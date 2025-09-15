@@ -43,15 +43,17 @@ async function handleVerify(e) {
 
 
 return (
-<div className=" bg-gradient-to-br from-primary to-primary/30 min-h-screen py-[100px] px-4">
-<h1 className=' font-bold'>Welcome to Hora</h1>
-<p >Login with your email. We'll send you a one-time code.</p>
+<div className=" bg-gradient-to-br from-primary to-primary/30 text-accent  min-h-screen py-[100px] px-4">
+<div className='mx-auto max-w-md space-y-4 border-1 border-primary/30 backdrop-blur-md p-8 rounded-lg shadow'>
+
+<h1 className='font-semibold text-3xl'>Welcome to Hora Light</h1>
+<p className='font-secondary'>Login with your email. We'll send you a one-time code.</p>
 
 
 {step === 'email' && (
     <div >
     <label>
-        <div>Email</div>
+        <div className='font-semibold'>Email</div>
         <input
         type="email"
         value={email}
@@ -60,7 +62,7 @@ return (
         style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #ddd' }}
         />
     </label>
-    <button onClick={handleSend} disabled={sending || !email} style={{ padding: '10px 12px', borderRadius: 8 }}>
+    <button onClick={handleSend} disabled={sending || !email} className='button-tech mt-6'>
     {sending ? 'Sending…' : 'Send code'}
     </button>
     {/* Optional: magic link mode — enable when backend ready */}
@@ -88,6 +90,7 @@ return (
         <button type="button" onClick={() => setStep('email')} style={{ background: 'transparent', border: 'none', color: '#666', textDecoration: 'underline' }}>Change email</button>
     </form>
 )}
+</div>
 </div>
 )
 }

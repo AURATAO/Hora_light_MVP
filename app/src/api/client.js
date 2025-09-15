@@ -13,7 +13,7 @@ export async function api(path, { method = "GET", body, headers = {} } = {}) {
       ...headers,
     },
     body: body ? JSON.stringify(body) : undefined,
-    credentials: "include", // harmless if server doesn't set cookies
+    // credentials: "include", // harmless if server doesn't set cookies
   });
 
   if (!res.ok) {
