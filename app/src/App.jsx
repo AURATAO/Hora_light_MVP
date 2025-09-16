@@ -11,50 +11,45 @@ import Nav from './components/Nav.jsx'
 export default function App() {
 return (
 <div>
-<Nav />
-<main >
-<Routes>
-<Route path="/login" element={<Login />} />
+    <Nav />
+    <main >
+    <Routes>
+    <Route path="/login" element={<Login />} />
+
+
+<Route path="/" element={
+    <ProtectedRoute>
+    <Dashboard />
+    </ProtectedRoute>
+    }  />
 
 
 <Route
-path="/"
-element={
-<ProtectedRoute>
-<Dashboard />
-</ProtectedRoute>
-}
-/>
-
-
-<Route
-path="/tasks/new"
+    path="/tasks/new"
 element={
 <ProtectedRoute>
 <NewTask />
 </ProtectedRoute>
-}
+    } />
+
+
+<Route
+    path="/tasks/:id"
+    element={
+    <ProtectedRoute>
+    <TaskDetail />
+    </ProtectedRoute>
+    }
 />
 
 
 <Route
-path="/tasks/:id"
-element={
-<ProtectedRoute>
-<TaskDetail />
-</ProtectedRoute>
-}
-/>
-
-
-<Route
-path="/my"
-element={
-<ProtectedRoute>
-<My />
-</ProtectedRoute>
-}
-/>
+    path="/my"
+    element={
+    <ProtectedRoute>
+    <My />
+    </ProtectedRoute>
+    }/>
 
 
 <Route path="*" element={<Navigate to="/" replace />} />
