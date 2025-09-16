@@ -54,6 +54,7 @@ type Task struct {
 	Requester         string     `json:"requester"`
 	Status            string     `json:"status"` // "open" | "completed"
 	CreatedAt         time.Time  `json:"created_at"`
+	AssignedTo        string     `json:"assigned_to"` //空字串代表尚未指派
 }
 
 type createTaskInput struct {
@@ -70,6 +71,22 @@ type createTaskInput struct {
 var (
 	tasksMu sync.Mutex
 	tasks   = map[string]Task{}
+)
+
+type Profile struct {
+	Email     string    `json:"email"`
+	Name      string    `json:"name"`
+	Phone     string    `json:"phone"`
+	City      string    `json:"city"`
+	AvatarURL string    `json:"avatar_url"`
+	Bio       string    `json:"bio"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+var (
+	profilesMu sync.Mutex
+	profiles   = map[string]Profile{}
 )
 
 func main() {
@@ -106,6 +123,15 @@ func main() {
 	auth.Use(authMiddleware())
 	auth.GET("/me", me)
 
+	// User Profile
+
+	meAPI := r.Group("/profile")
+	meAPI.Use(authMiddleware())
+	{
+		meAPI.GET("", getMyProfile)
+		meAPI.PATCH("", patchMyProfile)
+	}
+
 	tasksAPI := r.Group("/tasks")
 	tasksAPI.Use(authMiddleware())
 	{
@@ -113,6 +139,14 @@ func main() {
 		tasksAPI.GET("", listMyTasks)
 		tasksAPI.GET("/:id", getTask)
 		tasksAPI.PATCH("/:id", updateTask) // ← 編輯
+
+		tasksAPI.GET("/available", listAvailableTasks)
+		tasksAPI.GET("/assigned", listAssignedTasks)
+		tasksAPI.GET("/posted", listMyTasks) // alias
+		tasksAPI.GET("/done", listDoneTasks)
+
+		tasksAPI.POST("/:id/accept", acceptTask)     // 接單
+		tasksAPI.POST("/:id/complete", completeTask) // 完成
 	}
 
 	addr := ":8080"
@@ -429,5 +463,161 @@ func updateTask(c *gin.Context) {
 	tasksMu.Lock()
 	tasks[id] = t
 	tasksMu.Unlock()
+	c.JSON(http.StatusOK, t)
+}
+
+// -------- Profile handlers --------
+func getMyProfile(c *gin.Context) {
+	claims := c.MustGet("claims").(jwt.MapClaims)
+	email := fmt.Sprint(claims["email"])
+
+	profilesMu.Lock()
+	p, ok := profiles[email]
+	if !ok {
+		p = Profile{
+			Email:     email,
+			Name:      deriveName(email),
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+		profiles[email] = p
+	}
+	profilesMu.Unlock()
+	c.JSON(http.StatusOK, p)
+}
+
+func patchMyProfile(c *gin.Context) {
+	claims := c.MustGet("claims").(jwt.MapClaims)
+	email := fmt.Sprint(claims["email"])
+
+	var in struct {
+		Name      *string `json:"name"`
+		Phone     *string `json:"phone"`
+		City      *string `json:"city"`
+		AvatarURL *string `json:"avatar_url"`
+		Bio       *string `json:"bio"`
+	}
+	if err := c.BindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+		return
+	}
+
+	profilesMu.Lock()
+	p, ok := profiles[email]
+	if !ok {
+		p = Profile{Email: email, CreatedAt: time.Now()}
+	}
+	if in.Name != nil {
+		p.Name = strings.TrimSpace(*in.Name)
+	}
+	if in.Phone != nil {
+		p.Phone = strings.TrimSpace(*in.Phone)
+	}
+	if in.City != nil {
+		p.City = strings.TrimSpace(*in.City)
+	}
+	if in.AvatarURL != nil {
+		p.AvatarURL = strings.TrimSpace(*in.AvatarURL)
+	}
+	if in.Bio != nil {
+		p.Bio = strings.TrimSpace(*in.Bio)
+	}
+	p.UpdatedAt = time.Now()
+	profiles[email] = p
+	profilesMu.Unlock()
+
+	c.JSON(http.StatusOK, p)
+}
+
+// -------- Tasks extra list handlers --------
+func listAvailableTasks(c *gin.Context) {
+	me := fmt.Sprint(c.MustGet("claims").(jwt.MapClaims)["email"])
+	out := make([]Task, 0)
+	tasksMu.Lock()
+	for _, t := range tasks {
+		if t.Status == "open" && t.Requester != me && t.AssignedTo == "" {
+			out = append(out, t)
+		}
+	}
+	tasksMu.Unlock()
+	c.JSON(http.StatusOK, out)
+}
+
+func listAssignedTasks(c *gin.Context) {
+	me := fmt.Sprint(c.MustGet("claims").(jwt.MapClaims)["email"])
+	out := make([]Task, 0)
+	tasksMu.Lock()
+	for _, t := range tasks {
+		if t.AssignedTo == me && t.Status == "open" {
+			out = append(out, t)
+		}
+	}
+	tasksMu.Unlock()
+	c.JSON(http.StatusOK, out)
+}
+
+func listDoneTasks(c *gin.Context) {
+	me := fmt.Sprint(c.MustGet("claims").(jwt.MapClaims)["email"])
+	out := make([]Task, 0)
+	tasksMu.Lock()
+	for _, t := range tasks {
+		if (t.Requester == me || t.AssignedTo == me) && (t.Status == "completed" || t.Status == "cancelled") {
+			out = append(out, t)
+		}
+	}
+	tasksMu.Unlock()
+	c.JSON(http.StatusOK, out)
+}
+
+// -------- Tasks actions --------
+func acceptTask(c *gin.Context) {
+	id := c.Param("id")
+	me := fmt.Sprint(c.MustGet("claims").(jwt.MapClaims)["email"])
+
+	tasksMu.Lock()
+	t, ok := tasks[id]
+	if !ok {
+		tasksMu.Unlock()
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	if t.Requester == me {
+		tasksMu.Unlock()
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot accept your own task"})
+		return
+	}
+	if t.Status != "open" || t.AssignedTo != "" {
+		tasksMu.Unlock()
+		c.JSON(http.StatusBadRequest, gin.H{"error": "not available"})
+		return
+	}
+
+	t.AssignedTo = me
+	tasks[id] = t
+	tasksMu.Unlock()
+
+	c.JSON(http.StatusOK, t)
+}
+
+func completeTask(c *gin.Context) {
+	id := c.Param("id")
+	me := fmt.Sprint(c.MustGet("claims").(jwt.MapClaims)["email"])
+
+	tasksMu.Lock()
+	t, ok := tasks[id]
+	if !ok {
+		tasksMu.Unlock()
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	if t.Requester != me && t.AssignedTo != me {
+		tasksMu.Unlock()
+		c.JSON(http.StatusForbidden, gin.H{"error": "not allowed"})
+		return
+	}
+	t.Status = "completed"
+	tasks[id] = t
+	tasksMu.Unlock()
+
 	c.JSON(http.StatusOK, t)
 }
