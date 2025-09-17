@@ -29,6 +29,9 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"sync"
+
+	"math"
+	"sort"
 )
 
 var jwtSecret []byte
@@ -89,6 +92,21 @@ var (
 	profiles   = map[string]Profile{}
 )
 
+type WorkLog struct {
+	ID        string     `json:"id"`
+	TaskID    string     `json:"task_id"`
+	User      string     `json:"user"`
+	Start     time.Time  `json:"start"`
+	End       *time.Time `json:"end,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+}
+
+var (
+	worklogsMu sync.Mutex
+	worklogs   = make(map[string]WorkLog)
+)
+
 func main() {
 	secret := os.Getenv("JWT_SECRET")
 	if secret == "" {
@@ -147,6 +165,11 @@ func main() {
 
 		tasksAPI.POST("/:id/accept", acceptTask)     // 接單
 		tasksAPI.POST("/:id/complete", completeTask) // 完成
+
+		// ✅ 新增打卡與查詢工時
+		tasksAPI.POST("/:id/clock-in", clockIn)
+		tasksAPI.POST("/:id/clock-out", clockOut)
+		tasksAPI.GET("/:id/worklogs", getWorklogs)
 	}
 
 	addr := ":8080"
@@ -358,6 +381,8 @@ func createTask(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, t)
 }
+
+//handler 列出我發佈的任務
 
 func listMyTasks(c *gin.Context) {
 	claims := c.MustGet("claims").(jwt.MapClaims)
@@ -599,22 +624,211 @@ func acceptTask(c *gin.Context) {
 	c.JSON(http.StatusOK, t)
 }
 
+// func completeTask(c *gin.Context) {
+// 	id := c.Param("id")
+// 	me := fmt.Sprint(c.MustGet("claims").(jwt.MapClaims)["email"])
+
+// 	tasksMu.Lock()
+// 	t, ok := tasks[id]
+// 	if !ok {
+// 		tasksMu.Unlock()
+// 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+// 		return
+// 	}
+// 	if t.Requester != me && t.AssignedTo != me {
+// 		tasksMu.Unlock()
+// 		c.JSON(http.StatusForbidden, gin.H{"error": "not allowed"})
+// 		return
+// 	}
+// 	t.Status = "completed"
+// 	tasks[id] = t
+// 	tasksMu.Unlock()
+
+// 	c.JSON(http.StatusOK, t)
+// }
+
+// -------- WorkLog handlers --------
+const centsPerMinute = 50 // 0.5 EUR/min
+
+func clockIn(c *gin.Context) {
+	id := c.Param("id")
+	me := fmt.Sprint(c.MustGet("claims").(jwt.MapClaims)["email"])
+
+	tasksMu.Lock()
+	t, ok := tasks[id]
+	tasksMu.Unlock()
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	if t.AssignedTo != me {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only assignee can clock in"})
+		return
+	}
+	if t.Status != "open" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "task not open"})
+		return
+	}
+
+	// 不允許同一使用者有未結束的打卡
+	if hasOpen, _ := hasOpenLog(id, me); hasOpen {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "already clocked in"})
+		return
+	}
+
+	now := time.Now()
+	wl := WorkLog{
+		ID:        fmt.Sprintf("WL%v", time.Now().UnixNano()),
+		TaskID:    id,
+		User:      me,
+		Start:     now,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	worklogsMu.Lock()
+	worklogs[wl.ID] = wl
+	worklogsMu.Unlock()
+
+	c.JSON(http.StatusCreated, wl)
+}
+
+func clockOut(c *gin.Context) {
+	id := c.Param("id")
+	me := fmt.Sprint(c.MustGet("claims").(jwt.MapClaims)["email"])
+
+	tasksMu.Lock()
+	t, ok := tasks[id]
+	tasksMu.Unlock()
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	if t.AssignedTo != me {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only assignee can clock out"})
+		return
+	}
+
+	hasOpen, openID := hasOpenLog(id, me)
+	if !hasOpen {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no active session"})
+		return
+	}
+
+	now := time.Now()
+	worklogsMu.Lock()
+	wl := worklogs[openID]
+	wl.End = &now
+	wl.UpdatedAt = now
+	worklogs[openID] = wl
+	worklogsMu.Unlock()
+
+	c.JSON(http.StatusOK, wl)
+}
+
+func getWorklogs(c *gin.Context) {
+	id := c.Param("id")
+	me := fmt.Sprint(c.MustGet("claims").(jwt.MapClaims)["email"])
+
+	tasksMu.Lock()
+	t, ok := tasks[id]
+	tasksMu.Unlock()
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+
+	// 僅作者或接單者可查看
+	if t.Requester != me && t.AssignedTo != me {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not allowed"})
+		return
+	}
+
+	items := make([]WorkLog, 0)
+	worklogsMu.Lock()
+	for _, wl := range worklogs {
+		if wl.TaskID == id {
+			items = append(items, wl)
+		}
+	}
+	worklogsMu.Unlock()
+	sort.Slice(items, func(i, j int) bool { return items[i].Start.Before(items[j].Start) })
+
+	totalMin, hasOpen := totalMinutesForTask(id)
+	resp := gin.H{
+		"items":            items,
+		"total_minutes":    totalMin,
+		"total_cost_cents": totalMin * centsPerMinute,
+		"has_open":         hasOpen,
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+// 工具：是否有未結束打卡（特定使用者）
+func hasOpenLog(taskID, user string) (bool, string) {
+	worklogsMu.Lock()
+	defer worklogsMu.Unlock()
+	for id, wl := range worklogs {
+		if wl.TaskID == taskID && wl.User == user && wl.End == nil {
+			return true, id
+		}
+	}
+	return false, ""
+}
+
+// 工具：計算任務總分鐘（向上取整；>0 最少算 1 分）
+func totalMinutesForTask(taskID string) (int, bool) {
+	total := 0
+	hasOpen := false
+	worklogsMu.Lock()
+	defer worklogsMu.Unlock()
+	for _, wl := range worklogs {
+		if wl.TaskID != taskID {
+			continue
+		}
+		if wl.End == nil {
+			hasOpen = true
+			continue
+		}
+		dmin := wl.End.Sub(wl.Start).Minutes()
+		if dmin <= 0 {
+			continue
+		}
+		m := int(math.Ceil(dmin))
+		if m == 0 {
+			m = 1
+		}
+		total += m
+	}
+	return total, hasOpen
+}
+
+// ✅ 完成規則：作者或接單者可完成；若有未結束打卡需先 clock out
 func completeTask(c *gin.Context) {
 	id := c.Param("id")
 	me := fmt.Sprint(c.MustGet("claims").(jwt.MapClaims)["email"])
 
 	tasksMu.Lock()
 	t, ok := tasks[id]
+	tasksMu.Unlock()
 	if !ok {
-		tasksMu.Unlock()
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
 	if t.Requester != me && t.AssignedTo != me {
-		tasksMu.Unlock()
 		c.JSON(http.StatusForbidden, gin.H{"error": "not allowed"})
 		return
 	}
+	if t.Status != "open" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "already closed"})
+		return
+	}
+
+	if hasOpen, _ := hasOpenLog(id, t.AssignedTo); hasOpen {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "clock-out required before completing"})
+		return
+	}
+
+	tasksMu.Lock()
 	t.Status = "completed"
 	tasks[id] = t
 	tasksMu.Unlock()
