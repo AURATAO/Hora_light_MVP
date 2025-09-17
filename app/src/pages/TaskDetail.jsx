@@ -2,12 +2,14 @@ import { useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
+import { useNavigate } from 'react-router-dom'
 
 const MINUTE_RATE_EUR = 0.5
 
 export default function TaskDetail() {
   const { id } = useParams()
   const { user } = useAuth()
+
   const [task, setTask] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -23,18 +25,77 @@ export default function TaskDetail() {
   const [mode, setMode] = useState('now') // 'now' | 'schedule'
   const [date, setDate] = useState('')
   const [timeStr, setTimeStr] = useState('')
+  const navigate = useNavigate()
 
+  // 🔥 新增：工時資料
+  const [work, setWork] = useState({
+    items: [],
+    total_minutes: 0,
+    total_cost_cents: 0,
+    has_open: false,
+  })
+
+  // 身份判斷
+  const isOwner = user?.email && task?.requester && user.email === task.requester
+  const isAssignee = user?.email && task?.assigned_to && user.email === task.assigned_to
+  const canComplete = (isOwner || isAssignee) && task?.status === 'open' && !work.has_open
+
+  // 金額顯示
+  const totalEUR = useMemo(
+    () => (work.total_cost_cents || 0) / 100,
+    [work.total_cost_cents]
+  )
+
+  // 載入任務
   useEffect(() => {
     let alive = true
     setLoading(true); setError('')
     api(`/tasks/${id}`)
-      .then((t) => { if (alive) { setTask(t) } })
+      .then((t) => { if (alive) setTask(t) })
       .catch((e) => setError(e.message || 'Failed to load'))
       .finally(() => setLoading(false))
     return () => { alive = false }
   }, [id])
 
-  const isOwner = user?.email && task?.requester && user.email === task.requester
+  // 依任務載入工時（作者或承接者可看；403 就忽略）
+  useEffect(() => {
+    if (!task) return
+    let alive = true
+    ;(async () => {
+      try {
+        const w = await api(`/tasks/${id}/worklogs`)
+        if (alive) setWork(w)
+      } catch { /* 可能 403：不是相關人，略過 */ }
+    })()
+    return () => { alive = false }
+  }, [id, task])
+
+  // 重新抓工時
+  async function reloadWork() {
+      const [t, w] = await Promise.all([
+      api(`/tasks/${id}`),
+      api(`/tasks/${id}/worklogs`).catch(() => work),
+    ])
+    setTask(t); setWork(w)
+  }
+
+  // 🔥 新增：打卡
+  async function clockIn() {
+    try {
+      await api(`/tasks/${id}/clock-in`, { method: 'POST' })
+      await reloadWork()
+    } catch (e) {
+      alert(e.message || 'Clock in failed')
+    }
+  }
+  async function clockOut() {
+    try {
+      await api(`/tasks/${id}/clock-out`, { method: 'POST' })
+      await reloadWork()
+    } catch (e) {
+      alert(e.message || 'Clock out failed')
+    }
+  }
 
   // 進入編輯模式時把 task 值灌入表單
   function startEdit() {
@@ -108,6 +169,16 @@ export default function TaskDetail() {
   const advanceEUR = (task.prepay_amount_cents || 0) / 100
   const whenText = task.is_immediate ? 'ASAP' : (task.scheduled_at ? new Date(task.scheduled_at).toLocaleString() : '—')
 
+  async function markCompleted() {
+  try {
+    await api(`/tasks/${id}/complete`, { method: 'POST' })
+    // 完成後導回 Done 分頁；不想跳頁可改成 await reloadWork(); 再 setTask(...)
+    navigate('/my?tab=done', { replace: true })
+  } catch (e) {
+    alert(e.message || 'Complete failed')
+  }
+}
+
   return (
     <div className="bg-gradient-to-br from-primary to-primary/30 text-accent min-h-screen py-[100px] px-4">
       <div className="mx-auto max-w-md space-y-4 border border-primary/30 backdrop-blur-md p-8 rounded-lg shadow">
@@ -118,6 +189,14 @@ export default function TaskDetail() {
               <span className="inline-flex h-6 items-center rounded-full border border-white/15 bg-white/5 px-2 text-[11px] uppercase tracking-wide text-white/80 select-none pointer-events-none">
                 {task.status}
               </span>
+              {canComplete && (
+                <button
+                  onClick={markCompleted}
+                  className="ml-2 rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40"
+                >
+                  Mark completed
+                </button>
+              )}
               {isOwner && task.status === 'open' && (
                 <button onClick={startEdit} className="ml-2 rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40">
                   Edit
@@ -136,6 +215,26 @@ export default function TaskDetail() {
             <div className="border border-white/20 rounded-md p-3 whitespace-pre-wrap">
               {task.description || 'No description.'}
             </div>
+
+              {/* Worklogs / Time & Cost */}
+              {(isOwner || isAssignee) && (
+                <div className="border border-white/20 rounded-md p-3">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm">Logged: <b>{work.total_minutes} min</b> · Est. <b>{totalEUR.toFixed(2)} EUR</b></div>
+                    {isAssignee && task.status === 'open' && (
+                      work.has_open ? (
+                        <button onClick={clockOut} className="text-xs rounded-md border border-white/20 px-2 py-1 hover:border-white/40">
+                          Clock out
+                        </button>
+                      ) : (
+                        <button onClick={clockIn} className="text-xs rounded-md border border-white/20 px-2 py-1 hover:border-white/40">
+                          Clock in
+                        </button>
+                      )
+                    )}
+                  </div>
+                </div>
+              )}
 
             <div className="border border-white/20 rounded-md p-3">
               <div className="text-sm mb-2">Chat</div>
