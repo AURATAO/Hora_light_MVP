@@ -38,7 +38,12 @@ export default function TaskDetail() {
   // 身份判斷
   const isOwner = user?.email && task?.requester && user.email === task.requester
   const isAssignee = user?.email && task?.assigned_to && user.email === task.assigned_to
-  const canComplete = (isOwner || isAssignee) && task?.status === 'open' && !work.has_open
+  const hasLogged   = (work.total_minutes || 0) > 0
+  const canComplete = (isOwner || isAssignee)
+  && task?.status === 'open'
+  && !!task?.assigned_to
+  && !work.has_open
+  && hasLogged
 
   // 金額顯示
   const totalEUR = useMemo(
@@ -189,14 +194,15 @@ export default function TaskDetail() {
               <span className="inline-flex h-6 items-center rounded-full border border-white/15 bg-white/5 px-2 text-[11px] uppercase tracking-wide text-white/80 select-none pointer-events-none">
                 {task.status}
               </span>
-              {canComplete && (
-                <button
-                  onClick={markCompleted}
-                  className="ml-2 rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40"
-                >
-                  Mark completed
+              {canComplete ? (
+  <button onClick={markCompleted} className="ml-2 rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40">
+    Mark completed
+  </button>
+              ) : ((isOwner || isAssignee) && task?.status === 'open') ? (
+                <button disabled className="ml-2 text-xs opacity-60 border border-white/10 px-2 py-1 rounded-md cursor-not-allowed" title="Clock in & out at least once to complete">
+                  Complete (needs clock in/out)
                 </button>
-              )}
+              ) : null}
               {isOwner && task.status === 'open' && (
                 <button onClick={startEdit} className="ml-2 rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40">
                   Edit
