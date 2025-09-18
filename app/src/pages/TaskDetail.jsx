@@ -36,10 +36,25 @@ export default function TaskDetail() {
   })
 
   // 身份判斷
-  const isOwner = user?.email && task?.requester && user.email === task.requester
-  const isAssignee = user?.email && task?.assigned_to && user.email === task.assigned_to
+  const isOwner    = Boolean(user?.email && task?.requester   && user.email === task.requester)
+  const isAssignee = Boolean(user?.email && task?.assigned_to && user.email === task.assigned_to)
   const hasLogged   = (work.total_minutes || 0) > 0
   const canComplete = (isOwner || isAssignee)
+  const canAccept  = Boolean(
+    !isOwner &&
+    !isAssignee &&
+    task?.status === 'open' &&
+    !task?.assigned_to
+  )
+
+  console.log('[Detail canAccept]', {
+  user: user?.email,
+  requester: task?.requester,
+  assigned_to: task?.assigned_to,
+  status: task?.status,
+  canAccept
+})
+
   && task?.status === 'open'
   && !!task?.assigned_to
   && !work.has_open
@@ -50,6 +65,18 @@ export default function TaskDetail() {
     () => (work.total_cost_cents || 0) / 100,
     [work.total_cost_cents]
   )
+
+async function acceptFromDetail() {
+  try {
+    await api(`/tasks/${id}/accept`, { method: 'POST' })
+    const fresh = await api(`/tasks/${id}`)
+    setTask(fresh)
+  } catch (e) {
+    alert(e.message || 'Failed to accept')
+  }
+}
+
+
 
   // 載入任務
   useEffect(() => {
@@ -184,6 +211,7 @@ export default function TaskDetail() {
   }
 }
 
+
   return (
     <div className="bg-gradient-to-br from-primary to-primary/30 text-accent min-h-screen py-[100px] px-4">
       <div className="mx-auto max-w-md space-y-4 border border-primary/30 backdrop-blur-md p-8 rounded-lg shadow">
@@ -194,13 +222,22 @@ export default function TaskDetail() {
               <span className="inline-flex h-6 items-center rounded-full border border-white/15 bg-white/5 px-2 text-[11px] uppercase tracking-wide text-white/80 select-none pointer-events-none">
                 {task.status}
               </span>
+                {/* 可以 Accept 才顯示 */}
+              {canAccept && (
+                <button
+                  onClick={acceptFromDetail}
+                  className="ml-2 rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40"
+                >
+                  Accept
+                </button>
+              )}
               {canComplete ? (
-  <button onClick={markCompleted} className="ml-2 rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40">
-    Mark completed
-  </button>
+              <button onClick={markCompleted} className="ml-2 rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40">
+                Mark completed
+              </button>
               ) : ((isOwner || isAssignee) && task?.status === 'open') ? (
                 <button disabled className="ml-2 text-xs opacity-60 border border-white/10 px-2 py-1 rounded-md cursor-not-allowed" title="Clock in & out at least once to complete">
-                  Complete (needs clock in/out)
+                  Complete (needs clock )
                 </button>
               ) : null}
               {isOwner && task.status === 'open' && (

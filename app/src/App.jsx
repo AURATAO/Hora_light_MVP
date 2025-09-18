@@ -17,44 +17,44 @@ return (
     <Route path="/login" element={<Login />} />
 
 
-<Route path="/" element={
-    <ProtectedRoute>
-    <Dashboard />
-    </ProtectedRoute>
-    }  />
+    <Route path="/" element={
+        <ProtectedRoute>
+        <Dashboard />
+        </ProtectedRoute>
+        }  />
 
 
-<Route
-    path="/tasks/new"
-element={
-<ProtectedRoute>
-<NewTask />
-</ProtectedRoute>
-    } />
-
-
-<Route
-    path="/tasks/:id"
+    <Route
+        path="/tasks/new"
     element={
     <ProtectedRoute>
-    <TaskDetail />
+    <NewTask />
     </ProtectedRoute>
-    }
-/>
+        } />
 
 
-<Route
-    path="/my"
-    element={
-    <ProtectedRoute>
-    <My />
-    </ProtectedRoute>
-    }/>
+    <Route
+        path="/tasks/:id"
+        element={
+        <ProtectedRoute>
+        <TaskDetail />
+        </ProtectedRoute>
+        }
+    />
 
 
-<Route path="*" element={<Navigate to="/" replace />} />
-</Routes>
-</main>
+    <Route
+        path="/my"
+        element={
+        <ProtectedRoute>
+        <My />
+        </ProtectedRoute>
+        }/>
+
+
+    <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+    </main>
 </div>
 )
 }
