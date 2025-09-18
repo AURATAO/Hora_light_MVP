@@ -54,6 +54,13 @@ export default function NewTask() {
 
   const totalEstimate = useMemo(() => (timeCost + advance), [timeCost, advance])
 
+  const scheduledAtISO = useMemo(() => {
+    if (mode !== 'schedule' || !date || !timeStr) return ''
+    const dt = new Date(`${date}T${timeStr}`)   // 以本地時區組合
+    if (Number.isNaN(dt.getTime())) return ''
+    return dt.toISOString()                     // 後端要 RFC3339/ISO
+    }, [mode, date, timeStr])
+
   async function onSubmit(e) {
     e.preventDefault()
     setTouched(true)
@@ -65,6 +72,7 @@ export default function NewTask() {
         .map((s) => s.trim())
         .filter(Boolean)
         .join(' | ')
+
 
       const payload = {
         title, description, category, location_text,
@@ -82,6 +90,8 @@ export default function NewTask() {
       setLoading(false)
     }
   }
+
+
 
   return (
     <div className="bg-gradient-to-br from-primary to-primary/30 text-accent min-h-screen py-[100px] px-4">
