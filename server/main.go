@@ -775,6 +775,33 @@ func hasOpenLog(taskID, user string) (bool, string) {
 	return false, ""
 }
 
+// 指定使用者是否有至少一筆「已結束」的打卡
+func hasClosedLogByUser(taskID, user string) bool {
+	if user == "" {
+		return false
+	}
+	worklogsMu.Lock()
+	defer worklogsMu.Unlock()
+	for _, wl := range worklogs {
+		if wl.TaskID == taskID && wl.User == user && wl.End != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// 工具：結束打卡，才能標記任務完成（特定使用者）
+func hasAnyOpenLog(taskID string) bool {
+	worklogsMu.Lock()
+	defer worklogsMu.Unlock()
+	for _, wl := range worklogs {
+		if wl.TaskID == taskID && wl.End == nil { // 任何人未結束都算
+			return true
+		}
+	}
+	return false
+}
+
 // 工具：計算任務總分鐘（向上取整；>0 最少算 1 分）
 func totalMinutesForTask(taskID string) (int, bool) {
 	total := 0
@@ -814,6 +841,7 @@ func completeTask(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
+	// 只有作者或接單者能完成
 	if t.Requester != me && t.AssignedTo != me {
 		c.JSON(http.StatusForbidden, gin.H{"error": "not allowed"})
 		return
@@ -822,12 +850,21 @@ func completeTask(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "already closed"})
 		return
 	}
-
-	if hasOpen, _ := hasOpenLog(id, t.AssignedTo); hasOpen {
+	// 必須有指派對象
+	if t.AssignedTo == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "assignment required before completing"})
+		return
+	}
+	// 不可有未結束打卡
+	if hasAnyOpenLog(id) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "clock-out required before completing"})
 		return
 	}
-
+	// 必須至少有一筆已結束打卡（由接單者）
+	if !hasClosedLogByUser(id, t.AssignedTo) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "at least one work session is required before completing"})
+		return
+	}
 	tasksMu.Lock()
 	t.Status = "completed"
 	tasks[id] = t
