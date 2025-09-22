@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom'
 import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { useNavigate } from 'react-router-dom'
+import TaskChatBox from '../components/TaskChatBox'
 
 const MINUTE_RATE_EUR = 0.5
 
@@ -278,12 +279,9 @@ async function acceptFromDetail() {
                   </div>
                 </div>
               )}
-
             <div className="border border-white/20 rounded-md p-3">
               <div className="text-sm mb-2">Chat</div>
-              <div id="talkjs-container" className="h-56 rounded bg-white/5 border border-white/10 flex items-center justify-center text-xs text-white/60">
-                (Chat will appear here after assignment)
-              </div>
+              <TaskChatBox task={task} me={user} height={320} />
             </div>
           </>
         ) : (
