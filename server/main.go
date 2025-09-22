@@ -162,6 +162,7 @@ func main() {
 		tasksAPI.GET("/assigned", listAssignedTasks)
 		tasksAPI.GET("/posted", listMyTasks) // alias
 		tasksAPI.GET("/done", listDoneTasks)
+		tasksAPI.GET("/posted/closed", listMyPostedClosed) // 我發的已完成/取消（可選）
 
 		tasksAPI.POST("/:id/accept", acceptTask)     // 接單
 		tasksAPI.POST("/:id/complete", completeTask) // 完成
@@ -586,7 +587,20 @@ func listDoneTasks(c *gin.Context) {
 	out := make([]Task, 0)
 	tasksMu.Lock()
 	for _, t := range tasks {
-		if (t.Requester == me || t.AssignedTo == me) && (t.Status == "completed" || t.Status == "cancelled") {
+		if t.AssignedTo == me && t.Status == "completed" {
+			out = append(out, t)
+		}
+	}
+	tasksMu.Unlock()
+	c.JSON(http.StatusOK, out)
+}
+
+func listMyPostedClosed(c *gin.Context) {
+	me := fmt.Sprint(c.MustGet("claims").(jwt.MapClaims)["email"])
+	out := make([]Task, 0)
+	tasksMu.Lock()
+	for _, t := range tasks {
+		if t.Requester == me && (t.Status == "completed" || t.Status == "cancelled") {
 			out = append(out, t)
 		}
 	}
