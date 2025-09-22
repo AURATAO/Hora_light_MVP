@@ -40,7 +40,13 @@ export default function TaskDetail() {
   const isOwner    = Boolean(user?.email && task?.requester   && user.email === task.requester)
   const isAssignee = Boolean(user?.email && task?.assigned_to && user.email === task.assigned_to)
   const hasLogged   = (work.total_minutes || 0) > 0
-  const canComplete = (isOwner || isAssignee)
+  const canComplete = Boolean(
+  (isOwner || isAssignee) &&
+  task?.status === 'open' &&        
+  !!task?.assigned_to &&
+  !work.has_open &&
+  hasLogged
+)
   const canAccept  = Boolean(
     !isOwner &&
     !isAssignee &&
