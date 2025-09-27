@@ -8,8 +8,10 @@ import ProtectedRoute from './auth/ProtectedRoute.jsx'
 import Nav from './components/Nav.jsx'
 
 
+
 export default function App() {
 return (
+    
 <div>
     <Nav />
     <main >
@@ -56,5 +58,6 @@ return (
     </Routes>
     </main>
 </div>
+
 )
 }

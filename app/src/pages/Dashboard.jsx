@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.jsx'
 
 export default function Dashboard() {
-  const { user } = useAuth()
+  const { user, loading } = useAuth()
   return (
     <div className=' w-full flex justify-center flex-col items-center min-h-screen bg-gradient-to-br from-primary to-primary/30 text-accent'>
       <div className='max-w-7xl flex flex-col justify-center items-center text-center p-4'>

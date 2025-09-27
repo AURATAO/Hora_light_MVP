@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { api } from '../api/client'
 import { ProfileCard } from '../components/Profilecard'
 import TaskCard from '../components/TaskCard'
+import { useRequireAuth } from '../auth/useRequireAuth'
 
 function ThinCard({ children, className='' }) {
   return <div className={`border border-white/20 rounded-lg p-3 bg-white/5 ${className}`}>{children}</div>
@@ -16,8 +17,10 @@ export default function My() {
   const [lists, setLists] = useState({ available:[], assigned:[], posted:[], done:[] })
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const { user, loading: authLoading } = useRequireAuth()
 
   useEffect(() => {
+    if (authLoading || !user) return 
     // load profile
     api('/profile').then(setProfile)
     // load lists

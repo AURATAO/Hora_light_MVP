@@ -1,16 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { api } from '../api/client'
-import { useAuth } from '../auth/AuthContext'
 import { useNavigate } from 'react-router-dom'
 import TaskChatBox from '../components/TaskChatBox'
+import { useRequireAuth } from '../auth/useRequireAuth'
 
 const MINUTE_RATE_EUR = 0.5
 
 export default function TaskDetail() {
   const { id } = useParams()
-  const { user } = useAuth()
-
+  const { user, loading: authLoading } = useRequireAuth()
+  const taskId = id || ''
   const [task, setTask] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -62,10 +62,32 @@ export default function TaskDetail() {
   canAccept
 })
 
-  && task?.status === 'open'
-  && !!task?.assigned_to
-  && !work.has_open
-  && hasLogged
+
+   // ⬇️ 只保留一段「等 auth ready 再抓」的 effect
+  useEffect(() => {
+    if (authLoading || !user || !taskId) return
+    let alive = true
+    setLoading(true); setError('')
+    ;(async () => {
+      try {
+        const t = await api(`/tasks/${taskId}`)  // 一定會帶 token（api 已封裝）
+        if (!alive) return
+        setTask(t)
+        // 只有作者/接單者可看工時；失敗就忽略
+        try {
+          const w = await api(`/tasks/${taskId}/worklogs`)
+          if (alive) setWork(w)
+        } catch {}
+      } catch (e) {
+        if (!alive) return
+        setError(e.message || 'Failed to load')
+      } finally {
+        if (alive) setLoading(false)
+      }
+    })()
+    return () => { alive = false }
+  }, [authLoading, user, taskId])
+
 
   // 金額顯示
   const totalEUR = useMemo(

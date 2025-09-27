@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { AuthAPI } from '../api/client.js'
 import { useAuth } from '../auth/AuthContext.jsx'
+import { supabase } from '../lib/supabaseClient'
+
 
 
 export default function Login() {
@@ -27,7 +29,6 @@ async function handleSend() {
             setSending(false)
     }
 }
-
 
 
 async function handleVerify(e) {

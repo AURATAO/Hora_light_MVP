@@ -1,6 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api } from '../api/client'
+import { supabase } from '../lib/supabaseClient'
+import { useRequireAuth } from '../auth/UseRequireAuth'
+
 
 const MINUTE_RATE_EUR = 0.5
 
@@ -12,12 +14,15 @@ export default function NewTask() {
   const [locations, setLocations] = useState(['']) // 多地點
   const [minutes, setMinutes] = useState(30)
   const [prepay, setPrepay] = useState('') // 輸入 EUR（字串）
-  const [loading, setLoading] = useState(false)
+  const  [isSubmitting, setIsSubmitting]  = useState(false)
   const [touched, setTouched] = useState(false)
   const [mode, setMode] = useState('now') // 'now' | 'schedule'
   const [date, setDate] = useState('')    // YYYY-MM-DD
   const [timeStr, setTimeStr] = useState('') // HH:MM
   const nav = useNavigate()
+
+  const { user, loading: authLoading } = useRequireAuth()
+  if (authLoading) return null  
 
   function addLocation() {
     setLocations((prev) => [...prev, ''])
@@ -62,36 +67,87 @@ export default function NewTask() {
     }, [mode, date, timeStr])
 
   async function onSubmit(e) {
-    e.preventDefault()
+    // e.preventDefault()
+    // setTouched(true)
+    // if (!canSubmit) return
+    // setIsSubmitting(true)
+    // try {
+    //   // 把多地點合併成一個字串（MVP 先這樣傳給後端）
+    //   const location_text = locations
+    //     .map((s) => s.trim())
+    //     .filter(Boolean)
+    //     .join(' | ')
+
+
+    //   const payload = {
+    //     title, description, category, location_text,
+    //     estimated_minutes: Number(minutes) || 30,
+    //     prepay_amount_cents: Math.round((advance || 0) * 100),
+    //     is_immediate: mode === 'now',
+    //     scheduled_at: mode === 'schedule' ? scheduledAtISO : '',
+    //   }
+
+    // 由後端寫入
+    //   const t = await api('/tasks', { method: 'POST', body: payload })
+    //   nav(`/tasks/${t.id}`)
+    // } catch (e) {
+    //   alert(e.message || 'Failed to create task')
+    // } finally {
+    //   setIsSubmitting(false)
+    // }
+
+    // 直接寫入supabase
+     e.preventDefault()
     setTouched(true)
     if (!canSubmit) return
-    setLoading(true)
+    setIsSubmitting(true)
     try {
-      // 把多地點合併成一個字串（MVP 先這樣傳給後端）
+      if (!user) {            // 用 context 的 user
+        alert('請先登入')
+        return
+      }
+      const { data: { user: supaUser }  } = await supabase.auth.getUser()
+      if (!user) { alert('請先登入'); return }
+
+      // 把多地點字串化（沿用你現有邏輯）
       const location_text = locations
         .map((s) => s.trim())
         .filter(Boolean)
         .join(' | ')
 
+    // 組 payload（scheduled_at 用 null，不要空字串）
+    const payload = {
+      title,
+      description,
+      category,
+      location_text,
+      estimated_minutes: Number(minutes) || 30,
+      prepay_amount_cents: Math.round((advance || 0) * 100),
+      is_immediate: mode === 'now',
+      scheduled_at: mode === 'schedule' ? scheduledAtISO : null,
+      requester: supaUser.email, // 🔑 RLS 插入一定要是自己
+    }
 
-      const payload = {
-        title, description, category, location_text,
-        estimated_minutes: Number(minutes) || 30,
-        prepay_amount_cents: Math.round((advance || 0) * 100),
-        is_immediate: mode === 'now',
-        scheduled_at: mode === 'schedule' ? scheduledAtISO : '',
-      }
+    const { data, error } = await supabase
+      .from('tasks')
+      .insert([payload])
+      .select('id')      // 只取回 id 就好；你也可 select('*')
+      .single()
 
-      const t = await api('/tasks', { method: 'POST', body: payload })
-      nav(`/tasks/${t.id}`)
+     if (error) throw error
+    nav(`/tasks/${data.id}`)
     } catch (e) {
       alert(e.message || 'Failed to create task')
     } finally {
-      setLoading(false)
+      setIsSubmitting(false)
     }
   }
 
-
+  useEffect(() => {
+  supabase.auth.getSession().then(s => {
+    console.log('[NewTask] session?', !!s.data.session, s.data.session?.user?.id)
+  })
+}, [])
 
   return (
     <div className="bg-gradient-to-br from-primary to-primary/30 text-accent min-h-screen py-[100px] px-4">
@@ -245,10 +301,10 @@ export default function NewTask() {
           <div className="flex gap-3 pt-2">
             <button
               type="submit"
-              disabled={!canSubmit || loading}
+              disabled={!canSubmit || isSubmitting}
               className="rounded-md px-4 py-2 bg-white text-black disabled:opacity-50"
             >
-              {loading ? 'Posting…' : 'Create task'}
+              {isSubmitting ? 'Posting…' : 'Create task'}
             </button>
             <button
               type="button"

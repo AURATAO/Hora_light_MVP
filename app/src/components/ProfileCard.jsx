@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
+import { useRequireAuth } from '../auth/useRequireAuth'
 
 function ProfileCard() {
   const [profile, setProfile] = useState(null)
@@ -7,8 +8,11 @@ function ProfileCard() {
   const [loading, setLoading] = useState(true)
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
+  const { user, loading: authLoading } = useRequireAuth()
+
 
   useEffect(() => {
+    if (authLoading || !user) return
     (async () => {
       try {
         const p = await api('/profile')
