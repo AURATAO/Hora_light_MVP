@@ -1,7 +1,8 @@
 // app/src/components/TaskCard.jsx
 import { useNavigate } from 'react-router-dom'
+import CancelTaskButton from './CancelTaskButton'
 
-export default function TaskCard({ task, variant, onAccept, className = '' }) {
+export default function TaskCard({ task, variant, onAccept, className = '', onAfterChange }) {
   const navigate = useNavigate()
   const whenText = task.is_immediate
     ? 'ASAP'
@@ -65,12 +66,20 @@ export default function TaskCard({ task, variant, onAccept, className = '' }) {
         )}
 
         {variant === 'posted' && (
-          <button
-            onClick={(e) => { e.stopPropagation(); openDetail() }}
-            className="rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40"
-          >
-            Manage
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={(e) => { e.stopPropagation(); openDetail() }}
+              className="rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40"
+            >
+              Manage
+            </button>
+
+            {task.status === 'open' && (
+              <div onClick={(e) => e.stopPropagation()}>
+                <CancelTaskButton taskId={task.id} onDone={onAfterChange} />
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>

@@ -4,6 +4,8 @@ import { api } from '../api/client'
 import { ProfileCard } from '../components/Profilecard'
 import TaskCard from '../components/TaskCard'
 import { useRequireAuth } from '../auth/useRequireAuth'
+import NotificationFeed from '../components/NotificationFeed'
+
 
 function ThinCard({ children, className='' }) {
   return <div className={`border border-white/20 rounded-lg p-3 bg-white/5 ${className}`}>{children}</div>
@@ -70,12 +72,14 @@ export default function My() {
     { key:'done',      label:'Done' },
   ]
 
+
   return (
     <div className="bg-gradient-to-br from-primary to-primary/30 text-accent min-h-screen py-[100px] px-4">
       <div className="mx-auto max-w-3xl space-y-6">
 
         {/* Profile card */}
         <ProfileCard  />
+        <NotificationFeed className="mt-4" />
 
         {/* Tabs */}
         <ThinCard>
@@ -122,7 +126,7 @@ function LabeledInput({ label, value, onChange, onBlur }) {
   )
 }
 
-function TaskList({ items,variant, onAccept, showManage=false }) {
+function TaskList({ items, variant, onAccept, onAfterChange, showManage=false }) {
   if (!items?.length) return <div className="text-white/70">No items.</div>
   return (
     <ul className="space-y-2">
@@ -131,7 +135,8 @@ function TaskList({ items,variant, onAccept, showManage=false }) {
           key={t.id}
           task={t}
           variant={variant}      // 'available' | 'assigned' | 'posted' | 'done'
-          onAccept={onAccept}    // 只有 available 會用到
+          onAccept={onAccept} 
+          onAfterChange={onAfterChange}     // 只有 available 會用到
         />
       ))}
     </ul>
