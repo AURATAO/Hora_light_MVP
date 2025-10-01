@@ -10,9 +10,14 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
+
+	notify "hora-auth/internal/notify"
 	"os"
 	"strings"
 	"time"
@@ -23,6 +28,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/joho/godotenv"
 )
 
@@ -31,6 +37,7 @@ import (
 
 var jwks *keyfunc.JWKS
 var db *pgxpool.Pool
+var sqldb *sql.DB
 
 type Task struct {
 	ID                string     `json:"id"` // ← 原本是 string，改成 int64
@@ -78,6 +85,18 @@ type WorkLog struct {
 	End       *time.Time `json:"end,omitempty"`
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
+}
+
+type NotificationDTO struct {
+	ID          string     `json:"id"`
+	TaskID      string     `json:"task_id"`
+	Type        string     `json:"type"`
+	Title       string     `json:"title"`
+	Body        string     `json:"body"`
+	Unread      bool       `json:"unread"`
+	ViaEmail    bool       `json:"via_email"`
+	EmailSentAt *time.Time `json:"email_sent_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
 }
 
 func main() {
@@ -133,6 +152,28 @@ func main() {
 		log.Fatalf("DB ping failed: %v", err)
 	}
 	log.Println("[db] connected")
+	// 2) 用這個 DSN 開 stdlib 連線
+	pgxCfg, err := pgx.ParseConfig(dbURL)
+	if err != nil {
+		log.Fatalf("pgx ParseConfig (stdlib) error: %v", err)
+	}
+	pgxCfg.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol // ← 關鍵：走 Simple Protocol
+	pgxCfg.StatementCacheCapacity = 0                             // ← 與上面配對：不使用快取
+
+	// 產生給 database/sql 使用的 DSN
+	dsn := stdlib.RegisterConnConfig(pgxCfg)
+
+	sqldb, err = sql.Open("pgx", dsn) // 需：import "github.com/jackc/pgx/v5/stdlib"
+	if err != nil {
+		log.Fatalf("sql.Open error: %v", err)
+	}
+	if err := sqldb.Ping(); err != nil {
+		log.Fatalf("sqldb ping failed: %v", err)
+	}
+	sqldb.SetMaxOpenConns(8)
+	sqldb.SetMaxIdleConns(8)
+	sqldb.SetConnMaxLifetime(time.Hour)
+	log.Println("[sqldb] connected (simple protocol)")
 
 	// go cleanupLoop()
 
@@ -153,6 +194,8 @@ func main() {
 	}
 	r.Use(cors.New(c))
 	r.OPTIONS("/*path", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	// 掛上「通知 API」路由（用 sqldb）
+	RegisterNotificationRoutes(r, sqldb)
 
 	// r.POST("/auth/request-otp", requestOTP)
 	// r.POST("/auth/verify", verifyOTP)
@@ -707,6 +750,11 @@ func acceptTask(c *gin.Context) {
 	}
 
 	getTask(c)
+
+	notifyRequester(c, id, "ORDER_ACCEPTED",
+		"Your request was accepted",
+		"Your supporter has accepted the job. You'll be notified when they clock in.",
+	)
 }
 
 // -------- WorkLog handlers --------
@@ -738,6 +786,11 @@ func clockIn(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "already clocked in"})
 		return
 	}
+
+	notifyRequester(c, taskID, "CLOCK_IN",
+		"Supporter clocked in",
+		"The job has started. You can track progress in your dashboard.",
+	)
 
 	var id string
 	var createdAt, startAt time.Time
@@ -787,6 +840,11 @@ func clockOut(c *gin.Context) {
 	c.JSON(http.StatusOK, WorkLog{
 		ID: wlID, TaskID: taskID, User: me, Start: startAt, End: &endAt, CreatedAt: createdAt, UpdatedAt: updatedAt,
 	})
+
+	notifyRequester(c, taskID, "CLOCK_OUT",
+		"Supporter clocked out",
+		"Work session ended. We'll compute the bill and show the breakdown.",
+	)
 }
 
 func getWorklogs(c *gin.Context) {
@@ -882,6 +940,11 @@ func completeTask(c *gin.Context) {
 		return
 	}
 
+	notifyRequester(c, taskID, "COMPLETED",
+		"Job completed",
+		"Everything is done. Please leave a rating when you have a moment.",
+	)
+
 	var hasClosedByAssignee bool
 	_ = db.QueryRow(ctx, `
     select exists (
@@ -898,4 +961,242 @@ func completeTask(c *gin.Context) {
 		return
 	}
 	getTask(c)
+}
+
+// -------- Notifications --------
+func OnOrderAccepted(ctx context.Context, db *sql.DB, jobID, requesterID, supporterID, requesterEmail string) {
+	notify.Create(ctx, notify.CreateNotificationInput{
+		DB: db, UserID: requesterID, JobID: jobID, Type: "ORDER_ACCEPTED",
+		Title:     "Your request was accepted",
+		Body:      "Your supporter has accepted the job. You'll be notified when they clock in.",
+		SendEmail: true, EmailTo: requesterEmail,
+	})
+}
+
+// 打卡開始
+func OnClockIn(ctx context.Context, db *sql.DB, jobID, requesterID, requesterEmail string) {
+	notify.Create(ctx, notify.CreateNotificationInput{
+		DB: db, UserID: requesterID, JobID: jobID, Type: "CLOCK_IN",
+		Title:     "Supporter clocked in",
+		Body:      "The job has started. You can track progress in your dashboard.",
+		SendEmail: true, EmailTo: requesterEmail,
+	})
+}
+
+// 打卡結束
+func OnClockOut(ctx context.Context, db *sql.DB, jobID, requesterID, requesterEmail string) {
+	notify.Create(ctx, notify.CreateNotificationInput{
+		DB: db, UserID: requesterID, JobID: jobID, Type: "CLOCK_OUT",
+		Title:     "Supporter clocked out",
+		Body:      "Work session ended. We'll compute the bill and show the breakdown.",
+		SendEmail: true, EmailTo: requesterEmail,
+	})
+}
+
+// 完成
+func OnCompleted(ctx context.Context, db *sql.DB, jobID, requesterID, requesterEmail string) {
+	notify.Create(ctx, notify.CreateNotificationInput{
+		DB: db, UserID: requesterID, JobID: jobID, Type: "COMPLETED",
+		Title:     "Job completed",
+		Body:      "Everything is done. Please leave a rating when you have a moment.",
+		SendEmail: true, EmailTo: requesterEmail,
+	})
+}
+
+// 取消（同時寫 audit_log）
+func toJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
+func CancelJob(ctx context.Context, db *sql.DB, jobID, actorID string, reason string) error {
+	// 1) 檢查 open worklog
+	var openCnt int
+	if err := db.QueryRowContext(ctx, `
+    SELECT count(*) FROM worklogs WHERE task_id=$1 AND clock_in_at IS NOT NULL AND clock_out_at IS NULL
+  `, jobID).Scan(&openCnt); err != nil {
+		return err
+	}
+	if openCnt > 0 {
+		return fmt.Errorf("cannot cancel: open worklog exists")
+	}
+
+	// 2) 計算金額（略：依你現有 schema）
+	summary := map[string]any{"refund": 12.34, "billableHours": 1.25}
+
+	// 3) 寫 audit_logs
+	_, err := db.ExecContext(ctx, `
+    INSERT INTO audit_logs (task_id, actor_id, action, reason, meta)
+    VALUES ($1,$2,'JOB_CANCELLED',$3,$4::jsonb)
+  `, jobID, actorID, reason, toJSON(summary))
+	if err != nil {
+		return err
+	}
+
+	// 4) 通知雙方（這裡示例只給 requester）
+	requesterID, requesterEmail := "...", "..."
+	notify.Create(ctx, notify.CreateNotificationInput{
+		DB: db, UserID: requesterID, JobID: jobID, Type: "CANCELLED",
+		Title:     "Task cancelled",
+		Body:      fmt.Sprintf("The job was cancelled. Reason: %s", reason),
+		SendEmail: true, EmailTo: requesterEmail,
+	})
+	return nil
+}
+
+func RegisterNotificationRoutes(g *gin.Engine, db *sql.DB) {
+	grp := g.Group("/")
+	grp.Use(authMiddleware())
+
+	// GET /notifications
+	grp.GET("/notifications", func(c *gin.Context) {
+		me := c.GetString("uid")
+		if me == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+			return
+		}
+
+		unread := c.Query("unread") == "true"
+
+		limit := 50
+		if v := c.Query("limit"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				if n > 200 {
+					n = 200
+				}
+				limit = n
+			}
+		}
+
+		var before *time.Time
+		if s := c.Query("before"); s != "" {
+			if t, err := time.Parse(time.RFC3339, s); err == nil {
+				before = &t
+			}
+		}
+
+		q := `
+		SELECT id, task_id, type, title, body, unread, via_email, email_sent_at, created_at
+		FROM public.notifications
+		WHERE user_id = $1::uuid
+	`
+		args := []any{me}
+		arg := 2
+		if unread {
+			q += " AND unread = true"
+		}
+		if before != nil {
+			q += fmt.Sprintf(" AND created_at < $%d", arg)
+			args = append(args, *before)
+			arg++
+		}
+		q += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", arg)
+		args = append(args, limit)
+
+		log.Printf("[notifications][GET] uid=%s sql=%s args=%v", me, q, args) // 👈 印 SQL 與參數
+
+		rows, err := db.QueryContext(c.Request.Context(), q, args...)
+		if err != nil {
+			log.Printf("[notifications][GET][query] err=%v", err) // 👈 印真正錯誤
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		defer rows.Close()
+
+		out := make([]NotificationDTO, 0, limit)
+		for rows.Next() {
+			var n NotificationDTO
+			if err := rows.Scan(
+				&n.ID, &n.TaskID, &n.Type, &n.Title, &n.Body,
+				&n.Unread, &n.ViaEmail, &n.EmailSentAt, &n.CreatedAt,
+			); err != nil {
+				log.Printf("[notifications][GET][scan] err=%v", err) // 👈 最常見：欄位不存在/型別不合
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			out = append(out, n)
+		}
+		c.JSON(http.StatusOK, out)
+	})
+
+	// 單筆設為已讀
+	grp.PATCH("/notifications/:id/read", func(c *gin.Context) {
+		me := c.GetString("uid")
+		if me == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+			return
+		}
+		id := c.Param("id")
+		_, err := db.ExecContext(c.Request.Context(),
+			`UPDATE public.notifications
+          SET unread = false
+        WHERE id = $1::uuid AND user_id = $2::uuid`, // ← 修掉 AND AND，兩個都 ::uuid
+			id, me,
+		)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
+
+	// 全部設為已讀
+	grp.POST("/notifications/mark-read-all", func(c *gin.Context) {
+		me := c.GetString("uid")
+		if me == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+			return
+		}
+		_, err := db.ExecContext(c.Request.Context(),
+			`UPDATE public.notifications
+          SET unread = false
+        WHERE user_id = $1::uuid AND unread = true`,
+			me,
+		)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
+}
+
+// 由 taskID 取得 requester 的 uid（uuid）與 email
+func requesterUIDAndEmail(ctx context.Context, taskID string) (uid string, email string, err error) {
+	err = sqldb.QueryRowContext(ctx, `
+		SELECT u.id::text, t.requester
+		FROM public.tasks t
+		JOIN auth.users u ON lower(u.email) = lower(t.requester)
+		WHERE t.id = $1
+	`, taskID).Scan(&uid, &email)
+	return
+}
+
+// 共用通知 helper：用 uid 寫入 notifications，用 email 寄信
+func notifyRequester(c *gin.Context, taskID, ntype, title, body string) {
+	ctx := c.Request.Context()
+
+	uid, email, err := requesterUIDAndEmail(ctx, taskID)
+	if err != nil {
+		log.Printf("[notify][skip] lookup uid/email: %v", err)
+		return
+	}
+	log.Printf("[hook] %s job=%s requester_uid=%s email=%s", ntype, taskID, uid, email)
+
+	// 寫站內通知 +（可選）寄信
+	if err := notify.Create(ctx, notify.CreateNotificationInput{
+		DB:        sqldb, // ← 用 *sql.DB（pgx stdlib）
+		UserID:    uid,   // ← 這裡塞「uuid」
+		JobID:     taskID,
+		Type:      ntype,
+		Title:     title,
+		Body:      body,
+		SendEmail: email != "",
+		EmailTo:   email,
+	}); err != nil {
+		log.Printf("[notify][ERROR] %s: %v", ntype, err)
+	}
 }

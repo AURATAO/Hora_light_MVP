@@ -1,0 +1,11 @@
+# env/secrets
+.env
+.env.*.local
+*.env
+# build artifacts
+dist/
+build/
+# node
+node_modules/
+# macOS
+.DS_Store
