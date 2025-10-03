@@ -12,6 +12,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -40,7 +41,7 @@ var db *pgxpool.Pool
 var sqldb *sql.DB
 
 type Task struct {
-	ID                string     `json:"id"` // ← 原本是 string，改成 int64
+	ID                string     `json:"id"`
 	Title             string     `json:"title"`
 	Description       string     `json:"description"`
 	Category          string     `json:"category"`
@@ -53,6 +54,10 @@ type Task struct {
 	Status            string     `json:"status"`
 	CreatedAt         time.Time  `json:"created_at"`
 	AssignedTo        string     `json:"assigned_to"`
+
+	// 新：uuid（後端查詢/權限全靠它）
+	RequesterID  string  `json:"requester_id"`
+	AssignedToID *string `json:"assigned_to_id,omitempty"`
 }
 
 type createTaskInput struct {
@@ -332,6 +337,11 @@ func deriveName(email string) string {
 
 func getMyProfile(c *gin.Context) {
 	email := c.GetString("email")
+	uid := c.GetString("uid")
+	if email == "" || uid == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing uid/email in token"})
+		return
+	}
 	ctx := c.Request.Context()
 
 	var p Profile
@@ -341,19 +351,26 @@ func getMyProfile(c *gin.Context) {
   `, email).Scan(&p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.CreatedAt, &p.UpdatedAt)
 
 	if err != nil {
-		// 不存在就建一筆預設
-		now := time.Now()
-		_, err2 := db.Exec(ctx, `
-      insert into public.profiles(email,name,phone,city,avatar_url,bio,created_at,updated_at)
-      values ($1,$2,'','','','',$3,$3)
-    `, email, deriveName(email), now)
-		if err2 != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		if errors.Is(err, pgx.ErrNoRows) {
+			// 不存在就建一筆（⚠️ 帶 id）
+			now := time.Now()
+			_, err2 := db.Exec(ctx, `
+		insert into public.profiles (id, email, name, phone, city, avatar_url, bio, created_at, updated_at)
+		values ($1::uuid, $2, $3, '', '', '', '', $4, $4)
+	`, uid, email, deriveName(email), now)
+			if err2 != nil {
+				log.Printf("[profile][get] create default error: %v", err2)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err2.Error()})
+				return
+			}
+			p = Profile{
+				Email: email, Name: deriveName(email),
+				CreatedAt: now, UpdatedAt: now,
+			}
+		} else {
+			log.Printf("[profile][get] query error: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
-		}
-		p = Profile{
-			Email: email, Name: deriveName(email),
-			CreatedAt: now, UpdatedAt: now,
 		}
 	}
 	c.JSON(http.StatusOK, p)
@@ -361,6 +378,11 @@ func getMyProfile(c *gin.Context) {
 
 func patchMyProfile(c *gin.Context) {
 	email := c.GetString("email")
+	uid := c.GetString("uid")
+	if email == "" || uid == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing uid/email in token"})
+		return
+	}
 	var in struct {
 		Name      *string `json:"name"`
 		Phone     *string `json:"phone"`
@@ -404,13 +426,14 @@ func patchMyProfile(c *gin.Context) {
 	p.UpdatedAt = time.Now()
 
 	_, err := db.Exec(ctx, `
-    insert into public.profiles(email,name,phone,city,avatar_url,bio,created_at,updated_at)
-    values ($1,$2,$3,$4,$5,$6,$7,$8)
-    on conflict (email) do update
-    set name=$2, phone=$3, city=$4, avatar_url=$5, bio=$6, updated_at=$8
-  `, p.Email, p.Name, p.Phone, p.City, p.AvatarURL, p.Bio, p.CreatedAt, p.UpdatedAt)
+	insert into public.profiles(id,email,name,phone,city,avatar_url,bio,created_at,updated_at)
+	values ($1::uuid,$2,$3,$4,$5,$6,$7,$8)
+	on conflict (email) do update
+	set name=$2, phone=$3, city=$4, avatar_url=$5, bio=$6, updated_at=$8
+	`, uid, p.Email, p.Name, p.Phone, p.City, p.AvatarURL, p.Bio, p.CreatedAt, p.UpdatedAt)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		log.Printf("[profile][patch] upsert error: %v", err)                // 👈 新增
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()}) // 👈 回傳真錯
 		return
 	}
 	c.JSON(http.StatusOK, p)
@@ -449,8 +472,8 @@ func createTask(c *gin.Context) {
 	if in.IsImmediate {
 		now := time.Now()
 		when = &now
-	} else if strings.TrimSpace(in.ScheduledAt) != "" {
-		t, err := time.Parse(time.RFC3339, in.ScheduledAt)
+	} else if s := strings.TrimSpace(in.ScheduledAt); s != "" {
+		t, err := time.Parse(time.RFC3339, s)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "scheduled_at must be RFC3339"})
 			return
@@ -458,60 +481,103 @@ func createTask(c *gin.Context) {
 		when = &t
 	}
 
-	requester := c.GetString("email")
+	meUID := c.GetString("uid")
+	meEmail := c.GetString("email")
+	if meUID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+		return
+	}
+
 	ctx := c.Request.Context()
 	var id string
 	var createdAt time.Time
 	err := db.QueryRow(ctx, `
-    insert into public.tasks
-      (title,description,category,location_text,estimated_minutes,prepay_amount_cents,is_immediate,scheduled_at,requester,status,assigned_to)
-    values ($1,$2,$3,$4,$5,$6,$7,$8,$9,'open','')
-    returning id, created_at
-  `, in.Title, in.Description, in.Category, in.LocationText, in.EstimatedMinutes, in.PrepayAmountCents, in.IsImmediate, when, requester).Scan(&id, &createdAt)
+		insert into public.tasks
+		  (title,description,category,location_text,
+		   estimated_minutes,prepay_amount_cents,is_immediate,scheduled_at,
+		   requester, requester_id, status, assigned_to, assigned_to_id)
+		values
+		  ($1,$2,$3,$4,
+		   $5,$6,$7,$8,
+		   $9, $10::uuid, 'open', '', null)
+		returning id, created_at
+	`, in.Title, in.Description, in.Category, in.LocationText,
+		in.EstimatedMinutes, in.PrepayAmountCents, in.IsImmediate, when,
+		meEmail, meUID).Scan(&id, &createdAt)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
 	}
 
+	// 回傳格式不變，前端可用
 	c.JSON(http.StatusCreated, Task{
 		ID: id, Title: in.Title, Description: in.Description, Category: in.Category,
 		LocationText: in.LocationText, EstimatedMinutes: in.EstimatedMinutes,
 		PrepayAmountCents: in.PrepayAmountCents, IsImmediate: in.IsImmediate,
-		ScheduledAt: when, Requester: requester, Status: "open", CreatedAt: createdAt, AssignedTo: "",
+		ScheduledAt: when, Requester: meEmail, RequesterID: meUID,
+		Status: "open", CreatedAt: createdAt, AssignedTo: "", AssignedToID: nil,
 	})
 }
 
 func scanTask(rows interface{ Scan(dest ...any) error }) (Task, error) {
 	var t Task
+
+	// 先用 NullString 接可能為 NULL 的 uuid 欄位
+	var reqIDNS, assigneeIDNS sql.NullString
+
 	err := rows.Scan(
 		&t.ID, &t.Title, &t.Description, &t.Category, &t.LocationText,
 		&t.EstimatedMinutes, &t.PrepayAmountCents, &t.IsImmediate,
-		&t.ScheduledAt, &t.Requester, &t.Status, &t.CreatedAt, &t.AssignedTo,
+		&t.ScheduledAt,
+		&t.Requester, &reqIDNS, // requester_id -> NullString
+		&t.Status, &t.CreatedAt,
+		&t.AssignedTo, &assigneeIDNS, // assigned_to_id -> NullString
 	)
-	return t, err
+	if err != nil {
+		return t, err
+	}
+
+	// 將 NullString 映射回你的輸出型別
+	t.RequesterID = reqIDNS.String // 若為 NULL 會是 ""
+	if assigneeIDNS.Valid {
+		id := assigneeIDNS.String
+		t.AssignedToID = &id
+	} else {
+		t.AssignedToID = nil
+	}
+	return t, nil
 }
 
 func listMyTasks(c *gin.Context) {
-	me := c.GetString("email")
+	meUID := c.GetString("uid")
+	if meUID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+		return
+	}
+
 	ctx := c.Request.Context()
 	rows, err := db.Query(ctx, `
     select id,title,description,category,location_text,
            estimated_minutes,prepay_amount_cents,is_immediate,
-           scheduled_at,requester,status,created_at,assigned_to
+           scheduled_at,
+           requester, requester_id,
+           status,created_at,
+           assigned_to, assigned_to_id
     from public.tasks
-    where requester = $1
+    where requester_id = $1::uuid
     order by created_at desc
-  `, me)
+  `, meUID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
 	}
 	defer rows.Close()
+
 	out := []Task{}
 	for rows.Next() {
 		t, err := scanTask(rows)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "scan error"})
+			c.JSON(500, gin.H{"error": "scan error"})
 			return
 		}
 		out = append(out, t)
@@ -522,15 +588,28 @@ func listMyTasks(c *gin.Context) {
 func getTask(c *gin.Context) {
 	id := c.Param("id")
 	ctx := c.Request.Context()
+
 	row := db.QueryRow(ctx, `
-    select id,title,description,category,location_text,
-           estimated_minutes,prepay_amount_cents,is_immediate,
-           scheduled_at,requester,status,created_at,assigned_to
-    from public.tasks where id=$1
+    select
+      id, title, description, category, location_text,
+      estimated_minutes, prepay_amount_cents, is_immediate,
+      scheduled_at,
+      requester, requester_id,
+      status, created_at,
+      assigned_to, assigned_to_id
+    from public.tasks
+    where id = $1
   `, id)
+
 	t, err := scanTask(row)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		// 正確分辨「真的沒資料」與其他錯
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		} else {
+			log.Printf("[getTask][ERROR] id=%s scan error: %v", id, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "scan error"})
+		}
 		return
 	}
 	c.JSON(http.StatusOK, t)
@@ -538,16 +617,23 @@ func getTask(c *gin.Context) {
 
 func updateTask(c *gin.Context) {
 	id := c.Param("id")
-	me := c.GetString("email")
+	meUID := c.GetString("uid")
+	if meUID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+		return
+	}
 	ctx := c.Request.Context()
 
 	// 檢查擁有者 & 狀態
-	var requester, status string
-	if err := db.QueryRow(ctx, `select requester, status from public.tasks where id=$1`, id).Scan(&requester, &status); err != nil {
+	// 檢查擁有者 & 狀態（用 requester_id）
+	var requesterID, status string
+	if err := db.QueryRow(ctx,
+		`select requester_id, status from public.tasks where id=$1`, id,
+	).Scan(&requesterID, &status); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
-	if requester != me {
+	if requesterID != meUID {
 		c.JSON(http.StatusForbidden, gin.H{"error": "not your task"})
 		return
 	}
@@ -610,26 +696,33 @@ func updateTask(c *gin.Context) {
 }
 
 func listAvailableTasks(c *gin.Context) {
-	me := c.GetString("email")
+	meUID := c.GetString("uid")
+	if meUID == "" {
+		c.JSON(401, gin.H{"error": "unauthenticated"})
+		return
+	}
 	ctx := c.Request.Context()
 	rows, err := db.Query(ctx, `
     select id,title,description,category,location_text,
            estimated_minutes,prepay_amount_cents,is_immediate,
-           scheduled_at,requester,status,created_at,assigned_to
+           scheduled_at,
+           requester, requester_id,
+           status,created_at,
+           assigned_to, assigned_to_id
     from public.tasks
-    where status='open' and requester <> $1 and assigned_to = ''
+    where status='open' and requester_id <> $1::uuid and assigned_to_id is null
     order by created_at desc
-  `, me)
+  `, meUID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		c.JSON(500, gin.H{"error": "db error"})
 		return
 	}
 	defer rows.Close()
-	out := []Task{}
+	var out []Task
 	for rows.Next() {
 		t, err := scanTask(rows)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "scan error"})
+			c.JSON(500, gin.H{"error": "scan error"})
 			return
 		}
 		out = append(out, t)
@@ -638,26 +731,33 @@ func listAvailableTasks(c *gin.Context) {
 }
 
 func listAssignedTasks(c *gin.Context) {
-	me := c.GetString("email")
+	meUID := c.GetString("uid")
+	if meUID == "" {
+		c.JSON(401, gin.H{"error": "unauthenticated"})
+		return
+	}
 	ctx := c.Request.Context()
 	rows, err := db.Query(ctx, `
     select id,title,description,category,location_text,
            estimated_minutes,prepay_amount_cents,is_immediate,
-           scheduled_at,requester,status,created_at,assigned_to
+           scheduled_at,
+           requester, requester_id,
+           status,created_at,
+           assigned_to, assigned_to_id
     from public.tasks
-    where assigned_to = $1 and status='open'
+    where assigned_to_id = $1::uuid and status='open'
     order by created_at desc
-  `, me)
+  `, meUID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		c.JSON(500, gin.H{"error": "db error"})
 		return
 	}
 	defer rows.Close()
-	out := []Task{}
+	var out []Task
 	for rows.Next() {
 		t, err := scanTask(rows)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "scan error"})
+			c.JSON(500, gin.H{"error": "scan error"})
 			return
 		}
 		out = append(out, t)
@@ -666,26 +766,33 @@ func listAssignedTasks(c *gin.Context) {
 }
 
 func listDoneTasks(c *gin.Context) {
-	me := c.GetString("email")
+	meUID := c.GetString("uid")
+	if meUID == "" {
+		c.JSON(401, gin.H{"error": "unauthenticated"})
+		return
+	}
 	ctx := c.Request.Context()
 	rows, err := db.Query(ctx, `
     select id,title,description,category,location_text,
            estimated_minutes,prepay_amount_cents,is_immediate,
-           scheduled_at,requester,status,created_at,assigned_to
+           scheduled_at,
+           requester, requester_id,
+           status,created_at,
+           assigned_to, assigned_to_id
     from public.tasks
-    where assigned_to = $1 and status='completed'
+    where assigned_to_id = $1::uuid and status='completed'
     order by created_at desc
-  `, me)
+  `, meUID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		c.JSON(500, gin.H{"error": "db error"})
 		return
 	}
 	defer rows.Close()
-	out := []Task{}
+	var out []Task
 	for rows.Next() {
 		t, err := scanTask(rows)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "scan error"})
+			c.JSON(500, gin.H{"error": "scan error"})
 			return
 		}
 		out = append(out, t)
@@ -694,21 +801,32 @@ func listDoneTasks(c *gin.Context) {
 }
 
 func listMyPostedClosed(c *gin.Context) {
-	me := c.GetString("email")
+	meUID := c.GetString("uid")
+	if meUID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+		return
+	}
 	ctx := c.Request.Context()
+
 	rows, err := db.Query(ctx, `
-    select id,title,description,category,location_text,
-           estimated_minutes,prepay_amount_cents,is_immediate,
-           scheduled_at,requester,status,created_at,assigned_to
+    select
+      id, title, description, category, location_text,
+      estimated_minutes, prepay_amount_cents, is_immediate,
+      scheduled_at,
+      requester, requester_id,
+      status, created_at,
+      assigned_to, assigned_to_id
     from public.tasks
-    where requester = $1 and status in ('completed','cancelled')
+    where requester_id = $1::uuid
+      and status in ('completed','cancelled')
     order by created_at desc
-  `, me)
+  `, meUID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
 	}
 	defer rows.Close()
+
 	out := []Task{}
 	for rows.Next() {
 		t, err := scanTask(rows)
@@ -722,39 +840,48 @@ func listMyPostedClosed(c *gin.Context) {
 }
 
 // A user cannot accept their own task. Only open & unassigned tasks can be accepted.
-
 func acceptTask(c *gin.Context) {
 	id := c.Param("id")
-	me := c.GetString("email")
+	meUID := c.GetString("uid")
+	meEmail := c.GetString("email")
+	if meUID == "" {
+		c.JSON(401, gin.H{"error": "unauthenticated"})
+		return
+	}
+
 	ctx := c.Request.Context()
-
-	var requester, status, assignedTo string
-	err := db.QueryRow(ctx, `select requester,status,assigned_to from public.tasks where id=$1`, id).Scan(&requester, &status, &assignedTo)
+	var requesterID, status string
+	var assignedToID *string
+	err := db.QueryRow(ctx, `
+    select requester_id, status, assigned_to_id
+    from public.tasks where id=$1
+  `, id).Scan(&requesterID, &status, &assignedToID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
-		return
-	}
-	if requester == me {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot accept your own task"})
-		return
-	}
-	if status != "open" || assignedTo != "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "not available"})
+		c.JSON(404, gin.H{"error": "not found"})
 		return
 	}
 
-	_, err = db.Exec(ctx, `update public.tasks set assigned_to=$1 where id=$2`, me, id)
+	if requesterID == meUID {
+		c.JSON(400, gin.H{"error": "cannot accept your own task"})
+		return
+	}
+	if status != "open" || assignedToID != nil {
+		c.JSON(400, gin.H{"error": "not available"})
+		return
+	}
+
+	_, err = db.Exec(ctx, `
+    update public.tasks
+    set assigned_to_id = $1::uuid,
+        assigned_to    = $2
+    where id = $3
+  `, meUID, meEmail, id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		c.JSON(500, gin.H{"error": "db error"})
 		return
 	}
 
 	getTask(c)
-
-	notifyRequester(c, id, "ORDER_ACCEPTED",
-		"Your request was accepted",
-		"Your supporter has accepted the job. You'll be notified when they clock in.",
-	)
 }
 
 // -------- WorkLog handlers --------
@@ -762,15 +889,26 @@ const centsPerMinute = 50 // 0.5 EUR/min
 
 func clockIn(c *gin.Context) {
 	taskID := c.Param("id")
-	me := c.GetString("email")
+	meUID := c.GetString("uid")
+	meEmail := c.GetString("email")
+	if meUID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+		return
+	}
 	ctx := c.Request.Context()
 
-	var assignedTo, status string
-	if err := db.QueryRow(ctx, `select assigned_to,status from public.tasks where id=$1`, taskID).Scan(&assignedTo, &status); err != nil {
+	// 用 uuid 判斷是否為受派者
+	var status string
+	var assignedToID sql.NullString
+	if err := db.QueryRow(ctx, `
+      select assigned_to_id, status
+      from public.tasks
+      where id=$1
+    `, taskID).Scan(&assignedToID, &status); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
-	if assignedTo != me {
+	if !assignedToID.Valid || assignedToID.String != meUID {
 		c.JSON(http.StatusForbidden, gin.H{"error": "only assignee can clock in"})
 		return
 	}
@@ -779,14 +917,19 @@ func clockIn(c *gin.Context) {
 		return
 	}
 
-	// 有沒有未結束的打卡
+	// 有沒有未結束的打卡（沿用 email 欄位）
 	var exists bool
-	_ = db.QueryRow(ctx, `select exists (select 1 from public.worklogs where task_id=$1 and "user"=$2 and end_at is null)`, taskID, me).Scan(&exists)
+	_ = db.QueryRow(ctx, `
+      select exists (
+        select 1 from public.worklogs
+        where task_id=$1 and "user"=$2 and end_at is null
+      )`, taskID, meEmail).Scan(&exists)
 	if exists {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "already clocked in"})
 		return
 	}
 
+	// 通知 requester
 	notifyRequester(c, taskID, "CLOCK_IN",
 		"Supporter clocked in",
 		"The job has started. You can track progress in your dashboard.",
@@ -795,50 +938,57 @@ func clockIn(c *gin.Context) {
 	var id string
 	var createdAt, startAt time.Time
 	err := db.QueryRow(ctx, `
-    insert into public.worklogs(task_id,"user",start_at)
-    values ($1,$2,now())
-    returning id, created_at, start_at
-  `, taskID, me).Scan(&id, &createdAt, &startAt)
+      insert into public.worklogs(task_id,"user",start_at)
+      values ($1,$2,now())
+      returning id, created_at, start_at
+    `, taskID, meEmail).Scan(&id, &createdAt, &startAt)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
 	}
 
 	c.JSON(http.StatusCreated, WorkLog{
-		ID: id, TaskID: taskID, User: me, Start: startAt, End: nil, CreatedAt: createdAt, UpdatedAt: createdAt,
+		ID: id, TaskID: taskID, User: meEmail, Start: startAt, End: nil,
+		CreatedAt: createdAt, UpdatedAt: createdAt,
 	})
 }
 
 func clockOut(c *gin.Context) {
 	taskID := c.Param("id")
-	me := c.GetString("email")
+	meEmail := c.GetString("email")
+	if meEmail == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+		return
+	}
 	ctx := c.Request.Context()
 
-	// 找到開著的工時
 	var wlID string
 	err := db.QueryRow(ctx, `
-    select id from public.worklogs where task_id=$1 and "user"=$2 and end_at is null
-    order by start_at asc limit 1
-  `, taskID, me).Scan(&wlID)
+      select id
+      from public.worklogs
+      where task_id=$1 and "user"=$2 and end_at is null
+      order by start_at asc limit 1
+    `, taskID, meEmail).Scan(&wlID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no active session"})
 		return
 	}
 
-	// 更新 end_at
 	var startAt, endAt, createdAt, updatedAt time.Time
 	err = db.QueryRow(ctx, `
-    update public.worklogs set end_at=now(), updated_at=now()
-    where id=$1
-    returning start_at, end_at, created_at, updated_at
-  `, wlID).Scan(&startAt, &endAt, &createdAt, &updatedAt)
+      update public.worklogs
+      set end_at=now(), updated_at=now()
+      where id=$1
+      returning start_at, end_at, created_at, updated_at
+    `, wlID).Scan(&startAt, &endAt, &createdAt, &updatedAt)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
 	}
 
 	c.JSON(http.StatusOK, WorkLog{
-		ID: wlID, TaskID: taskID, User: me, Start: startAt, End: &endAt, CreatedAt: createdAt, UpdatedAt: updatedAt,
+		ID: wlID, TaskID: taskID, User: meEmail,
+		Start: startAt, End: &endAt, CreatedAt: createdAt, UpdatedAt: updatedAt,
 	})
 
 	notifyRequester(c, taskID, "CLOCK_OUT",
@@ -849,24 +999,30 @@ func clockOut(c *gin.Context) {
 
 func getWorklogs(c *gin.Context) {
 	taskID := c.Param("id")
-	me := c.GetString("email")
+	meUID := c.GetString("uid")
+	if meUID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+		return
+	}
 	ctx := c.Request.Context()
 
-	// 權限：作者或接單者
-	var requester, assignedTo string
-	if err := db.QueryRow(ctx, `select requester,assigned_to from public.tasks where id=$1`, taskID).Scan(&requester, &assignedTo); err != nil {
+	var reqID, assID sql.NullString
+	if err := db.QueryRow(ctx, `
+      select requester_id, assigned_to_id
+      from public.tasks where id=$1
+    `, taskID).Scan(&reqID, &assID); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
-	if requester != me && assignedTo != me {
+	if (!reqID.Valid || reqID.String != meUID) && (!assID.Valid || assID.String != meUID) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "not allowed"})
 		return
 	}
 
 	rows, err := db.Query(ctx, `
-    select id,task_id,"user",start_at,end_at,created_at,updated_at
-    from public.worklogs where task_id=$1 order by start_at asc
-  `, taskID)
+      select id,task_id,"user",start_at,end_at,created_at,updated_at
+      from public.worklogs where task_id=$1 order by start_at asc
+    `, taskID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
@@ -883,18 +1039,21 @@ func getWorklogs(c *gin.Context) {
 		items = append(items, wl)
 	}
 
-	// total minutes（向上取整；未結束的不算）
 	var totalMin int
 	_ = db.QueryRow(ctx, `
-    with x as (
-      select ceil(extract(epoch from (end_at - start_at))/60.0) as m
-      from public.worklogs where task_id=$1 and end_at is not null and end_at > start_at
-    )
-    select coalesce(sum(greatest(m,1))::int, 0) from x
-  `, taskID).Scan(&totalMin)
+      with x as (
+        select ceil(extract(epoch from (end_at - start_at))/60.0) as m
+        from public.worklogs
+        where task_id=$1 and end_at is not null and end_at > start_at
+      )
+      select coalesce(sum(greatest(m,1))::int, 0) from x
+    `, taskID).Scan(&totalMin)
 
 	var hasOpen bool
-	_ = db.QueryRow(ctx, `select exists (select 1 from public.worklogs where task_id=$1 and end_at is null)`, taskID).Scan(&hasOpen)
+	_ = db.QueryRow(ctx, `
+      select exists (
+        select 1 from public.worklogs where task_id=$1 and end_at is null
+      )`, taskID).Scan(&hasOpen)
 
 	c.JSON(http.StatusOK, gin.H{
 		"items":            items,
@@ -912,15 +1071,26 @@ func getWorklogs(c *gin.Context) {
 
 func completeTask(c *gin.Context) {
 	taskID := c.Param("id")
-	me := c.GetString("email")
+	meUID := c.GetString("uid")
+	if meUID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+		return
+	}
 	ctx := c.Request.Context()
 
-	var requester, assignedTo, status string
-	if err := db.QueryRow(ctx, `select requester,assigned_to,status from public.tasks where id=$1`, taskID).Scan(&requester, &assignedTo, &status); err != nil {
+	var status, assigneeEmail string
+	var requesterID, assignedToID sql.NullString
+	if err := db.QueryRow(ctx, `
+      select requester_id, assigned_to_id, assigned_to, status
+      from public.tasks where id=$1
+    `, taskID).Scan(&requesterID, &assignedToID, &assigneeEmail, &status); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
-	if requester != me && assignedTo != me {
+
+	// 只有作者或受派者可以完成
+	if (!requesterID.Valid || requesterID.String != meUID) &&
+		(!assignedToID.Valid || assignedToID.String != meUID) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "not allowed"})
 		return
 	}
@@ -928,15 +1098,30 @@ func completeTask(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "already closed"})
 		return
 	}
-	if assignedTo == "" {
+	if !assignedToID.Valid {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "assignment required before completing"})
 		return
 	}
 
 	var hasOpen bool
-	_ = db.QueryRow(ctx, `select exists (select 1 from public.worklogs where task_id=$1 and end_at is null)`, taskID).Scan(&hasOpen)
+	_ = db.QueryRow(ctx, `
+      select exists (
+        select 1 from public.worklogs where task_id=$1 and end_at is null
+      )`, taskID).Scan(&hasOpen)
 	if hasOpen {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "clock-out required before completing"})
+		return
+	}
+
+	// assignee 是否至少完成過一段工時（沿用 email）
+	var hasClosedByAssignee bool
+	_ = db.QueryRow(ctx, `
+      select exists (
+        select 1 from public.worklogs
+        where task_id=$1 and "user"=$2 and end_at is not null
+      )`, taskID, assigneeEmail).Scan(&hasClosedByAssignee)
+	if !hasClosedByAssignee {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "at least one work session is required before completing"})
 		return
 	}
 
@@ -945,18 +1130,7 @@ func completeTask(c *gin.Context) {
 		"Everything is done. Please leave a rating when you have a moment.",
 	)
 
-	var hasClosedByAssignee bool
-	_ = db.QueryRow(ctx, `
-    select exists (
-      select 1 from public.worklogs where task_id=$1 and "user"=$2 and end_at is not null
-    )`, taskID, assignedTo).Scan(&hasClosedByAssignee)
-	if !hasClosedByAssignee {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "at least one work session is required before completing"})
-		return
-	}
-
-	_, err := db.Exec(ctx, `update public.tasks set status='completed' where id=$1`, taskID)
-	if err != nil {
+	if _, err := db.Exec(ctx, `update public.tasks set status='completed' where id=$1`, taskID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
 	}
