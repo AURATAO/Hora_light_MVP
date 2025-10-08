@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api/client'
-import { ProfileCard } from '../components/Profilecard'
+import {ProfileCard}  from '../components/ProfileCard'
 import TaskCard from '../components/TaskCard'
 import { useRequireAuth } from '../auth/useRequireAuth'
 import NotificationFeed from '../components/NotificationFeed'

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import { useRequireAuth } from '../auth/useRequireAuth'
+import AvatarUploader from './AvatarUploader'
 
 function ProfileCard() {
   const [profile, setProfile] = useState(null)
@@ -41,7 +42,6 @@ function ProfileCard() {
           name: draft?.name ?? '',
           phone: draft?.phone ?? '',
           city: draft?.city ?? '',
-          avatar_url: draft?.avatar_url ?? '',
           bio: draft?.bio ?? '',
         },
       })
@@ -55,18 +55,46 @@ function ProfileCard() {
     }
   }
 
+   async function handleAvatarUploaded(url) {
+    setSaving(true)
+    try {
+      const next = await api('/profile', {
+        method: 'PATCH',
+        body: { avatar_url: url },
+      })
+      setProfile(next)
+      setDraft(next)
+    } catch (e) {
+      alert(e.message || 'Failed to update avatar')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   if (loading) {
     return <div className="border border-white/20 rounded-lg p-3 bg-white/5">Loading profile…</div>
   }
+
+   const currentAvatar = (editing ? draft?.avatar_url : profile?.avatar_url) || ''
 
   return (
     <div className="border border-white/20 rounded-lg p-3 bg-white/5">
       {/* Header */}
       <div className="flex items-start gap-4">
-        <img
-          src={(editing ? draft?.avatar_url : profile?.avatar_url) || 'https://placehold.co/80x80?text=Avatar'}
-          alt=""
-          className="w-16 h-16 rounded-full border border-white/20 object-cover"
+         <AvatarUploader
+          value={(editing ? draft?.avatar_url : profile?.avatar_url) || ''}
+          onChange={async (url) => {
+            // 先立刻更新 UI
+            setProfile(p => ({ ...(p || {}), avatar_url: url }))
+            setDraft(d => ({ ...(d || {}), avatar_url: url }))
+
+            // 寫回後端
+            try {
+              await api('/profile', { method: 'PATCH', body: { avatar_url: url } })
+            } catch (e) {
+              alert(e.message || 'Failed to save avatar')
+            }
+          }}
         />
         <div className="flex-1">
           {!editing ? (
@@ -85,7 +113,6 @@ function ProfileCard() {
               <div className="mt-2 grid gap-2 sm:grid-cols-3">
                 <div className="text-sm text-white/80"><span className="opacity-70">Phone:</span> {profile?.phone || '—'}</div>
                 <div className="text-sm text-white/80"><span className="opacity-70">City:</span> {profile?.city || '—'}</div>
-                <div className="text-sm text-white/80"><span className="opacity-70">Avatar URL:</span> {profile?.avatar_url || '—'}</div>
               </div>
               <div className="mt-2 text-sm text-white/80 whitespace-pre-wrap">{profile?.bio || '—'}</div>
             </>
@@ -117,14 +144,6 @@ function ProfileCard() {
                       className="bg-transparent outline-none border border-white/20 focus:border-white/40 rounded px-2 py-1"
                       value={draft?.city || ''}
                       onChange={(e) => setDraft(d => ({ ...d, city: e.target.value }))}
-                    />
-                  </label>
-                  <label className="text-sm grid gap-1">
-                    <span className="text-white/80">Avatar URL</span>
-                    <input
-                      className="bg-transparent outline-none border border-white/20 focus:border-white/40 rounded px-2 py-1"
-                      value={draft?.avatar_url || ''}
-                      onChange={(e) => setDraft(d => ({ ...d, avatar_url: e.target.value }))}
                     />
                   </label>
                 </div>

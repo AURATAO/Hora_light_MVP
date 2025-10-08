@@ -337,11 +337,6 @@ func deriveName(email string) string {
 
 func getMyProfile(c *gin.Context) {
 	email := c.GetString("email")
-	uid := c.GetString("uid")
-	if email == "" || uid == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing uid/email in token"})
-		return
-	}
 	ctx := c.Request.Context()
 
 	var p Profile
@@ -351,26 +346,20 @@ func getMyProfile(c *gin.Context) {
   `, email).Scan(&p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.CreatedAt, &p.UpdatedAt)
 
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			// 不存在就建一筆（⚠️ 帶 id）
-			now := time.Now()
-			_, err2 := db.Exec(ctx, `
-		insert into public.profiles (id, email, name, phone, city, avatar_url, bio, created_at, updated_at)
-		values ($1::uuid, $2, $3, '', '', '', '', $4, $4)
-	`, uid, email, deriveName(email), now)
-			if err2 != nil {
-				log.Printf("[profile][get] create default error: %v", err2)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err2.Error()})
-				return
-			}
-			p = Profile{
-				Email: email, Name: deriveName(email),
-				CreatedAt: now, UpdatedAt: now,
-			}
-		} else {
-			log.Printf("[profile][get] query error: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		// 不存在就建一筆預設（id 用 default 觸發 gen_random_uuid()）
+		now := time.Now()
+		_, err2 := db.Exec(ctx, `
+      insert into public.profiles(id,email,name,phone,city,avatar_url,bio,created_at,updated_at)
+      values (default,$1,$2,'','','','',$3,$3)
+    `, email, deriveName(email), now)
+		if err2 != nil {
+			log.Printf("[profile][insert default] email=%s err=%v", email, err2)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 			return
+		}
+		p = Profile{
+			Email: email, Name: deriveName(email),
+			CreatedAt: now, UpdatedAt: now,
 		}
 	}
 	c.JSON(http.StatusOK, p)
@@ -378,11 +367,6 @@ func getMyProfile(c *gin.Context) {
 
 func patchMyProfile(c *gin.Context) {
 	email := c.GetString("email")
-	uid := c.GetString("uid")
-	if email == "" || uid == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing uid/email in token"})
-		return
-	}
 	var in struct {
 		Name      *string `json:"name"`
 		Phone     *string `json:"phone"`
@@ -395,7 +379,6 @@ func patchMyProfile(c *gin.Context) {
 		return
 	}
 
-	// 讀舊值
 	ctx := c.Request.Context()
 	var p Profile
 	_ = db.QueryRow(ctx, `
@@ -403,7 +386,6 @@ func patchMyProfile(c *gin.Context) {
     from public.profiles where email = $1
   `, email).Scan(&p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.CreatedAt, &p.UpdatedAt)
 
-	// upsert
 	if in.Name != nil {
 		p.Name = strings.TrimSpace(*in.Name)
 	}
@@ -426,14 +408,14 @@ func patchMyProfile(c *gin.Context) {
 	p.UpdatedAt = time.Now()
 
 	_, err := db.Exec(ctx, `
-	insert into public.profiles(id,email,name,phone,city,avatar_url,bio,created_at,updated_at)
-	values ($1::uuid,$2,$3,$4,$5,$6,$7,$8)
-	on conflict (email) do update
-	set name=$2, phone=$3, city=$4, avatar_url=$5, bio=$6, updated_at=$8
-	`, uid, p.Email, p.Name, p.Phone, p.City, p.AvatarURL, p.Bio, p.CreatedAt, p.UpdatedAt)
+    insert into public.profiles(id,email,name,phone,city,avatar_url,bio,created_at,updated_at)
+    values (default,$1,$2,$3,$4,$5,$6,$7,$8)
+    on conflict (email) do update
+      set name=$2, phone=$3, city=$4, avatar_url=$5, bio=$6, updated_at=$8
+  `, p.Email, p.Name, p.Phone, p.City, p.AvatarURL, p.Bio, p.CreatedAt, p.UpdatedAt)
 	if err != nil {
-		log.Printf("[profile][patch] upsert error: %v", err)                // 👈 新增
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()}) // 👈 回傳真錯
+		log.Printf("[profile][upsert] email=%s err=%v", email, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
 	}
 	c.JSON(http.StatusOK, p)
