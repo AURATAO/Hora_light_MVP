@@ -3,30 +3,47 @@ import { Link } from 'react-router-dom'
 import { useNotifications } from '../hooks/useNotifications'
 
 export default function NotificationFeed({ limit = 50, className = '' }) {
-  const { items, setItems, loading, fetchList, markRead, markAllRead } = useNotifications()
+  const {
+    items, setItems, loading, fetchList,
+    markRead, markAllRead,
+    remove, clearRead,             // ← 新增
+  } = useNotifications()
 
   useEffect(() => {
     fetchList({ limit }).then(setItems)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [limit])
 
+  const hasAny = items.length > 0
+  const hasRead = items.some(n => !n.unread)
+
   return (
     <div className={`border border-white/20 rounded-lg p-3 bg-white/5 ${className}`}>
-      <div className="flex items-center mb-2">
+      <div className="flex items-center gap-2 mb-2">
         <div className="font-semibold">Notifications</div>
-        {items.length > 0 && (
-          <button
-            className="ml-auto text-xs underline opacity-80 hover:opacity-100"
-            onClick={markAllRead}
-          >
-            Mark all read
-          </button>
-        )}
+        <div className="ml-auto flex items-center gap-3">
+          {hasAny && (
+            <button
+              className="text-xs underline opacity-80 hover:opacity-100"
+              onClick={markAllRead}
+            >
+              Mark all read
+            </button>
+          )}
+          {hasRead && (
+            <button
+              className="text-xs underline opacity-80 hover:opacity-100"
+              onClick={clearRead}
+            >
+              Clear read
+            </button>
+          )}
+        </div>
       </div>
 
       {loading ? (
         <div className="text-white/70">Loading…</div>
-      ) : items.length === 0 ? (
+      ) : !hasAny ? (
         <div className="text-white/70">No notifications yet.</div>
       ) : (
         <ul className="space-y-2">
@@ -57,6 +74,14 @@ export default function NotificationFeed({ limit = 50, className = '' }) {
                       Read
                     </button>
                   )}
+                  {/* ✅ 新增：刪除單筆 */}
+                  <button
+                    className="text-xs underline opacity-80 hover:opacity-100"
+                    onClick={() => remove(n.id)}
+                    title="Delete this notification"
+                  >
+                    Delete
+                  </button>
                 </div>
               </div>
             </li>

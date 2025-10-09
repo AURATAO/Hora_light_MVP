@@ -1,7 +1,7 @@
 import { useMemo, useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabaseClient'
-import { useRequireAuth } from '../auth/UseRequireAuth'
+import { useRequireAuth } from '../auth/useRequireAuth'
 
 
 const MINUTE_RATE_EUR = 0.5

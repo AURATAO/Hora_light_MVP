@@ -82,6 +82,32 @@ type Profile struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+type PublicProfile struct {
+	// ProfilePublic is a safe view for public profile
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	City      string    `json:"city"`
+	AvatarURL string    `json:"avatar_url"`
+	Bio       string    `json:"bio"`
+	CreatedAt time.Time `json:"created_at"`
+
+	// stats
+	PostedTotal     int `json:"posted_total"`
+	PostedCompleted int `json:"posted_completed"`
+	AsgInProgress   int `json:"asg_in_progress"`
+	AsgCompleted    int `json:"asg_completed"`
+}
+
+type TaskListItem struct {
+	ID               string    `json:"id"`
+	Title            string    `json:"title"`
+	Category         string    `json:"category"`
+	EstimatedMinutes int       `json:"estimated_minutes"`
+	Status           string    `json:"status"`
+	CreatedAt        time.Time `json:"created_at"`
+	RequesterID      string    `json:"requester_id"`
+	AssignedToID     *string   `json:"assigned_to_id,omitempty"`
+}
 type WorkLog struct {
 	ID        string     `json:"id"`
 	TaskID    string     `json:"task_id"`
@@ -192,7 +218,7 @@ func main() {
 			"https://horaapp.co",
 			"https://app.horaapp.co",
 		},
-		AllowMethods:     []string{"GET", "POST", "PATCH", "OPTIONS"},
+		AllowMethods:     []string{"GET", "POST", "PATCH", "OPTIONS", "DELETE"},
 		AllowHeaders:     []string{"Authorization", "Content-Type"},
 		AllowCredentials: false,
 		MaxAge:           12 * time.Hour,
@@ -201,6 +227,16 @@ func main() {
 	r.OPTIONS("/*path", func(c *gin.Context) { c.Status(http.StatusNoContent) })
 	// 掛上「通知 API」路由（用 sqldb）
 	RegisterNotificationRoutes(r, sqldb)
+
+	// ✅ 公開個人頁（決定是否需要登入）
+	profilesAPI := r.Group("/profiles")
+	// → 如果想限制「登入後才能看別人的公開頁」，保留下一行；
+	//   如果要完全公開，就把這行拿掉。
+	profilesAPI.Use(authMiddleware())
+	{
+		profilesAPI.GET("/:id", getProfileByID)
+		profilesAPI.GET("/:id/tasks", listProfileTasks)
+	}
 
 	// r.POST("/auth/request-otp", requestOTP)
 	// r.POST("/auth/verify", verifyOTP)
@@ -419,6 +455,112 @@ func patchMyProfile(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, p)
+}
+
+func getProfileByID(c *gin.Context) {
+	id := c.Param("id")
+	ctx := c.Request.Context()
+
+	var p PublicProfile
+	// profiles.id 是 uuid；profiles 這張表請確認有 id (uuid) 欄位
+	err := db.QueryRow(ctx, `
+		select id, name, city, avatar_url, bio, created_at
+		from public.profiles
+		where id = $1::uuid
+	`, id).Scan(&p.ID, &p.Name, &p.City, &p.AvatarURL, &p.Bio, &p.CreatedAt)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+
+	// 統計（posted / assignee）
+	_ = db.QueryRow(ctx, `select count(*) from public.tasks where requester_id=$1::uuid`, id).Scan(&p.PostedTotal)
+	_ = db.QueryRow(ctx, `select count(*) from public.tasks where requester_id=$1::uuid and status='completed'`, id).Scan(&p.PostedCompleted)
+	_ = db.QueryRow(ctx, `select count(*) from public.tasks where assigned_to_id=$1::uuid and status='open'`, id).Scan(&p.AsgInProgress)
+	_ = db.QueryRow(ctx, `select count(*) from public.tasks where assigned_to_id=$1::uuid and status='completed'`, id).Scan(&p.AsgCompleted)
+
+	c.JSON(http.StatusOK, p)
+}
+
+func listProfileTasks(c *gin.Context) {
+	uid := c.Param("id")
+	role := c.Query("role")     // "assignee" | "requester"
+	status := c.Query("status") // "open" | "completed" | "all"
+	limit := 20
+	if v := c.Query("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 100 {
+			limit = n
+		}
+	}
+	var before *time.Time
+	if s := c.Query("before"); s != "" {
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			before = &t
+		}
+	}
+
+	if role != "assignee" && role != "requester" {
+		c.JSON(400, gin.H{"error": "invalid role"})
+		return
+	}
+	if status == "" {
+		status = "all"
+	}
+
+	where := []string{}
+	args := []any{}
+	arg := 1
+
+	if role == "assignee" {
+		where = append(where, fmt.Sprintf("assigned_to_id = $%d::uuid", arg))
+	} else {
+		where = append(where, fmt.Sprintf("requester_id = $%d::uuid", arg))
+	}
+	args = append(args, uid)
+	arg++
+
+	if status == "open" || status == "completed" {
+		where = append(where, fmt.Sprintf("status = $%d", arg))
+		args = append(args, status)
+		arg++
+	}
+	if before != nil {
+		where = append(where, fmt.Sprintf("created_at < $%d", arg))
+		args = append(args, *before)
+		arg++
+	}
+
+	q := fmt.Sprintf(`
+    select id, title, category, estimated_minutes, status, created_at, requester_id, assigned_to_id
+    from public.tasks
+    where %s
+    order by created_at desc
+    limit $%d
+  `, strings.Join(where, " AND "), arg)
+	args = append(args, limit)
+
+	rows, err := db.Query(c.Request.Context(), q, args...)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "db error"})
+		return
+	}
+	defer rows.Close()
+
+	out := []TaskListItem{}
+	for rows.Next() {
+		var it TaskListItem
+		if err := rows.Scan(&it.ID, &it.Title, &it.Category, &it.EstimatedMinutes, &it.Status, &it.CreatedAt, &it.RequesterID, &it.AssignedToID); err != nil {
+			c.JSON(500, gin.H{"error": "scan error"})
+			return
+		}
+		out = append(out, it)
+	}
+	c.JSON(200, out)
 }
 
 // -------- Tasks handlers --------
@@ -864,6 +1006,13 @@ func acceptTask(c *gin.Context) {
 	}
 
 	getTask(c)
+	notifyRequester(
+		c,
+		id, // taskID
+		"ORDER_ACCEPTED",
+		"Your request was accepted",
+		"Your supporter has accepted the job. You'll be notified when they clock in.",
+	)
 }
 
 // -------- WorkLog handlers --------
@@ -1310,6 +1459,49 @@ func RegisterNotificationRoutes(g *gin.Engine, db *sql.DB) {
 			`UPDATE public.notifications
           SET unread = false
         WHERE user_id = $1::uuid AND unread = true`,
+			me,
+		)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
+
+	// ✅ 單筆刪除
+	grp.DELETE("/notifications/:id", func(c *gin.Context) {
+		me := c.GetString("uid")
+		if me == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+			return
+		}
+		id := c.Param("id")
+		_, err := db.ExecContext(
+			c.Request.Context(),
+			`DELETE FROM public.notifications WHERE id = $1::uuid AND user_id = $2::uuid`,
+			id, me,
+		)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
+
+	// ✅ 清掉全部已讀（僅當 ?read=true）
+	grp.DELETE("/notifications", func(c *gin.Context) {
+		me := c.GetString("uid")
+		if me == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+			return
+		}
+		if c.Query("read") != "true" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "missing read=true"})
+			return
+		}
+		_, err := db.ExecContext(
+			c.Request.Context(),
+			`DELETE FROM public.notifications WHERE user_id = $1::uuid AND unread = false`,
 			me,
 		)
 		if err != nil {

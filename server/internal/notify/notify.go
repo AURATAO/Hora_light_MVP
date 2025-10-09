@@ -105,10 +105,10 @@ func Create(ctx context.Context, in CreateNotificationInput) error {
 
 	if in.SendEmail && in.EmailTo != "" {
 		html := fmt.Sprintf(`<div style="font-family:Inter,system-ui">
-<h2>%s</h2>
-<p>%s</p>
-<p style="margin-top:16px"><a href="%s/jobs/%s">View Job</a></p>
-</div>`, in.Title, in.Body, getenv("APP_BASE_URL", "https://my-hora.com"), in.JobID)
+	<h2>%s</h2>
+	<p>%s</p>
+	<p style="margin-top:16px"><a href="%s/jobs/%s">View Job</a></p>
+	</div>`, in.Title, in.Body, getenv("APP_BASE_URL", "https://my-hora.com"), in.JobID)
 
 		if err := SendEmail(EmailPayload{To: in.EmailTo, Subject: in.Title, Html: html}); err != nil {
 			log.Printf("SendEmail error: %v", err)

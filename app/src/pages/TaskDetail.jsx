@@ -4,6 +4,7 @@ import { api } from '../api/client'
 import { useNavigate } from 'react-router-dom'
 import TaskChatBox from '../components/TaskChatBox'
 import { useRequireAuth } from '../auth/useRequireAuth'
+import UserPill from '../components/UserPill'
 
 const MINUTE_RATE_EUR = 0.5
 
@@ -274,6 +275,20 @@ async function acceptFromDetail() {
                   Edit
                 </button>
               )}
+            </div>
+
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <div className="flex items-center gap-3">
+                <div className="text-white/70 text-sm">Requester:</div>
+                <UserPill userId={task.requester_id} meId={user?.id} label="Requester" />
+              </div>
+
+              <div className="flex items-center gap-3">
+                <div className="text-white/70 text-sm">Supporter:</div>
+                 {task.assigned_to_id
+                ? <UserPill userId={task.assigned_to_id} meId={user?.id} label="Assignee" />
+                : <span className="text-white/60 text-sm">Not assigned yet</span>}
+              </div>
             </div>
 
             <div className="text-sm text-white/80 space-y-1">

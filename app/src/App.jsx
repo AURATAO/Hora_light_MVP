@@ -6,6 +6,7 @@ import TaskDetail from './pages/TaskDetail.jsx'
 import My from './pages/My.jsx'
 import ProtectedRoute from './auth/ProtectedRoute.jsx'
 import Nav from './components/Nav.jsx'
+import PublicProfilePage from './pages/PublicProfilePage.jsx'
 
 
 
@@ -55,7 +56,9 @@ return (
 
 
     <Route path="*" element={<Navigate to="/" replace />} />
+    <Route path="/u/:id" element={<PublicProfilePage />} />
     </Routes>
+
     </main>
 </div>
 

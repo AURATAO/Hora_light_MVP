@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
-import { useRequireAuth } from '../auth/useRequireAuth'
 import AvatarUploader from './AvatarUploader'
+import { useRequireAuth } from '../auth/useRequireAuth'
 
 function ProfileCard() {
   const [profile, setProfile] = useState(null)
