@@ -13,17 +13,31 @@ function ProfileCard() {
 
 
   useEffect(() => {
-    if (authLoading || !user) return
-    (async () => {
-      try {
-        const p = await api('/profile')
-        setProfile(p)
-        setDraft(p)
-      } finally {
-        setLoading(false)
-      }
-    })()
-  }, [])
+  if (authLoading) return;          // 還在等 Supabase 回答，就先不動
+  if (!user) {                      // 沒登入：結束 loading，顯示適當文案
+    setLoading(false);
+    setProfile(null);
+    setDraft(null);
+    return;
+  }
+
+  let alive = true;
+  setLoading(true);
+  (async () => {
+    try {
+      const p = await api('/profile');
+      if (!alive) return;
+      setProfile(p);
+      setDraft(p);
+    } catch (e) {
+      // 可選：顯示錯誤
+      console.error('[profile] load error:', e);
+    } finally {
+      if (alive) setLoading(false);
+    }
+  })();
+  return () => { alive = false; };
+}, [authLoading, user]);
 
   function startEdit() {
     setDraft(profile)

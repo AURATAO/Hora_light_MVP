@@ -1,19 +1,16 @@
-import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'         // ← 加 useRef
+import { useLocation, useNavigate } from 'react-router-dom' // ← 加這兩個
 import { api } from '../api/client'
-import {ProfileCard}  from '../components/ProfileCard'
+import { ProfileCard } from '../components/ProfileCard'
 import TaskCard from '../components/TaskCard'
 import { useRequireAuth } from '../auth/useRequireAuth'
 import NotificationFeed from '../components/NotificationFeed'
-
 
 function ThinCard({ children, className='' }) {
   return <div className={`border border-white/20 rounded-lg p-3 bg-white/5 ${className}`}>{children}</div>
 }
 
 export default function My() {
-   console.log('[My] mounted')
-
   const [profile, setProfile] = useState(null)
   const [tab, setTab] = useState('available') // available | assigned | posted | done
   const [lists, setLists] = useState({ available:[], assigned:[], posted:[], done:[] })
@@ -21,28 +18,75 @@ export default function My() {
   const [saving, setSaving] = useState(false)
   const { user, loading: authLoading } = useRequireAuth()
 
+  const loc = useLocation()          // ← 新增
+  const nav = useNavigate()          // ← 新增
+  const runIdRef = useRef(0)         // ← 新增：避免舊請求覆蓋新資料
+  const [debug, setDebug] = useState(0)
+
+  // Promise.all + race guard
+ async function refreshLists() {
+  setLoading(true)
+  try {
+    const [available, assigned, posted, done] = await Promise.all([
+      api('/tasks/available'),
+      api('/tasks/assigned'),
+      api('/tasks/posted'),
+      api('/tasks/done'),
+    ])
+
+    const asArr = (x, name) => {
+      if (Array.isArray(x)) return x
+      console.warn(`[refreshLists] ${name} is not array:`, x)
+      return [] // 防呆
+    }
+
+    setLists({
+      available: asArr(available, 'available'),
+      assigned : asArr(assigned,  'assigned'),
+      posted   : asArr(posted,    'posted'),
+      done     : asArr(done,      'done'),
+    })
+  } catch (e) {
+    console.error('[refreshLists] failed:', e)
+    // 失敗時也給空陣列，避免下游 map 出錯
+    setLists({ available: [], assigned: [], posted: [], done: [] })
+  } finally {
+    setLoading(false)
+  }
+}
+
+  // 首次載入：等 auth 就緒，再抓 profile + 列表
   useEffect(() => {
-    if (authLoading || !user) return 
-    // load profile
+    if (authLoading || !user) return
     api('/profile').then(setProfile)
-    // load lists
     refreshLists()
+  }, [authLoading, user])
+
+  // ✅ 新增：從 URL 拿 tab（/my?tab=posted）
+  useEffect(() => {
+    const u = new URL(window.location.href)
+    const qTab = u.searchParams.get('tab')
+    if (qTab) setTab(qTab) // 'available' | 'assigned' | 'posted' | 'done'
   }, [])
 
-  async function refreshLists() {
-    setLoading(true)
-    try {
-      const [available, assigned, posted, done] = await Promise.all([
-        api('/tasks/available'),
-        api('/tasks/assigned'),
-        api('/tasks/posted'),
-        api('/tasks/done'),
-      ])
-      setLists({ available, assigned, posted, done })
-    } finally {
-      setLoading(false)
+  // ✅ 新增：處理建立任務後導來的 refresh 旗標（/my?refresh=1）
+  useEffect(() => {
+    const u = new URL(window.location.href)
+    const need = u.searchParams.get('refresh') === '1' || loc.state?.refresh
+    if (need) {
+      refreshLists().finally(() => {
+        u.searchParams.delete('refresh')
+        nav(u.pathname + (u.search ? `?${u.searchParams.toString()}` : ''), { replace: true, state: {} })
+      })
     }
-  }
+  }, [loc.key]) // loc.key 導航時會變
+
+  // ✅ 你問的這段：視窗回到前景時自動刷新
+  useEffect(() => {
+    const onFocus = () => refreshLists()
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [])
 
   async function saveProfile(patch) {
     setSaving(true)
@@ -72,16 +116,11 @@ export default function My() {
     { key:'done',      label:'Done' },
   ]
 
-
   return (
     <div className="bg-gradient-to-br from-primary to-primary/30 text-accent min-h-screen py-[100px] px-4">
       <div className="mx-auto max-w-3xl space-y-6">
-
-        {/* Profile card */}
-        <ProfileCard  />
+        <ProfileCard />
         <NotificationFeed className="mt-4" />
-
-        {/* Tabs */}
         <ThinCard>
           <div className="flex gap-2 border-b border-white/10 pb-2 mb-3">
             {tabs.map(t => (
@@ -95,16 +134,16 @@ export default function My() {
             <div className="ml-auto text-sm text-white/70">{loading ? 'Loading…' : ''}</div>
           </div>
           {tab === 'available' && (
-            <TaskList items={lists.available} variant="available" onAccept={acceptTask} />
+            <TaskList items={lists.available} variant="available" onAccept={acceptTask} onAfterChange={refreshLists} />
           )}
           {tab === 'assigned' && (
-            <TaskList items={lists.assigned} variant="assigned" />
+            <TaskList items={lists.assigned} variant="assigned" onAfterChange={refreshLists} />
           )}
           {tab === 'posted' && (
-            <TaskList items={lists.posted} variant="posted" />
+            <TaskList items={lists.posted} variant="posted" onAfterChange={refreshLists} />
           )}
           {tab === 'done' && (
-            <TaskList items={lists.done} variant="done" />
+            <TaskList items={lists.done} variant="done" onAfterChange={refreshLists} />
           )}
         </ThinCard>
       </div>
@@ -112,31 +151,17 @@ export default function My() {
   )
 }
 
-function LabeledInput({ label, value, onChange, onBlur }) {
-  return (
-    <label className="text-sm grid gap-1">
-      <span className="text-white/80">{label}</span>
-      <input
-        className="bg-transparent outline-none border border-white/10 focus:border-white/30 rounded px-2 py-1"
-        value={value}
-        onChange={(e)=> onChange(e.target.value)}
-        onBlur={onBlur}
-      />
-    </label>
-  )
-}
-
-function TaskList({ items, variant, onAccept, onAfterChange, showManage=false }) {
+function TaskList({ items, variant, onAccept, onAfterChange }) {
   if (!items?.length) return <div className="text-white/70">No items.</div>
   return (
     <ul className="space-y-2">
       {items.map(t => (
-         <TaskCard
+        <TaskCard
           key={t.id}
           task={t}
-          variant={variant}      // 'available' | 'assigned' | 'posted' | 'done'
-          onAccept={onAccept} 
-          onAfterChange={onAfterChange}     // 只有 available 會用到
+          variant={variant}
+          onAccept={onAccept}
+          onAfterChange={onAfterChange}
         />
       ))}
     </ul>

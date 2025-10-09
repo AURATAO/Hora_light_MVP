@@ -1,40 +1,34 @@
 import { useMemo, useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { supabase } from '../lib/supabaseClient'
+import { api } from '../api/client'
 import { useRequireAuth } from '../auth/useRequireAuth'
-
 
 const MINUTE_RATE_EUR = 0.5
 
 export default function NewTask() {
+  const nav = useNavigate()
+  const { user, loading: authLoading } = useRequireAuth()
 
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [category, setCategory] = useState('task') // task | companion
-  const [locations, setLocations] = useState(['']) // 多地點
+  const [locations, setLocations] = useState([''])
   const [minutes, setMinutes] = useState(30)
-  const [prepay, setPrepay] = useState('') // 輸入 EUR（字串）
-  const  [isSubmitting, setIsSubmitting]  = useState(false)
+  const [prepay, setPrepay] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const [touched, setTouched] = useState(false)
   const [mode, setMode] = useState('now') // 'now' | 'schedule'
-  const [date, setDate] = useState('')    // YYYY-MM-DD
-  const [timeStr, setTimeStr] = useState('') // HH:MM
-  const nav = useNavigate()
+  const [date, setDate] = useState('')
+  const [timeStr, setTimeStr] = useState('')
 
-  const { user, loading: authLoading } = useRequireAuth()
-  if (authLoading) return null  
+  // ✅ 不要在 hook 後面用條件 return，改成條件渲染
+  const notReady = authLoading || !user
 
-  function addLocation() {
-    setLocations((prev) => [...prev, ''])
-  }
-  function updateLocation(i, v) {
-    setLocations((prev) => prev.map((x, idx) => (idx === i ? v : x)))
-  }
-  function removeLocation(i) {
-    setLocations((prev) => prev.filter((_, idx) => idx !== i))
-  }
+  function addLocation() { setLocations(prev => [...prev, '']) }
+  function updateLocation(i, v) { setLocations(prev => prev.map((x, idx) => idx === i ? v : x)) }
+  function removeLocation(i) { setLocations(prev => prev.filter((_, idx) => idx !== i)) }
 
-   const errors = useMemo(() => {
+  const errors = useMemo(() => {
     const e = {}
     if (!title.trim()) e.title = 'Title is required'
     if (!minutes || Number(minutes) <= 0) e.minutes = 'Minutes must be > 0'
@@ -43,111 +37,62 @@ export default function NewTask() {
     return e
   }, [title, minutes, prepay, mode, date, timeStr])
 
-
   const canSubmit = Object.keys(errors).length === 0
 
-  const timeCost = useMemo(() => {
-    const m = Number(minutes) || 0
-    return (m * MINUTE_RATE_EUR)
-  }, [minutes])
-
+  const timeCost = useMemo(() => (Number(minutes || 0) * MINUTE_RATE_EUR), [minutes])
   const advance = useMemo(() => {
     if (prepay === '') return 0
     const n = Number(prepay)
     return Number.isNaN(n) ? 0 : Math.max(0, n)
   }, [prepay])
-
   const totalEstimate = useMemo(() => (timeCost + advance), [timeCost, advance])
 
   const scheduledAtISO = useMemo(() => {
     if (mode !== 'schedule' || !date || !timeStr) return ''
-    const dt = new Date(`${date}T${timeStr}`)   // 以本地時區組合
-    if (Number.isNaN(dt.getTime())) return ''
-    return dt.toISOString()                     // 後端要 RFC3339/ISO
-    }, [mode, date, timeStr])
+    const dt = new Date(`${date}T${timeStr}`)
+    return Number.isNaN(dt.getTime()) ? '' : dt.toISOString()
+  }, [mode, date, timeStr])
 
   async function onSubmit(e) {
-    // e.preventDefault()
-    // setTouched(true)
-    // if (!canSubmit) return
-    // setIsSubmitting(true)
-    // try {
-    //   // 把多地點合併成一個字串（MVP 先這樣傳給後端）
-    //   const location_text = locations
-    //     .map((s) => s.trim())
-    //     .filter(Boolean)
-    //     .join(' | ')
-
-
-    //   const payload = {
-    //     title, description, category, location_text,
-    //     estimated_minutes: Number(minutes) || 30,
-    //     prepay_amount_cents: Math.round((advance || 0) * 100),
-    //     is_immediate: mode === 'now',
-    //     scheduled_at: mode === 'schedule' ? scheduledAtISO : '',
-    //   }
-
-    // 由後端寫入
-    //   const t = await api('/tasks', { method: 'POST', body: payload })
-    //   nav(`/tasks/${t.id}`)
-    // } catch (e) {
-    //   alert(e.message || 'Failed to create task')
-    // } finally {
-    //   setIsSubmitting(false)
-    // }
-
-    // 直接寫入supabase
-     e.preventDefault()
+    e.preventDefault()
     setTouched(true)
     if (!canSubmit) return
     setIsSubmitting(true)
     try {
-      if (!user) {            // 用 context 的 user
-        alert('請先登入')
-        return
+      if (!user) throw new Error('Please sign in')
+
+      const location_text = locations.map(s => s.trim()).filter(Boolean).join(' | ')
+      const payload = {
+        title,
+        description,
+        category,
+        location_text,
+        estimated_minutes: Number(minutes) || 30,
+        prepay_amount_cents: Math.round((advance || 0) * 100),
+        is_immediate: mode === 'now',
+        scheduled_at: mode === 'schedule' ? scheduledAtISO : '',
       }
-      const { data: { user: supaUser }  } = await supabase.auth.getUser()
-      if (!user) { alert('請先登入'); return }
 
-      // 把多地點字串化（沿用你現有邏輯）
-      const location_text = locations
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .join(' | ')
+      // ⬇️ 交給你的後端建立（會用 JWT 取得 uid/email，正確填 requester_id 等欄）
+      await api('/tasks', { method: 'POST', body: payload })
 
-    // 組 payload（scheduled_at 用 null，不要空字串）
-    const payload = {
-      title,
-      description,
-      category,
-      location_text,
-      estimated_minutes: Number(minutes) || 30,
-      prepay_amount_cents: Math.round((advance || 0) * 100),
-      is_immediate: mode === 'now',
-      scheduled_at: mode === 'schedule' ? scheduledAtISO : null,
-      requester: supaUser.email, // 🔑 RLS 插入一定要是自己
-    }
-
-    const { data, error } = await supabase
-      .from('tasks')
-      .insert([payload])
-      .select('id')      // 只取回 id 就好；你也可 select('*')
-      .single()
-
-     if (error) throw error
-    nav(`/tasks/${data.id}`)
-    } catch (e) {
-      alert(e.message || 'Failed to create task')
+      // 導回 Posted 分頁並觸發 refresh
+      nav('/my?tab=posted&refresh=1', { replace: true })
+    } catch (err) {
+      alert(err.message || 'Failed to create task')
     } finally {
       setIsSubmitting(false)
     }
   }
 
   useEffect(() => {
-  supabase.auth.getSession().then(s => {
-    console.log('[NewTask] session?', !!s.data.session, s.data.session?.user?.id)
-  })
-}, [])
+    // 可選：觀察 session（除錯用）
+    // console.log('[NewTask] user?', user?.id)
+  }, [user])
+
+  if (notReady) {
+    return <div className="p-6">Loading…</div>
+  }
 
   return (
     <div className="bg-gradient-to-br from-primary to-primary/30 text-accent min-h-screen py-[100px] px-4">
@@ -182,24 +127,18 @@ export default function NewTask() {
           <div className="grid gap-1">
             <label className="text-sm">Category</label>
             <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setCategory('task')}
-                className={`px-3 py-1.5 rounded-md border ${category === 'task' ? 'bg-white text-black border-white' : 'border-white/20 hover:border-white/40'}`}
-              >
+              <button type="button" onClick={()=>setCategory('task')}
+                className={`px-3 py-1.5 rounded-md border ${category==='task'?'bg-white text-black border-white':'border-white/20 hover:border-white/40'}`}>
                 Task
               </button>
-              <button
-                type="button"
-                onClick={() => setCategory('companion')}
-                className={`px-3 py-1.5 rounded-md border ${category === 'companion' ? 'bg-white text-black border-white' : 'border-white/20 hover:border-white/40'}`}
-              >
+              <button type="button" onClick={()=>setCategory('companion')}
+                className={`px-3 py-1.5 rounded-md border ${category==='companion'?'bg-white text-black border-white':'border-white/20 hover:border-white/40'}`}>
                 Companion
               </button>
             </div>
           </div>
 
-          {/* Locations with + */}
+          {/* Locations */}
           <div className="grid gap-1">
             <label className="text-sm">Location(s)</label>
             <div className="space-y-2">
@@ -220,7 +159,8 @@ export default function NewTask() {
               ))}
             </div>
           </div>
-          {/* When: 立即 or 排程 */}
+
+          {/* When */}
           <div className="grid gap-2">
             <label className="text-sm">When</label>
             <div className="flex items-center gap-3">
@@ -233,7 +173,6 @@ export default function NewTask() {
                 <span>Schedule</span>
               </label>
             </div>
-
             {mode === 'schedule' && (
               <div className="flex gap-2">
                 <input
@@ -254,40 +193,33 @@ export default function NewTask() {
           </div>
 
           {/* Minutes + Advance */}
-
           <div className="grid gap-1">
-              <label className="text-sm">Estimated minutes <span className="text-red-500">*</span></label>
-              <input
-                type="number"
-                min={5}
-                step={5}
-                className={`rounded-md px-3 py-2 bg-transparent outline-none border ${touched && errors.minutes ? 'border-red-400' : 'border-white/20'} focus:border-white/40`}
-                value={minutes}
-                onChange={(e) => setMinutes(Number(e.target.value))}
-              />
-              {touched && errors.minutes && <div className="text-sm text-red-400">{errors.minutes}</div>}
+            <label className="text-sm">Estimated minutes <span className="text-red-500">*</span></label>
+            <input
+              type="number" min={5} step={5}
+              className={`rounded-md px-3 py-2 bg-transparent outline-none border ${touched && errors.minutes ? 'border-red-400' : 'border-white/20'} focus:border-white/40`}
+              value={minutes}
+              onChange={(e)=>setMinutes(Number(e.target.value))}
+            />
+            {touched && errors.minutes && <div className="text-sm text-red-400">{errors.minutes}</div>}
+            <div className="text-xs text-white/80">
+              Time cost (~{MINUTE_RATE_EUR.toFixed(2)} EUR/min): <b>{timeCost.toFixed(2)} EUR</b>
+            </div>
 
-              {/* 預估金額 */}
-              <div className="text-xs text-white/80 ">
-                Time cost (~{MINUTE_RATE_EUR.toFixed(2)} EUR/min): <b>{timeCost.toFixed(2)} EUR</b>
-              </div>
-
-            <div className="grid gap-1">
+            <div className="grid gap-1 mt-2">
               <label className="text-sm">Advance for purchase (EUR)</label>
               <input
-                type="number"
-                min={0}
-                step={0.01}
+                type="number" min={0} step={0.01}
                 className={`rounded-md px-3 py-2 bg-transparent outline-none border ${touched && errors.prepay ? 'border-red-400' : 'border-white/20'} focus:border-white/40`}
                 value={prepay}
-                onChange={(e) => setPrepay(e.target.value)}
+                onChange={(e)=>setPrepay(e.target.value)}
                 placeholder="e.g., 12.50"
               />
               {touched && errors.prepay && <div className="text-sm text-red-400">{errors.prepay}</div>}
             </div>
           </div>
 
-             {/* 預估區（加上開始時間） */}
+          {/* Estimate summary */}
           <div className="text-xs text-white/80 rounded-md px-3 py-2 bg-transparent outline-none border flex flex-col items-start">
             Start: <b>{mode === 'now' ? 'ASAP' : (date && timeStr ? new Date(`${date}T${timeStr}`).toLocaleString() : '—')}</b>
             <span className="mx-2">•</span>
@@ -299,25 +231,19 @@ export default function NewTask() {
 
           {/* Actions */}
           <div className="flex gap-3 pt-2">
-            <button
-              type="submit"
-              disabled={!canSubmit || isSubmitting}
-              className="rounded-md px-4 py-2 bg-white text-black disabled:opacity-50"
-            >
+            <button type="submit" disabled={!canSubmit || isSubmitting}
+              className="rounded-md px-4 py-2 bg-white text-black disabled:opacity-50">
               {isSubmitting ? 'Posting…' : 'Create task'}
             </button>
-            <button
-              type="button"
-              onClick={() => {
+            <button type="button"
+              onClick={()=>{
                 setTitle(''); setDescription(''); setCategory('task');
                 setLocations(['']); setMinutes(30); setPrepay(''); setTouched(false)
               }}
-              className="rounded-md px-4 py-2 border border-white/20 hover:border-white/40"
-            >
+              className="rounded-md px-4 py-2 border border-white/20 hover:border-white/40">
               Clear
             </button>
           </div>
-
         </form>
       </div>
     </div>

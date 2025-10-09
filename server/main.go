@@ -11,7 +11,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -270,6 +269,7 @@ func main() {
 
 		tasksAPI.POST("/:id/accept", acceptTask)     // 接單
 		tasksAPI.POST("/:id/complete", completeTask) // 完成
+		tasksAPI.POST("/:id/cancel", cancelTask)     // 取消
 
 		// ✅ 新增打卡與查詢工時
 		tasksAPI.POST("/:id/clock-in", clockIn)
@@ -616,18 +616,20 @@ func createTask(c *gin.Context) {
 	var id string
 	var createdAt time.Time
 	err := db.QueryRow(ctx, `
-		insert into public.tasks
-		  (title,description,category,location_text,
-		   estimated_minutes,prepay_amount_cents,is_immediate,scheduled_at,
-		   requester, requester_id, status, assigned_to, assigned_to_id)
-		values
-		  ($1,$2,$3,$4,
-		   $5,$6,$7,$8,
-		   $9, $10::uuid, 'open', '', null)
-		returning id, created_at
-	`, in.Title, in.Description, in.Category, in.LocationText,
+	insert into public.tasks
+		(title,description,category,location_text,
+		estimated_minutes,prepay_amount_cents,is_immediate,scheduled_at,
+		requester, requester_id, status, assigned_to, assigned_to_id)
+	values
+		($1,$2,$3,$4,
+		$5,$6,$7,$8,
+		$9, $10::uuid, 'open', '', null)
+	returning id, created_at
+	`,
+		in.Title, in.Description, in.Category, in.LocationText,
 		in.EstimatedMinutes, in.PrepayAmountCents, in.IsImmediate, when,
-		meEmail, meUID).Scan(&id, &createdAt)
+		meEmail, strings.TrimSpace(meUID),
+	).Scan(&id, &createdAt)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
@@ -697,7 +699,7 @@ func listMyTasks(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	out := []Task{}
+	out := make([]Task, 0)
 	for rows.Next() {
 		t, err := scanTask(rows)
 		if err != nil {
@@ -837,12 +839,13 @@ func listAvailableTasks(c *gin.Context) {
     where status='open' and requester_id <> $1::uuid and assigned_to_id is null
     order by created_at desc
   `, meUID)
+
 	if err != nil {
 		c.JSON(500, gin.H{"error": "db error"})
 		return
 	}
 	defer rows.Close()
-	var out []Task
+	out := make([]Task, 0)
 	for rows.Next() {
 		t, err := scanTask(rows)
 		if err != nil {
@@ -877,7 +880,7 @@ func listAssignedTasks(c *gin.Context) {
 		return
 	}
 	defer rows.Close()
-	var out []Task
+	out := make([]Task, 0)
 	for rows.Next() {
 		t, err := scanTask(rows)
 		if err != nil {
@@ -912,7 +915,7 @@ func listDoneTasks(c *gin.Context) {
 		return
 	}
 	defer rows.Close()
-	var out []Task
+	out := make([]Task, 0)
 	for rows.Next() {
 		t, err := scanTask(rows)
 		if err != nil {
@@ -1130,29 +1133,35 @@ func clockOut(c *gin.Context) {
 
 func getWorklogs(c *gin.Context) {
 	taskID := c.Param("id")
-	meUID := c.GetString("uid")
+	meUID := c.GetString("uid") // ✅ 用 uid
 	if meUID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
 		return
 	}
 	ctx := c.Request.Context()
 
-	var reqID, assID sql.NullString
+	// 用 uuid 欄位檢查權限
+	var requesterID string
+	var assignedToID *string
 	if err := db.QueryRow(ctx, `
-      select requester_id, assigned_to_id
-      from public.tasks where id=$1
-    `, taskID).Scan(&reqID, &assID); err != nil {
+        select requester_id, assigned_to_id
+        from public.tasks
+        where id = $1
+    `, taskID).Scan(&requesterID, &assignedToID); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
-	if (!reqID.Valid || reqID.String != meUID) && (!assID.Valid || assID.String != meUID) {
+	if meUID != requesterID && (assignedToID == nil || meUID != *assignedToID) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "not allowed"})
 		return
 	}
 
+	// 下面原本的查詢不需改
 	rows, err := db.Query(ctx, `
-      select id,task_id,"user",start_at,end_at,created_at,updated_at
-      from public.worklogs where task_id=$1 order by start_at asc
+        select id,task_id,"user",start_at,end_at,created_at,updated_at
+        from public.worklogs
+        where task_id=$1
+        order by start_at asc
     `, taskID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
@@ -1172,19 +1181,21 @@ func getWorklogs(c *gin.Context) {
 
 	var totalMin int
 	_ = db.QueryRow(ctx, `
-      with x as (
-        select ceil(extract(epoch from (end_at - start_at))/60.0) as m
-        from public.worklogs
-        where task_id=$1 and end_at is not null and end_at > start_at
-      )
-      select coalesce(sum(greatest(m,1))::int, 0) from x
+        with x as (
+          select ceil(extract(epoch from (end_at - start_at))/60.0) as m
+          from public.worklogs
+          where task_id=$1 and end_at is not null and end_at > start_at
+        )
+        select coalesce(sum(greatest(m,1))::int, 0) from x
     `, taskID).Scan(&totalMin)
 
 	var hasOpen bool
 	_ = db.QueryRow(ctx, `
-      select exists (
-        select 1 from public.worklogs where task_id=$1 and end_at is null
-      )`, taskID).Scan(&hasOpen)
+        select exists (
+          select 1 from public.worklogs
+          where task_id=$1 and end_at is null
+        )
+    `, taskID).Scan(&hasOpen)
 
 	c.JSON(http.StatusOK, gin.H{
 		"items":            items,
@@ -1268,88 +1279,181 @@ func completeTask(c *gin.Context) {
 	getTask(c)
 }
 
+// POST /tasks/:id/cancel
+// 只有作者(requester)可取消；任務須為 open；若有未結束工時(end_at is null)不可取消。
+// 已有結束工時則：bill = total_minutes * rate；refund = max(prepay - bill, 0)。
+// 取已結束工時總分鐘（向上取整，每段至少 1 分鐘），只算 end_at 有值的
+func totalClosedMinutes(ctx context.Context, taskID string) (int, error) {
+	var total int
+	err := db.QueryRow(ctx, `
+		with x as (
+			select ceil(extract(epoch from (end_at - start_at))/60.0)::int as m
+			from public.worklogs
+			where task_id=$1 and end_at is not null and end_at > start_at
+		)
+		select coalesce(sum(greatest(m,1)),0) from x
+	`, taskID).Scan(&total)
+	return total, err
+}
+
+func cancelTask(c *gin.Context) {
+	taskID := c.Param("id")
+	meUID := c.GetString("uid")
+	if meUID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+		return
+	}
+
+	// 讀取 reason
+	var in struct {
+		Reason string `json:"reason"`
+	}
+	if err := c.BindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+		return
+	}
+	in.Reason = strings.TrimSpace(in.Reason)
+	if in.Reason == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "reason required"})
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	// 讀任務狀態與擁有者
+	var requesterID, status string
+	var assignedToID *string
+	err := db.QueryRow(ctx, `
+		select requester_id, status, assigned_to_id
+		from public.tasks
+		where id = $1
+	`, taskID).Scan(&requesterID, &status, &assignedToID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+
+	// 權限：只有作者能取消
+	if requesterID != meUID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only requester can cancel"})
+		return
+	}
+
+	// 狀態檢查
+	if status != "open" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "task already closed"})
+		return
+	}
+
+	// 如果你規則是「未接單前才可取消」就擋這裡（也可改成允許已接單但未開工）：
+	if assignedToID != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot cancel after it has been accepted"})
+		return
+	}
+
+	// 是否有未結束工時
+	var hasOpen bool
+	_ = db.QueryRow(ctx, `
+		select exists (
+			select 1 from public.worklogs
+			where task_id=$1 and end_at is null
+		)
+	`, taskID).Scan(&hasOpen)
+	if hasOpen {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot cancel with an active work session (clock out first)"})
+		return
+	}
+
+	// 計算費用（已結束的總分鐘 * 單價）
+	totalMin, err := totalClosedMinutes(ctx, taskID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "calc error"})
+		return
+	}
+	var prepayCents int
+	if err := db.QueryRow(ctx, `
+		select coalesce(prepay_amount_cents,0) from public.tasks where id=$1
+	`, taskID).Scan(&prepayCents); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+	billCents := totalMin * centsPerMinute
+	refundCents := prepayCents - billCents
+	if refundCents < 0 {
+		refundCents = 0
+	}
+
+	// 寫入取消狀態 + 理由（建議你在 tasks 加欄位：cancel_reason text, cancelled_at timestamptz）
+	_, err = db.Exec(ctx, `
+		update public.tasks
+		set status='cancelled',
+		    cancel_reason = $2,
+		    cancelled_at = now()
+		where id=$1
+	`, taskID, in.Reason)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+
+	// （可選）寫入 audit_logs（若你有這張表）
+	// _, _ = db.Exec(ctx, `
+	// 	insert into public.audit_logs(task_id, actor_id, action, reason, meta)
+	// 	values ($1,$2,'TASK_CANCELLED',$3,jsonb_build_object(
+	// 		'total_minutes', $4, 'bill_cents', $5, 'refund_cents', $6
+	// 	))
+	// `, taskID, meUID, in.Reason, totalMin, billCents, refundCents)
+
+	// 通知 requester（自己），也可選擇通知 assignee（如果允許被接單後取消）
+	// 這裡沿用你既有的 notifyRequester，如果你要寄給 assignee 就寫一個 notifyAssignee。
+	notifyRequester(c, taskID, "CANCELLED",
+		"Task cancelled",
+		fmt.Sprintf("Reason: %s", in.Reason),
+	)
+
+	// 前端期望的回傳格式
+	c.JSON(http.StatusOK, gin.H{
+		"total_minutes": totalMin,
+		"bill_cents":    billCents,
+		"refund_cents":  refundCents,
+	})
+}
+
 // -------- Notifications --------
-func OnOrderAccepted(ctx context.Context, db *sql.DB, jobID, requesterID, supporterID, requesterEmail string) {
+func OnOrderAccepted(ctx context.Context, db *sql.DB, taskID, requesterID, supporterID, requesterEmail string) {
 	notify.Create(ctx, notify.CreateNotificationInput{
-		DB: db, UserID: requesterID, JobID: jobID, Type: "ORDER_ACCEPTED",
+		DB: db, UserID: requesterID, TaskID: taskID, Type: "ORDER_ACCEPTED",
 		Title:     "Your request was accepted",
 		Body:      "Your supporter has accepted the job. You'll be notified when they clock in.",
 		SendEmail: true, EmailTo: requesterEmail,
 	})
 }
 
-// 打卡開始
-func OnClockIn(ctx context.Context, db *sql.DB, jobID, requesterID, requesterEmail string) {
+func OnClockIn(ctx context.Context, db *sql.DB, taskID, requesterID, requesterEmail string) {
 	notify.Create(ctx, notify.CreateNotificationInput{
-		DB: db, UserID: requesterID, JobID: jobID, Type: "CLOCK_IN",
+		DB: db, UserID: requesterID, TaskID: taskID, Type: "CLOCK_IN",
 		Title:     "Supporter clocked in",
 		Body:      "The job has started. You can track progress in your dashboard.",
 		SendEmail: true, EmailTo: requesterEmail,
 	})
 }
 
-// 打卡結束
-func OnClockOut(ctx context.Context, db *sql.DB, jobID, requesterID, requesterEmail string) {
+func OnClockOut(ctx context.Context, db *sql.DB, taskID, requesterID, requesterEmail string) {
 	notify.Create(ctx, notify.CreateNotificationInput{
-		DB: db, UserID: requesterID, JobID: jobID, Type: "CLOCK_OUT",
+		DB: db, UserID: requesterID, TaskID: taskID, Type: "CLOCK_OUT",
 		Title:     "Supporter clocked out",
 		Body:      "Work session ended. We'll compute the bill and show the breakdown.",
 		SendEmail: true, EmailTo: requesterEmail,
 	})
 }
 
-// 完成
-func OnCompleted(ctx context.Context, db *sql.DB, jobID, requesterID, requesterEmail string) {
+func OnCompleted(ctx context.Context, db *sql.DB, taskID, requesterID, requesterEmail string) {
 	notify.Create(ctx, notify.CreateNotificationInput{
-		DB: db, UserID: requesterID, JobID: jobID, Type: "COMPLETED",
+		DB: db, UserID: requesterID, TaskID: taskID, Type: "COMPLETED",
 		Title:     "Job completed",
 		Body:      "Everything is done. Please leave a rating when you have a moment.",
 		SendEmail: true, EmailTo: requesterEmail,
 	})
-}
-
-// 取消（同時寫 audit_log）
-func toJSON(v any) string {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return "{}"
-	}
-	return string(b)
-}
-
-func CancelJob(ctx context.Context, db *sql.DB, jobID, actorID string, reason string) error {
-	// 1) 檢查 open worklog
-	var openCnt int
-	if err := db.QueryRowContext(ctx, `
-    SELECT count(*) FROM worklogs WHERE task_id=$1 AND clock_in_at IS NOT NULL AND clock_out_at IS NULL
-  `, jobID).Scan(&openCnt); err != nil {
-		return err
-	}
-	if openCnt > 0 {
-		return fmt.Errorf("cannot cancel: open worklog exists")
-	}
-
-	// 2) 計算金額（略：依你現有 schema）
-	summary := map[string]any{"refund": 12.34, "billableHours": 1.25}
-
-	// 3) 寫 audit_logs
-	_, err := db.ExecContext(ctx, `
-    INSERT INTO audit_logs (task_id, actor_id, action, reason, meta)
-    VALUES ($1,$2,'JOB_CANCELLED',$3,$4::jsonb)
-  `, jobID, actorID, reason, toJSON(summary))
-	if err != nil {
-		return err
-	}
-
-	// 4) 通知雙方（這裡示例只給 requester）
-	requesterID, requesterEmail := "...", "..."
-	notify.Create(ctx, notify.CreateNotificationInput{
-		DB: db, UserID: requesterID, JobID: jobID, Type: "CANCELLED",
-		Title:     "Task cancelled",
-		Body:      fmt.Sprintf("The job was cancelled. Reason: %s", reason),
-		SendEmail: true, EmailTo: requesterEmail,
-	})
-	return nil
 }
 
 func RegisterNotificationRoutes(g *gin.Engine, db *sql.DB) {
@@ -1538,7 +1642,7 @@ func notifyRequester(c *gin.Context, taskID, ntype, title, body string) {
 	if err := notify.Create(ctx, notify.CreateNotificationInput{
 		DB:        sqldb, // ← 用 *sql.DB（pgx stdlib）
 		UserID:    uid,   // ← 這裡塞「uuid」
-		JobID:     taskID,
+		TaskID:    taskID,
 		Type:      ntype,
 		Title:     title,
 		Body:      body,
