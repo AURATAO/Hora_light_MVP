@@ -9,3 +9,6 @@ build/
 node_modules/
 # macOS
 .DS_Store
+# secrets
+.env
+server/.env

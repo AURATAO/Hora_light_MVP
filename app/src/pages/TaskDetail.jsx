@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import TaskChatBox from '../components/TaskChatBox'
-import { useRequireAuth } from '../auth/useRequireAuth'
+import { useAuth } from '../auth/AuthContext'
 import UserPill from '../components/UserPill'
 
 const MINUTE_RATE_EUR = 0.5
@@ -10,7 +10,7 @@ const MINUTE_RATE_EUR = 0.5
 export default function TaskDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { user, loading: authLoading } = useRequireAuth()
+  const { user, loading: authLoading } = useAuth()
 
   const [task, setTask] = useState(null)
   const [work, setWork] = useState({ items: [], total_minutes: 0, total_cost_cents: 0, has_open: false })

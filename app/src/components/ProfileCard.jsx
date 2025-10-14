@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import AvatarUploader from './AvatarUploader'
-import { useRequireAuth } from '../auth/useRequireAuth'
+import { useAuth } from '../auth/AuthContext'
 
 function ProfileCard() {
   const [profile, setProfile] = useState(null)
@@ -9,7 +9,7 @@ function ProfileCard() {
   const [loading, setLoading] = useState(true)
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
-  const { user, loading: authLoading } = useRequireAuth()
+  const { user, loading: authLoading } = useAuth()
 
 
   useEffect(() => {

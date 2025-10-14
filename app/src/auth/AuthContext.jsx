@@ -1,83 +1,73 @@
+// src/auth/AuthContext.jsx
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
-import { AuthAPI } from '../api/client' // 內部會用 supabase.verifyOtp / signOut
+import { AuthAPI } from '../api/client'   // ← NEW
 
 
+const MODE = import.meta.env.VITE_AUTH_MODE || 'cookie'
 const AuthCtx = createContext(null)
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
-  const [token, setToken] = useState(null) // 給既有程式相容
+  const [token, setToken] = useState(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    let mounted = true
+    let live = true
 
-    // ① 啟動時恢復 session & user（這一步也能觸發 refresh）
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!mounted) return
+    const initCookie = async () => {
+      try {
+        const me = await AuthAPI.me()          // ← 必打 /auth/me（會帶 credentials）
+        if (!live) return
+        setUser(me)                            // me 可能是 null 或 {id,email,name}
+      } finally {
+        if (live) setLoading(false)
+      }
+    }
+
+    const initBearer = async () => {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!live) return
       setUser(session?.user ?? null)
       setToken(session?.access_token ?? null)
       setLoading(false)
-    })
-
-    // ② 監聽登入 / 續期 / 登出
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null)
-      setToken(session?.access_token ?? null)
-    })
-
-    // ③ 啟動自動續期（開發期間/HMR 有時需要手動叫起來最穩）
-    supabase.auth.startAutoRefresh()
-
-    // ④ 分頁回來時主動檢查（會在過期時自動換新 token）
-    const onVisible = async () => {
-      if (document.visibilityState === 'visible') {
-        await supabase.auth.getSession()
+      const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
+        setUser(s?.user ?? null)
+        setToken(s?.access_token ?? null)
+      })
+      supabase.auth.startAutoRefresh()
+      const onVisible = async () => { if (document.visibilityState === 'visible') await supabase.auth.getSession() }
+      const onFocus = async () => { await supabase.auth.getSession() }
+      window.addEventListener('visibilitychange', onVisible)
+      window.addEventListener('focus', onFocus)
+      return () => {
+        sub.subscription.unsubscribe()
+        window.removeEventListener('visibilitychange', onVisible)
+        window.removeEventListener('focus', onFocus)
+        supabase.auth.stopAutoRefresh()
       }
     }
-    const onFocus = async () => {
-      await supabase.auth.getSession()
-    }
-    window.addEventListener('visibilitychange', onVisible)
-    window.addEventListener('focus', onFocus)
 
-    return () => {
-      mounted = false
-      sub.subscription.unsubscribe()
-      window.removeEventListener('visibilitychange', onVisible)
-      window.removeEventListener('focus', onFocus)
-      supabase.auth.stopAutoRefresh()
+    if (MODE === 'cookie') {
+      initCookie()
+      const onFocus = async () => {
+        try { const me = await AuthAPI.me(); setUser(me) } catch { setUser(null) }
+      }
+      window.addEventListener('focus', onFocus)
+      return () => { live = false; window.removeEventListener('focus', onFocus) }
+    } else {
+      const cleanup = initBearer()
+      return () => { live = false; cleanup && cleanup() }
     }
   }, [])
 
-  // 以「email + 6 碼」登入（verifyOtp 成功後，onAuthStateChange 會更新 user/token）
-  async function loginWithOtp(email, code) {
-    setLoading(true)
-    try {
-      const data = await AuthAPI.verifyOtp(email, code)
-      // 保險：馬上同步一次 session（避免少數瀏覽器延遲）
-      const { data: s } = await supabase.auth.getSession()
-      setUser(s.session?.user ?? null)
-      setToken(s.session?.access_token ?? null)
-      return data
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  // 登出（注意：不要清整個 localStorage，以免清掉 Supabase 的 session 儲存）
   async function logout() {
-    await AuthAPI.signOut()
-    setUser(null)
-    setToken(null)
+    if (MODE !== 'cookie') await supabase.auth.signOut().catch(() => {})
+    setUser(null); setToken(null)
   }
 
-  const value = useMemo(
-    () => ({ user, token, loading, loginWithOtp, logout, setUser }),
-    [user, token, loading]
-  )
-
+  const value = useMemo(() => ({ user, token, loading, logout, setUser }), [user, token, loading])
+  console.log('[CTX] user=', user, 'loading=', loading)
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>
 }
 

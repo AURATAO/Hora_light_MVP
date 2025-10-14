@@ -1,74 +1,69 @@
 import { supabase } from "../lib/supabaseClient";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080";
+export const API_BASE =
+  (
+    import.meta.env.VITE_API_BASE_URL ??
+    import.meta.env.VITE_API_BASE ??
+    "/api"
+  ).replace(/\/+$/, "") || "/api";
 
-// 取得最新可用的 access token（若沒有先 refresh 一次）
-async function getFreshAccessToken() {
-  let {
-    data: { session },
-  } = await supabase.auth.getSession();
-  if (session?.access_token) return session.access_token;
+console.log("[client.js] API_BASE=", API_BASE);
 
-  const { data, error } = await supabase.auth.refreshSession();
-  if (!error && data.session?.access_token) {
-    return data.session.access_token;
+// 取 token（拿不到就回 null，不丟錯）
+async function maybeGetSupabaseToken() {
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    return session?.access_token || null;
+  } catch {
+    return null;
   }
-  throw new Error("Not authenticated");
 }
 
-async function rawFetch(
-  path,
-  { method = "GET", body, headers = {} } = {},
-  token
-) {
+// 「雙送」的 fetch：永遠帶 cookie；若有 token 也帶 Bearer
+export async function api(path, opts = {}) {
+  const token = await maybeGetSupabaseToken();
+
   const res = await fetch(`${API_BASE}${path}`, {
-    method,
+    method: opts.method || "GET",
+    credentials: "include", // ← 永遠帶 cookie
+    cache: "no-store",
+    redirect: "follow",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-      ...headers,
+      ...(token ? { Authorization: `Bearer ${token}` } : {}), // ← 有就帶
+      ...(opts.headers || {}),
     },
-    body: body ? JSON.stringify(body) : undefined,
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
-  return res;
-}
-
-// 高階 api：自帶 token，若 401 會 refresh 後重試一次
-export async function api(path, opts = {}) {
-  let token = await getFreshAccessToken();
-  let res = await rawFetch(path, opts, token);
-
-  if (res.status === 401) {
-    const { data, error } = await supabase.auth.refreshSession();
-    if (!error && data.session?.access_token) {
-      token = data.session.access_token;
-      res = await rawFetch(path, opts, token);
-    }
-  }
 
   if (!res.ok) {
-    const text = await res.text().catch(() => `HTTP ${res.status}`);
-    throw new Error(text);
+    throw new Error((await res.text().catch(() => "")) || `HTTP ${res.status}`);
   }
-
   const ct = res.headers.get("content-type") || "";
   return ct.includes("application/json") ? res.json() : res.text();
 }
 
-// 直接使用 Supabase 的 Auth 流程
+/** Auth 封裝 */
 export const AuthAPI = {
+  async me() {
+    // 後端的 /auth/me 已用 tryAuth：能吃 cookie 或 bearer
+    const res = await api("/auth/me");
+    if (res && res.auth)
+      return { id: res.id, email: res.email, name: res.name || res.email };
+    return null;
+  },
+
+  // ——— 如果你現在 OTP 用 Supabase（6 碼） ———
   async requestOtp(email) {
     const { error } = await supabase.auth.signInWithOtp({
       email,
-      options: {
-        shouldCreateUser: true,
-        emailRedirectTo: "http://localhost:5173/auth/callback",
-      },
+      options: { shouldCreateUser: true },
     });
     if (error) throw error;
     return true;
   },
-
   async verifyOtp(email, code) {
     const { data, error } = await supabase.auth.verifyOtp({
       email,
@@ -76,17 +71,26 @@ export const AuthAPI = {
       type: "email",
     });
     if (error) throw error;
-    return data; // data.session, data.user
-  },
-
-  async me() {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    return user;
+    return data; // 成功後 supabase 會有 session，api() 就會自動帶 Bearer
   },
 
   async signOut() {
-    await supabase.auth.signOut();
+    // 登出兩邊都清一下：cookie + supabase
+    await fetch(`${API_BASE}/auth/logout`, {
+      method: "POST",
+      credentials: "include",
+    }).catch(() => {});
+    await supabase.auth.signOut().catch(() => {});
+  },
+
+  loginWithGoogle(next = "/") {
+    const appBase = import.meta.env.BASE_URL || "/";
+    const baseURL = window.location.origin + appBase.replace(/\/$/, "");
+    const nextAbs = /^https?:\/\//i.test(next)
+      ? next
+      : baseURL + (next.startsWith("/") ? "" : "/") + next;
+    window.location.href = `${API_BASE}/auth/login?next=${encodeURIComponent(
+      nextAbs
+    )}`;
   },
 };

@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom' // ← 加這兩個
 import { api } from '../api/client'
 import { ProfileCard } from '../components/ProfileCard'
 import TaskCard from '../components/TaskCard'
-import { useRequireAuth } from '../auth/useRequireAuth'
+import { useAuth } from '../auth/AuthContext'
 import NotificationFeed from '../components/NotificationFeed'
 
 function ThinCard({ children, className='' }) {
@@ -16,7 +16,7 @@ export default function My() {
   const [lists, setLists] = useState({ available:[], assigned:[], posted:[], done:[] })
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
-  const { user, loading: authLoading } = useRequireAuth()
+  const { user, loading: authLoading } = useAuth()
 
   const loc = useLocation()          // ← 新增
   const nav = useNavigate()          // ← 新增

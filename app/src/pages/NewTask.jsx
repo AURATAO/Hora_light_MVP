@@ -1,13 +1,13 @@
 import { useMemo, useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
-import { useRequireAuth } from '../auth/useRequireAuth'
+import { useAuth } from '../auth/AuthContext'
 
 const MINUTE_RATE_EUR = 0.5
 
 export default function NewTask() {
   const nav = useNavigate()
-  const { user, loading: authLoading } = useRequireAuth()
+  const { user, loading: authLoading } = useAuth()
 
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')

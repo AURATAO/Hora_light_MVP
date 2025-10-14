@@ -22,6 +22,8 @@ import (
 	"strings"
 	"time"
 
+	"hora-auth/auth"
+
 	"github.com/MicahParks/keyfunc/v2"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -38,6 +40,10 @@ import (
 var jwks *keyfunc.JWKS
 var db *pgxpool.Pool
 var sqldb *sql.DB
+
+var DB *sql.DB
+
+func SetDB(db *sql.DB) { DB = db }
 
 type Task struct {
 	ID                string     `json:"id"`
@@ -132,6 +138,7 @@ type NotificationDTO struct {
 func main() {
 	_ = godotenv.Load()
 
+	// --- JWKS (Supabase Bearer 驗證用) ---
 	projectURL := strings.TrimSuffix(os.Getenv("SUPABASE_PROJECT_URL"), "/")
 	jwksURL := strings.TrimSpace(os.Getenv("SUPABASE_JWKS_URL"))
 	if jwksURL == "" && projectURL != "" {
@@ -140,11 +147,9 @@ func main() {
 	if jwksURL == "" {
 		log.Fatal("SUPABASE_JWKS_URL is not set (hint: set SUPABASE_PROJECT_URL=https://<ref>.supabase.co)")
 	}
-	log.Printf("[auth] using JWKS URL: %s", jwksURL)
-
 	var err error
 	jwks, err = keyfunc.Get(jwksURL, keyfunc.Options{
-		RefreshInterval: time.Hour, // 定期自動更新金鑰
+		RefreshInterval: time.Hour,
 		RefreshTimeout:  10 * time.Second,
 		Ctx:             context.Background(),
 		RefreshErrorHandler: func(err error) {
@@ -154,11 +159,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to init JWKS: %v", err)
 	}
-	//DB init
-	// Initialize pgx pool. Keep MaxConns conservative on small instances.
-	// Tip: add `?sslmode=require` in SUPABASE_DB_URL for production.
-	// Initialize Postgres (Supabase) connection pool.
-	// Initialize Postgres (Supabase) via Transaction Pooler (IPv4 proxied).
+	log.Printf("[auth] using JWKS URL: %s", jwksURL)
+
+	// --- DB 連線（pgxpool + database/sql）---
 	dbURL := strings.TrimSpace(os.Getenv("SUPABASE_DB_URL"))
 	if dbURL == "" {
 		log.Fatal("SUPABASE_DB_URL is not set")
@@ -171,7 +174,6 @@ func main() {
 	cfg.MaxConns = 8
 	cfg.MinConns = 1
 	cfg.MaxConnLifetime = time.Hour
-
 	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 
 	db, err = pgxpool.NewWithConfig(context.Background(), cfg)
@@ -182,18 +184,16 @@ func main() {
 		log.Fatalf("DB ping failed: %v", err)
 	}
 	log.Println("[db] connected")
-	// 2) 用這個 DSN 開 stdlib 連線
+
 	pgxCfg, err := pgx.ParseConfig(dbURL)
 	if err != nil {
 		log.Fatalf("pgx ParseConfig (stdlib) error: %v", err)
 	}
-	pgxCfg.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol // ← 關鍵：走 Simple Protocol
-	pgxCfg.StatementCacheCapacity = 0                             // ← 與上面配對：不使用快取
-
-	// 產生給 database/sql 使用的 DSN
+	pgxCfg.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	pgxCfg.StatementCacheCapacity = 0
 	dsn := stdlib.RegisterConnConfig(pgxCfg)
 
-	sqldb, err = sql.Open("pgx", dsn) // 需：import "github.com/jackc/pgx/v5/stdlib"
+	sqldb, err = sql.Open("pgx", dsn)
 	if err != nil {
 		log.Fatalf("sql.Open error: %v", err)
 	}
@@ -205,73 +205,103 @@ func main() {
 	sqldb.SetConnMaxLifetime(time.Hour)
 	log.Println("[sqldb] connected (simple protocol)")
 
-	// go cleanupLoop()
+	// --- Google OAuth 初始化 & 注入 DB（只做一次！）---
+	if err := auth.InitGoogleOAuth(); err != nil {
+		log.Fatalf("InitGoogleOAuth error: %v", err)
+	}
+	auth.SetDB(sqldb)
+	log.Println("[auth] DB injected")
 
+	// --- Gin & CORS ---
 	r := gin.Default()
-
-	// CORS: allow local dev and production origins. Adjust before deploying preview domains.
-
 	c := cors.Config{
-		AllowOrigins: []string{
-			"http://localhost:5173",
-			"https://horaapp.co",
-			"https://app.horaapp.co",
-		},
+		AllowOrigins:     []string{"http://localhost:5173", "https://horaapp.co", "https://app.horaapp.co"},
 		AllowMethods:     []string{"GET", "POST", "PATCH", "OPTIONS", "DELETE"},
 		AllowHeaders:     []string{"Authorization", "Content-Type"},
-		AllowCredentials: false,
+		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
 	}
 	r.Use(cors.New(c))
 	r.OPTIONS("/*path", func(c *gin.Context) { c.Status(http.StatusNoContent) })
-	// 掛上「通知 API」路由（用 sqldb）
+
+	// --- 路由 ---
 	RegisterNotificationRoutes(r, sqldb)
 
-	// ✅ 公開個人頁（決定是否需要登入）
+	// 公開個人頁（你要「登入可看更完整，未登入也可看」→ 用 tryAuth）
 	profilesAPI := r.Group("/profiles")
-	// → 如果想限制「登入後才能看別人的公開頁」，保留下一行；
-	//   如果要完全公開，就把這行拿掉。
-	profilesAPI.Use(authMiddleware())
+	profilesAPI.Use(tryAuth(sqldb))
 	{
 		profilesAPI.GET("/:id", getProfileByID)
 		profilesAPI.GET("/:id/tasks", listProfileTasks)
 	}
 
-	// r.POST("/auth/request-otp", requestOTP)
-	// r.POST("/auth/verify", verifyOTP)
+	// Google OAuth
+	r.GET("/auth/login", auth.HandleLogin)
+	r.GET("/auth/callback", auth.HandleCallback)
 
-	auth := r.Group("/auth")
-	auth.Use(authMiddleware())
-	auth.GET("/me", me)
+	// /auth/me（不噴 401）
+	r.GET("/auth/me", tryAuth(sqldb), func(c *gin.Context) {
+		uid := c.GetString("uid")
+		email := c.GetString("email")
+		if uid == "" {
+			c.JSON(http.StatusOK, gin.H{"auth": false})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"auth":  true,
+			"id":    uid,
+			"email": email,
+			"name":  deriveName(email),
+		})
+	})
 
-	// User Profile
+	// 根路徑 → 你的前端（/app/）
+	r.GET("/", func(c *gin.Context) {
+		base := strings.TrimSpace(os.Getenv("APP_BASE_URL"))
+		if base == "" {
+			base = "http://localhost:5173/app"
+		}
+		c.Redirect(http.StatusFound, strings.TrimRight(base, "/")+"/")
+	})
 
+	r.POST("/auth/logout", func(c *gin.Context) {
+		http.SetCookie(c.Writer, &http.Cookie{
+			Name:     "hora_session",
+			Value:    "",
+			Path:     "/",
+			MaxAge:   -1,
+			HttpOnly: true,
+			Secure:   false, // prod 改 true + SameSite=None
+		})
+		c.Status(http.StatusNoContent)
+	})
+
+	// 需要登入的 API
 	meAPI := r.Group("/profile")
-	meAPI.Use(authMiddleware())
+	meAPI.Use(dualAuth(sqldb))
 	{
 		meAPI.GET("", getMyProfile)
 		meAPI.PATCH("", patchMyProfile)
 	}
 
 	tasksAPI := r.Group("/tasks")
-	tasksAPI.Use(authMiddleware())
+	tasksAPI.Use(dualAuth(sqldb))
 	{
 		tasksAPI.POST("", createTask)
 		tasksAPI.GET("", listMyTasks)
 		tasksAPI.GET("/:id", getTask)
-		tasksAPI.PATCH("/:id", updateTask) // ← 編輯
+		tasksAPI.PATCH("/:id", updateTask)
 
 		tasksAPI.GET("/available", listAvailableTasks)
 		tasksAPI.GET("/assigned", listAssignedTasks)
-		tasksAPI.GET("/posted", listMyTasks) // alias
+		tasksAPI.GET("/posted", listMyTasks)
 		tasksAPI.GET("/done", listDoneTasks)
-		tasksAPI.GET("/posted/closed", listMyPostedClosed) // 我發的已完成/取消（可選）
+		tasksAPI.GET("/posted/closed", listMyPostedClosed)
 
-		tasksAPI.POST("/:id/accept", acceptTask)     // 接單
-		tasksAPI.POST("/:id/complete", completeTask) // 完成
-		tasksAPI.POST("/:id/cancel", cancelTask)     // 取消
+		tasksAPI.POST("/:id/accept", acceptTask)
+		tasksAPI.POST("/:id/complete", completeTask)
+		tasksAPI.POST("/:id/cancel", cancelTask)
 
-		// ✅ 新增打卡與查詢工時
 		tasksAPI.POST("/:id/clock-in", clockIn)
 		tasksAPI.POST("/:id/clock-out", clockOut)
 		tasksAPI.GET("/:id/worklogs", getWorklogs)
@@ -282,79 +312,83 @@ func main() {
 	if err := r.Run(addr); err != nil {
 		log.Fatal(err)
 	}
-
 }
 
-func me(c *gin.Context) {
-	uid := c.GetString("uid")
-	email := c.GetString("email")
-	c.JSON(http.StatusOK, gin.H{
-		"id":    uid,
-		"email": email,
-		"name":  deriveName(email),
-	})
-}
+// func me(c *gin.Context) {
+// 	uid := c.GetString("uid")
+// 	email := c.GetString("email")
+// 	if uid == "" {
+// 		c.JSON(http.StatusOK, gin.H{"auth": false})
+// 		return
+// 	}
+// 	c.JSON(http.StatusOK, gin.H{
+// 		"auth":  true,
+// 		"id":    uid,
+// 		"email": email,
+// 		"name":  deriveName(email),
+// 	})
+// }
 
 // Verify "Bearer <JWT>" using JWKS and enforce issuer = <PROJECT_URL>/auth/v1.
 // Exposes: c.Set("uid") = sub (Supabase user UUID), c.Set("email") if present.
 
-func authMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		authz := c.GetHeader("Authorization")
-		if !strings.HasPrefix(authz, "Bearer ") {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing bearer token"})
-			return
-		}
-		tokenStr := strings.TrimPrefix(authz, "Bearer ")
+// func authMiddleware() gin.HandlerFunc {
+// 	return func(c *gin.Context) {
+// 		authz := c.GetHeader("Authorization")
+// 		if !strings.HasPrefix(authz, "Bearer ") {
+// 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing bearer token"})
+// 			return
+// 		}
+// 		tokenStr := strings.TrimPrefix(authz, "Bearer ")
 
-		// 依 alg 選擇驗證方式
-		keyfunc := func(t *jwt.Token) (interface{}, error) {
-			alg := t.Method.Alg()
-			switch alg {
-			case "HS256", "HS384", "HS512":
-				secret := strings.TrimSpace(os.Getenv("SUPABASE_JWT_SECRET"))
-				if secret == "" {
-					return nil, fmt.Errorf("SUPABASE_JWT_SECRET is not set")
-				}
-				return []byte(secret), nil
-			case "RS256", "RS384", "RS512":
-				if jwks == nil {
-					return nil, fmt.Errorf("jwks not initialized")
-				}
-				return jwks.Keyfunc(t)
-			default:
-				return nil, fmt.Errorf("unsupported alg: %s", alg)
-			}
-		}
+// 		// 依 alg 選擇驗證方式
+// 		keyfunc := func(t *jwt.Token) (interface{}, error) {
+// 			alg := t.Method.Alg()
+// 			switch alg {
+// 			case "HS256", "HS384", "HS512":
+// 				secret := strings.TrimSpace(os.Getenv("SUPABASE_JWT_SECRET"))
+// 				if secret == "" {
+// 					return nil, fmt.Errorf("SUPABASE_JWT_SECRET is not set")
+// 				}
+// 				return []byte(secret), nil
+// 			case "RS256", "RS384", "RS512":
+// 				if jwks == nil {
+// 					return nil, fmt.Errorf("jwks not initialized")
+// 				}
+// 				return jwks.Keyfunc(t)
+// 			default:
+// 				return nil, fmt.Errorf("unsupported alg: %s", alg)
+// 			}
+// 		}
 
-		token, err := jwt.Parse(tokenStr, keyfunc)
-		if err != nil || !token.Valid {
-			log.Printf("[auth] invalid token: %v", err)
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
-			return
-		}
-		claims, ok := token.Claims.(jwt.MapClaims)
-		if !ok {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid claims"})
-			return
-		}
+// 		token, err := jwt.Parse(tokenStr, keyfunc)
+// 		if err != nil || !token.Valid {
+// 			log.Printf("[auth] invalid token: %v", err)
+// 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+// 			return
+// 		}
+// 		claims, ok := token.Claims.(jwt.MapClaims)
+// 		if !ok {
+// 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid claims"})
+// 			return
+// 		}
 
-		// Issuer 檢查
-		expIss := strings.TrimSuffix(os.Getenv("SUPABASE_PROJECT_URL"), "/") + "/auth/v1"
-		if iss := fmt.Sprint(claims["iss"]); expIss != "" && iss != expIss {
-			log.Printf("[auth] invalid issuer: got=%s want=%s", iss, expIss)
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid issuer"})
-			return
-		}
+// 		// Issuer 檢查
+// 		expIss := strings.TrimSuffix(os.Getenv("SUPABASE_PROJECT_URL"), "/") + "/auth/v1"
+// 		if iss := fmt.Sprint(claims["iss"]); expIss != "" && iss != expIss {
+// 			log.Printf("[auth] invalid issuer: got=%s want=%s", iss, expIss)
+// 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid issuer"})
+// 			return
+// 		}
 
-		c.Set("claims", claims)
-		c.Set("uid", fmt.Sprint(claims["sub"]))
-		if email, _ := claims["email"].(string); email != "" {
-			c.Set("email", email)
-		}
-		c.Next()
-	}
-}
+// 		c.Set("claims", claims)
+// 		c.Set("uid", fmt.Sprint(claims["sub"]))
+// 		if email, _ := claims["email"].(string); email != "" {
+// 			c.Set("email", email)
+// 		}
+// 		c.Next()
+// 	}
+// }
 
 // -------- Auth handlers (OTP via email) --------
 // deriveName: naive display name from email local-part; replace with real profile later.
@@ -1458,13 +1492,14 @@ func OnCompleted(ctx context.Context, db *sql.DB, taskID, requesterID, requester
 
 func RegisterNotificationRoutes(g *gin.Engine, db *sql.DB) {
 	grp := g.Group("/")
-	grp.Use(authMiddleware())
+	// 以前是 authMiddleware()/dualAuth()，請改成 tryAuth()：不通過也不 401
+	grp.Use(tryAuth(sqldb))
 
 	// GET /notifications
 	grp.GET("/notifications", func(c *gin.Context) {
 		me := c.GetString("uid")
 		if me == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+			c.Status(http.StatusNoContent) // 或 c.JSON(http.StatusOK, []NotificationDTO{})
 			return
 		}
 
@@ -1488,10 +1523,10 @@ func RegisterNotificationRoutes(g *gin.Engine, db *sql.DB) {
 		}
 
 		q := `
-		SELECT id, task_id, type, title, body, unread, via_email, email_sent_at, created_at
-		FROM public.notifications
-		WHERE user_id = $1::uuid
-	`
+      SELECT id, task_id, type, title, body, unread, via_email, email_sent_at, created_at
+      FROM public.notifications
+      WHERE user_id = $1::uuid
+    `
 		args := []any{me}
 		arg := 2
 		if unread {
@@ -1505,12 +1540,12 @@ func RegisterNotificationRoutes(g *gin.Engine, db *sql.DB) {
 		q += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", arg)
 		args = append(args, limit)
 
-		log.Printf("[notifications][GET] uid=%s sql=%s args=%v", me, q, args) // 👈 印 SQL 與參數
+		log.Printf("[notifications][GET] uid=%s sql=%s args=%v", me, q, args)
 
 		rows, err := db.QueryContext(c.Request.Context(), q, args...)
 		if err != nil {
-			log.Printf("[notifications][GET][query] err=%v", err) // 👈 印真正錯誤
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			log.Printf("[notifications][GET][query] err=%v", err)
+			c.JSON(http.StatusOK, []NotificationDTO{})
 			return
 		}
 		defer rows.Close()
@@ -1522,8 +1557,8 @@ func RegisterNotificationRoutes(g *gin.Engine, db *sql.DB) {
 				&n.ID, &n.TaskID, &n.Type, &n.Title, &n.Body,
 				&n.Unread, &n.ViaEmail, &n.EmailSentAt, &n.CreatedAt,
 			); err != nil {
-				log.Printf("[notifications][GET][scan] err=%v", err) // 👈 最常見：欄位不存在/型別不合
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				log.Printf("[notifications][GET][scan] err=%v", err)
+				c.JSON(http.StatusOK, []NotificationDTO{})
 				return
 			}
 			out = append(out, n)
@@ -1531,7 +1566,6 @@ func RegisterNotificationRoutes(g *gin.Engine, db *sql.DB) {
 		c.JSON(http.StatusOK, out)
 	})
 
-	// 單筆設為已讀
 	grp.PATCH("/notifications/:id/read", func(c *gin.Context) {
 		me := c.GetString("uid")
 		if me == "" {
@@ -1540,9 +1574,7 @@ func RegisterNotificationRoutes(g *gin.Engine, db *sql.DB) {
 		}
 		id := c.Param("id")
 		_, err := db.ExecContext(c.Request.Context(),
-			`UPDATE public.notifications
-          SET unread = false
-        WHERE id = $1::uuid AND user_id = $2::uuid`, // ← 修掉 AND AND，兩個都 ::uuid
+			`UPDATE public.notifications SET unread = false WHERE id = $1::uuid AND user_id = $2::uuid`,
 			id, me,
 		)
 		if err != nil {
@@ -1552,7 +1584,6 @@ func RegisterNotificationRoutes(g *gin.Engine, db *sql.DB) {
 		c.Status(http.StatusNoContent)
 	})
 
-	// 全部設為已讀
 	grp.POST("/notifications/mark-read-all", func(c *gin.Context) {
 		me := c.GetString("uid")
 		if me == "" {
@@ -1560,9 +1591,7 @@ func RegisterNotificationRoutes(g *gin.Engine, db *sql.DB) {
 			return
 		}
 		_, err := db.ExecContext(c.Request.Context(),
-			`UPDATE public.notifications
-          SET unread = false
-        WHERE user_id = $1::uuid AND unread = true`,
+			`UPDATE public.notifications SET unread = false WHERE user_id = $1::uuid AND unread = true`,
 			me,
 		)
 		if err != nil {
@@ -1572,7 +1601,6 @@ func RegisterNotificationRoutes(g *gin.Engine, db *sql.DB) {
 		c.Status(http.StatusNoContent)
 	})
 
-	// ✅ 單筆刪除
 	grp.DELETE("/notifications/:id", func(c *gin.Context) {
 		me := c.GetString("uid")
 		if me == "" {
@@ -1580,8 +1608,7 @@ func RegisterNotificationRoutes(g *gin.Engine, db *sql.DB) {
 			return
 		}
 		id := c.Param("id")
-		_, err := db.ExecContext(
-			c.Request.Context(),
+		_, err := db.ExecContext(c.Request.Context(),
 			`DELETE FROM public.notifications WHERE id = $1::uuid AND user_id = $2::uuid`,
 			id, me,
 		)
@@ -1592,7 +1619,6 @@ func RegisterNotificationRoutes(g *gin.Engine, db *sql.DB) {
 		c.Status(http.StatusNoContent)
 	})
 
-	// ✅ 清掉全部已讀（僅當 ?read=true）
 	grp.DELETE("/notifications", func(c *gin.Context) {
 		me := c.GetString("uid")
 		if me == "" {
@@ -1603,8 +1629,7 @@ func RegisterNotificationRoutes(g *gin.Engine, db *sql.DB) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "missing read=true"})
 			return
 		}
-		_, err := db.ExecContext(
-			c.Request.Context(),
+		_, err := db.ExecContext(c.Request.Context(),
 			`DELETE FROM public.notifications WHERE user_id = $1::uuid AND unread = false`,
 			me,
 		)
@@ -1650,5 +1675,138 @@ func notifyRequester(c *gin.Context, taskID, ntype, title, body string) {
 		EmailTo:   email,
 	}); err != nil {
 		log.Printf("[notify][ERROR] %s: %v", ntype, err)
+	}
+}
+func dualAuth(db *sql.DB) gin.HandlerFunc {
+	hmacSecret := []byte(os.Getenv("SESSION_JWT_SECRET"))
+
+	return func(c *gin.Context) {
+		// 1) 先試 Cookie（Google OAuth → sub 已是 internal UUID）
+		if cookie, err := c.Cookie("hora_session"); err == nil && cookie != "" {
+			tok, err := jwt.Parse(cookie, func(t *jwt.Token) (any, error) {
+				if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+					return nil, jwt.ErrSignatureInvalid
+				}
+				return hmacSecret, nil
+			})
+			if err == nil && tok.Valid {
+				if claims, ok := tok.Claims.(jwt.MapClaims); ok {
+					if sub, _ := claims["sub"].(string); sub != "" {
+						c.Set("uid", sub) // internal UUID
+						if email, _ := claims["email"].(string); email != "" {
+							c.Set("email", email)
+						}
+						c.Next()
+						return
+					}
+				}
+			} else {
+				// 清壞 cookie（避免卡住）
+				http.SetCookie(c.Writer, &http.Cookie{
+					Name: "hora_session", Value: "", Path: "/", MaxAge: -1,
+					HttpOnly: true, Secure: false,
+				})
+			}
+		}
+
+		// 2) 再試 Bearer（Supabase → sub 是 Supabase UUID；需翻譯成 internal UUID）
+		authz := c.GetHeader("Authorization")
+		if strings.HasPrefix(authz, "Bearer ") {
+			raw := strings.TrimSpace(authz[7:])
+			token, err := jwt.Parse(raw, jwks.Keyfunc)
+			if err == nil && token != nil && token.Valid {
+				if claims, ok := token.Claims.(jwt.MapClaims); ok {
+					// Supabase sub（uuid）
+					if extSub, _ := claims["sub"].(string); extSub != "" {
+						// optional：取 email
+						email, _ := claims["email"].(string)
+
+						// 映射：supabase_sub(uuid) -> internal id(uuid)
+						var internalID string
+						// 先找
+						err := db.QueryRowContext(c.Request.Context(),
+							`select id from public.users where supabase_sub = $1::uuid`, extSub,
+						).Scan(&internalID)
+
+						if errors.Is(err, sql.ErrNoRows) {
+							// 沒有就建一筆，email/名稱可先帶 email 前綴
+							name := deriveName(email)
+							err = db.QueryRowContext(c.Request.Context(), `
+                insert into public.users (supabase_sub, email, name)
+                values ($1::uuid, $2, $3)
+                returning id
+              `, extSub, email, name).Scan(&internalID)
+						}
+						if err == nil && internalID != "" {
+							c.Set("uid", internalID) // 統一設成 internal UUID
+							if email != "" {
+								c.Set("email", email)
+							}
+							c.Next()
+							return
+						}
+					}
+				}
+			}
+		}
+
+		// 3) 都沒過 → 401
+		c.AbortWithStatus(http.StatusUnauthorized)
+	}
+}
+
+func tryAuth(db *sql.DB) gin.HandlerFunc {
+	hmacSecret := []byte(os.Getenv("SESSION_JWT_SECRET"))
+
+	return func(c *gin.Context) {
+		// Cookie（已是 internal UUID）
+		if cookie, err := c.Cookie("hora_session"); err == nil && cookie != "" {
+			if tok, err := jwt.Parse(cookie, func(t *jwt.Token) (any, error) { return hmacSecret, nil }); err == nil && tok.Valid {
+				if claims, ok := tok.Claims.(jwt.MapClaims); ok {
+					if sub, _ := claims["sub"].(string); sub != "" {
+						c.Set("uid", sub)
+						if email, _ := claims["email"].(string); email != "" {
+							c.Set("email", email)
+						}
+					}
+				}
+			}
+		}
+
+		// Bearer（需要映射）
+		if c.GetString("uid") == "" {
+			authz := c.GetHeader("Authorization")
+			if strings.HasPrefix(authz, "Bearer ") {
+				raw := strings.TrimSpace(authz[7:])
+				if tok, err := jwt.Parse(raw, jwks.Keyfunc); err == nil && tok.Valid {
+					if claims, ok := tok.Claims.(jwt.MapClaims); ok {
+						if extSub, _ := claims["sub"].(string); extSub != "" {
+							email, _ := claims["email"].(string)
+
+							var internalID string
+							err := db.QueryRowContext(c.Request.Context(),
+								`select id from public.users where supabase_sub = $1::uuid`, extSub,
+							).Scan(&internalID)
+
+							if errors.Is(err, sql.ErrNoRows) {
+								name := deriveName(email)
+								err = db.QueryRowContext(c.Request.Context(), `
+                  insert into public.users (supabase_sub, email, name)
+                  values ($1::uuid, $2, $3)
+                  returning id
+                `, extSub, email, name).Scan(&internalID)
+							}
+							if err == nil && internalID != "" {
+								c.Set("uid", internalID)
+								if email != "" {
+									c.Set("email", email)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		c.Next()
 	}
 }
