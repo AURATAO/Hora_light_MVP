@@ -2,6 +2,8 @@ import { useMemo, useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
+import Modal from '../components/Modal'
+import PlaceInput from '../components/PlaceInput'
 
 const MINUTE_RATE_EUR = 0.5
 
@@ -12,7 +14,8 @@ export default function NewTask() {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [category, setCategory] = useState('task') // task | companion
-  const [locations, setLocations] = useState([''])
+  // const [locations, setLocations] = useState([''])
+  const [locations, setLocations] = useState([{ label: '' }])
   const [minutes, setMinutes] = useState(30)
   const [prepay, setPrepay] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -20,12 +23,34 @@ export default function NewTask() {
   const [mode, setMode] = useState('now') // 'now' | 'schedule'
   const [date, setDate] = useState('')
   const [timeStr, setTimeStr] = useState('')
+  const [successOpen, setSuccessOpen] = useState(false)
+
+  const goToPosted = () => {
+  setSuccessOpen(false);
+  nav('/my', { replace: true });
+};
 
   // ✅ 不要在 hook 後面用條件 return，改成條件渲染
   const notReady = authLoading || !user
 
-  function addLocation() { setLocations(prev => [...prev, '']) }
-  function updateLocation(i, v) { setLocations(prev => prev.map((x, idx) => idx === i ? v : x)) }
+  function normalizeLocationItem(x) {
+  if (!x) return { label: '' }
+  if (typeof x === 'string') return { label: x }
+  if (typeof x === 'object') {
+    const label = x.label || x.description || x.formatted || ''
+    return { ...x, label }
+  }
+  return { label: String(x) }
+}
+
+  // function addLocation() { setLocations(prev => [...prev, '']) }
+  // function updateLocation(i, v) { setLocations(prev => prev.map((x, idx) => idx === i ? v : x)) }
+  function addLocation() { setLocations(prev => [...prev, { label: '' }]) }
+  function updateLocation(i, v) {
+  setLocations(prev =>
+    prev.map((x, idx) => (idx === i ? normalizeLocationItem(v) : x))
+  )
+}
   function removeLocation(i) { setLocations(prev => prev.filter((_, idx) => idx !== i)) }
 
   const errors = useMemo(() => {
@@ -54,36 +79,53 @@ export default function NewTask() {
   }, [mode, date, timeStr])
 
   async function onSubmit(e) {
-    e.preventDefault()
-    setTouched(true)
-    if (!canSubmit) return
-    setIsSubmitting(true)
-    try {
-      if (!user) throw new Error('Please sign in')
+  e.preventDefault()
+  setTouched(true)
+  if (!canSubmit) return
+  setIsSubmitting(true)
+  try {
+    if (!user) throw new Error('Please sign in')
 
-      const location_text = locations.map(s => s.trim()).filter(Boolean).join(' | ')
-      const payload = {
-        title,
-        description,
-        category,
-        location_text,
-        estimated_minutes: Number(minutes) || 30,
-        prepay_amount_cents: Math.round((advance || 0) * 100),
-        is_immediate: mode === 'now',
-        scheduled_at: mode === 'schedule' ? scheduledAtISO : '',
-      }
+    // 先正規化 locations
+    const locItems = locations.map(normalizeLocationItem)
 
-      // ⬇️ 交給你的後端建立（會用 JWT 取得 uid/email，正確填 requester_id 等欄）
-      await api('/tasks', { method: 'POST', body: payload })
+    // 1) 給人看的文字（後端/列表用）
+    const location_text = locItems
+      .map(it => (it.label || '').trim())
+      .filter(Boolean)
+      .join(' | ')
 
-      // 導回 Posted 分頁並觸發 refresh
-      nav('/my?tab=posted&refresh=1', { replace: true })
-    } catch (err) {
-      alert(err.message || 'Failed to create task')
-    } finally {
-      setIsSubmitting(false)
+    // 2) 給機器用的結構（之後要落 DB 再用）
+    const locations_geo = locItems
+      .filter(x => (x.label || '').trim())
+      .map(x => ({
+        label: (x.label || '').trim(),
+        placeId: x.placeId || x.id || null,
+        lat: typeof x.lat === 'number' ? x.lat : null,
+        lng: typeof x.lng === 'number' ? x.lng : null,
+      }))
+
+    const payload = {
+      title,
+      description,
+      category,
+      location_text,
+      locations_geo, // ← 現在已定義
+      estimated_minutes: Number(minutes) || 30,
+      prepay_amount_cents: Math.round((advance || 0) * 100),
+      is_immediate: mode === 'now',
+      scheduled_at: mode === 'schedule' ? scheduledAtISO : '',
     }
+
+    await api('/tasks', { method: 'POST', body: payload, noRedirect: true })
+    setSuccessOpen(true)
+    return
+  } catch (err) {
+    alert(err.message || 'Failed to create task')
+  } finally {
+    setIsSubmitting(false)
   }
+}
 
   useEffect(() => {
     // 可選：觀察 session（除錯用）
@@ -144,12 +186,26 @@ export default function NewTask() {
             <div className="space-y-2">
               {locations.map((loc, i) => (
                 <div key={i} className="flex items-center gap-2">
-                  <input
+                  {/* <input
                     className="flex-1 rounded-md px-3 py-2 bg-transparent outline-none border border-white/20 focus:border-white/40"
                     value={loc}
                     onChange={(e) => updateLocation(i, e.target.value)}
                     placeholder={i === 0 ? 'Address or meeting point' : 'Add another point'}
-                  />
+                  /> */}
+                  <div className="flex-1">
+                   <PlaceInput
+                      value={locations[i]}
+                      placeholder={i === 0 ? 'Address or meeting point' : 'Add another point'}
+                      // 跨國就別傳 countryCodes；或傳 []
+                     onChange={(val) => updateLocation(i, val)}
+                    />
+                    {/* 除錯用：選到地標時顯示經緯度，可刪 */}
+                    {loc?.lat && loc?.lng && (
+                      <div className="mt-1 text-xs text-white/60">
+                        ({loc.lat.toFixed(6)}, {loc.lng.toFixed(6)})
+                      </div>
+                    )}
+                  </div>
                   {i === locations.length - 1 ? (
                     <button type="button" onClick={addLocation} className="px-2 py-1 rounded-md border border-white/20 hover:border-white/40">＋</button>
                   ) : (
@@ -238,7 +294,7 @@ export default function NewTask() {
             <button type="button"
               onClick={()=>{
                 setTitle(''); setDescription(''); setCategory('task');
-                setLocations(['']); setMinutes(30); setPrepay(''); setTouched(false)
+                setLocations([{ label: '' }]); setMinutes(30); setPrepay(''); setTouched(false)
               }}
               className="rounded-md px-4 py-2 border border-white/20 hover:border-white/40">
               Clear
@@ -246,6 +302,23 @@ export default function NewTask() {
           </div>
         </form>
       </div>
+      <Modal
+        open={successOpen}
+        onClose={goToPosted}        // 點背景/ESC/右上角都導去 posted
+        title="Task Posted !"
+        // 1.5 秒後跳轉
+        autoCloseMs={5000}
+        actions={
+          <>
+            <button
+              className="rounded-md px-4 py-2 border border-white/20 hover:border-white/40"
+              onClick={goToPosted}
+            >
+              My Task
+            </button>
+          </>
+        }
+      />
     </div>
   )
 }

@@ -29,6 +29,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/joho/godotenv"
@@ -406,24 +407,36 @@ func deriveName(email string) string {
 // patchMyProfile: upsert via ON CONFLICT(email).
 
 func getMyProfile(c *gin.Context) {
+	uid := c.GetString("uid")
 	email := c.GetString("email")
 	ctx := c.Request.Context()
 
-	var p Profile
-	err := db.QueryRow(ctx, `
-    select email, name, phone, city, avatar_url, bio, created_at, updated_at
-    from public.profiles where email = $1
-  `, email).Scan(&p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.CreatedAt, &p.UpdatedAt)
+	if uid == "" || email == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
 
-	if err != nil {
-		// 不存在就建一筆預設（id 用 default 觸發 gen_random_uuid()）
-		now := time.Now()
+	var p Profile
+	var existingID *string
+
+	// 以 email 先找一筆（你本來就這樣）
+	err := db.QueryRow(ctx, `
+    select id::text, email, name, phone, city, avatar_url, bio, created_at, updated_at
+    from public.profiles
+    where email = $1
+  `, email).Scan(&existingID, &p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.CreatedAt, &p.UpdatedAt)
+
+	now := time.Now()
+
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// 沒有 → 直接用 uid 當 id 建
 		_, err2 := db.Exec(ctx, `
       insert into public.profiles(id,email,name,phone,city,avatar_url,bio,created_at,updated_at)
-      values (default,$1,$2,'','','','',$3,$3)
-    `, email, deriveName(email), now)
+      values ($1::uuid,$2,$3,'','','','',$4,$4)
+    `, uid, email, deriveName(email), now)
 		if err2 != nil {
-			log.Printf("[profile][insert default] email=%s err=%v", email, err2)
+			log.Printf("[profile][insert uid] email=%s err=%v", email, err2)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 			return
 		}
@@ -431,12 +444,43 @@ func getMyProfile(c *gin.Context) {
 			Email: email, Name: deriveName(email),
 			CreatedAt: now, UpdatedAt: now,
 		}
+
+	case err == nil:
+		// 有 → 若 id 舊的不是 uid，矯正為 uid（一次性修復）
+		if existingID != nil && *existingID != uid {
+			_, errFix := db.Exec(ctx, `
+        update public.profiles
+        set id = $1::uuid, updated_at = $2
+        where email = $3
+      `, uid, now, email)
+			if errFix != nil {
+				log.Printf("[profile][fix id] email=%s from=%s to=%s err=%v", email, *existingID, uid, errFix)
+			}
+		}
+
+	default:
+		log.Printf("[profile][select] email=%s err=%v", email, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
 	}
+
+	// 回傳最新資料
+	_ = db.QueryRow(ctx, `
+    select email, name, phone, city, avatar_url, bio, created_at, updated_at
+    from public.profiles where email = $1
+  `, email).Scan(&p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.CreatedAt, &p.UpdatedAt)
+
 	c.JSON(http.StatusOK, p)
 }
 
 func patchMyProfile(c *gin.Context) {
+	uid := c.GetString("uid")
 	email := c.GetString("email")
+	if uid == "" || email == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
 	var in struct {
 		Name      *string `json:"name"`
 		Phone     *string `json:"phone"`
@@ -478,11 +522,11 @@ func patchMyProfile(c *gin.Context) {
 	p.UpdatedAt = time.Now()
 
 	_, err := db.Exec(ctx, `
-    insert into public.profiles(id,email,name,phone,city,avatar_url,bio,created_at,updated_at)
-    values (default,$1,$2,$3,$4,$5,$6,$7,$8)
-    on conflict (email) do update
-      set name=$2, phone=$3, city=$4, avatar_url=$5, bio=$6, updated_at=$8
-  `, p.Email, p.Name, p.Phone, p.City, p.AvatarURL, p.Bio, p.CreatedAt, p.UpdatedAt)
+	insert into public.profiles(id,email,name,phone,city,avatar_url,bio,created_at,updated_at)
+	values ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)
+	on conflict (email) do update
+		set name=$3, phone=$4, city=$5, avatar_url=$6, bio=$7, updated_at=$9
+	`, uid, p.Email, p.Name, p.Phone, p.City, p.AvatarURL, p.Bio, p.CreatedAt, p.UpdatedAt)
 	if err != nil {
 		log.Printf("[profile][upsert] email=%s err=%v", email, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
@@ -496,23 +540,56 @@ func getProfileByID(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	var p PublicProfile
-	// profiles.id 是 uuid；profiles 這張表請確認有 id (uuid) 欄位
 	err := db.QueryRow(ctx, `
-		select id, name, city, avatar_url, bio, created_at
-		from public.profiles
-		where id = $1::uuid
-	`, id).Scan(&p.ID, &p.Name, &p.City, &p.AvatarURL, &p.Bio, &p.CreatedAt)
+    select id, name, city, avatar_url, bio, created_at
+    from public.profiles
+    where id = $1::uuid
+  `, id).Scan(&p.ID, &p.Name, &p.City, &p.AvatarURL, &p.Bio, &p.CreatedAt)
 
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Fallback: 先從 users 抓 email
+		var email sql.NullString
+		_ = db.QueryRow(ctx, `select email from public.users where id = $1::uuid`, id).Scan(&email)
+		if !email.Valid {
+			// 再從 tasks（有人用這個 id 發/接過單）
+			_ = db.QueryRow(ctx, `
+        select requester from public.tasks where requester_id = $1::uuid
+        order by created_at desc limit 1
+      `, id).Scan(&email)
+			if !email.Valid {
+				_ = db.QueryRow(ctx, `
+          select assigned_to from public.tasks where assigned_to_id = $1::uuid
+          order by created_at desc limit 1
+        `, id).Scan(&email)
+			}
+		}
+		if !email.Valid {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 			return
 		}
+
+		// 直接回推導的 profile（也可順手 upsert 保存）
+		name := deriveName(email.String)
+		now := time.Now()
+		p = PublicProfile{
+			ID: id, Name: name, AvatarURL: "", City: "", Bio: "", CreatedAt: now,
+		}
+
+		// （可選）順手 upsert，避免下次再 fallback
+		_, _ = db.Exec(ctx, `
+      insert into public.profiles (id,email,name,created_at,updated_at)
+      values ($1::uuid,$2,$3,$4,$4)
+      on conflict (email) do update set
+        name = coalesce(nullif($3,''), public.profiles.name),
+        updated_at = greatest(public.profiles.updated_at, $4)
+    `, id, email.String, name, now)
+
+	} else if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
 	}
 
-	// 統計（posted / assignee）
+	// 統計
 	_ = db.QueryRow(ctx, `select count(*) from public.tasks where requester_id=$1::uuid`, id).Scan(&p.PostedTotal)
 	_ = db.QueryRow(ctx, `select count(*) from public.tasks where requester_id=$1::uuid and status='completed'`, id).Scan(&p.PostedCompleted)
 	_ = db.QueryRow(ctx, `select count(*) from public.tasks where assigned_to_id=$1::uuid and status='open'`, id).Scan(&p.AsgInProgress)
@@ -601,15 +678,16 @@ func listProfileTasks(c *gin.Context) {
 func createTask(c *gin.Context) {
 	var in createTaskInput
 	if err := c.BindJSON(&in); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+		c.JSON(400, gin.H{"error": "invalid payload"})
 		return
 	}
+	// sanitize
 	in.Title = strings.TrimSpace(in.Title)
 	in.Description = strings.TrimSpace(in.Description)
 	in.Category = strings.TrimSpace(in.Category)
 	in.LocationText = strings.TrimSpace(in.LocationText)
 	if in.Title == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "title required"})
+		c.JSON(400, gin.H{"error": "title required"})
 		return
 	}
 	if in.EstimatedMinutes <= 0 {
@@ -619,13 +697,14 @@ func createTask(c *gin.Context) {
 		in.Category = "task"
 	}
 	if in.Category != "task" && in.Category != "companion" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid category"})
+		c.JSON(400, gin.H{"error": "invalid category"})
 		return
 	}
 	if in.PrepayAmountCents < 0 {
 		in.PrepayAmountCents = 0
 	}
 
+	// schedule
 	var when *time.Time
 	if in.IsImmediate {
 		now := time.Now()
@@ -633,48 +712,126 @@ func createTask(c *gin.Context) {
 	} else if s := strings.TrimSpace(in.ScheduledAt); s != "" {
 		t, err := time.Parse(time.RFC3339, s)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "scheduled_at must be RFC3339"})
+			c.JSON(400, gin.H{"error": "scheduled_at must be RFC3339"})
 			return
 		}
 		when = &t
 	}
 
-	meUID := c.GetString("uid")
-	meEmail := c.GetString("email")
-	if meUID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+	// auth（用 email 反查 canonical users.id）
+	email := strings.TrimSpace(c.GetString("email"))
+	if email == "" {
+		c.JSON(401, gin.H{"error": "unauthenticated"})
 		return
 	}
 
 	ctx := c.Request.Context()
-	var id string
-	var createdAt time.Time
-	err := db.QueryRow(ctx, `
-	insert into public.tasks
-		(title,description,category,location_text,
-		estimated_minutes,prepay_amount_cents,is_immediate,scheduled_at,
-		requester, requester_id, status, assigned_to, assigned_to_id)
-	values
-		($1,$2,$3,$4,
-		$5,$6,$7,$8,
-		$9, $10::uuid, 'open', '', null)
-	returning id, created_at
-	`,
-		in.Title, in.Description, in.Category, in.LocationText,
-		in.EstimatedMinutes, in.PrepayAmountCents, in.IsImmediate, when,
-		meEmail, strings.TrimSpace(meUID),
-	).Scan(&id, &createdAt)
+	tx, err := sqldb.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		c.JSON(500, gin.H{"error": "db error"})
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// 1) 取得或建立 users（以 email 唯一）
+	var uid string
+	err = tx.QueryRowContext(ctx, `SELECT id::text FROM public.users WHERE email=$1 LIMIT 1`, email).Scan(&uid)
+	if err == sql.ErrNoRows {
+		// 沒有就建（讓 DB 產生 id）
+		if err := tx.QueryRowContext(ctx, `
+      INSERT INTO public.users (email, name)
+      VALUES ($1, $2)
+      RETURNING id::text
+    `, email, deriveName(email)).Scan(&uid); err != nil {
+			log.Printf("[users.insert] %v", err)
+			c.JSON(500, gin.H{"error": "db error"})
+			return
+		}
+	} else if err != nil {
+		log.Printf("[users.lookup] %v", err)
+		c.JSON(500, gin.H{"error": "db error"})
 		return
 	}
 
-	// 回傳格式不變，前端可用
-	c.JSON(http.StatusCreated, Task{
-		ID: id, Title: in.Title, Description: in.Description, Category: in.Category,
+	// 2) 對齊 profiles：若 profiles(email) 存在但 id != users.id，直接把 profiles.id 改成 users.id
+	var profID string
+	err = tx.QueryRowContext(ctx, `SELECT id::text FROM public.profiles WHERE email=$1 LIMIT 1`, email).Scan(&profID)
+	switch {
+	case err == sql.ErrNoRows:
+		// 沒有 profile → 建一筆，用 users.id
+		if _, err := tx.ExecContext(ctx, `
+      INSERT INTO public.profiles (id, email, name, created_at, updated_at)
+      VALUES ($1::uuid, $2, $3, now(), now())
+    `, uid, email, deriveName(email)); err != nil {
+			log.Printf("[profiles.insert] %v", err)
+			c.JSON(500, gin.H{"error": "db error"})
+			return
+		}
+	case err == nil:
+		if profID != uid {
+			// 先確定 users 有這個 uid（理論上一定有）
+			var exists bool
+			_ = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM public.users WHERE id=$1::uuid)`, uid).Scan(&exists)
+			if !exists {
+				log.Printf("[profiles.align] users missing uid=%s", uid)
+				c.JSON(500, gin.H{"error": "db error"})
+				return
+			}
+			// 直接把 profiles 的主鍵 id 改成 users.id
+			if _, err := tx.ExecContext(ctx, `
+        UPDATE public.profiles
+        SET id = $1::uuid, updated_at = now()
+        WHERE id = $2::uuid
+      `, uid, profID); err != nil {
+				log.Printf("[profiles.align.update-id] %v", err)
+				c.JSON(500, gin.H{"error": "db error"})
+				return
+			}
+		}
+	default:
+		log.Printf("[profiles.lookup] %v", err)
+		c.JSON(500, gin.H{"error": "db error"})
+		return
+	}
+
+	// 3) 插入 task（用 users.id / profiles.id 對齊後的 uid）
+	var taskID string
+	var createdAt time.Time
+	if err := tx.QueryRowContext(ctx, `
+    INSERT INTO public.tasks
+      (title,description,category,location_text,
+       estimated_minutes,prepay_amount_cents,is_immediate,scheduled_at,
+       requester, requester_id, status, assigned_to, assigned_to_id)
+    VALUES
+      ($1,$2,$3,$4,
+       $5,$6,$7,$8,
+       $9, $10::uuid, 'open', '', NULL)
+    RETURNING id, created_at
+  `, in.Title, in.Description, in.Category, in.LocationText,
+		in.EstimatedMinutes, in.PrepayAmountCents, in.IsImmediate, when,
+		email, uid,
+	).Scan(&taskID, &createdAt); err != nil {
+		if pgErr, ok := err.(*pgconn.PgError); ok {
+			log.Printf("[tasks.insert] code=%s tbl=%s col=%s detail=%s where=%s msg=%s",
+				pgErr.Code, pgErr.TableName, pgErr.ColumnName, pgErr.Detail, pgErr.Where, pgErr.Message)
+		} else {
+			log.Printf("[tasks.insert] %v", err)
+		}
+		c.JSON(500, gin.H{"error": "db error"})
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Printf("[tx.commit] %v", err)
+		c.JSON(500, gin.H{"error": "db error"})
+		return
+	}
+
+	c.JSON(201, Task{
+		ID: taskID, Title: in.Title, Description: in.Description, Category: in.Category,
 		LocationText: in.LocationText, EstimatedMinutes: in.EstimatedMinutes,
 		PrepayAmountCents: in.PrepayAmountCents, IsImmediate: in.IsImmediate,
-		ScheduledAt: when, Requester: meEmail, RequesterID: meUID,
+		ScheduledAt: when, Requester: email, RequesterID: uid,
 		Status: "open", CreatedAt: createdAt, AssignedTo: "", AssignedToID: nil,
 	})
 }
@@ -744,8 +901,8 @@ func listMyTasks(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, out)
 }
-
 func getTask(c *gin.Context) {
+	uid := c.GetString("uid")
 	id := c.Param("id")
 	ctx := c.Request.Context()
 
@@ -758,12 +915,11 @@ func getTask(c *gin.Context) {
       status, created_at,
       assigned_to, assigned_to_id
     from public.tasks
-    where id = $1
+    where id = $1::uuid
   `, id)
 
 	t, err := scanTask(row)
 	if err != nil {
-		// 正確分辨「真的沒資料」與其他錯
 		if errors.Is(err, pgx.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		} else {
@@ -772,6 +928,20 @@ func getTask(c *gin.Context) {
 		}
 		return
 	}
+
+	// 檢查是否是指派者
+	isAssignee := func() bool {
+		if t.AssignedToID == nil {
+			return false
+		}
+		return uid == *t.AssignedToID
+	}()
+
+	if t.Status != "open" && uid != t.RequesterID && !isAssignee {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+
 	c.JSON(http.StatusOK, t)
 }
 
@@ -1071,7 +1241,7 @@ func clockIn(c *gin.Context) {
 	if err := db.QueryRow(ctx, `
       select assigned_to_id, status
       from public.tasks
-      where id=$1
+      WHERE id = $1::uuid
     `, taskID).Scan(&assignedToID, &status); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
@@ -1146,7 +1316,7 @@ func clockOut(c *gin.Context) {
 	err = db.QueryRow(ctx, `
       update public.worklogs
       set end_at=now(), updated_at=now()
-      where id=$1
+      WHERE id = $1::uuid
       returning start_at, end_at, created_at, updated_at
     `, wlID).Scan(&startAt, &endAt, &createdAt, &updatedAt)
 	if err != nil {
@@ -1180,7 +1350,7 @@ func getWorklogs(c *gin.Context) {
 	if err := db.QueryRow(ctx, `
         select requester_id, assigned_to_id
         from public.tasks
-        where id = $1
+        WHERE id = $1::uuid
     `, taskID).Scan(&requesterID, &assignedToID); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
@@ -1306,7 +1476,7 @@ func completeTask(c *gin.Context) {
 		"Everything is done. Please leave a rating when you have a moment.",
 	)
 
-	if _, err := db.Exec(ctx, `update public.tasks set status='completed' where id=$1`, taskID); err != nil {
+	if _, err := db.Exec(ctx, `update public.tasks set status='completed' WHERE id = $1::uuid`, taskID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
 	}
@@ -1360,7 +1530,7 @@ func cancelTask(c *gin.Context) {
 	err := db.QueryRow(ctx, `
 		select requester_id, status, assigned_to_id
 		from public.tasks
-		where id = $1
+		WHERE id = $1::uuid
 	`, taskID).Scan(&requesterID, &status, &assignedToID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
@@ -1644,10 +1814,9 @@ func RegisterNotificationRoutes(g *gin.Engine, db *sql.DB) {
 // 由 taskID 取得 requester 的 uid（uuid）與 email
 func requesterUIDAndEmail(ctx context.Context, taskID string) (uid string, email string, err error) {
 	err = sqldb.QueryRowContext(ctx, `
-		SELECT u.id::text, t.requester
-		FROM public.tasks t
-		JOIN auth.users u ON lower(u.email) = lower(t.requester)
-		WHERE t.id = $1
+		SELECT requester_id::text, requester
+		FROM public.tasks
+		WHERE id = $1
 	`, taskID).Scan(&uid, &email)
 	return
 }

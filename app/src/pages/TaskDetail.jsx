@@ -4,6 +4,7 @@ import { api } from '../api/client'
 import TaskChatBox from '../components/TaskChatBox'
 import { useAuth } from '../auth/AuthContext'
 import UserPill from '../components/UserPill'
+import { gmapsPlaceUrl, gmapsDirectionsUrl } from '../utils/gmaps'
 
 const MINUTE_RATE_EUR = 0.5
 
@@ -28,6 +29,34 @@ export default function TaskDetail() {
   const [mode, setMode] = useState('now')
   const [date, setDate] = useState('')
   const [timeStr, setTimeStr] = useState('')
+
+useEffect(() => {
+  if (task) {
+    window.__TASK__ = task
+    console.debug('[TASK]', task)
+  }
+}, [task])
+
+
+  const locs = (() => {
+  // 1) 嘗試讀 locations_geo（支援 string / null / []）
+  let geo = task?.locations_geo
+  if (typeof geo === 'string') {
+    try { geo = JSON.parse(geo) } catch { geo = [] }
+  }
+  if (Array.isArray(geo) && geo.length > 0) {
+    // 只保留有 label 或座標/ID 的點
+    return geo.filter(p => p && (p.label || p.placeId || p.id || (p.lat != null && p.lng != null)))
+  }
+
+  // 2) 回退到舊的 location_text（用 ' | ' 分隔）
+  const labels = (task?.location_text || '')
+    .split(' | ')
+    .map(s => s.trim())
+    .filter(Boolean)
+
+  return labels.map(label => ({ label }))
+  })()
 
   // ✅ 單一 effect：等 auth ready 再抓 任務 + 工時
   useEffect(() => {
@@ -171,6 +200,17 @@ export default function TaskDetail() {
   const advanceEUR = (task.prepay_amount_cents || 0) / 100
   const whenText = task.is_immediate ? 'ASAP' : (task.scheduled_at ? new Date(task.scheduled_at).toLocaleString() : '—')
 
+
+  function DebugMe() {
+  const { user } = useAuth()
+  useEffect(() => {
+    // 直接把目前登入者掛到 window，方便 Console 查
+    window.__ME__ = { id: user?.id, email: user?.email }
+    console.debug('[ME]', window.__ME__)
+  }, [user])
+  return null
+}
+
   return (
     <div className="bg-gradient-to-br from-primary to-primary/30 text-accent min-h-screen py-[100px] px-4">
       <div className="mx-auto max-w-md space-y-4 border border-primary/30 backdrop-blur-md p-8 rounded-lg shadow">
@@ -210,7 +250,7 @@ export default function TaskDetail() {
               <div className="flex items-center gap-3">
                 <div className="text-white/70 text-sm">Supporter:</div>
                 {task.assigned_to_id
-                  ? <UserPill userId={task.assigned_to_id} meId={user?.id} label="Assignee" />
+                  ? <UserPill userId={String(task.assigned_to_id)} meId={user?.id} label="Assignee" />
                   : <span className="text-white/60 text-sm">Not assigned yet</span>}
               </div>
             </div>
@@ -219,13 +259,46 @@ export default function TaskDetail() {
               <div><b>When:</b> {whenText}</div>
               <div><b>Estimated:</b> {task.estimated_minutes} min</div>
               <div><b>Advance:</b> {advanceEUR.toFixed(2)} EUR</div>
-              <div><b>Locations:</b> {task.location_text || '—'}</div>
-              <div className="text-xs opacity-80">ID: {task.id}</div>
+              {/* <div><b>Locations:</b> {task.location_text || '—'}</div> */}
+              <div>  <b>Locations:</b>{' '}
+                {locs.length ? (
+                  <span className="inline-flex flex-wrap gap-1 align-middle">
+                    {locs.map((p, i) => (
+                      <a
+                        key={i}
+                        href={gmapsPlaceUrl(p)}
+                        target="_blank" rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 rounded-full border border-white/20 px-2 py-0.5 text-xs hover:border-white/40"
+                        title="Open in Google Maps"
+                      >
+                        {/* 你可以換成自己的 icon */}
+                        <span aria-hidden>📍</span>
+                        {p.label || 'Open in Maps'}
+                      </a>
+                    ))}
+                  </span>
+                ) : '—'}
+                </div>
+                {/* （可選）兩點以上顯示一鍵路線 */}
+                {locs.length >= 2 && (
+                  <div className="mt-2">
+                    <a
+                      href={gmapsDirectionsUrl(locs)}
+                      target="_blank" rel="noopener noreferrer"
+                      className="inline-flex items-center gap-2 rounded-md border border-white/20 px-3 py-1 text-xs hover:border-white/40"
+                      title="Open route in Google Maps"
+                    >
+                      🧭 Open route
+                    </a>
+                  </div>
+                )}
+                <div className="text-xs opacity-80">ID: {task.id}</div>
             </div>
 
             <div className="border border-white/20 rounded-md p-3 whitespace-pre-wrap">
               {task.description || 'No description.'}
             </div>
+            <DebugMe />
 
             {(isOwner || isAssignee) && (
               <div className="border border-white/20 rounded-md p-3">
