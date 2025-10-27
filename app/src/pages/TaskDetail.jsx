@@ -5,19 +5,22 @@ import TaskChatBox from '../components/TaskChatBox'
 import { useAuth } from '../auth/AuthContext'
 import UserPill from '../components/UserPill'
 import { gmapsPlaceUrl, gmapsDirectionsUrl } from '../utils/gmaps'
+import { useLoader } from '../providers/LoaderProvider.jsx'
 
 const MINUTE_RATE_EUR = 0.5
 
 export default function TaskDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { user, loading: authLoading } = useAuth()
-
+  // const { user, loading: authLoading } = useAuth()
+  const { user } = useAuth()
+  const { wrap } = useLoader()
   const [task, setTask] = useState(null)
   const [work, setWork] = useState({ items: [], total_minutes: 0, total_cost_cents: 0, has_open: false })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [editing, setEditing] = useState(false)
+
 
   // 編輯表單狀態
   const [title, setTitle] = useState('')
@@ -60,29 +63,45 @@ useEffect(() => {
 
   // ✅ 單一 effect：等 auth ready 再抓 任務 + 工時
   useEffect(() => {
-    if (authLoading || !user || !id) return
+    // if (authLoading || !user || !id) return
+    if (!user || !id) return
     let alive = true
-    ;(async () => {
-      setLoading(true)
+    // ;(async () => {
+    //   setLoading(true)
+    //   setError('')
+    //   try {
+    //     const t = await api(`/tasks/${id}`)
+    //     if (!alive) return
+    //     setTask(t)
+
+    //     // 作者或接單者可看工時；403 就忽略
+    //     try {
+    //       const w = await api(`/tasks/${id}/worklogs`)
+    //       if (alive) setWork(w)
+    //     } catch {/* ignore */}
+    //   } catch (e) {
+    //     if (alive) setError(e.message || 'Failed to load')
+    //   } finally {
+    //     if (alive) setLoading(false)
+    //   }
+    // })()
+     ;(async () => {
       setError('')
-      try {
+      await wrap(async () => {
         const t = await api(`/tasks/${id}`)
         if (!alive) return
         setTask(t)
-
         // 作者或接單者可看工時；403 就忽略
         try {
           const w = await api(`/tasks/${id}/worklogs`)
           if (alive) setWork(w)
         } catch {/* ignore */}
-      } catch (e) {
+      }).catch((e) => {
         if (alive) setError(e.message || 'Failed to load')
-      } finally {
-        if (alive) setLoading(false)
-      }
+      })
     })()
     return () => { alive = false }
-  }, [authLoading, user, id])
+  }, [ user, id])
 
   // ✅ 用 UUID 判斷身分
   const isOwner    = Boolean(user?.id && task?.requester_id && user.id === task.requester_id)
@@ -91,48 +110,90 @@ useEffect(() => {
   const canComplete = Boolean((isOwner || isAssignee) && task?.status === 'open' && !!task?.assigned_to_id && !work.has_open && hasLogged)
   const canAccept   = Boolean(!isOwner && !isAssignee && task?.status === 'open' && !task?.assigned_to_id)
 
-  async function reloadWorkAndTask() {
-    const [t, w] = await Promise.all([
-      api(`/tasks/${id}`),
-      api(`/tasks/${id}/worklogs`).catch(() => work),
-    ])
-    setTask(t)
-    setWork(w)
-  }
+  // async function reloadWorkAndTask() {
+  //   const [t, w] = await Promise.all([
+  //     api(`/tasks/${id}`),
+  //     api(`/tasks/${id}/worklogs`).catch(() => work),
+  //   ])
+  //   setTask(t)
+  //   setWork(w)
+  // }
+   async function reloadWorkAndTask() {
+   await wrap(async () => {
+     const [t, w] = await Promise.all([
+       api(`/tasks/${id}`),
+       api(`/tasks/${id}/worklogs`).catch(() => work),
+     ])
+     setTask(t)
+     setWork(w)
+   })
+ }
 
   async function acceptFromDetail() {
-    try {
-      await api(`/tasks/${id}/accept`, { method: 'POST' })
-      await reloadWorkAndTask()
-    } catch (e) {
-      alert(e.message || 'Failed to accept')
-    }
+    // try {
+    //   await api(`/tasks/${id}/accept`, { method: 'POST' })
+    //   await reloadWorkAndTask()
+    // } catch (e) {
+    //   alert(e.message || 'Failed to accept')
+    // }
+    await wrap(async () => {
+     try {
+       await api(`/tasks/${id}/accept`, { method: 'POST' })
+       await reloadWorkAndTask()
+     } catch (e) {
+       alert(e.message || 'Failed to accept')
+     }
+   })
   }
 
   async function clockIn() {
-    try {
-      await api(`/tasks/${id}/clock-in`, { method: 'POST' })
-      await reloadWorkAndTask()
-    } catch (e) {
-      alert(e.message || 'Clock in failed')
-    }
+    // try {
+    //   await api(`/tasks/${id}/clock-in`, { method: 'POST' })
+    //   await reloadWorkAndTask()
+    // } catch (e) {
+    //   alert(e.message || 'Clock in failed')
+    // }
+    await wrap(async () => {
+     try {
+       await api(`/tasks/${id}/clock-in`, { method: 'POST' })
+       await reloadWorkAndTask()
+     } catch (e) {
+       alert(e.message || 'Clock in failed')
+     }
+   })
   }
   async function clockOut() {
-    try {
-      await api(`/tasks/${id}/clock-out`, { method: 'POST' })
-      await reloadWorkAndTask()
-    } catch (e) {
-      alert(e.message || 'Clock out failed')
-    }
+    // try {
+    //   await api(`/tasks/${id}/clock-out`, { method: 'POST' })
+    //   await reloadWorkAndTask()
+    // } catch (e) {
+    //   alert(e.message || 'Clock out failed')
+    // }
+     await wrap(async () => {
+     try {
+       await api(`/tasks/${id}/clock-out`, { method: 'POST' })
+       await reloadWorkAndTask()
+     } catch (e) {
+       alert(e.message || 'Clock out failed')
+     }
+   })
   }
 
   async function markCompleted() {
-    try {
-      await api(`/tasks/${id}/complete`, { method: 'POST' })
-      navigate('/my?tab=done', { replace: true })
-    } catch (e) {
-      alert(e.message || 'Complete failed')
-    }
+    // try {
+    //   await api(`/tasks/${id}/complete`, { method: 'POST' })
+    //   navigate('/my?tab=done', { replace: true })
+    // } catch (e) {
+    //   alert(e.message || 'Complete failed')
+    // }
+    await wrap(async () => {
+     try {
+       await api(`/tasks/${id}/complete`, { method: 'POST' })
+       navigate('/my?tab=done', { replace: true })
+     } catch (e) {
+       alert(e.message || 'Complete failed')
+     }
+   })
   }
 
   // 進入編輯模式時把 task 值灌入表單（與你原本相同邏輯）
@@ -173,10 +234,29 @@ useEffect(() => {
   const totalEUR = useMemo(() => (work.total_cost_cents || 0) / 100, [work.total_cost_cents])
 
   async function saveEdit() {
-    try {
-      const location_text = locations.map(s=>s.trim()).filter(Boolean).join(' | ')
-      const payload = {
-        title,
+    // try {
+    //   const location_text = locations.map(s=>s.trim()).filter(Boolean).join(' | ')
+    //   const payload = {
+    //     title,
+    //     description,
+    //     category,
+    //     location_text,
+    //     estimated_minutes: Number(minutes) || 30,
+    //     prepay_amount_cents: Math.round((advance || 0) * 100),
+    //     is_immediate: mode === 'now',
+    //     scheduled_at: mode === 'schedule' ? scheduledAtISO : '',
+    //   }
+    //   const updated = await api(`/tasks/${task.id}`, { method: 'PATCH', body: payload })
+    //   setTask(updated)
+    //   setEditing(false)
+    // } catch (e) {
+    //   alert(e.message || 'Failed to save')
+    // }
+     await wrap(async () => {
+     try {
+       const location_text = locations.map(s=>s.trim()).filter(Boolean).join(' | ')
+       const payload = { 
+         title,
         description,
         category,
         location_text,
@@ -184,16 +264,17 @@ useEffect(() => {
         prepay_amount_cents: Math.round((advance || 0) * 100),
         is_immediate: mode === 'now',
         scheduled_at: mode === 'schedule' ? scheduledAtISO : '',
-      }
-      const updated = await api(`/tasks/${task.id}`, { method: 'PATCH', body: payload })
-      setTask(updated)
-      setEditing(false)
-    } catch (e) {
-      alert(e.message || 'Failed to save')
-    }
+        }
+       const updated = await api(`/tasks/${task.id}`, { method: 'PATCH', body: payload })
+       setTask(updated)
+       setEditing(false)
+     } catch (e) {
+       alert(e.message || 'Failed to save')
+     }
+   })
   }
 
-  if (loading) return <div className="p-6">Loading…</div>
+  // if (loading) return <div className="p-6">Loading…</div>
   if (error)   return <div className="p-6 text-red-500">{error}</div>
   if (!task)   return <div className="p-6">Task not found.</div>
 
