@@ -218,9 +218,12 @@ func main() {
 
 	// --- Gin & CORS ---
 	r := gin.Default()
+	r.SetTrustedProxies(nil)
+	origins := os.Getenv("CORS_ALLOW_ORIGINS") // "http://localhost:5173,https://mvp.horaapp.co,https://horaapp.co,https://app.horaapp.co"
+	allow := strings.Split(origins, ",")
 	c := cors.Config{
-		AllowOrigins:     []string{"http://localhost:5173", "https://horaapp.co", "https://app.horaapp.co"},
-		AllowMethods:     []string{"GET", "POST", "PATCH", "OPTIONS", "DELETE"},
+		AllowOrigins:     allow,
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Authorization", "Content-Type"},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
@@ -269,14 +272,22 @@ func main() {
 	})
 
 	r.POST("/auth/logout", func(c *gin.Context) {
-		http.SetCookie(c.Writer, &http.Cookie{
+		isProd := strings.EqualFold(os.Getenv("APP_ENV"), "prod") || strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true")
+
+		cookie := &http.Cookie{
 			Name:     "hora_session",
 			Value:    "",
 			Path:     "/",
 			MaxAge:   -1,
 			HttpOnly: true,
-			Secure:   false, // prod 改 true + SameSite=None
-		})
+			Secure:   isProd, // ✅ prod 要 true
+		}
+		if isProd {
+			cookie.SameSite = http.SameSiteNoneMode // ✅ 跨網域需要
+		} else {
+			cookie.SameSite = http.SameSiteLaxMode
+		}
+		http.SetCookie(c.Writer, cookie)
 		c.Status(http.StatusNoContent)
 	})
 
@@ -310,10 +321,21 @@ func main() {
 		tasksAPI.POST("/:id/clock-out", clockOut)
 		tasksAPI.GET("/:id/worklogs", getWorklogs)
 	}
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
 
-	addr := ":8080"
-	log.Printf("listening on %s", addr)
-	if err := r.Run(addr); err != nil {
+	srv := &http.Server{
+		Addr:         ":" + port,
+		Handler:      r,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	log.Printf("listening on :%s", port)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
 }
