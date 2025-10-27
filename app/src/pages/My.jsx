@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'         // ← 加 useRef
+import { useEffect, useState } from 'react'         // ← 加 useRef
 import { useLocation, useNavigate } from 'react-router-dom' // ← 加這兩個
 import { api } from '../api/client'
 import { ProfileCard } from '../components/ProfileCard'
@@ -83,6 +83,13 @@ export default function My() {
       })
     })()
   }, [authLoading, user])
+
+  useEffect(() => {
+  if (loc.state?.refreshAt) {
+    refreshLists()
+  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [loc.state?.refreshAt])
 
   // ✅ 新增：從 URL 拿 tab（/my?tab=posted）
   useEffect(() => {
@@ -192,7 +199,7 @@ export default function My() {
         <ProfileCard />
       </div>
 
-      <NotificationFeed className="mt-4" />
+     <NotificationFeed key={String(loc.state?.refreshAt ?? 'static')} className="mt-4" />
 
       <ThinCard>
         {/* Tabs：手機可滑動、桌機正常；Loading 位置做 RWD */}
@@ -209,6 +216,10 @@ export default function My() {
                     }`}
                     onClick={() => {
                       setTab(t.key)
+                      const u = new URL(window.location.href)
+                      u.searchParams.set('tab', t.key)
+                      nav(u.pathname + '?' + u.searchParams.toString(), { replace: true })
+
                       if (!lists[t.key].loaded && !lists[t.key].loading) {
                         fetchPage(t.key, null)
                       }

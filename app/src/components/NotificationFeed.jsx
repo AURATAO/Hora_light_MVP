@@ -9,10 +9,17 @@ export default function NotificationFeed({ limit = 50, className = '' }) {
     remove, clearRead,             // ← 新增
   } = useNotifications()
 
-  useEffect(() => {
-    fetchList({ limit }).then(setItems)
+   useEffect(() => {
+    (async () => {
+      try {
+        await markAllRead();               // 進到 /my 就全數設已讀（會廣播 notif:unread=false）
+      } finally {
+        const data = await fetchList({ limit });
+        setItems(data);
+      }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [limit])
+  }, [limit]);
 
   const hasAny = items.length > 0
   const hasRead = items.some(n => !n.unread)
@@ -52,7 +59,7 @@ export default function NotificationFeed({ limit = 50, className = '' }) {
               <div className="flex justify-between gap-3">
                 <div className="min-w-0">
                   <div className="text-sm font-medium truncate">{n.title}</div>
-                  {n.body && <div className="text-sm opacity-80 break-words">{n.body}</div>}
+                  {n.body && <div className="text-sm opacity-80 wrap-break-words">{n.body}</div>}
                   <div className="text-xs opacity-60 mt-1">
                     {new Date(n.created_at).toLocaleString()}
                   </div>

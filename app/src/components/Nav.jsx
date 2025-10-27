@@ -53,6 +53,12 @@ export default function Nav() {
     }
   }, [authed, hideOnLogin, loc.key])
 
+  useEffect(() => {
+  const onUnread = (e) => setHasUnread(!!e.detail?.has);
+  window.addEventListener("notif:unread", onUnread);
+  return () => window.removeEventListener("notif:unread", onUnread);
+}, []);
+
   async function handleLogout() {
     try {
       await logout()
@@ -77,14 +83,27 @@ export default function Nav() {
         <div className="flex justify-center gap-4 ml-auto items-center">
           <Link to="/tasks/new">Post a Task</Link>
 
-          <div className="relative">
-            <Link to="/my">My</Link>
-            {hasUnread && (
-              <span
-                className="absolute -top-1 -right-2 block h-2.5 w-2.5 rounded-full bg-red-500"
-                aria-label="You have unread notifications"
-              />
-            )}
+          
+         <div className="relative">
+            <Link
+              to="/my"
+              className="relative"
+              onClick={(e) => {
+                if (loc.pathname === '/my') {
+                  e.preventDefault()
+                  nav('/my', { state: { refreshAt: Date.now() } })
+                  window.dispatchEvent(new CustomEvent('notif:unread', { detail: { has: false } }));
+                }
+              }}
+            >
+              My
+              {hasUnread && (
+                <span
+                  className="absolute -top-1 -right-2 block h-2.5 w-2.5 rounded-full bg-red-500"
+                  aria-label="You have unread notifications"
+                />
+              )}
+            </Link>
           </div>
 
           {authed ? (
