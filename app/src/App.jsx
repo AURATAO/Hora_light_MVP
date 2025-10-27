@@ -27,7 +27,7 @@ export default function App() {
       </Route>
 
       {/* 兜底 */}
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route path="*" element={<div style={{padding:20}}>Not Found</div>}/>
     </Routes>
   )
 }
