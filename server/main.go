@@ -314,6 +314,12 @@ func main() {
 		log.Fatal(err)
 	}
 }
+func parseLimit(q string, def, max int) int {
+	if n, err := strconv.Atoi(q); err == nil && n > 0 && n <= max {
+		return n
+	}
+	return def
+}
 
 // func me(c *gin.Context) {
 // 	uid := c.GetString("uid")
@@ -868,39 +874,73 @@ func scanTask(rows interface{ Scan(dest ...any) error }) (Task, error) {
 func listMyTasks(c *gin.Context) {
 	meUID := c.GetString("uid")
 	if meUID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+		c.JSON(401, gin.H{"error": "unauthenticated"})
 		return
 	}
 
-	ctx := c.Request.Context()
-	rows, err := db.Query(ctx, `
+	limit := parseLimit(c.Query("limit"), 10, 50)
+	var beforeCreatedAt *time.Time
+	var beforeID *string
+	if s := strings.TrimSpace(c.Query("before_created_at")); s != "" {
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			beforeCreatedAt = &t
+		}
+	}
+	if s := strings.TrimSpace(c.Query("before_id")); s != "" {
+		beforeID = &s
+	}
+
+	where := []string{"requester_id = $1::uuid"}
+	args := []any{meUID}
+	arg := 2
+	if beforeCreatedAt != nil && beforeID != nil {
+		where = append(where, fmt.Sprintf("(created_at, id) < ($%d, $%d::uuid)", arg, arg+1))
+		args = append(args, *beforeCreatedAt, *beforeID)
+		arg += 2
+	}
+
+	q := fmt.Sprintf(`
     select id,title,description,category,location_text,
            estimated_minutes,prepay_amount_cents,is_immediate,
            scheduled_at,
            requester, requester_id,
-           status,created_at,
+           status, created_at,
            assigned_to, assigned_to_id
     from public.tasks
-    where requester_id = $1::uuid
-    order by created_at desc
-  `, meUID)
+    where %s
+    order by created_at desc, id desc
+    limit $%d
+  `, strings.Join(where, " and "), arg)
+	args = append(args, limit)
+
+	ctx := c.Request.Context()
+	rows, err := db.Query(ctx, q, args...)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		c.JSON(500, gin.H{"error": "db error"})
 		return
 	}
 	defer rows.Close()
 
-	out := make([]Task, 0)
+	items := make([]Task, 0, limit)
 	for rows.Next() {
 		t, err := scanTask(rows)
 		if err != nil {
 			c.JSON(500, gin.H{"error": "scan error"})
 			return
 		}
-		out = append(out, t)
+		items = append(items, t)
 	}
-	c.JSON(http.StatusOK, out)
+	var next any = nil
+	if len(items) == limit {
+		last := items[len(items)-1]
+		next = gin.H{
+			"before_created_at": last.CreatedAt.Format(time.RFC3339),
+			"before_id":         last.ID,
+		}
+	}
+	c.JSON(200, gin.H{"items": items, "next": next})
 }
+
 func getTask(c *gin.Context) {
 	uid := c.GetString("uid")
 	id := c.Param("id")
@@ -1031,34 +1071,73 @@ func listAvailableTasks(c *gin.Context) {
 		c.JSON(401, gin.H{"error": "unauthenticated"})
 		return
 	}
-	ctx := c.Request.Context()
-	rows, err := db.Query(ctx, `
+
+	limit := parseLimit(c.Query("limit"), 10, 50)
+	var beforeCreatedAt *time.Time
+	var beforeID *string
+	if s := strings.TrimSpace(c.Query("before_created_at")); s != "" {
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			beforeCreatedAt = &t
+		}
+	}
+	if s := strings.TrimSpace(c.Query("before_id")); s != "" {
+		beforeID = &s
+	}
+
+	where := []string{
+		"status='open'",
+		"assigned_to_id is null",
+		"requester_id <> $1::uuid",
+	}
+	args := []any{meUID}
+	arg := 2
+	if beforeCreatedAt != nil && beforeID != nil {
+		where = append(where, fmt.Sprintf("(created_at, id) < ($%d, $%d::uuid)", arg, arg+1))
+		args = append(args, *beforeCreatedAt, *beforeID)
+		arg += 2
+	}
+
+	q := fmt.Sprintf(`
     select id,title,description,category,location_text,
            estimated_minutes,prepay_amount_cents,is_immediate,
            scheduled_at,
            requester, requester_id,
-           status,created_at,
+           status, created_at,
            assigned_to, assigned_to_id
     from public.tasks
-    where status='open' and requester_id <> $1::uuid and assigned_to_id is null
-    order by created_at desc
-  `, meUID)
+    where %s
+    order by created_at desc, id desc
+    limit $%d
+  `, strings.Join(where, " and "), arg)
+	args = append(args, limit)
 
+	ctx := c.Request.Context()
+	rows, err := db.Query(ctx, q, args...)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "db error"})
 		return
 	}
 	defer rows.Close()
-	out := make([]Task, 0)
+
+	items := make([]Task, 0, limit)
 	for rows.Next() {
 		t, err := scanTask(rows)
 		if err != nil {
 			c.JSON(500, gin.H{"error": "scan error"})
 			return
 		}
-		out = append(out, t)
+		items = append(items, t)
 	}
-	c.JSON(http.StatusOK, out)
+
+	var next any = nil
+	if len(items) == limit {
+		last := items[len(items)-1]
+		next = gin.H{
+			"before_created_at": last.CreatedAt.Format(time.RFC3339),
+			"before_id":         last.ID,
+		}
+	}
+	c.JSON(200, gin.H{"items": items, "next": next})
 }
 
 func listAssignedTasks(c *gin.Context) {
@@ -1067,33 +1146,71 @@ func listAssignedTasks(c *gin.Context) {
 		c.JSON(401, gin.H{"error": "unauthenticated"})
 		return
 	}
-	ctx := c.Request.Context()
-	rows, err := db.Query(ctx, `
+
+	limit := parseLimit(c.Query("limit"), 10, 50)
+	var beforeCreatedAt *time.Time
+	var beforeID *string
+	if s := strings.TrimSpace(c.Query("before_created_at")); s != "" {
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			beforeCreatedAt = &t
+		}
+	}
+	if s := strings.TrimSpace(c.Query("before_id")); s != "" {
+		beforeID = &s
+	}
+
+	where := []string{
+		"assigned_to_id = $1::uuid",
+		"status='open'",
+	}
+	args := []any{meUID}
+	arg := 2
+	if beforeCreatedAt != nil && beforeID != nil {
+		where = append(where, fmt.Sprintf("(created_at, id) < ($%d, $%d::uuid)", arg, arg+1))
+		args = append(args, *beforeCreatedAt, *beforeID)
+		arg += 2
+	}
+
+	q := fmt.Sprintf(`
     select id,title,description,category,location_text,
            estimated_minutes,prepay_amount_cents,is_immediate,
            scheduled_at,
            requester, requester_id,
-           status,created_at,
+           status, created_at,
            assigned_to, assigned_to_id
     from public.tasks
-    where assigned_to_id = $1::uuid and status='open'
-    order by created_at desc
-  `, meUID)
+    where %s
+    order by created_at desc, id desc
+    limit $%d
+  `, strings.Join(where, " and "), arg)
+	args = append(args, limit)
+
+	ctx := c.Request.Context()
+	rows, err := db.Query(ctx, q, args...)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "db error"})
 		return
 	}
 	defer rows.Close()
-	out := make([]Task, 0)
+
+	items := make([]Task, 0, limit)
 	for rows.Next() {
 		t, err := scanTask(rows)
 		if err != nil {
 			c.JSON(500, gin.H{"error": "scan error"})
 			return
 		}
-		out = append(out, t)
+		items = append(items, t)
 	}
-	c.JSON(http.StatusOK, out)
+	var next any = nil
+	if len(items) == limit {
+		last := items[len(items)-1]
+		next = gin.H{
+			"before_created_at": last.CreatedAt.Format(time.RFC3339),
+			"before_id":         last.ID,
+		}
+	}
+	c.JSON(200, gin.H{"items": items, "next": next})
 }
 
 func listDoneTasks(c *gin.Context) {
@@ -1102,72 +1219,144 @@ func listDoneTasks(c *gin.Context) {
 		c.JSON(401, gin.H{"error": "unauthenticated"})
 		return
 	}
-	ctx := c.Request.Context()
-	rows, err := db.Query(ctx, `
+
+	limit := parseLimit(c.Query("limit"), 10, 50)
+	var beforeCreatedAt *time.Time
+	var beforeID *string
+	if s := strings.TrimSpace(c.Query("before_created_at")); s != "" {
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			beforeCreatedAt = &t
+		}
+	}
+	if s := strings.TrimSpace(c.Query("before_id")); s != "" {
+		beforeID = &s
+	}
+
+	where := []string{"assigned_to_id = $1::uuid", "status='completed'"}
+	args := []any{meUID}
+	arg := 2
+	if beforeCreatedAt != nil && beforeID != nil {
+		where = append(where, fmt.Sprintf("(created_at, id) < ($%d, $%d::uuid)", arg, arg+1))
+		args = append(args, *beforeCreatedAt, *beforeID)
+		arg += 2
+	}
+
+	q := fmt.Sprintf(`
     select id,title,description,category,location_text,
            estimated_minutes,prepay_amount_cents,is_immediate,
            scheduled_at,
            requester, requester_id,
-           status,created_at,
+           status, created_at,
            assigned_to, assigned_to_id
     from public.tasks
-    where assigned_to_id = $1::uuid and status='completed'
-    order by created_at desc
-  `, meUID)
+    where %s
+    order by created_at desc, id desc
+    limit $%d
+  `, strings.Join(where, " and "), arg)
+	args = append(args, limit)
+
+	ctx := c.Request.Context()
+	rows, err := db.Query(ctx, q, args...)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "db error"})
 		return
 	}
 	defer rows.Close()
-	out := make([]Task, 0)
+
+	items := make([]Task, 0, limit)
 	for rows.Next() {
 		t, err := scanTask(rows)
 		if err != nil {
 			c.JSON(500, gin.H{"error": "scan error"})
 			return
 		}
-		out = append(out, t)
+		items = append(items, t)
 	}
-	c.JSON(http.StatusOK, out)
+	var next any = nil
+	if len(items) == limit {
+		last := items[len(items)-1]
+		next = gin.H{
+			"before_created_at": last.CreatedAt.Format(time.RFC3339),
+			"before_id":         last.ID,
+		}
+	}
+	c.JSON(200, gin.H{"items": items, "next": next})
 }
 
 func listMyPostedClosed(c *gin.Context) {
 	meUID := c.GetString("uid")
 	if meUID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+		c.JSON(401, gin.H{"error": "unauthenticated"})
 		return
 	}
-	ctx := c.Request.Context()
 
-	rows, err := db.Query(ctx, `
-    select
-      id, title, description, category, location_text,
-      estimated_minutes, prepay_amount_cents, is_immediate,
-      scheduled_at,
-      requester, requester_id,
-      status, created_at,
-      assigned_to, assigned_to_id
-    from public.tasks
-    where requester_id = $1::uuid
-      and status in ('completed','cancelled')
-    order by created_at desc
-  `, meUID)
+	limit := parseLimit(c.Query("limit"), 10, 50)
+	var beforeCreatedAt *time.Time
+	var beforeID *string
+	if s := strings.TrimSpace(c.Query("before_created_at")); s != "" {
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			beforeCreatedAt = &t
+		}
+	}
+	if s := strings.TrimSpace(c.Query("before_id")); s != "" {
+		beforeID = &s
+	}
+
+	// 我發的 + 已關閉（完成或取消）
+	where := []string{
+		"requester_id = $1::uuid",
+		"status in ('completed','cancelled')",
+	}
+	args := []any{meUID}
+	arg := 2
+
+	// keyset： (created_at, id) < (cursor)
+	if beforeCreatedAt != nil && beforeID != nil {
+		where = append(where, fmt.Sprintf("(created_at, id) < ($%d, $%d::uuid)", arg, arg+1))
+		args = append(args, *beforeCreatedAt, *beforeID)
+		arg += 2
+	}
+
+	q := fmt.Sprintf(`
+		select id,title,description,category,location_text,
+		       estimated_minutes,prepay_amount_cents,is_immediate,
+		       scheduled_at,
+		       requester, requester_id,
+		       status, created_at,
+		       assigned_to, assigned_to_id
+		from public.tasks
+		where %s
+		order by created_at desc, id desc
+		limit $%d
+	`, strings.Join(where, " and "), arg)
+	args = append(args, limit)
+
+	ctx := c.Request.Context()
+	rows, err := db.Query(ctx, q, args...)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		c.JSON(500, gin.H{"error": "db error"})
 		return
 	}
 	defer rows.Close()
 
-	out := []Task{}
+	items := make([]Task, 0, limit)
 	for rows.Next() {
 		t, err := scanTask(rows)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "scan error"})
+			c.JSON(500, gin.H{"error": "scan error"})
 			return
 		}
-		out = append(out, t)
+		items = append(items, t)
 	}
-	c.JSON(http.StatusOK, out)
+	var next any = nil
+	if len(items) == limit {
+		last := items[len(items)-1]
+		next = gin.H{
+			"before_created_at": last.CreatedAt.Format(time.RFC3339),
+			"before_id":         last.ID,
+		}
+	}
+	c.JSON(200, gin.H{"items": items, "next": next})
 }
 
 // A user cannot accept their own task. Only open & unassigned tasks can be accepted.

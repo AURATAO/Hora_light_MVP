@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from 'react'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { api } from '../api/client' // ← 不再匯入 isAuthed / AuthAPI
 
+
+
 export default function Nav() {
   const { user, logout } = useAuth()
   const nav = useNavigate()
@@ -17,7 +19,6 @@ export default function Nav() {
   useEffect(() => {
     let mounted = true
 
-    // 清除輪詢
     const stopPolling = () => {
       if (pollRef.current) {
         clearInterval(pollRef.current)
@@ -25,31 +26,24 @@ export default function Nav() {
       }
     }
 
-    // 登入頁或未登入 → 不輪詢
     if (hideOnLogin || !authed) {
       stopPolling()
       setHasUnread(false)
       return
     }
 
-    // 已登入 → 啟動輪詢
     const check = async () => {
       try {
         const res = await api('/notifications?unread=true&limit=1')
         if (!mounted) return
         setHasUnread(Array.isArray(res) && res.length > 0)
-      } catch {
-        // 靜默失敗
-      }
+      } catch { /* silent */ }
     }
 
-    // 立刻查一次，之後每 30 秒
     check()
     pollRef.current = setInterval(check, 30_000)
 
-    const onVis = () => {
-      if (document.visibilityState === 'visible') check()
-    }
+    const onVis = () => { if (document.visibilityState === 'visible') check() }
     document.addEventListener('visibilitychange', onVis)
 
     return () => {
@@ -57,13 +51,12 @@ export default function Nav() {
       document.removeEventListener('visibilitychange', onVis)
       stopPolling()
     }
-  }, [authed, hideOnLogin, loc.key]) // loc.key 變動代表路由切換
+  }, [authed, hideOnLogin, loc.key])
 
   async function handleLogout() {
     try {
-      await logout() // 由 AuthContext 處理 cookie/supabase 兩邊
+      await logout()
     } finally {
-      // 停掉輪詢 & 清狀態
       if (pollRef.current) {
         clearInterval(pollRef.current)
         pollRef.current = null
@@ -76,10 +69,10 @@ export default function Nav() {
   if (hideOnLogin) return null
 
   return (
-    <header className="sticky top-0 inset-x-0 z-50 bg-gradient-to-br from-primary to-primary/50 text-accent font-secondary">
+    <header className="sticky top-0 inset-x-0 z-50 bg-linear-to-br from-primary to-primary/50 text-accent font-secondary">
       <nav className="max-w-4xl m-auto justify-center items-center px-4 py-3 flex gap-4">
         <Link to="/" className="flex justify-center text-3xl">
-          <img src="/app/Logo.svg" className="h-7 w-30" alt="Hora" />
+          <img src={`${import.meta.env.BASE_URL}Logo.svg`} className="h-7 w-30" alt="Hora" />
         </Link>
         <div className="flex justify-center gap-4 ml-auto items-center">
           <Link to="/tasks/new">Post a Task</Link>

@@ -1,5 +1,7 @@
+// src/api/client.js
 import { supabase } from "../lib/supabaseClient";
 
+// 1) API_BASE（容錯多環境變數）
 export const API_BASE =
   (
     import.meta.env.VITE_API_BASE_URL ??
@@ -7,9 +9,11 @@ export const API_BASE =
     "/api"
   ).replace(/\/+$/, "") || "/api";
 
+const appBase = (import.meta.env.BASE_URL || "/").replace(/\/?$/, "/");
+
 console.log("[client.js] API_BASE=", API_BASE);
 
-// 取 token（拿不到就回 null，不丟錯）
+// 2) 可選 Bearer 的 token 取得
 async function maybeGetSupabaseToken() {
   try {
     const {
@@ -21,41 +25,57 @@ async function maybeGetSupabaseToken() {
   }
 }
 
-// 「雙送」的 fetch：永遠帶 cookie；若有 token 也帶 Bearer
+// 3) 「雙送」api：預設帶 cookie；若有 token 也帶 Bearer
 export async function api(path, opts = {}) {
   const token = await maybeGetSupabaseToken();
+  const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
 
-  const res = await fetch(`${API_BASE}${path}`, {
+  const headers = new Headers(opts.headers || {});
+  headers.set(
+    "Content-Type",
+    headers.get("Content-Type") || "application/json"
+  );
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  const res = await fetch(url, {
     method: opts.method || "GET",
-    credentials: "include", // ← 永遠帶 cookie
+    credentials: "include", // 關鍵：永遠帶 cookie
     cache: "no-store",
     redirect: "follow",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}), // ← 有就帶
-      ...(opts.headers || {}),
-    },
+    headers,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
 
-  if (!res.ok) {
-    throw new Error((await res.text().catch(() => "")) || `HTTP ${res.status}`);
-  }
   const ct = res.headers.get("content-type") || "";
-  return ct.includes("application/json") ? res.json() : res.text();
+  const body = ct.includes("application/json")
+    ? await res.json()
+    : await res.text();
+
+  if (!res.ok) {
+    const err = new Error("HTTP " + res.status);
+    err.status = res.status;
+    err.body = body;
+    throw err;
+  }
+  return body;
 }
 
-/** Auth 封裝 */
+// 4) AuthAPI（統一出口）
 export const AuthAPI = {
   async me() {
-    // 後端的 /auth/me 已用 tryAuth：能吃 cookie 或 bearer
-    const res = await api("/auth/me");
-    if (res && res.auth)
-      return { id: res.id, email: res.email, name: res.name || res.email };
-    return null;
+    const res = await api("/auth/me"); // 自帶 credentials
+    return res && res.auth
+      ? { id: res.id, email: res.email, name: res.name || res.email }
+      : null;
   },
 
-  // ——— 如果你現在 OTP 用 Supabase（6 碼） ———
+  // 單一登出：清 server cookie + supabase
+  async logout() {
+    await api("/auth/logout", { method: "POST" }).catch(() => {});
+    await supabase.auth.signOut().catch(() => {});
+    return true;
+  },
+
   async requestOtp(email) {
     const { error } = await supabase.auth.signInWithOtp({
       email,
@@ -64,6 +84,7 @@ export const AuthAPI = {
     if (error) throw error;
     return true;
   },
+
   async verifyOtp(email, code) {
     const { data, error } = await supabase.auth.verifyOtp({
       email,
@@ -71,24 +92,13 @@ export const AuthAPI = {
       type: "email",
     });
     if (error) throw error;
-    return data; // 成功後 supabase 會有 session，api() 就會自動帶 Bearer
-  },
-
-  async signOut() {
-    // 登出兩邊都清一下：cookie + supabase
-    await fetch(`${API_BASE}/auth/logout`, {
-      method: "POST",
-      credentials: "include",
-    }).catch(() => {});
-    await supabase.auth.signOut().catch(() => {});
+    return data; // 之後 api() 會自動帶 Bearer
   },
 
   loginWithGoogle(next = "/") {
-    const appBase = import.meta.env.BASE_URL || "/";
-    const baseURL = window.location.origin + appBase.replace(/\/$/, "");
-    const nextAbs = /^https?:\/\//i.test(next)
-      ? next
-      : baseURL + (next.startsWith("/") ? "" : "/") + next;
+    // 正確組成 base 下的絕對 next
+    const baseURL = new URL(appBase, window.location.origin);
+    const nextAbs = new URL(next, baseURL).toString();
     window.location.href = `${API_BASE}/auth/login?next=${encodeURIComponent(
       nextAbs
     )}`;

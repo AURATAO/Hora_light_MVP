@@ -1,8 +1,7 @@
 // src/auth/AuthContext.jsx
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
-import { AuthAPI } from '../api/client'   // ← NEW
-
+import { AuthAPI } from '../api/client'
 
 const MODE = import.meta.env.VITE_AUTH_MODE || 'cookie'
 const AuthCtx = createContext(null)
@@ -17,9 +16,9 @@ export function AuthProvider({ children }) {
 
     const initCookie = async () => {
       try {
-        const me = await AuthAPI.me()          // ← 必打 /auth/me（會帶 credentials）
+        const me = await AuthAPI.me()
         if (!live) return
-        setUser(me)                            // me 可能是 null 或 {id,email,name}
+        setUser(me)
       } finally {
         if (live) setLoading(false)
       }
@@ -61,9 +60,14 @@ export function AuthProvider({ children }) {
     }
   }, [])
 
+  // ← 這裡改了：永遠叫 AuthAPI.logout()
   async function logout() {
-    if (MODE !== 'cookie') await supabase.auth.signOut().catch(() => {})
-    setUser(null); setToken(null)
+    try {
+      await AuthAPI.logout()
+    } finally {
+      setUser(null)
+      setToken(null)
+    }
   }
 
   const value = useMemo(() => ({ user, token, loading, logout, setUser }), [user, token, loading])
