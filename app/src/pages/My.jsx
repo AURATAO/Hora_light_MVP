@@ -5,12 +5,15 @@ import { ProfileCard } from '../components/ProfileCard'
 import TaskCard from '../components/TaskCard'
 import { useAuth } from '../auth/AuthContext'
 import NotificationFeed from '../components/NotificationFeed'
+import { useLoader } from '../providers/LoaderProvider'
+
 
 function ThinCard({ children, className='' }) {
   return <div className={`border border-white/20 rounded-lg p-3 bg-white/5 ${className}`}>{children}</div>
 }
 
 export default function My() {
+  const { wrap } = useLoader()
   const [profile, setProfile] = useState(null)
   const [tab, setTab] = useState('available') // available | assigned | posted | done
   // const [lists, setLists] = useState({ available:[], assigned:[], posted:[], done:[] })
@@ -61,7 +64,7 @@ export default function My() {
 // }
  async function refreshLists() {
    // 只刷新當前 tab 第一頁
-   await fetchPage(tab, null)
+   await wrap(() => fetchPage(tab, null)) 
  }
 
   // 首次載入：等 auth 就緒，再抓 profile + 列表
@@ -72,9 +75,14 @@ export default function My() {
   // }, [authLoading, user])
   useEffect(() => {
    if (authLoading || !user) return
-   api('/profile').then(setProfile)
-   fetchPage(tab, null)      // 只抓目前 tab
- }, [authLoading, user])
+    ;(async () => {
+      await wrap(async () => {
+        const p = await api('/profile')
+        setProfile(p)
+        await fetchPage(tab, null) // 只抓目前 tab
+      })
+    })()
+  }, [authLoading, user])
 
   // ✅ 新增：從 URL 拿 tab（/my?tab=posted）
   useEffect(() => {
@@ -123,10 +131,12 @@ export default function My() {
   //   }
   // }
   async function acceptTask(id) {
-  try {
-    await api(`/tasks/${id}/accept`, { method: 'POST' })
-    await fetchPage('available', null)
-    await fetchPage('assigned',  null)
+    try {
+    await wrap(async () => {
+      await api(`/tasks/${id}/accept`, { method: 'POST' })
+      await fetchPage('available', null)
+      await fetchPage('assigned',  null)
+    })
   } catch (e) {
     alert(e.message || 'Failed to accept')
   }
@@ -149,24 +159,30 @@ export default function My() {
     params.set('before_created_at', cursor.before_created_at)
     params.set('before_id', cursor.before_id)
   }
-  const res = await api(`/${which === 'posted' ? 'tasks/posted'
-                          : which === 'assigned' ? 'tasks/assigned'
-                          : which === 'done' ? 'tasks/done'
-                          : 'tasks/available'}?${params.toString()}`)
-
-  // 後端若尚未改成 {items,next}，暫時容錯
-  const items = Array.isArray(res?.items) ? res.items : (Array.isArray(res) ? res : [])
-  const next  = res?.next ?? null
-
-  setLists(prev => ({
-    ...prev,
-    [which]: {
-      items: cursor ? [...prev[which].items, ...items] : items,
-      next,
-      loading: false,
-      loaded: true,
-    }
-  }))
+  try {
+    await wrap(async () => {
+      const endpoint =
+        which === 'posted'   ? 'tasks/posted'   :
+        which === 'assigned' ? 'tasks/assigned' :
+        which === 'done'     ? 'tasks/done'     :
+                               'tasks/available'
+      const res = await api(`/${endpoint}?${params.toString()}`)
+      const items = Array.isArray(res?.items) ? res.items : (Array.isArray(res) ? res : [])
+      const next  = res?.next ?? null
+      setLists(prev => ({
+        ...prev,
+        [which]: {
+          items: cursor ? [...prev[which].items, ...items] : items,
+          next,
+          loading: false,
+          loaded: true,
+        }
+      }))
+    })
+  } catch (e) {
+    console.error('[fetchPage] failed:', e)
+    setLists(prev => ({ ...prev, [which]: { ...prev[which], loading: false, loaded: true } }))
+  }
 }
 
   return (

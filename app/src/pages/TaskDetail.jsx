@@ -17,7 +17,7 @@ export default function TaskDetail() {
   const { wrap } = useLoader()
   const [task, setTask] = useState(null)
   const [work, setWork] = useState({ items: [], total_minutes: 0, total_cost_cents: 0, has_open: false })
-  const [loading, setLoading] = useState(true)
+
   const [error, setError] = useState('')
   const [editing, setEditing] = useState(false)
 
@@ -274,7 +274,7 @@ useEffect(() => {
    })
   }
 
-  // if (loading) return <div className="p-6">Loading…</div>
+
   if (error)   return <div className="p-6 text-red-500">{error}</div>
   if (!task)   return <div className="p-6">Task not found.</div>
 
