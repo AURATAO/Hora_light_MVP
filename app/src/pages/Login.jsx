@@ -76,10 +76,10 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-white to-slate-50 flex items-center justify-center px-4">
+    <div className="min-h-screen bg-Linear-to-b from-white to-slate-50 flex items-center justify-center px-4">
       <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white/80 backdrop-blur p-6 shadow-sm">
         <div className="mb-6 text-center">
-          <div className="mx-auto h-10 w-10 "><img src="/app/Logo_icon.png" alt="logo"/></div>
+          <div className="mx-auto h-10 w-10 "><img src="/Logo_icon.png" alt="logo"/></div>
           <h1 className="mt-3 text-xl font-semibold text-slate-900">Welcome to Hora_Light</h1>
           <p className="mt-1 text-sm text-slate-500">Choose a sign-in method</p>
         </div>
