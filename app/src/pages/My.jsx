@@ -186,116 +186,105 @@ export default function My() {
 }
 
   return (
-    <div className=" bg-linear-to-br from-primary to-primary/30 text-accent min-h-screen py-[100px] px-4">
-      <div className="mx-auto max-w-3xl space-y-6">
+  <div className="bg-linear-to-br from-primary to-primary/30 text-accent min-h-screen py-[100px] px-4">
+    <div className="mx-auto max-w-3xl space-y-6">
+      <div className="min-w-0">
         <ProfileCard />
-        <NotificationFeed className="mt-4" />
-        <ThinCard>
-          <div className="flex gap-2 border-b border-white/10 pb-2 mb-3">
-            {tabs.map(t => (
-              <button key={t.key}
-                className={`px-3 py-1.5 rounded-md border ${tab===t.key ? 'border-white/40 bg-white/10' : 'border-white/10 hover:border-white/30'}`}
-                // onClick={() => setTab(t.key)}
-                  onClick={() => {
-                  setTab(t.key)
-                  if (!lists[t.key].loaded && !lists[t.key].loading) {
-                    fetchPage(t.key, null)
-                  }
-                }}
-              >
-                {t.label}
-              </button>
-            ))}
-            {/* <div className="ml-auto text-sm text-white/70">{loading ? 'Loading…' : ''}</div> */}
-            <div className="ml-auto text-sm text-white/70">
+      </div>
+
+      <NotificationFeed className="mt-4" />
+
+      <ThinCard>
+        {/* Tabs：手機可滑動、桌機正常；Loading 位置做 RWD */}
+        <div className="border-b border-white/10 pb-2 mb-3">
+          <div className="flex items-center gap-2">
+            {/* 可水平滑動的容器（mobile） */}
+            <div className="flex-1 overflow-x-auto md:overflow-visible whitespace-nowrap md:whitespace-normal -mx-1 px-1">
+              <div className="inline-flex gap-2">
+                {tabs.map(t => (
+                  <button
+                    key={t.key}
+                    className={`shrink-0 px-3 py-1.5 rounded-md border text-sm md:text-base ${
+                      tab === t.key ? 'border-white/40 bg-white/10' : 'border-white/10 hover:border-white/30'
+                    }`}
+                    onClick={() => {
+                      setTab(t.key)
+                      if (!lists[t.key].loaded && !lists[t.key].loading) {
+                        fetchPage(t.key, null)
+                      }
+                    }}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* 桌機：Loading 放右側 */}
+            <div className="ml-2 hidden md:block text-sm text-white/70">
               {lists[tab].loading ? 'Loading…' : ''}
             </div>
           </div>
 
-          {tab === 'available' && (
-            <TaskList
-              items={lists.available.items}
-              next={lists.available.next}
-              loading={lists.available.loading}
-              variant="available"
-              onAccept={acceptTask}
-              onAfterChange={refreshLists}
-              onLoadMore={() => fetchPage('available', lists.available.next)}
-            />
-          )}
-    
-          {tab === 'assigned' && (
-            <TaskList
-              items={lists.assigned.items}
-              next={lists.assigned.next}
-              loading={lists.assigned.loading}
-              variant="assigned"
-              onAfterChange={refreshLists}
-              onLoadMore={() => fetchPage('assigned', lists.assigned.next)}
-            />
-          )}
- 
-          {tab === 'posted' && (
-            <TaskList
-              items={lists.posted.items}
-              next={lists.posted.next}
-              loading={lists.posted.loading}
-              variant="posted"
-              onAfterChange={refreshLists}
-              onLoadMore={() => fetchPage('posted', lists.posted.next)}
-            />
-          )}
-           {tab === 'done' && (
-            <TaskList
-              items={lists.done.items}
-              next={lists.done.next}
-              loading={lists.done.loading}
-              variant="done"
-              onAfterChange={refreshLists}
-              onLoadMore={() => fetchPage('done', lists.done.next)}
-            />
-          )}
-          {/* {tab === 'available' && (
-            <TaskList items={lists.available} variant="available" onAccept={acceptTask} onAfterChange={refreshLists} />
-          )} */}
-          {/* {tab === 'assigned' && (
-            <TaskList items={lists.assigned} variant="assigned" onAfterChange={refreshLists} />
-          )} */}
-          {/* {tab === 'done' && (
-            <TaskList items={lists.done} variant="done" onAfterChange={refreshLists} />
-          )} */}
-         {/* {tab === 'posted' && (
-            <TaskList items={lists.posted} variant="posted" onAfterChange={refreshLists} />
-          )} */}
-          {/* {tab === 'done' && (
-            <TaskList items={lists.done} variant="done" onAfterChange={refreshLists} />
-          )} */}
-  
-        </ThinCard>
-      </div>
+          {/* 手機：Loading 放下一行，避免擠壓 tabs */}
+          <div className="mt-2 md:hidden text-xs text-white/60">
+            {lists[tab].loading ? 'Loading…' : ''}
+          </div>
+        </div>
+
+        {tab === 'available' && (
+          <TaskList
+            items={lists.available.items}
+            next={lists.available.next}
+            loading={lists.available.loading}
+            variant="available"
+            onAccept={acceptTask}
+            onAfterChange={refreshLists}
+            onLoadMore={() => fetchPage('available', lists.available.next)}
+          />
+        )}
+
+        {tab === 'assigned' && (
+          <TaskList
+            items={lists.assigned.items}
+            next={lists.assigned.next}
+            loading={lists.assigned.loading}
+            variant="assigned"
+            onAfterChange={refreshLists}
+            onLoadMore={() => fetchPage('assigned', lists.assigned.next)}
+          />
+        )}
+
+        {tab === 'posted' && (
+          <TaskList
+            items={lists.posted.items}
+            next={lists.posted.next}
+            loading={lists.posted.loading}
+            variant="posted"
+            onAfterChange={refreshLists}
+            onLoadMore={() => fetchPage('posted', lists.posted.next)}
+          />
+        )}
+
+        {tab === 'done' && (
+          <TaskList
+            items={lists.done.items}
+            next={lists.done.next}
+            loading={lists.done.loading}
+            variant="done"
+            onAfterChange={refreshLists}
+            onLoadMore={() => fetchPage('done', lists.done.next)}
+          />
+        )}
+      </ThinCard>
     </div>
-  )
+  </div>
+)
 }
 
-// function TaskList({ items, variant, onAccept, onAfterChange }) {
-//   if (!items?.length) return <div className="text-white/70">No items.</div>
-//   return (
-//     <ul className="space-y-2">
-//       {items.map(t => (
-//         <TaskCard
-//           key={t.id}
-//           task={t}
-//           variant={variant}
-//           onAccept={onAccept}
-//           onAfterChange={onAfterChange}
-//         />
-//       ))}
-//     </ul>
-//   )
-// }
 function TaskList({ items, next, loading, variant, onAccept, onAfterChange, onLoadMore }) {
   return (
-    <div>
+    <div className="min-w-0">
       {(!items || items.length === 0) ? (
         <div className="text-white/70">No items.</div>
       ) : (
