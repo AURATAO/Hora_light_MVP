@@ -22,6 +22,9 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
+
 	"hora-auth/auth"
 
 	"github.com/MicahParks/keyfunc/v2"
@@ -403,7 +406,7 @@ func parseLimit(q string, def, max int) int {
 
 func deriveName(email string) string {
 	if i := strings.IndexByte(email, '@'); i > 0 {
-		return strings.Title(strings.ReplaceAll(email[:i], ".", " "))
+		return cases.Title(language.Und).String(strings.ReplaceAll(email[:i], ".", " "))
 	}
 	return email
 }
@@ -1832,12 +1835,14 @@ func OnClockIn(ctx context.Context, db *sql.DB, taskID, requesterID, requesterEm
 }
 
 func OnClockOut(ctx context.Context, db *sql.DB, taskID, requesterID, requesterEmail string) {
-	notify.Create(ctx, notify.CreateNotificationInput{
+	if err := notify.Create(ctx, notify.CreateNotificationInput{
 		DB: db, UserID: requesterID, TaskID: taskID, Type: "CLOCK_OUT",
 		Title:     "Supporter clocked out",
 		Body:      "Work session ended. We'll compute the bill and show the breakdown.",
 		SendEmail: true, EmailTo: requesterEmail,
-	})
+	}); err != nil {
+		log.Printf("[notify] create failed: %v", err)
+	}
 }
 
 func OnCompleted(ctx context.Context, db *sql.DB, taskID, requesterID, requesterEmail string) {
