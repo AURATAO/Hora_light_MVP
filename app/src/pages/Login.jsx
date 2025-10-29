@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { AuthAPI } from '../api/client.js'
 import { useAuth } from '../auth/AuthContext.jsx'
+import { useLoader } from '../providers/LoaderProvider.jsx'
 
 export default function Login() {
   const [email, setEmail] = useState('')
@@ -9,6 +10,7 @@ export default function Login() {
   const [code, setCode] = useState('')
   const [loading, setLoading] = useState(false)
   const [checking, setChecking] = useState(true)
+  const { wrap } = useLoader()
 
   const nav = useNavigate()
   const loc = useLocation()
@@ -23,33 +25,27 @@ export default function Login() {
   useEffect(() => {
     let alive = true
     ;(async () => {
-      try {
+     await wrap(async () => {
         const me = await AuthAPI.me()
         if (alive && me) {
-          // 直接導回上一頁（不做 endsWith('/login') 的判斷，避免誤判）
           nav(from, { replace: true })
           return
         }
-      } finally {
+      }).finally(() => {
         if (alive) setChecking(false)
-      }
+      })
     })()
     return () => { alive = false }
   }, [from, nav])
 
-  if (checking) {
-    return (
-      <div className="min-h-screen grid place-items-center">
-        <div className="text-slate-500 text-sm">Checking session…</div>
-      </div>
-    )
-  }
+  // 檢查中交給全域 Overlay，避免白底
+  if (checking) return null
 
   async function sendOtp() {
     if (!email) return
     setLoading(true)
     try {
-      await AuthAPI.requestOtp(email)
+      await wrap(() => AuthAPI.requestOtp(email))
       setStep('code')
     } catch (e) {
       alert(e.message || 'Failed to send code')
@@ -63,11 +59,13 @@ export default function Login() {
     if (!email || !code) return
     setLoading(true)
     try {
-      await AuthAPI.verifyOtp(email, code)   // bearer 模式
-      const me = await AuthAPI.me().catch(() => null) // 兩種模式都安全
-      setUser(me)                              // ← 立即同步 Context
-      nav(from, { replace: true })
-      console.log('[Login] verify ok → nav to', from)
+      await wrap(async () => {
+        await AuthAPI.verifyOtp(email, code)
+        const me = await AuthAPI.me().catch(() => null)
+        setUser(me)
+        nav(from, { replace: true })
+        console.log('[Login] verify ok → nav to', from)
+      })
     } catch (e) {
       alert(e.message || 'Invalid code')
     } finally {
@@ -76,7 +74,7 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen bg-Linear-to-b from-white to-slate-50 flex items-center justify-center px-4">
+    <div className="min-h-screen flex items-center justify-center px-4">
       <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white/80 backdrop-blur p-6 shadow-sm">
         <div className="mb-6 text-center">
           <div className="mx-auto h-10 w-10 "><img src="/Logo_icon.png" alt="logo"/></div>

@@ -57,7 +57,7 @@ export default function PublicProfile() {
   if (!profile) return <div className="p-6">Loading…</div>
 
   return (
-    <div className="bg-gradient-to-br from-primary to-primary/30 text-accent min-h-screen py-[80px] px-4">
+    <div className="bg-linear-to-br from-primary to-primary/30 text-accent min-h-screen py-20 px-4">
       <div className="mx-auto max-w-3xl space-y-6">
         {/* Header */}
         <div className="flex items-start gap-4 border border-white/20 rounded-lg p-4 bg-white/5">

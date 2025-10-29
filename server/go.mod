@@ -9,6 +9,7 @@ require (
 	github.com/gin-gonic/gin v1.10.1
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/jackc/pgx/v5 v5.7.0
+	github.com/supabase-community/storage-go v0.8.1
 	golang.org/x/oauth2 v0.22.0
 )
 

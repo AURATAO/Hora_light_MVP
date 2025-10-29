@@ -9,12 +9,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strconv"
 
 	notify "hora-auth/internal/notify"
@@ -36,6 +39,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/joho/godotenv"
+
+	storage_go "github.com/supabase-community/storage-go"
 )
 
 // Fetch JWKS from Supabase and auto-refresh. This validates access tokens
@@ -233,6 +238,8 @@ func main() {
 
 	// --- 路由 ---
 	RegisterNotificationRoutes(r, sqldb)
+
+	addAvatarUploadRouteV1(r)
 
 	// 公開個人頁（你要「登入可看更完整，未登入也可看」→ 用 tryAuth）
 	profilesAPI := r.Group("/profiles")
@@ -436,6 +443,175 @@ func deriveName(email string) string {
 // -------- Profile handlers --------
 // getMyProfile: lazy-create profile if missing (idempotent).
 // patchMyProfile: upsert via ON CONFLICT(email).
+
+func mustEnv(name string) string {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		log.Fatalf("missing required env: %s", name)
+	}
+	return v
+}
+
+func newStorageClientV1() *storage_go.Client {
+	base := strings.TrimSuffix(mustEnv("SUPABASE_PROJECT_URL"), "/")
+	key := mustEnv("SUPABASE_SERVICE_ROLE_KEY") // 務必是 service_role 的 key
+	log.Printf("[storage] endpoint=%s/storage/v1", base)
+	return storage_go.NewClient(base+"/storage/v1", key, nil)
+}
+
+func addAvatarUploadRouteV1(r *gin.Engine) {
+	log.Println("[BOOT] addAvatarUploadRouteV1 ENTER")
+
+	st := newStorageClientV1()
+	bucket := strings.TrimSpace(os.Getenv("AVATARS_BUCKET"))
+	if bucket == "" {
+		bucket = "avatars"
+	}
+	log.Printf("[storage] bucket=%s", bucket)
+
+	isProd := strings.EqualFold(os.Getenv("APP_ENV"), "prod")
+
+	fail := func(c *gin.Context, code int, msg string, err error) {
+		if err != nil {
+			log.Printf("[avatar][ERR] %s: %v", msg, err)
+		} else {
+			log.Printf("[avatar][ERR] %s", msg)
+		}
+		payload := gin.H{"error": msg}
+		if !isProd && err != nil {
+			payload["detail"] = err.Error()
+		}
+		c.JSON(code, payload)
+	}
+
+	r.POST("/profile/avatar", dualAuth(sqldb), func(c *gin.Context) {
+		uid := c.GetString("uid")
+		if uid == "" {
+			fail(c, http.StatusUnauthorized, "unauthenticated", nil)
+			return
+		}
+
+		// 限 5MB
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 5<<20)
+
+		// 讀檔（必須是 multipart/form-data，欄位名 "file"）
+		f, hdr, err := c.Request.FormFile("file")
+		if err != nil {
+			fail(c, http.StatusBadRequest, "file required (multipart/form-data; field name 'file')", err)
+			return
+		}
+		defer f.Close()
+
+		// content-type（必要時用副檔名推）
+		contentType := hdr.Header.Get("Content-Type")
+		if contentType == "" {
+			switch strings.ToLower(filepath.Ext(hdr.Filename)) {
+			case ".jpg", ".jpeg":
+				contentType = "image/jpeg"
+			case ".png":
+				contentType = "image/png"
+			case ".webp":
+				contentType = "image/webp"
+			case ".gif":
+				contentType = "image/gif"
+			case ".heic":
+				contentType = "image/heic"
+			case ".heif":
+				contentType = "image/heif"
+			default:
+				contentType = "application/octet-stream"
+			}
+		}
+
+		// 讀進記憶體
+		var buf bytes.Buffer
+		if _, err := io.Copy(&buf, f); err != nil {
+			fail(c, http.StatusInternalServerError, "read file failed", err)
+			return
+		}
+
+		// 目標 key
+		ext := strings.ToLower(filepath.Ext(hdr.Filename))
+		if ext == "" {
+			ext = ".jpg"
+		}
+		key := fmt.Sprintf("%s/avatar-%d%s", uid, time.Now().Unix(), ext)
+		log.Printf("[avatar] uid=%s key=%s ct=%s size=%d", uid, key, contentType, buf.Len())
+
+		// 1) 取簽名上傳 URL
+		signed, err := st.CreateSignedUploadUrl(bucket, key)
+		if err != nil || signed.Url == "" {
+			log.Printf("[avatar][signed-url][ERR] resp=%+v err=%v", signed, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "signed url failed"})
+			return
+		}
+
+		// 1.5) 轉成絕對網址（你的 SUPABASE_PROJECT_URL 例如 https://xxxx.supabase.co）
+		base := strings.TrimSuffix(os.Getenv("SUPABASE_PROJECT_URL"), "/")
+		uploadURL := signed.Url
+		switch {
+		case strings.HasPrefix(uploadURL, "http://") || strings.HasPrefix(uploadURL, "https://"):
+			// 已是完整網址，OK
+		case strings.HasPrefix(uploadURL, "/"):
+			// 相對於 /storage/v1
+			uploadURL = base + "/storage/v1" + uploadURL
+		default:
+			// 沒有斜線、但也不是 http(s) → 當作相對於 /storage/v1
+			uploadURL = base + "/storage/v1/" + uploadURL
+		}
+		log.Printf("[avatar] uploadURL=%s", uploadURL)
+
+		// 2) PUT 上傳（顯式帶 Content-Type、x-upsert）
+		req, err := http.NewRequest("PUT", uploadURL, bytes.NewReader(buf.Bytes()))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "build request failed"})
+			return
+		}
+		req.Header.Set("Content-Type", contentType)
+		req.Header.Set("x-upsert", "true")
+		req.Header.Set("Cache-Control", "public, max-age=3600")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			log.Printf("[avatar][upload-signed][ERR] %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "upload failed"})
+			return
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode >= 300 {
+			log.Printf("[avatar][upload-signed][HTTP %d] %s", resp.StatusCode, string(b))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("upload failed (%d)", resp.StatusCode)})
+			return
+		}
+		log.Printf("[avatar][upload-signed][OK] ct=%s size=%d", contentType, buf.Len())
+
+		// 3) 取公開網址
+		pub := st.GetPublicUrl(bucket, key)
+		publicURL := pub.SignedURL
+		if publicURL == "" {
+			base := strings.TrimSuffix(os.Getenv("SUPABASE_PROJECT_URL"), "/")
+			publicURL = fmt.Sprintf("%s/storage/v1/object/public/%s/%s", base, bucket, key)
+			log.Printf("[avatar][publicURL][fallback] %s", publicURL)
+		} else {
+			log.Printf("[avatar][publicURL] %s", publicURL)
+		}
+
+		// 4) 存 DB
+		if _, err := db.Exec(c.Request.Context(),
+			`UPDATE public.profiles SET avatar_url=$1, updated_at=now() WHERE id=$2::uuid`,
+			publicURL, uid,
+		); err != nil {
+			fail(c, http.StatusInternalServerError, "db error", err)
+			return
+		}
+
+		// 5) 回傳
+		c.JSON(http.StatusOK, gin.H{"url": publicURL})
+	})
+
+	log.Println("[http] POST /profile/avatar mounted")
+}
 
 func getMyProfile(c *gin.Context) {
 	uid := c.GetString("uid")

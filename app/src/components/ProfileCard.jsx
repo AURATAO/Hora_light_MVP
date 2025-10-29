@@ -96,11 +96,14 @@ function ProfileCard() {
     {/* Header */}
     <div className="flex flex-col sm:flex-row sm:items-start gap-3 sm:gap-4">
       <div className="shrink-0">
-        <AvatarUploader
+       <AvatarUploader
           value={(editing ? draft?.avatar_url : profile?.avatar_url) || ''}
           onChange={async (url) => {
+            // 先更新本地 UI
             setProfile(p => ({ ...(p || {}), avatar_url: url }))
             setDraft(d => ({ ...(d || {}), avatar_url: url }))
+
+            // 再告訴後端更新 profile（可選；若你的上傳 API 已寫入 DB，可以省略）
             try {
               await api('/profile', { method: 'PATCH', body: { avatar_url: url } })
             } catch (e) {
@@ -110,14 +113,14 @@ function ProfileCard() {
         />
       </div>
 
-      <div className="flex-1 min-w-0">
+      <div className="flex-1 min-w-0 p-3">
         {!editing ? (
           <>
             {/* 顯示模式：手機直排、桌機橫排 */}
             <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2">
               <div className="text-lg font-semibold truncate">{profile?.name || '—'}</div>
               {/* 手機允許換行；桌機可截斷 */}
-              <span className="text-xs text-white/70 break-words sm:truncate">
+              <span className="text-xs text-white/70 wrap-break-words sm:truncate">
                 {profile?.email}
               </span>
 
@@ -143,7 +146,7 @@ function ProfileCard() {
             </div>
 
             {/* 文字可換行避免撐爆 */}
-            <div className="mt-2 text-sm text-white/80 whitespace-pre-wrap break-words">
+            <div className="mt-2 text-sm text-white/80 whitespace-pre-wrap wrap-break-words">
               {profile?.bio || '—'}
             </div>
           </>
@@ -158,7 +161,7 @@ function ProfileCard() {
                   onChange={(e) => setDraft(d => ({ ...d, name: e.target.value }))}
                   placeholder="Your name"
                 />
-                <span className="text-xs text-white/60 break-words sm:truncate">
+                <span className="text-xs text-white/60 wrap-break-words sm:truncate">
                   {profile?.email}
                 </span>
               </div>
