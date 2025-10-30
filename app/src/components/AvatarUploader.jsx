@@ -76,7 +76,7 @@ export default function AvatarUploader({ value, onChange, size = 96, className =
 
       const API_BASE =
         import.meta?.env?.VITE_API_BASE?.replace(/\/+$/, '') ||
-        (location.hostname === 'localhost' ? 'http://localhost:8080' : 'https://api.horaapp.co')
+        (location.hostname === 'localhost' ? 'http://localhost:8080' : 'https://core.horaapp.co')
 
       const res = await fetch(`${API_BASE}/profile/avatar`, {
         method: 'POST',
