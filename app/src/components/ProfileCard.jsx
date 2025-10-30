@@ -96,7 +96,7 @@ function ProfileCard() {
     {/* Header */}
     <div className="flex flex-col sm:flex-row sm:items-start gap-3 sm:gap-4">
       <div className="shrink-0">
-       <AvatarUploader
+       {/* <AvatarUploader
           value={(editing ? draft?.avatar_url : profile?.avatar_url) || ''}
           onChange={async (url) => {
             // 先更新本地 UI
@@ -109,6 +109,13 @@ function ProfileCard() {
             } catch (e) {
               alert(e.message || 'Failed to save avatar')
             }
+          }}
+        /> */}
+        <AvatarUploader
+          value={(editing ? draft?.avatar_url : profile?.avatar_url) || ''}
+          onChange={(rawUrl) => {
+            setProfile(p => ({ ...(p || {}), avatar_url: rawUrl }))
+            setDraft(d => ({ ...(d || {}), avatar_url: rawUrl }))
           }}
         />
       </div>
