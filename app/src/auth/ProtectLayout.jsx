@@ -4,6 +4,8 @@ import { useAuth } from "./AuthContext.jsx";
 import { useEffect, useState } from "react";
 
 export default function ProtectedLayout() {
+  console.log('[Guard]', { loading, user, timeoutHit: timeoutHit })
+  
   const { user, loading } = useAuth();
   const loc = useLocation();
   const [timeoutHit, setTimeoutHit] = useState(false);
