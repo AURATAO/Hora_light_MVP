@@ -1,33 +1,34 @@
-import { Routes, Route, Navigate } from 'react-router-dom'
-import Login from './pages/Login.jsx'
-import Dashboard from './pages/Dashboard.jsx'
-import NewTask from './pages/NewTask.jsx'
-import TaskDetail from './pages/TaskDetail.jsx'
-import My from './pages/My.jsx'
-import PublicProfilePage from './pages/PublicProfilePage.jsx'
-import ProtectedLayout from './auth/ProtectLayOut.jsx'
-import ShellLayout from './pages/ShellLayout.jsx'
-
+import { Routes, Route, Navigate } from "react-router-dom";
+import ShellLayout from "./pages/ShellLayout.jsx";
+import ProtectedLayout from "./auth/ProtectLayOut.jsx";
+import Login from "./pages/Login.jsx";
+import Dashboard from "./pages/Dashboard.jsx";
+import NewTask from "./pages/NewTask.jsx";
+import TaskDetail from "./pages/TaskDetail.jsx";
+import My from "./pages/My.jsx";
+import PublicProfilePage from "./pages/PublicProfilePage.jsx";
 
 export default function App() {
+  console.log("[App] routes boot");
   return (
     <Routes>
       {/* 公開頁 */}
       <Route path="/login" element={<Login />} />
-      <Route path="/u/:id" element={<PublicProfilePage />} />
+     
 
-      {/* 受保護區：外層驗一次，內層帶殼（含 Nav） */}
+      {/* 受保護區：唯一守門 */}
       <Route element={<ProtectedLayout />}>
         <Route element={<ShellLayout />}>
-          <Route index element={<Dashboard />} />
+          <Route index element={<Dashboard />} />     
           <Route path="tasks/new" element={<NewTask />} />
           <Route path="tasks/:id" element={<TaskDetail />} />
           <Route path="my" element={<My />} />
+           <Route path="/u/:id" element={<PublicProfilePage />} />
         </Route>
       </Route>
 
-      {/* 兜底 */}
-      <Route path="*" element={<div style={{padding:20}}>Not Found</div>}/>
+      {/* 兜底：導回首頁（或改成 NotFound 頁） */}
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
-  )
+  );
 }

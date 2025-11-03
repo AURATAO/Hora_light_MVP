@@ -66,10 +66,6 @@ export default function PublicProfile() {
             <div className="text-xl font-semibold">{profile.name || '—'}</div>
             <div className="text-sm opacity-70">{profile.city || '—'}</div>
             {profile.bio && <div className="text-sm mt-1 opacity-90 whitespace-pre-wrap">{profile.bio}</div>}
-            <div className="text-xs opacity-60 mt-2">
-              Posted: {profile.PostedTotal} · Posted completed: {profile.PostedCompleted} ·
-              In progress: {profile.AsgInProgress} · Completed: {profile.AsgCompleted}
-            </div>
           </div>
         </div>
 
