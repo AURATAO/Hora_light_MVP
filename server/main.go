@@ -41,6 +41,9 @@ import (
 	"github.com/joho/godotenv"
 
 	storage_go "github.com/supabase-community/storage-go"
+
+	"encoding/base64"
+	"encoding/json"
 )
 
 // Fetch JWKS from Supabase and auto-refresh. This validates access tokens
@@ -158,9 +161,10 @@ func main() {
 	}
 	var err error
 	jwks, err = keyfunc.Get(jwksURL, keyfunc.Options{
-		RefreshInterval: time.Hour,
-		RefreshTimeout:  10 * time.Second,
-		Ctx:             context.Background(),
+		RefreshInterval:   time.Hour,
+		RefreshTimeout:    10 * time.Second,
+		RefreshUnknownKID: true, // ★ 新 kid 立即 re-fetch
+		Ctx:               context.Background(),
 		RefreshErrorHandler: func(err error) {
 			log.Printf("[jwks] refresh error: %v", err)
 		},
@@ -624,9 +628,8 @@ func getMyProfile(c *gin.Context) {
 	}
 
 	var p Profile
-	var existingID *string
+	var existingID sql.NullString // ← 用 NullString
 
-	// 以 email 先找一筆（你本來就這樣）
 	err := db.QueryRow(ctx, `
     select id::text, email, name, phone, city, avatar_url, bio, created_at, updated_at
     from public.profiles
@@ -637,12 +640,11 @@ func getMyProfile(c *gin.Context) {
 
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		// 沒有 → 直接用 uid 當 id 建
-		_, err2 := db.Exec(ctx, `
+		// 沒有 → 新建（用 uid 當 id）
+		if _, err2 := db.Exec(ctx, `
       insert into public.profiles(id,email,name,phone,city,avatar_url,bio,created_at,updated_at)
       values ($1::uuid,$2,$3,'','','','',$4,$4)
-    `, uid, email, deriveName(email), now)
-		if err2 != nil {
+    `, uid, email, deriveName(email), now); err2 != nil {
 			log.Printf("[profile][insert uid] email=%s err=%v", email, err2)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 			return
@@ -653,15 +655,14 @@ func getMyProfile(c *gin.Context) {
 		}
 
 	case err == nil:
-		// 有 → 若 id 舊的不是 uid，矯正為 uid（一次性修復）
-		if existingID != nil && *existingID != uid {
-			_, errFix := db.Exec(ctx, `
+		// 有 → 若已存在且 id != uid，矯正為 uid（一次性修正）
+		if existingID.Valid && existingID.String != uid {
+			if _, errFix := db.Exec(ctx, `
         update public.profiles
         set id = $1::uuid, updated_at = $2
         where email = $3
-      `, uid, now, email)
-			if errFix != nil {
-				log.Printf("[profile][fix id] email=%s from=%s to=%s err=%v", email, *existingID, uid, errFix)
+      `, uid, now, email); errFix != nil {
+				log.Printf("[profile][fix id] email=%s from=%s to=%s err=%v", email, existingID.String, uid, errFix)
 			}
 		}
 
@@ -671,11 +672,15 @@ func getMyProfile(c *gin.Context) {
 		return
 	}
 
-	// 回傳最新資料
-	_ = db.QueryRow(ctx, `
+	// 回讀最新
+	if err := db.QueryRow(ctx, `
     select email, name, phone, city, avatar_url, bio, created_at, updated_at
     from public.profiles where email = $1
-  `, email).Scan(&p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.CreatedAt, &p.UpdatedAt)
+  `, email).Scan(&p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		log.Printf("[profile][select after upsert] email=%s err=%v", email, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
 
 	c.JSON(http.StatusOK, p)
 }
@@ -2274,37 +2279,54 @@ func dualAuth(db *sql.DB) gin.HandlerFunc {
 		authz := c.GetHeader("Authorization")
 		if strings.HasPrefix(authz, "Bearer ") {
 			raw := strings.TrimSpace(authz[7:])
-			token, err := jwt.Parse(raw, jwks.Keyfunc)
+			// token, err := jwt.Parse(raw, jwks.Keyfunc)
+			token, err := jwt.Parse(raw, supabaseKeyfunc())
 			if err == nil && token != nil && token.Valid {
-				if claims, ok := token.Claims.(jwt.MapClaims); ok {
-					// Supabase sub（uuid）
-					if extSub, _ := claims["sub"].(string); extSub != "" {
-						// optional：取 email
-						email, _ := claims["email"].(string)
+				claims, ok := token.Claims.(jwt.MapClaims)
+				if ok {
+					extSub, _ := claims["sub"].(string)
+					email, _ := claims["email"].(string)
+					name := deriveName(email)
 
-						// 映射：supabase_sub(uuid) -> internal id(uuid)
+					if extSub != "" {
+						// 1) 先用 supabase_sub 找（最快）
 						var internalID string
-						// 先找
 						err := db.QueryRowContext(c.Request.Context(),
-							`select id from public.users where supabase_sub = $1::uuid`, extSub,
+							`select id from public.users where supabase_sub = $1::uuid`,
+							extSub,
 						).Scan(&internalID)
 
 						if errors.Is(err, sql.ErrNoRows) {
-							// 沒有就建一筆，email/名稱可先帶 email 前綴
-							name := deriveName(email)
+							// 2) 用 email（不分大小寫）找既有帳號，若找到就補上 supabase_sub
 							err = db.QueryRowContext(c.Request.Context(), `
-                insert into public.users (supabase_sub, email, name)
-                values ($1::uuid, $2, $3)
-                returning id
-              `, extSub, email, name).Scan(&internalID)
+        update public.users
+           set supabase_sub = $1::uuid
+         where lower(email) = lower($2) and supabase_sub is null
+      returning id
+      `, extSub, email).Scan(&internalID)
+
+							if errors.Is(err, sql.ErrNoRows) {
+								// 3) 還是沒有 → 嘗試 INSERT；若 email 已存在（大小寫不同），用 ON CONFLICT(email_lower) 合併
+								// 你如果用了上面的 lower(email) 唯一索引，寫一個生成欄位或直接用 ON CONFLICT ON CONSTRAINT 亦可。
+								err = db.QueryRowContext(c.Request.Context(), `
+          insert into public.users (supabase_sub, email, name)
+          values ($1::uuid, $2, $3)
+          on conflict ((lower(email))) do update
+            set supabase_sub = excluded.supabase_sub
+          returning id
+        `, extSub, email, name).Scan(&internalID)
+							}
 						}
+
 						if err == nil && internalID != "" {
-							c.Set("uid", internalID) // 統一設成 internal UUID
+							c.Set("uid", internalID)
 							if email != "" {
 								c.Set("email", email)
 							}
-							c.Next()
-							return
+							// 成功
+						} else {
+							log.Printf("[auth-map] failed to map supabase_sub/email → internal id: %v", err)
+							// 不中斷請求流程，後面 /auth/me 會回 auth:false
 						}
 					}
 				}
@@ -2320,7 +2342,7 @@ func tryAuth(db *sql.DB) gin.HandlerFunc {
 	hmacSecret := []byte(os.Getenv("SESSION_JWT_SECRET"))
 
 	return func(c *gin.Context) {
-		// Cookie（已是 internal UUID）
+		// 1) Cookie（internal UUID）
 		if cookie, err := c.Cookie("hora_session"); err == nil && cookie != "" {
 			if tok, err := jwt.Parse(cookie, func(t *jwt.Token) (any, error) { return hmacSecret, nil }); err == nil && tok.Valid {
 				if claims, ok := tok.Claims.(jwt.MapClaims); ok {
@@ -2334,40 +2356,124 @@ func tryAuth(db *sql.DB) gin.HandlerFunc {
 			}
 		}
 
-		// Bearer（需要映射）
+		// 2) Bearer（Supabase → extSub 映射 internal id）
 		if c.GetString("uid") == "" {
 			authz := c.GetHeader("Authorization")
 			if strings.HasPrefix(authz, "Bearer ") {
 				raw := strings.TrimSpace(authz[7:])
-				if tok, err := jwt.Parse(raw, jwks.Keyfunc); err == nil && tok.Valid {
+				// tok, err := jwt.Parse(raw, jwks.Keyfunc)
+				tok, err := jwt.Parse(raw, supabaseKeyfunc())
+				if err != nil || tok == nil || !tok.Valid {
+					log.Printf("[tryAuth] bearer parse fail: %v", err)
+				} else {
 					if claims, ok := tok.Claims.(jwt.MapClaims); ok {
-						if extSub, _ := claims["sub"].(string); extSub != "" {
-							email, _ := claims["email"].(string)
+						extSub, _ := claims["sub"].(string)
+						email, _ := claims["email"].(string)
+						name := deriveName(email)
+						log.Printf("[tryAuth] bearer ok extSub=%s email=%s", extSub, email)
 
+						if extSub != "" {
 							var internalID string
+
+							// 2.1 用 supabase_sub 找
 							err := db.QueryRowContext(c.Request.Context(),
-								`select id from public.users where supabase_sub = $1::uuid`, extSub,
+								`select id from public.users where supabase_sub = $1::uuid`,
+								extSub,
 							).Scan(&internalID)
 
 							if errors.Is(err, sql.ErrNoRows) {
-								name := deriveName(email)
+								// 2.2 用 email 合併（大小寫不敏感），補上 supabase_sub
 								err = db.QueryRowContext(c.Request.Context(), `
-                  insert into public.users (supabase_sub, email, name)
-                  values ($1::uuid, $2, $3)
-                  returning id
-                `, extSub, email, name).Scan(&internalID)
+                  update public.users
+                     set supabase_sub = $1::uuid
+                   where lower(email) = lower($2) and supabase_sub is null
+                returning id
+                `, extSub, email).Scan(&internalID)
+
+								if errors.Is(err, sql.ErrNoRows) {
+									// 2.3 還是沒有 → 插入（需要 lower(email) 唯一索引）
+									err = db.QueryRowContext(c.Request.Context(), `
+                    insert into public.users (supabase_sub, email, name)
+                    values ($1::uuid, $2, $3)
+                    on conflict ((lower(email))) do update
+                      set supabase_sub = excluded.supabase_sub
+                    returning id
+                  `, extSub, email, name).Scan(&internalID)
+								}
 							}
+
 							if err == nil && internalID != "" {
+								log.Printf("[tryAuth] map success → internalID=%s", internalID)
 								c.Set("uid", internalID)
 								if email != "" {
 									c.Set("email", email)
 								}
+							} else {
+								log.Printf("[tryAuth] map FAILED: %v (extSub=%s email=%s)", err, extSub, email)
 							}
 						}
 					}
 				}
+			} else {
+				log.Printf("[tryAuth] no bearer")
 			}
 		}
+
 		c.Next()
+	}
+}
+
+func supabaseKeyfunc() jwt.Keyfunc {
+	return func(t *jwt.Token) (interface{}, error) {
+		// 只接受 RS 系列簽章（Supabase 預設 RS256）
+		if alg := t.Method.Alg(); !strings.HasPrefix(alg, "RS") {
+			return nil, fmt.Errorf("unexpected alg: %s", alg)
+		}
+
+		// 先試目前內存中的 jwks
+		if jwks != nil {
+			if key, err := jwks.Keyfunc(t); err == nil {
+				return key, nil
+			} else {
+				log.Printf("[jwks] Keyfunc fail, will try reload via iss: %v", err)
+			}
+		}
+
+		// 手動解 payload 取 iss（不驗簽，只為找到正確的 JWKS endpoint）
+		parts := strings.Split(strings.TrimSpace(t.Raw), ".")
+		if len(parts) < 2 {
+			return nil, fmt.Errorf("invalid JWT, not enough parts")
+		}
+		payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+		if err != nil {
+			return nil, fmt.Errorf("decode payload: %w", err)
+		}
+		var claims map[string]any
+		if err := json.Unmarshal(payload, &claims); err != nil {
+			return nil, fmt.Errorf("unmarshal payload: %w", err)
+		}
+		iss, _ := claims["iss"].(string)
+		if iss == "" {
+			return nil, fmt.Errorf("no iss in token")
+		}
+
+		// 從 iss 重新取得該專案的 JWKS
+		url := strings.TrimSuffix(iss, "/") + "/keys"
+		j, err := keyfunc.Get(url, keyfunc.Options{
+			RefreshInterval:   time.Hour,
+			RefreshTimeout:    10 * time.Second,
+			RefreshUnknownKID: true, // ★ kid 不在清單時自動 re-fetch
+			Ctx:               context.Background(),
+			RefreshErrorHandler: func(err error) {
+				log.Printf("[jwks] refresh from iss error: %v", err)
+			},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("reload jwks from iss failed: %w", err)
+		}
+		jwks = j
+
+		// 再用新的 jwks 取 key
+		return jwks.Keyfunc(t)
 	}
 }
