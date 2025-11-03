@@ -1,6 +1,6 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 import ShellLayout from "./pages/ShellLayout.jsx";
-import ProtectedLayout from "./auth/ProtectLayOut.jsx";
+import ProtectedLayout from "./auth/ProtectLayout.jsx";
 import Login from "./pages/Login.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import NewTask from "./pages/NewTask.jsx";
