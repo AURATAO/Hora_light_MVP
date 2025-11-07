@@ -297,8 +297,8 @@ useEffect(() => {
       <div className="mx-auto max-w-md space-y-4 border border-primary/30 backdrop-blur-md p-8 rounded-lg shadow">
         {!editing ? (
           <>
-            <div className="flex items-start gap-3">
-              <h2 className="text-2xl font-semibold flex-1">{task.title}</h2>
+            <div className="flex items-start justify-end gap-3">
+             
               <span className="inline-flex h-6 items-center rounded-full border border-white/15 bg-white/5 px-2 text-[11px] uppercase tracking-wide text-white/80 select-none pointer-events-none">
                 {task.status}
               </span>
@@ -322,7 +322,7 @@ useEffect(() => {
                 </button>
               )}
             </div>
-
+            <h2 className="text-2xl font-semibold flex-1">{task.title}</h2>
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
               <div className="flex items-center gap-3">
                 <div className="text-white/70 text-sm">Requester:</div>
@@ -341,9 +341,9 @@ useEffect(() => {
               <div><b>Estimated:</b> {task.estimated_minutes} min</div>
               <div><b>Advance:</b> {advanceEUR.toFixed(2)} EUR</div>
               {/* <div><b>Locations:</b> {task.location_text || '—'}</div> */}
-              <div>  <b>Locations:</b>{' '}
+              <div><b className="block mb-2">Locations:</b>{' '}
                 {locs.length ? (
-                  <span className="inline-flex flex-wrap gap-1 align-middle">
+                  <span className="inline-flex flex-wrap gap-2 align-middle ">
                     {locs.map((p, i) => (
                       <a
                         key={i}
