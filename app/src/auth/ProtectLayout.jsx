@@ -42,6 +42,18 @@ export default function ProtectedLayout() {
   // 首屏等 /auth/me 結束，避免空白或亂跳
   if (loading) {
     return <div style={{ padding: 16 }}>Loading…</div>;
+  // 最多等 8 秒就不再顯示空白
+  useEffect(() => {
+    if (!loading) return;
+    const t = setTimeout(() => setTimeoutHit(true), 8000);
+    return () => clearTimeout(t);
+  }, [loading]);
+
+  // ✅ 放到這裡（宣告之後）
+  console.log("[Guard]", { loading, user, timeoutHit });
+
+  if (loading && !timeoutHit) {
+    return <div style={{ padding: 24 }}>Loading…</div>;
   }
 
   if (!user) {

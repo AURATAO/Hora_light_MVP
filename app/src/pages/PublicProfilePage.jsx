@@ -71,11 +71,11 @@ export default function PublicProfile() {
 
         {/* Tabs */}
         <div className="border border-white/20 rounded-lg p-3 bg-white/5">
-          <div className="flex gap-2 border-b border-white/10 pb-2 mb-3">
+          <div className="flex gap-2 border-b border-white/10 pb-2 mb-3 text-xs ">
             <TabButton active={tab==='completed'} onClick={()=>setTab('completed')}>Completed</TabButton>
             <TabButton active={tab==='inprogress'} onClick={()=>setTab('inprogress')}>In progress</TabButton>
             <TabButton active={tab==='posted'} onClick={()=>setTab('posted')}>Posted</TabButton>
-            <Link to="/my" className="ml-auto text-sm underline opacity-80 hover:opacity-100">Back</Link>
+            <Link to="/my" className="ml-auto text-sm underline opacity-80 pl-3 hover:opacity-100">Back</Link>
           </div>
 
           {loading ? (
