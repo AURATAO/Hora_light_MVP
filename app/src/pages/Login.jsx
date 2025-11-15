@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { AuthAPI } from '../api/client.js'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useLoader } from '../providers/LoaderProvider.jsx'
+import { supabase } from "../lib/supabaseClient";
 
 export default function Login() {
   const [email, setEmail] = useState('')
@@ -22,23 +23,22 @@ export default function Login() {
     return f
   }, [loc.state])
 
-  useEffect(() => {
-    let alive = true
-    ;(async () => {
-     await wrap(async () => {
-        const me = await AuthAPI.me()
-        if (alive && me) {
-          nav(from, { replace: true })
-          return
-        }
-      }).finally(() => {
-        if (alive) setChecking(false)
-      })
-    })()
-    return () => { alive = false }
-  }, [from, nav])
+useEffect(() => {
+  let alive = true
+  ;(async () => {
+    try {
+      const me = await AuthAPI.me()
+      if (alive && me) {
+        nav(from, { replace: true })
+        return
+      }
+    } finally {
+      if (alive) setChecking(false)
+    }
+  })()
+  return () => { alive = false }
+}, [from, nav])
 
-  // 檢查中交給全域 Overlay，避免白底
   if (checking) return null
 
   async function sendOtp() {
@@ -54,25 +54,64 @@ export default function Login() {
     }
   }
 
-  async function verifyOtp(e) {
-    e.preventDefault()
-    if (!email || !code) return
-    setLoading(true)
-    try {
-      await wrap(async () => {
-        await AuthAPI.verifyOtp(email, code)
-        const me = await AuthAPI.me().catch(() => null)
-        setUser(me)
-        nav(from, { replace: true })
-        console.log('[Login] verify ok → nav to', from)
-      })
-    } catch (e) {
-      alert(e.message || 'Invalid code')
-    } finally {
-      setLoading(false)
-    }
-  }
+async function verifyOtp(e) {
+  e.preventDefault();
+  if (!email || !code) return;
 
+  const s1 = await supabase.auth.getSession();
+  console.log('[verifyOtp] session right before /auth/me =', s1?.data?.session?.access_token?.slice(0,20), '...');
+
+  const t = (await supabase.auth.getSession()).data.session?.access_token;
+  const [h, p] = t.split('.').slice(0,2).map(s => JSON.parse(atob(s.replace(/-/g,'+').replace(/_/g,'/'))));
+  console.log('kid=', h.kid, 'iss=', p.iss);
+
+  setLoading(true);
+  try {
+    await wrap(async () => {
+      // 1) 驗證 OTP（會建立 session）
+      const { data, error } = await supabase.auth.verifyOtp({
+        email,
+        token: code,
+        type: "email",
+      });
+      if (error) throw error;
+
+      // 2) 等到 session 確認就緒（最多等 3 秒，100ms 一次）
+      let ready = false;
+      for (let i = 0; i < 50; i++) {
+        const { data: s } = await supabase.auth.getSession();
+        if (s?.session?.access_token) { ready = true; break; }
+        await new Promise(r => setTimeout(r, 100));
+      }
+      if (!ready) {
+        alert("Login succeeded but session not ready yet. Please try again.");
+        return;
+      }
+
+      // 3) 取 /auth/me（帶 3 次 retry/backoff）
+      const retry = async (fn, times = 3) => {
+        let last;
+        for (let i = 0; i < times; i++) {
+          try { return await fn(); } catch (e) { last = e; await new Promise(r => setTimeout(r, 150 * (i + 1))); }
+        }
+        throw last;
+      };
+
+      let me = await retry(() => AuthAPI.me());
+      if (!me) {
+        alert("Session ready but /auth/me still null. Please refresh and try again.");
+        return;
+      }
+
+      setUser(me);
+      nav(from, { replace: true });
+    });
+  } catch (e) {
+    alert(e.message || "Invalid code");
+  } finally {
+    setLoading(false);
+  }
+}
   return (
     <div className="min-h-screen flex items-center justify-center px-4">
       <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white/80 backdrop-blur p-6 shadow-sm">
