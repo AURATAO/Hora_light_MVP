@@ -41,37 +41,37 @@ export default function Login() {
   // 檢查中交給全域 Overlay，避免白底
   if (checking) return null
 
-  async function sendOtp() {
-    if (!email) return
-    setLoading(true)
-    try {
-      await wrap(() => AuthAPI.requestOtp(email))
-      setStep('code')
-    } catch (e) {
-      alert(e.message || 'Failed to send code')
-    } finally {
-      setLoading(false)
-    }
-  }
+  // async function sendOtp() {
+  //   if (!email) return
+  //   setLoading(true)
+  //   try {
+  //     await wrap(() => AuthAPI.requestOtp(email))
+  //     setStep('code')
+  //   } catch (e) {
+  //     alert(e.message || 'Failed to send code')
+  //   } finally {
+  //     setLoading(false)
+  //   }
+  // }
 
-  async function verifyOtp(e) {
-    e.preventDefault()
-    if (!email || !code) return
-    setLoading(true)
-    try {
-      await wrap(async () => {
-        await AuthAPI.verifyOtp(email, code)
-        const me = await AuthAPI.me().catch(() => null)
-        setUser(me)
-        nav(from, { replace: true })
-        console.log('[Login] verify ok → nav to', from)
-      })
-    } catch (e) {
-      alert(e.message || 'Invalid code')
-    } finally {
-      setLoading(false)
-    }
-  }
+  // async function verifyOtp(e) {
+  //   e.preventDefault()
+  //   if (!email || !code) return
+  //   setLoading(true)
+  //   try {
+  //     await wrap(async () => {
+  //       await AuthAPI.verifyOtp(email, code)
+  //       const me = await AuthAPI.me().catch(() => null)
+  //       setUser(me)
+  //       nav(from, { replace: true })
+  //       console.log('[Login] verify ok → nav to', from)
+  //     })
+  //   } catch (e) {
+  //     alert(e.message || 'Invalid code')
+  //   } finally {
+  //     setLoading(false)
+  //   }
+  // }
 
   return (
     <div className="min-h-screen flex items-center justify-center px-4">
@@ -79,7 +79,7 @@ export default function Login() {
         <div className="mb-6 text-center">
           <div className="mx-auto h-10 w-10 "><img src="/Logo_icon.png" alt="logo"/></div>
           <h1 className="mt-3 text-xl font-semibold text-slate-900">Welcome to Hora_Light</h1>
-          <p className="mt-1 text-sm text-slate-500">Choose a sign-in method</p>
+          {/* <p className="mt-1 text-sm text-slate-500">Choose a sign-in method</p> */}
         </div>
 
         <div className="flex items-center justify-center gap-4">
@@ -98,7 +98,7 @@ export default function Login() {
             </svg>
           </button>
 
-          <button
+          {/* <button
             onClick={() => setStep(prev => (prev === 'email' ? 'idle' : 'email'))}
             title="Sign in with email"
             aria-label="Sign in with email"
@@ -108,11 +108,11 @@ export default function Login() {
               <path d="M2 6.5A2.5 2.5 0 0 1 4.5 4h15A2.5 2.5 0 0 1 22 6.5v11A2.5 2.5 0 0 1 19.5 20h-15A2.5 2.5 0 0 1 2 17.5v-11Z" fill="none" stroke="currentColor" strokeWidth="1.5"/>
               <path d="M3 7l8.5 6a2 2 0 0 0 2 0L22 7" fill="none" stroke="currentColor" strokeWidth="1.5"/>
             </svg>
-          </button>
+          </button> */}
         </div>
 
         <div className="my-6 h-px bg-slate-200" />
-
+{/* 
         {step !== 'idle' && (
           <div className="space-y-3">
             <label className="block text-sm text-slate-600">
@@ -169,7 +169,7 @@ export default function Login() {
               </form>
             )}
           </div>
-        )}
+        )} */}
 
         <div className="mt-6 text-center text-xs text-slate-500">
           By continuing, you agree to our <a href="https://www.horaapp.co/terms" className="underline">Terms</a> & <a href="https://www.horaapp.co/privacy" className="underline">Privacy</a>.
