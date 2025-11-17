@@ -40,6 +40,8 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/joho/godotenv"
 
+	opsroutes "hora-auth/ops"
+
 	storage_go "github.com/supabase-community/storage-go"
 
 	"encoding/base64"
@@ -56,6 +58,21 @@ var sqldb *sql.DB
 var DB *sql.DB
 
 func SetDB(db *sql.DB) { DB = db }
+
+var opsAdminEmails = map[string]bool{
+	"auratao.model@gmail.com": true,
+	"liang.you@horaapp.co":    true,
+	"liang.you@arcodiax.com":  true,
+	"rollod4@gmail.com":       true,
+	"daniele@arcodiax.com":    true,
+}
+
+func isOpsAdminEmail(s string) bool {
+	if s == "" {
+		return false
+	}
+	return opsAdminEmails[strings.ToLower(s)]
+}
 
 type Task struct {
 	ID                string     `json:"id"`
@@ -145,6 +162,29 @@ type NotificationDTO struct {
 	ViaEmail    bool       `json:"via_email"`
 	EmailSentAt *time.Time `json:"email_sent_at,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
+}
+
+type Row struct {
+	TaskID           string     `json:"task_id"`
+	Title            string     `json:"title"`
+	Category         string     `json:"category"`
+	LocationText     string     `json:"location_text"`
+	Status           string     `json:"status"`
+	EstimatedMinutes int        `json:"estimated_minutes"`
+	PrepayAmount     *float64   `json:"prepay_amount"`
+	IsImmediate      bool       `json:"is_immediate"`
+	ScheduledAt      *time.Time `json:"scheduled_at"`
+	CreatedAt        time.Time  `json:"created_at"`
+	CancelledAt      *time.Time `json:"cancelled_at"`
+	CancelReason     *string    `json:"cancel_reason"`
+	RequesterEmail   *string    `json:"requester_email"`
+	SupporterEmail   *string    `json:"supporter_email"`
+	FirstStartAt     *time.Time `json:"first_start_at"`
+	LastEndAt        *time.Time `json:"last_end_at"`
+	TotalDone        *int       `json:"total_minutes_done"`
+	Running          *int       `json:"running_minutes"`
+	Duration         *int       `json:"duration_minutes"`
+	LastEventAt      time.Time  `json:"last_event_at"`
 }
 
 func main() {
@@ -244,6 +284,11 @@ func main() {
 	RegisterNotificationRoutes(r, sqldb)
 
 	addAvatarUploadRouteV1(r)
+
+	// 在 ListenAndServe 之前，註冊 Ops 路由
+	opsroutes.RegisterOpsRoutes(r, sqldb, dualAuth(sqldb), func(email string) bool {
+		return isOpsAdminEmail(email)
+	})
 
 	// 公開個人頁（你要「登入可看更完整，未登入也可看」→ 用 tryAuth）
 	profilesAPI := r.Group("/profiles")
