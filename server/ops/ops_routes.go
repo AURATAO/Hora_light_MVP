@@ -17,6 +17,8 @@ func RegisterOpsRoutes(r *gin.Engine, sqldb *sql.DB, authMW gin.HandlerFunc, isA
 	ops.Use(authMW)
 
 	// GET /ops/feed?status=all&q=
+
+	ops.GET("/ping", func(c *gin.Context) { c.String(200, "pong") })
 	ops.GET("/feed", func(c *gin.Context) {
 		email := c.GetString("email")
 		if !isAdmin(email) {

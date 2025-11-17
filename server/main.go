@@ -261,6 +261,17 @@ func main() {
 		return isOpsAdminEmail(email)
 	})
 
+	// 列出所有路由（除錯用）
+
+	r.GET("/__routes", func(c *gin.Context) {
+		type R struct{ Method, Path string }
+		rs := []R{}
+		for _, rt := range r.Routes() {
+			rs = append(rs, R{Method: rt.Method, Path: rt.Path})
+		}
+		c.JSON(200, rs)
+	})
+
 	// 公開個人頁（你要「登入可看更完整，未登入也可看」→ 用 tryAuth）
 	profilesAPI := r.Group("/profiles")
 	profilesAPI.Use(tryAuth(sqldb))
