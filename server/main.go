@@ -40,6 +40,8 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/joho/godotenv"
 
+	opsroutes "hora-auth/ops"
+
 	storage_go "github.com/supabase-community/storage-go"
 )
 
@@ -53,6 +55,20 @@ var sqldb *sql.DB
 var DB *sql.DB
 
 func SetDB(db *sql.DB) { DB = db }
+
+var opsAdmins = map[string]struct{}{
+	"auratao.model@gmail.com": {},
+	"liang.you@horaapp.co":    {},
+	"liang.you@arcodiax.com":  {},
+	"rollod4@gmail.com":       {},
+	"daniele@arcodiax.com":    {},
+}
+
+func isOpsAdminEmail(s string) bool {
+	s = strings.TrimSpace(strings.ToLower(s))
+	_, ok := opsAdmins[s]
+	return ok
+}
 
 type Task struct {
 	ID                string     `json:"id"`
@@ -240,6 +256,10 @@ func main() {
 	RegisterNotificationRoutes(r, sqldb)
 
 	addAvatarUploadRouteV1(r)
+
+	opsroutes.RegisterOpsRoutes(r, sqldb, dualAuth(sqldb), func(email string) bool {
+		return isOpsAdminEmail(email)
+	})
 
 	// 公開個人頁（你要「登入可看更完整，未登入也可看」→ 用 tryAuth）
 	profilesAPI := r.Group("/profiles")
