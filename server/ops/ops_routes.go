@@ -33,38 +33,47 @@ func RegisterOpsRoutes(r *gin.Engine, sqldb *sql.DB, authMW gin.HandlerFunc, isA
 
 		var args []any
 		w := []string{"1=1"}
+		next := 1
 
-		if status != "" && status != "all" {
-			w = append(w, "status = $1")
-			args = append(args, status)
+		switch status {
+		case "", "all":
+			// no-op
+		case "open":
+			w = append(w, "status = 'open' AND supporter_email IS NULL")
+		case "accepted":
+			w = append(w, "status = 'open' AND supporter_email IS NOT NULL AND COALESCE(running_minutes,0)=0 AND COALESCE(total_minutes_done,0)=0")
+		case "in_progress":
+			w = append(w, "status = 'open' AND (COALESCE(running_minutes,0) > 0 OR COALESCE(total_minutes_done,0) > 0)")
+		case "completed":
+			w = append(w, "status = 'completed'")
+		case "cancelled":
+			w = append(w, "status = 'cancelled'")
+		default:
+			// 不認得的值 → 當 all
 		}
 		if q != "" {
 			like := "%" + q + "%"
-			if len(args) == 0 {
-				w = append(w, "(title ilike $1 or location_text ilike $1 or requester_email ilike $1 or supporter_email ilike $1)")
-				args = append(args, like)
-			} else {
-				w = append(w, fmt.Sprintf(
-					"(title ilike $%d or location_text ilike $%d or requester_email ilike $%d or supporter_email ilike $%d)",
-					len(args)+1, len(args)+1, len(args)+1, len(args)+1,
-				))
-				args = append(args, like)
-			}
+			w = append(w, fmt.Sprintf(
+				"(title ILIKE $%[1]d OR location_text ILIKE $%[1]d OR requester_email ILIKE $%[1]d OR supporter_email ILIKE $%[1]d)",
+				next,
+			))
+			args = append(args, like)
+			next++
 		}
 
 		sqlStr := fmt.Sprintf(`
-      select
-        task_id, title, category, location_text, status, estimated_minutes,
-        prepay_amount, is_immediate, scheduled_at, created_at, cancelled_at, cancel_reason,
-        requester_email, supporter_email,
-        first_start_at, last_end_at, total_minutes_done, running_minutes,
-        (coalesce(total_minutes_done,0)+coalesce(running_minutes,0)) as duration_minutes,
-        last_event_at
-      from public.view_ops_tasks
-      where %s
-      order by last_event_at desc
-      limit 500
-    `, strings.Join(w, " and "))
+			SELECT
+				task_id, title, category, location_text, status, estimated_minutes,
+				prepay_amount, is_immediate, scheduled_at, created_at, cancelled_at, cancel_reason,
+				requester_email, supporter_email,
+				first_start_at, last_end_at, total_minutes_done, running_minutes,
+				(COALESCE(total_minutes_done,0)+COALESCE(running_minutes,0)) AS duration_minutes,
+				last_event_at
+			FROM public.view_ops_tasks
+			WHERE %s
+			ORDER BY last_event_at DESC
+			LIMIT 500
+			`, strings.Join(w, " AND "))
 
 		rows, err := sqldb.QueryContext(c.Request.Context(), sqlStr, args...)
 		if err != nil {

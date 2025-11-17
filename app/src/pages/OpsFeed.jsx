@@ -18,7 +18,7 @@ const ADMIN_EMAILS = new Set([
   'daniele@arcodiax.com'
 ]);
 
-const STATUS_FILTERS = ['all','open','accepted','in_progress','completed','cancelled','disputed'];
+const STATUS_FILTERS = ['all','accepted','completed','cancelled'];
 
 // ---- 共用：抓 JSON，順便幫忙把不是 JSON 的 404/HTML 報錯印出前 200 字 ----
 
