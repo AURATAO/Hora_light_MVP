@@ -6,6 +6,7 @@ import { useAuth } from '../auth/AuthContext'
 import UserPill from '../components/UserPill'
 import { gmapsPlaceUrl, gmapsDirectionsUrl } from '../utils/gmaps'
 import { useLoader } from '../providers/LoaderProvider.jsx'
+import PlaceInput from '../components/PlaceInput'
 
 const MINUTE_RATE_EUR = 0.5
 
@@ -20,13 +21,14 @@ export default function TaskDetail() {
 
   const [error, setError] = useState('')
   const [editing, setEditing] = useState(false)
+  
 
 
   // 編輯表單狀態
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [category, setCategory] = useState('task')
-  const [locations, setLocations] = useState([''])
+  const [locations, setLocations] = useState([{ label: '' }])
   const [minutes, setMinutes] = useState(30)
   const [prepay, setPrepay] = useState('')
   const [mode, setMode] = useState('now')
@@ -102,6 +104,30 @@ useEffect(() => {
     })()
     return () => { alive = false }
   }, [ user, id])
+
+  function normalizeLocationItem(x) {
+  if (!x) return { label: '' }
+  if (typeof x === 'string') return { label: x }
+  if (typeof x === 'object') {
+    const label = x.label || x.description || x.formatted || ''
+    return { ...x, label }
+  }
+  return { label: String(x) }
+}
+
+function addLocation() {
+  setLocations(prev => [...prev, { label: '' }])
+}
+
+function updateLocation(i, v) {
+  setLocations(prev =>
+    prev.map((x, idx) => (idx === i ? normalizeLocationItem(v) : x))
+  )
+}
+
+function removeLocation(i) {
+  setLocations(prev => prev.filter((_, idx) => idx !== i))
+}
 
   // ✅ 用 UUID 判斷身分
   const isOwner    = Boolean(user?.id && task?.requester_id && user.id === task.requester_id)
@@ -198,27 +224,58 @@ useEffect(() => {
 
   // 進入編輯模式時把 task 值灌入表單（與你原本相同邏輯）
   function startEdit() {
-    if (!task) return
-    setTitle(task.title || '')
-    setDescription(task.description || '')
-    setCategory(task.category || 'task')
-    const locs = (task.location_text || '').split(' | ').map(s=>s.trim()).filter(Boolean)
-    setLocations(locs.length ? locs : [''])
-    setMinutes(task.estimated_minutes || 30)
-    setPrepay(((task.prepay_amount_cents || 0) / 100).toString())
-    if (task.is_immediate) {
-      setMode('now'); setDate(''); setTimeStr('')
-    } else if (task.scheduled_at) {
-      const d = new Date(task.scheduled_at)
-      const pad = (n) => String(n).padStart(2, '0')
-      setMode('schedule')
-      setDate(`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`)
-      setTimeStr(`${pad(d.getHours())}:${pad(d.getMinutes())}`)
-    } else {
-      setMode('now'); setDate(''); setTimeStr('')
-    }
-    setEditing(true)
+  if (!task) return
+
+  setTitle(task.title || '')
+  setDescription(task.description || '')
+  setCategory(task.category || 'task')
+
+  // 1) 先看 locations_geo（可能是 jsonb 或字串）
+  let locItems = []
+  let geo = task.locations_geo
+
+  if (typeof geo === 'string') {
+    try { geo = JSON.parse(geo) } catch { geo = [] }
   }
+
+  if (Array.isArray(geo) && geo.length > 0) {
+    locItems = geo.map(normalizeLocationItem)
+  } else {
+    // 2) 沒有 geo → 用 location_text
+    const labels = (task.location_text || '')
+      .split(' | ')
+      .map(s => s.trim())
+      .filter(Boolean)
+
+    locItems = labels.length
+      ? labels.map(normalizeLocationItem)
+      : [{ label: '' }]
+  }
+
+  setLocations(locItems)
+
+  setMinutes(task.estimated_minutes || 30)
+  setPrepay(((task.prepay_amount_cents || 0) / 100).toString())
+
+  if (task.is_immediate) {
+    setMode('now')
+    setDate('')
+    setTimeStr('')
+  } else if (task.scheduled_at) {
+    const d = new Date(task.scheduled_at)
+    const pad = (n) => String(n).padStart(2, '0')
+    setMode('schedule')
+    setDate(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`)
+    setTimeStr(`${pad(d.getHours())}:${pad(d.getMinutes())}`)
+  } else {
+    setMode('now')
+    setDate('')
+    setTimeStr('')
+  }
+
+  setEditing(true)
+}
+
 
   const scheduledAtISO = useMemo(() => {
     if (mode === 'schedule' && date && timeStr) return new Date(`${date}T${timeStr}`).toISOString()
@@ -234,45 +291,50 @@ useEffect(() => {
   const totalEUR = useMemo(() => (work.total_cost_cents || 0) / 100, [work.total_cost_cents])
 
   async function saveEdit() {
-    // try {
-    //   const location_text = locations.map(s=>s.trim()).filter(Boolean).join(' | ')
-    //   const payload = {
-    //     title,
-    //     description,
-    //     category,
-    //     location_text,
-    //     estimated_minutes: Number(minutes) || 30,
-    //     prepay_amount_cents: Math.round((advance || 0) * 100),
-    //     is_immediate: mode === 'now',
-    //     scheduled_at: mode === 'schedule' ? scheduledAtISO : '',
-    //   }
-    //   const updated = await api(`/tasks/${task.id}`, { method: 'PATCH', body: payload })
-    //   setTask(updated)
-    //   setEditing(false)
-    // } catch (e) {
-    //   alert(e.message || 'Failed to save')
-    // }
-     await wrap(async () => {
-     try {
-       const location_text = locations.map(s=>s.trim()).filter(Boolean).join(' | ')
-       const payload = { 
-         title,
+  await wrap(async () => {
+    try {
+      // 先正規化 locations
+      const locItems = locations.map(normalizeLocationItem)
+
+      // 1) 給人看的文字（後端/列表用）
+      const location_text = locItems
+        .map(it => (it.label || '').trim())
+        .filter(Boolean)
+        .join(' | ')
+
+      // 2) 給機器用的結構（之後要落 DB 再用）
+      const locations_geo = locItems
+        .filter(x => (x.label || '').trim())
+        .map(x => ({
+          label: (x.label || '').trim(),
+          placeId: x.placeId || x.id || null,
+          lat: typeof x.lat === 'number' ? x.lat : null,
+          lng: typeof x.lng === 'number' ? x.lng : null,
+        }))
+
+      const payload = {
+        title,
         description,
         category,
         location_text,
+        locations_geo,
         estimated_minutes: Number(minutes) || 30,
         prepay_amount_cents: Math.round((advance || 0) * 100),
         is_immediate: mode === 'now',
         scheduled_at: mode === 'schedule' ? scheduledAtISO : '',
-        }
-       const updated = await api(`/tasks/${task.id}`, { method: 'PATCH', body: payload })
-       setTask(updated)
-       setEditing(false)
-     } catch (e) {
-       alert(e.message || 'Failed to save')
-     }
-   })
-  }
+      }
+
+      const updated = await api(`/tasks/${task.id}`, {
+        method: 'PATCH',
+        body: payload,
+      })
+      setTask(updated)
+      setEditing(false)
+    } catch (e) {
+      alert(e.message || 'Failed to save')
+    }
+  })
+}
 
 
   if (error)   return <div className="p-6 text-red-500">{error}</div>
@@ -408,7 +470,179 @@ useEffect(() => {
         ) : (
           /* 編輯區（原本邏輯保留） */
           /* ... */
-          null
+           <form
+              className="space-y-4"
+              onSubmit={(e) => {
+                e.preventDefault()
+                saveEdit()
+              }}
+            >
+              <div className="flex items-center justify-between">
+                <h2 className="text-xl font-semibold">Edit task</h2>
+                <button
+                  type="button"
+                  onClick={() => setEditing(false)}
+                  className="text-xs px-2 py-1 border border-white/20 rounded-md hover:border-white/40"
+                >
+                  Cancel
+                </button>
+              </div>
+
+              <div className="space-y-2">
+                {/* Title */}
+                <label className="block text-sm text-white/80">
+                  Title
+                  <input
+                    className="mt-1 w-full rounded-md bg-white/5 border border-white/20 px-3 py-2 text-sm"
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    required
+                  />
+                </label>
+
+                {/* Description */}
+                <label className="block text-sm text-white/80">
+                  Description
+                  <textarea
+                    className="mt-1 w-full rounded-md bg-white/5 border border-white/20 px-3 py-2 text-sm min-h-20"
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                  />
+                </label>
+
+                {/* Category */}
+                <label className="block text-sm text-white/80">
+                  Category
+                  <select
+                    className="mt-1 w-full rounded-md bg-white/5 border border-white/20 px-3 py-2 text-sm"
+                    value={category}
+                    onChange={(e) => setCategory(e.target.value)}
+                  >
+                    <option value="task">Task</option>
+                    <option value="companion">Companion</option>
+                  </select>
+                </label>
+
+                {/* Locations with PlaceInput */}
+                <div className="grid gap-1">
+                  <label className="block text-sm text-white/80">Location(s)</label>
+                  <div className="space-y-2">
+                    {locations.map((loc, i) => (
+                      <div key={i} className="flex items-center gap-2">
+                        <div className="flex-1">
+                          <PlaceInput
+                            value={locations[i]}
+                            placeholder={
+                              i === 0 ? 'Address or meeting point' : 'Add another point'
+                            }
+                            onChange={(val) => updateLocation(i, val)}
+                          />
+                          {loc?.lat && loc?.lng && (
+                            <div className="mt-1 text-xs text-white/60">
+                              ({loc.lat.toFixed(6)}, {loc.lng.toFixed(6)})
+                            </div>
+                          )}
+                        </div>
+                        {i === locations.length - 1 ? (
+                          <button
+                            type="button"
+                            onClick={addLocation}
+                            className="px-2 py-1 rounded-md border border-white/20 hover:border-white/40"
+                          >
+                            ＋
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => removeLocation(i)}
+                            className="px-2 py-1 rounded-md border border-white/20 hover:border-white/40"
+                          >
+                            ×
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Estimated minutes */}
+                <label className="block text-sm text-white/80">
+                  Estimated minutes
+                  <input
+                    type="number"
+                    min={5}
+                    step={5}
+                    className="mt-1 w-full rounded-md bg-white/5 border border-white/20 px-3 py-2 text-sm"
+                    value={minutes}
+                    onChange={(e) => setMinutes(Number(e.target.value) || 0)}
+                  />
+                </label>
+
+                {/* Advance */}
+                <label className="block text-sm text-white/80">
+                  Advance (EUR)
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    className="mt-1 w-full rounded-md bg-white/5 border border-white/20 px-3 py-2 text-sm"
+                    value={prepay}
+                    onChange={(e) => setPrepay(e.target.value)}
+                  />
+                </label>
+
+                {/* When */}
+                <div className="space-y-2">
+                  <div className="text-sm text-white/80">When</div>
+                  <div className="flex gap-3 text-sm">
+                    <label className="inline-flex items-center gap-2">
+                      <input
+                        type="radio"
+                        name="mode"
+                        value="now"
+                        checked={mode === 'now'}
+                        onChange={() => setMode('now')}
+                      />
+                      <span>ASAP</span>
+                    </label>
+                    <label className="inline-flex items-center gap-2">
+                      <input
+                        type="radio"
+                        name="mode"
+                        value="schedule"
+                        checked={mode === 'schedule'}
+                        onChange={() => setMode('schedule')}
+                      />
+                      <span>Schedule</span>
+                    </label>
+                  </div>
+
+                  {mode === 'schedule' && (
+                    <div className="flex gap-3">
+                      <input
+                        type="date"
+                        className="flex-1 rounded-md bg-white/5 border border-white/20 px-3 py-2 text-sm"
+                        value={date}
+                        onChange={(e) => setDate(e.target.value)}
+                      />
+                      <input
+                        type="time"
+                        className="flex-1 rounded-md bg-white/5 border border-white/20 px-3 py-2 text-sm"
+                        value={timeStr}
+                        onChange={(e) => setTimeStr(e.target.value)}
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                className="w-full mt-4 rounded-md border border-white/20 px-4 py-2 text-sm font-medium hover:border-white/40"
+              >
+                Save changes
+              </button>
+            </form>
         )}
       </div>
     </div>

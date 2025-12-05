@@ -1219,26 +1219,48 @@ func getTask(c *gin.Context) {
 
 func updateTask(c *gin.Context) {
 	id := c.Param("id")
+
 	meUID := c.GetString("uid")
-	if meUID == "" {
+	meEmail := c.GetString("email")
+
+	if meUID == "" && meEmail == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
 		return
 	}
+
 	ctx := c.Request.Context()
 
-	// 檢查擁有者 & 狀態
-	// 檢查擁有者 & 狀態（用 requester_id）
-	var requesterID, status string
+	// 多抓 requester（email）一起比
+	var requesterID, requesterEmail, status string
 	if err := db.QueryRow(ctx,
-		`select requester_id, status from public.tasks where id=$1`, id,
-	).Scan(&requesterID, &status); err != nil {
+		`select requester_id, requester, status from public.tasks where id=$1`,
+		id,
+	).Scan(&requesterID, &requesterEmail, &status); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
-	if requesterID != meUID {
-		c.JSON(http.StatusForbidden, gin.H{"error": "not your task"})
+
+	// Debug log：之後看 log 就知道為什麼被擋
+	log.Printf(
+		"[updateTask] id=%s meUID=%s meEmail=%s db.requester_id=%s db.requester=%s status=%s",
+		id, meUID, meEmail, requesterID, requesterEmail, status,
+	)
+
+	// ✅ 只要「其中一種身分」對得上，就視為 owner
+	isOwnerByID := (meUID != "" && requesterID != "" && requesterID == meUID)
+	isOwnerByEmail := (meEmail != "" && requesterEmail != "" && strings.EqualFold(requesterEmail, meEmail))
+
+	if !isOwnerByID && !isOwnerByEmail {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error":        "not your task",
+			"me_uid":       meUID,
+			"me_email":     meEmail,
+			"requester_id": requesterID,
+			"requester":    requesterEmail,
+		})
 		return
 	}
+
 	if status != "open" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "only open tasks can be edited"})
 		return
@@ -1249,10 +1271,12 @@ func updateTask(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
 		return
 	}
+
 	in.Title = strings.TrimSpace(in.Title)
 	in.Description = strings.TrimSpace(in.Description)
 	in.Category = strings.TrimSpace(in.Category)
 	in.LocationText = strings.TrimSpace(in.LocationText)
+
 	if in.Title == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "title required"})
 		return
@@ -1285,15 +1309,33 @@ func updateTask(c *gin.Context) {
 	}
 
 	_, err := db.Exec(ctx, `
-    update public.tasks
-    set title=$1, description=$2, category=$3, location_text=$4,
-        estimated_minutes=$5, prepay_amount_cents=$6, is_immediate=$7, scheduled_at=$8
-    where id=$9
-  `, in.Title, in.Description, in.Category, in.LocationText, in.EstimatedMinutes, in.PrepayAmountCents, in.IsImmediate, when, id)
+        update public.tasks
+        set title=$1,
+            description=$2,
+            category=$3,
+            location_text=$4,
+            estimated_minutes=$5,
+            prepay_amount_cents=$6,
+            is_immediate=$7,
+            scheduled_at=$8
+        where id=$9
+    `,
+		in.Title,
+		in.Description,
+		in.Category,
+		in.LocationText,
+		in.EstimatedMinutes,
+		in.PrepayAmountCents,
+		in.IsImmediate,
+		when,
+		id,
+	)
 	if err != nil {
+		log.Printf("[updateTask] db error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
 	}
+
 	getTask(c)
 }
 
