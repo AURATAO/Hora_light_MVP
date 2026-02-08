@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { AuthAPI } from '../api/client.js'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useLoader } from '../providers/LoaderProvider.jsx'
+import { Link } from "react-router-dom";
 
 export default function Login() {
   const [email, setEmail] = useState('')
@@ -11,6 +12,7 @@ export default function Login() {
   const [loading, setLoading] = useState(false)
   const [checking, setChecking] = useState(true)
   const { wrap } = useLoader()
+  const [agree, setAgree] = useState(false);
 
   const nav = useNavigate()
   const loc = useLocation()
@@ -84,10 +86,15 @@ export default function Login() {
 
         <div className="flex items-center justify-center gap-4">
           <button
-            onClick={() => AuthAPI.loginWithGoogle(from)}
-            title="Continue with Google"
+            onClick={() => {
+              if (!agree) return
+              AuthAPI.loginWithGoogle(from)
+            }}
+            disabled={!agree}
+            title={!agree ? "Please agree to Privacy Policy and Terms to continue" : "Continue with Google"}
             aria-label="Continue with Google"
-            className="group h-12 w-12 rounded-full border border-slate-200 bg-white shadow-sm transition hover:shadow-md active:scale-95 flex items-center justify-center"
+            className={`group h-12 w-12 rounded-full border border-slate-200 bg-white shadow-sm transition active:scale-95 flex items-center justify-center
+              ${!agree ? "opacity-40 cursor-not-allowed" : "hover:shadow-md"}`}
           >
             {/* Google SVG */}
             <svg viewBox="0 0 48 48" className="h-6 w-6" aria-hidden>
@@ -171,9 +178,20 @@ export default function Login() {
           </div>
         )} */}
 
-        <div className="mt-6 text-center text-xs text-slate-500">
+        {/* <div className="mt-6 text-center text-xs text-slate-500">
           By continuing, you agree to our <a href="https://www.horaapp.co/terms" className="underline">Terms</a> & <a href="https://www.horaapp.co/privacy" className="underline">Privacy</a>.
-        </div>
+        </div> */}
+        <div className="flex items-center mb-4">
+                    <input 
+                    type="checkbox"
+                    checked={agree}
+                    onChange={(e) => setAgree(e.target.checked)}
+                    className="mr-2 accent-secondary"
+                    />
+                    <span className="text-primary text-sm">
+                    I have read and agree to the <Link to="/privacy" className="underline text-secondary">Privacy Policy</Link> and <Link to="/terms" className="underline text-secondary">Terms of Use</Link>.
+                    </span>
+                </div>
       </div>
     </div>
   )
