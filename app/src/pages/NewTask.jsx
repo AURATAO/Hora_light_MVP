@@ -25,6 +25,10 @@ export default function NewTask() {
   const [timeStr, setTimeStr] = useState('')
   const [successOpen, setSuccessOpen] = useState(false)
 
+  const [compPolicyOpen, setCompPolicyOpen] = useState(false)
+  const [compPolicyAgreed, setCompPolicyAgreed] = useState(false)
+  const [compPolicyChecked, setCompPolicyChecked] = useState(false)
+
   const goToPosted = () => {
   setSuccessOpen(false);
   nav('/my', { replace: true });
@@ -59,8 +63,9 @@ export default function NewTask() {
     if (!minutes || Number(minutes) <= 0) e.minutes = 'Minutes must be > 0'
     if (prepay !== '' && (Number.isNaN(Number(prepay)) || Number(prepay) < 0)) e.prepay = 'Invalid advance'
     if (mode === 'schedule' && (!date || !timeStr)) e.when = 'Pick date & time'
+    if (category === 'companion' && !compPolicyAgreed) e.category = 'Please review & agree to the companionship policy'
     return e
-  }, [title, minutes, prepay, mode, date, timeStr])
+  }, [title, minutes, prepay, mode, date, timeStr,category, compPolicyAgreed])
 
   const canSubmit = Object.keys(errors).length === 0
 
@@ -136,6 +141,40 @@ export default function NewTask() {
     return <div className="p-6">Loading…</div>
   }
 
+  //Policy for companion category 
+const COMP_POLICY_TEXT = `Companionship (Accompaniment) Policy
+
+What it IS:
+• Public-route accompaniment only (e.g., walking together in public areas, escorting someone to a nearby appointment, accompanying someone to a subway/bus stop).
+• Non-medical, non-caregiving, and strictly for general presence/support in public.
+
+What it is NOT:
+• No medical or personal care (no medication handling, bathing, lifting, or physical assistance).
+• No services involving minors.
+• No intimate/sexual services, no dating positioning.
+• No overnight stays.
+• No staying inside a private residence.
+
+Safety & boundaries:
+• Keep the route in public places; either party can end the task anytime if uncomfortable.
+• If a request involves restricted activities, it must be declined and reported to the platform.
+`
+
+function openCompanionPolicy() {
+  setCompPolicyChecked(false)
+  setCompPolicyOpen(true)
+}
+
+function closeCompanionPolicy() {
+  setCompPolicyOpen(false)
+}
+
+function confirmCompanionPolicy() {
+  setCompPolicyAgreed(true)
+  setCompPolicyOpen(false)
+  setCategory('companion')
+}
+
   return (
     <div className="bg-linear-to-br from-primary to-primary/30 text-accent min-h-screen py-[100px] px-4">
       <div className="mx-auto max-w-md space-y-4 border border-primary/30 backdrop-blur-md p-8 rounded-lg shadow">
@@ -173,11 +212,25 @@ export default function NewTask() {
                 className={`px-3 py-1.5 rounded-md border ${category==='task'?'bg-white text-black border-white':'border-white/20 hover:border-white/40'}`}>
                 Task
               </button>
-              <button type="button" onClick={()=>setCategory('companion')}
-                className={`px-3 py-1.5 rounded-md border ${category==='companion'?'bg-white text-black border-white':'border-white/20 hover:border-white/40'}`}>
-                Companion
+              <button
+                type="button"
+                onClick={() => {
+                  if (compPolicyAgreed) {
+                    setCategory('companion')
+                    return
+                  }
+                  openCompanionPolicy()
+                }}
+                className={`px-3 py-1.5 rounded-md border ${
+                  category==='companion'
+                    ? 'bg-white text-black border-white'
+                    : 'border-white/20 hover:border-white/40'
+                }`}
+              >
+                Companion {compPolicyAgreed ? '✓' : ''}
               </button>
             </div>
+               {touched && errors.category && <div className="text-sm text-red-400">{errors.category}</div>}
           </div>
 
           {/* Locations */}
@@ -294,7 +347,8 @@ export default function NewTask() {
             <button type="button"
               onClick={()=>{
                 setTitle(''); setDescription(''); setCategory('task');
-                setLocations([{ label: '' }]); setMinutes(30); setPrepay(''); setTouched(false)
+                setLocations([{ label: '' }]); setMinutes(30); setPrepay(''); setTouched(false);setCompPolicyAgreed(false); setCompPolicyChecked(false); setCompPolicyOpen(false);
+                
               }}
               className="rounded-md px-4 py-2 border border-white/20 hover:border-white/40">
               Clear
@@ -319,6 +373,54 @@ export default function NewTask() {
           </>
         }
       />
+      <Modal
+        open={compPolicyOpen}
+        onClose={() => {
+          closeCompanionPolicy()
+          // 沒同意就不要切到 companion
+          if (!compPolicyAgreed) setCategory('task')
+        }}
+        title="Companionship Policy"
+        actions={
+          <>
+            <button
+              className="rounded-md px-4 py-2 border border-white/20 hover:border-white/40"
+              onClick={() => {
+                closeCompanionPolicy()
+                if (!compPolicyAgreed) setCategory('task')
+              }}
+            >
+              Cancel
+            </button>
+
+            <button
+              className="rounded-md px-4 py-2 bg-white text-black disabled:opacity-50"
+              disabled={!compPolicyChecked}
+              onClick={confirmCompanionPolicy}
+            >
+              Confirm & Continue
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <div className="whitespace-pre-wrap rounded-md border border-white/20 p-3 max-h-[45vh] overflow-auto">
+            {COMP_POLICY_TEXT}
+          </div>
+
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={compPolicyChecked}
+              onChange={(e) => setCompPolicyChecked(e.target.checked)}
+              className="mt-1"
+            />
+            <span>I have read and agree to the companionship policy.</span>
+          </label>
+        </div>
+      </Modal>
     </div>
   )
 }
+
+
