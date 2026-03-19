@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { api } from '../api/client'
 import TaskCard from '../components/TaskCard'
+import SkeletonCard from '../components/SkeletonCard'
 
 function TabButton({ active, children, onClick }) {
   return (
@@ -79,7 +80,7 @@ export default function PublicProfile() {
           </div>
 
           {loading ? (
-            <div className="text-white/70">Loading…</div>
+            <SkeletonCard count={3} />
           ) : list.length === 0 ? (
             <div className="py-8 text-center text-white/60 text-sm">
               {tab === 'completed' && 'No completed tasks yet.'}

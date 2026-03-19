@@ -4,7 +4,7 @@ import { api } from '../api/client'
 import Modal from './Modal'
 
 function euro(cents) {
-  return `\u20AC${(cents / 100).toFixed(2)}`
+  return `$${(cents / 100).toFixed(2)}`
 }
 
 export default function CancelTaskButton({ taskId, disabled = false, onDone }) {

@@ -35,7 +35,7 @@ export default function TaskCard({ task, variant, onAccept, className = '', onAf
           <div className="font-medium underline-offset-2 group-hover:underline">{task.title}</div>
           <div className="text-xs text-white/70">
             {whenText}<span className="mx-2">•</span>{task.estimated_minutes} min
-            {advance > 0 && <><span className="mx-2">•</span>Advance {advance.toFixed(2)} EUR</>}
+            {advance > 0 && <><span className="mx-2">•</span>Advance ${advance.toFixed(2)}</>}
           </div>
         </div>
 

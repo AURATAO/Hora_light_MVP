@@ -89,6 +89,13 @@ export default function NewTask() {
   e.preventDefault()
   setTouched(true)
   if (!canSubmit) return
+  if (mode === 'schedule' && date && timeStr) {
+    const selected = new Date(`${date}T${timeStr}`)
+    if (selected < new Date()) {
+      toast('Please select a future date and time', 'error')
+      return
+    }
+  }
   setIsSubmitting(true)
   try {
     if (!user) throw new Error('Please sign in')
@@ -290,6 +297,7 @@ function confirmCompanionPolicy() {
                   type="date"
                   className={`rounded-md px-3 py-2 bg-transparent outline-none border ${errors.when ? 'border-red-400' : 'border-white/20'} focus:border-white/40 flex-1`}
                   value={date}
+                  min={new Date().toISOString().split('T')[0]}
                   onChange={(e)=>setDate(e.target.value)}
                 />
                 <input
@@ -314,11 +322,11 @@ function confirmCompanionPolicy() {
             />
             {touched && errors.minutes && <div className="text-sm text-red-400">{errors.minutes}</div>}
             <div className="text-xs text-white/80">
-              Time cost (~{MINUTE_RATE_EUR.toFixed(2)} EUR/min): <b>{timeCost.toFixed(2)} EUR</b>
+              Time cost (~${MINUTE_RATE_EUR.toFixed(2)}/min): <b>${timeCost.toFixed(2)}</b>
             </div>
 
             <div className="grid gap-1 mt-2">
-              <label className="text-sm">Advance for purchase (EUR)</label>
+              <label className="text-sm">Advance for purchase ($)</label>
               <input
                 type="number" min={0} step={0.01}
                 className={`rounded-md px-3 py-2 bg-transparent outline-none border ${touched && errors.prepay ? 'border-red-400' : 'border-white/20'} focus:border-white/40`}
@@ -334,10 +342,10 @@ function confirmCompanionPolicy() {
           <div className="text-xs text-white/80 rounded-md px-3 py-2 bg-transparent outline-none border flex flex-col items-start">
             Start: <b>{mode === 'now' ? 'ASAP' : (date && timeStr ? new Date(`${date}T${timeStr}`).toLocaleString() : '—')}</b>
             <span className="mx-2">•</span>
-            Time cost (~{MINUTE_RATE_EUR.toFixed(2)} EUR/min): <b>{timeCost.toFixed(2)} EUR</b>
-            {advance > 0 && <> <span className="mx-2">•</span> Advance: <b>{advance.toFixed(2)} EUR</b> </>}
+            Time cost (~${MINUTE_RATE_EUR.toFixed(2)}/min): <b>${timeCost.toFixed(2)}</b>
+            {advance > 0 && <> <span className="mx-2">•</span> Advance: <b>${advance.toFixed(2)}</b> </>}
             <span className="mx-2">•</span>
-            Total estimate: <b>{totalEstimate.toFixed(2)} EUR</b>
+            Total estimate: <b>${totalEstimate.toFixed(2)}</b>
           </div>
 
           {/* Actions */}

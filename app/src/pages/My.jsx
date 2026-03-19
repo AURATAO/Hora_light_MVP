@@ -3,6 +3,7 @@ import { useLocation, useNavigate, Link } from 'react-router-dom' // ← 加這�
 import { api } from '../api/client'
 import { ProfileCard } from '../components/ProfileCard'
 import TaskCard from '../components/TaskCard'
+import SkeletonCard from '../components/SkeletonCard'
 import { useAuth } from '../auth/AuthContext'
 import NotificationFeed from '../components/NotificationFeed'
 import { useLoader } from '../providers/LoaderProvider'
@@ -318,7 +319,9 @@ function TaskList({ items, next, loading, variant, onAccept, onAfterChange, onLo
   const empty = EMPTY_STATES[variant] || { message: 'Nothing here yet.', cta: null }
   return (
     <div className="min-w-0">
-      {(!items || items.length === 0) && !loading ? (
+      {loading && (!items || items.length === 0) ? (
+        <SkeletonCard count={3} />
+      ) : (!items || items.length === 0) ? (
         <div className="py-8 flex flex-col items-center gap-3 text-center">
           <p className="text-white/60 text-sm">{empty.message}</p>
           {empty.cta && (

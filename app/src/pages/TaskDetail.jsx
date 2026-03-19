@@ -403,7 +403,7 @@ function removeLocation(i) {
             <div className="text-sm text-white/80 space-y-1">
               <div><b>When:</b> {whenText}</div>
               <div><b>Estimated:</b> {task.estimated_minutes} min</div>
-              <div><b>Advance:</b> {advanceEUR.toFixed(2)} EUR</div>
+              <div><b>Advance:</b> ${advanceEUR.toFixed(2)}</div>
               {/* <div><b>Locations:</b> {task.location_text || '—'}</div> */}
               <div><b className="block mb-2">Locations:</b>{' '}
                 {locs.length ? (
@@ -448,7 +448,7 @@ function removeLocation(i) {
             {(isOwner || isAssignee) && (
               <div className="border border-white/20 rounded-md p-3">
                 <div className="flex items-center justify-between">
-                  <div className="text-sm">Logged: <b>{work.total_minutes} min</b> · Est. <b>{totalEUR.toFixed(2)} EUR</b></div>
+                  <div className="text-sm">Logged: <b>{work.total_minutes} min</b> · Est. <b>${totalEUR.toFixed(2)}</b></div>
                   {isAssignee && task.status === 'open' && (
                     work.has_open ? (
                       <button onClick={clockOut} className="text-xs rounded-md border border-white/20 px-2 py-1 hover:border-white/40">
@@ -582,7 +582,7 @@ function removeLocation(i) {
 
                 {/* Advance */}
                 <label className="block text-sm text-white/80">
-                  Advance (EUR)
+                  Advance ($)
                   <input
                     type="number"
                     min={0}

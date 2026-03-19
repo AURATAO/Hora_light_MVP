@@ -227,7 +227,7 @@ export default function OpsFeed() {
                     {r.duration_minutes ? ` (${r.duration_minutes}m)` : ''}
                   </td>
                   <td className="p-2">
-                    {typeof r.prepay_amount === 'number' ? r.prepay_amount.toFixed(2) : '—'}
+                    {typeof r.prepay_amount === 'number' ? `$${r.prepay_amount.toFixed(2)}` : '—'}
                   </td>
                   <td className="p-2 text-xs">
                     {r.running_minutes > 0 && <span className="inline-block border rounded px-1 mr-1">running</span>}
