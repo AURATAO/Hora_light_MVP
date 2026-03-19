@@ -6,6 +6,7 @@ import TaskCard from '../components/TaskCard'
 import { useAuth } from '../auth/AuthContext'
 import NotificationFeed from '../components/NotificationFeed'
 import { useLoader } from '../providers/LoaderProvider'
+import { useToast } from '../providers/ToastProvider'
 
 
 function ThinCard({ children, className='' }) {
@@ -14,6 +15,7 @@ function ThinCard({ children, className='' }) {
 
 export default function My() {
   const { wrap } = useLoader()
+  const toast = useToast()
   const [profile, setProfile] = useState(null)
   const [tab, setTab] = useState('available') // available | assigned | posted | done
   // const [lists, setLists] = useState({ available:[], assigned:[], posted:[], done:[] })
@@ -123,7 +125,7 @@ export default function My() {
       const next = await api('/profile', { method: 'PATCH', body: patch })
       setProfile(next)
     } catch (e) {
-      alert(e.message || 'Failed to save profile')
+      toast(e.message || 'Failed to save profile')
     } finally {
       setSaving(false)
     }
@@ -145,7 +147,7 @@ export default function My() {
       await fetchPage('assigned',  null)
     })
   } catch (e) {
-    alert(e.message || 'Failed to accept')
+    toast(e.message || 'Failed to accept')
   }
 }
 

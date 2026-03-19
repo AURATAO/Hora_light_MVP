@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import AvatarUploader from './AvatarUploader'
 import { useAuth } from '../auth/AuthContext'
+import { useToast } from '../providers/ToastProvider'
 
 function ProfileCard() {
   const [profile, setProfile] = useState(null)
@@ -10,6 +11,7 @@ function ProfileCard() {
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
   const { user, loading: authLoading } = useAuth()
+  const toast = useToast()
 
 
   useEffect(() => {
@@ -63,7 +65,7 @@ function ProfileCard() {
       setDraft(next)
       setEditing(false)
     } catch (e) {
-      alert(e.message || 'Failed to save profile')
+      toast(e.message || 'Failed to save profile')
     } finally {
       setSaving(false)
     }
@@ -79,7 +81,7 @@ function ProfileCard() {
       setProfile(next)
       setDraft(next)
     } catch (e) {
-      alert(e.message || 'Failed to update avatar')
+      toast(e.message || 'Failed to update avatar')
     } finally {
       setSaving(false)
     }

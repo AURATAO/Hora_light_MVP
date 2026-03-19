@@ -1,10 +1,12 @@
 import { useRef, useState, useEffect } from 'react'
+import { useToast } from '../providers/ToastProvider'
 
 export default function AvatarUploader({ value, onChange, size = 96, className = '' }) {
   const [uploading, setUploading] = useState(false)
   const [displayURL, setDisplayURL] = useState(value || '')
   const inputRef = useRef(null)
   const lastBlobURL = useRef(null)
+  const toast = useToast()
 
   useEffect(() => {
     // 父層 value 變動時，也更新顯示（加 bust）
@@ -58,7 +60,7 @@ export default function AvatarUploader({ value, onChange, size = 96, className =
     const file = e.target.files?.[0]
     if (!file) return
     if (file.size > 5 * 1024 * 1024) {
-      alert('Max 5MB')
+      toast('Max 5MB — please choose a smaller image', 'error')
       e.target.value = ''
       return
     }
@@ -113,7 +115,7 @@ export default function AvatarUploader({ value, onChange, size = 96, className =
       setDisplayURL(bust(raw))
     } catch (err) {
       console.error('[avatar][upload]', err)
-      alert(err.message || 'Upload failed')
+      toast(err.message || 'Upload failed')
       // 發生錯誤時，把預覽復原成舊 value
       setDisplayURL(value ? bust(value) : '')
     } finally {

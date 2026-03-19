@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from "../auth/AuthContext.jsx";
 import { supabase } from '../lib/supabaseClient'
+import { useToast } from '../providers/ToastProvider'
 
 // ✅ 從環境變數讀 API Base（例如 https://core.horaapp.co）
 const API = (import.meta.env?.VITE_API_BASE || '').trim();
@@ -51,6 +52,7 @@ async function fetchJSON(path, init={}) {
 
 export default function OpsFeed() {
   const { user } = useAuth()
+  const toast = useToast()
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
@@ -119,7 +121,7 @@ export default function OpsFeed() {
       });
       load();
     } catch (e) {
-      alert(e.message);
+      toast(e.message || 'Action failed');
     }
   }
 
@@ -135,7 +137,7 @@ export default function OpsFeed() {
       });
       load();
     } catch (e) {
-      alert(e.message);
+      toast(e.message || 'Action failed');
     }
   }
 
@@ -154,7 +156,7 @@ export default function OpsFeed() {
       });
       load();
     } catch (e) {
-      alert(e.message);
+      toast(e.message || 'Action failed');
     }
   }
 

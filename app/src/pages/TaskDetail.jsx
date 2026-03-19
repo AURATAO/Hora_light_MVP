@@ -7,6 +7,7 @@ import UserPill from '../components/UserPill'
 import { gmapsPlaceUrl, gmapsDirectionsUrl } from '../utils/gmaps'
 import { useLoader } from '../providers/LoaderProvider.jsx'
 import PlaceInput from '../components/PlaceInput'
+import { useToast } from '../providers/ToastProvider'
 
 const MINUTE_RATE_EUR = 0.5
 
@@ -16,6 +17,7 @@ export default function TaskDetail() {
   // const { user, loading: authLoading } = useAuth()
   const { user } = useAuth()
   const { wrap } = useLoader()
+  const toast = useToast()
   const [task, setTask] = useState(null)
   const [work, setWork] = useState({ items: [], total_minutes: 0, total_cost_cents: 0, has_open: false })
 
@@ -167,7 +169,7 @@ function removeLocation(i) {
        await api(`/tasks/${id}/accept`, { method: 'POST' })
        await reloadWorkAndTask()
      } catch (e) {
-       alert(e.message || 'Failed to accept')
+       toast(e.message || 'Failed to accept')
      }
    })
   }
@@ -184,7 +186,7 @@ function removeLocation(i) {
        await api(`/tasks/${id}/clock-in`, { method: 'POST' })
        await reloadWorkAndTask()
      } catch (e) {
-       alert(e.message || 'Clock in failed')
+       toast(e.message || 'Clock in failed')
      }
    })
   }
@@ -200,7 +202,7 @@ function removeLocation(i) {
        await api(`/tasks/${id}/clock-out`, { method: 'POST' })
        await reloadWorkAndTask()
      } catch (e) {
-       alert(e.message || 'Clock out failed')
+       toast(e.message || 'Clock out failed')
      }
    })
   }
@@ -217,7 +219,7 @@ function removeLocation(i) {
        await api(`/tasks/${id}/complete`, { method: 'POST' })
        navigate('/my?tab=done', { replace: true })
      } catch (e) {
-       alert(e.message || 'Complete failed')
+       toast(e.message || 'Complete failed')
      }
    })
   }
@@ -331,7 +333,7 @@ function removeLocation(i) {
       setTask(updated)
       setEditing(false)
     } catch (e) {
-      alert(e.message || 'Failed to save')
+      toast(e.message || 'Failed to save')
     }
   })
 }

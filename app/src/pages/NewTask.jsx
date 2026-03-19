@@ -4,12 +4,14 @@ import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import Modal from '../components/Modal'
 import PlaceInput from '../components/PlaceInput'
+import { useToast } from '../providers/ToastProvider'
 
 const MINUTE_RATE_EUR = 0.5
 
 export default function NewTask() {
   const nav = useNavigate()
   const { user, loading: authLoading } = useAuth()
+  const toast = useToast()
 
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
@@ -126,7 +128,7 @@ export default function NewTask() {
     setSuccessOpen(true)
     return
   } catch (err) {
-    alert(err.message || 'Failed to create task')
+    toast(err.message || 'Failed to create task')
   } finally {
     setIsSubmitting(false)
   }

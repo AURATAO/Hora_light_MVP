@@ -8,6 +8,8 @@ import TaskDetail from "./pages/TaskDetail.jsx";
 import My from "./pages/My.jsx";
 import PublicProfilePage from "./pages/PublicProfilePage.jsx";
 import OpsFeed from "./pages/OpsFeed.jsx";
+import Terms from "./pages/Terms.jsx";
+import Privacy from "./pages/Privacy.jsx";
 
 export default function App() {
   console.log("[App] routes boot");
@@ -15,6 +17,8 @@ export default function App() {
     <Routes>
       {/* 公開頁 */}
       <Route path="/login" element={<Login />} />
+      <Route path="/terms" element={<Terms />} />
+      <Route path="/privacy" element={<Privacy />} />
      
 
       {/* 受保護區：唯一守門 */}
