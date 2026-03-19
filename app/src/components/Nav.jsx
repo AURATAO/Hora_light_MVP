@@ -107,7 +107,7 @@ export default function Nav() {
           </div>
 
           {authed ? (
-            <button onClick={handleLogout}>Logout</button>
+            <button onClick={handleLogout} className="opacity-80 hover:opacity-100 transition-opacity">Logout</button>
           ) : (
             <Link to="/login">Login</Link>
           )}

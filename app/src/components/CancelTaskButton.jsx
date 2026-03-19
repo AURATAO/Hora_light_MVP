@@ -59,12 +59,12 @@ export default function CancelTaskButton({ taskId, disabled = false, onDone }) {
             <>
               <Link
                 to={`/tasks/${taskId}`}
-                className="px-3 py-1.5 rounded border border-white/20 hover:border-white/40 text-accent"
+                className="px-3 py-1.5 rounded-md border border-white/20 hover:border-white/40 text-accent"
               >
                 View task
               </Link>
               <button
-                className="px-3 py-1.5 rounded bg-white/90 text-black hover:bg-white"
+                className="px-3 py-1.5 rounded-md bg-white/90 text-black hover:bg-white"
                 onClick={() => setOpen(false)}
               >
                 Done
@@ -73,14 +73,14 @@ export default function CancelTaskButton({ taskId, disabled = false, onDone }) {
           ) : (
             <>
               <button
-                className="px-3 py-1.5 rounded border border-white/20 hover:border-white/40 text-accent"
+                className="px-3 py-1.5 rounded-md border border-white/20 hover:border-white/40 text-accent"
                 onClick={() => setOpen(false)}
                 disabled={submitting}
               >
                 Never mind
               </button>
               <button
-                className="px-3 py-1.5 rounded bg-red-500/90 hover:bg-red-500 text-black disabled:opacity-60"
+                className="px-3 py-1.5 rounded-md bg-red-500/90 hover:bg-red-500 text-black disabled:opacity-60"
                 onClick={submit}
                 disabled={submitting}
               >

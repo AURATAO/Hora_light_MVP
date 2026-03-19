@@ -9,7 +9,6 @@ import { useLoader } from '../providers/LoaderProvider.jsx'
 import PlaceInput from '../components/PlaceInput'
 import { useToast } from '../providers/ToastProvider'
 
-const MINUTE_RATE_EUR = 0.5
 
 export default function TaskDetail() {
   const { id } = useParams()
@@ -284,7 +283,6 @@ function removeLocation(i) {
     return ''
   }, [mode, date, timeStr])
 
-  const timeCost = useMemo(() => Number(minutes || 0) * MINUTE_RATE_EUR, [minutes])
   const advance  = useMemo(() => {
     if (prepay === '') return 0
     const n = Number(prepay)
@@ -640,7 +638,7 @@ function removeLocation(i) {
 
               <button
                 type="submit"
-                className="w-full mt-4 rounded-md border border-white/20 px-4 py-2 text-sm font-medium hover:border-white/40"
+                className="w-full mt-4 rounded-md bg-white text-black px-4 py-2 text-sm font-medium hover:bg-white/90 disabled:opacity-50"
               >
                 Save changes
               </button>

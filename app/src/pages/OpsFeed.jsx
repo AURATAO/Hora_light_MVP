@@ -235,9 +235,9 @@ export default function OpsFeed() {
                   </td>
                   <td className="p-2">
                     <div className="flex gap-1">
-                      <button className="border rounded px-2 py-0.5" onClick={()=>adjustTime(r.task_id)}>Adjust</button>
-                      <button className="border rounded px-2 py-0.5" onClick={()=>forceComplete(r.task_id)}>Force</button>
-                      <button className="border rounded px-2 py-0.5" onClick={()=>cancelTask(r.task_id)}>Cancel</button>
+                      <button className="rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40" onClick={()=>adjustTime(r.task_id)}>Adjust</button>
+                      <button className="rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40" onClick={()=>forceComplete(r.task_id)}>Force</button>
+                      <button className="rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40" onClick={()=>cancelTask(r.task_id)}>Cancel</button>
                     </div>
                   </td>
                 </tr>
