@@ -81,7 +81,11 @@ export default function PublicProfile() {
           {loading ? (
             <div className="text-white/70">Loading…</div>
           ) : list.length === 0 ? (
-            <div className="text-white/70">No items.</div>
+            <div className="py-8 text-center text-white/60 text-sm">
+              {tab === 'completed' && 'No completed tasks yet.'}
+              {tab === 'inprogress' && 'No tasks in progress right now.'}
+              {tab === 'posted' && "This user hasn't posted any tasks yet."}
+            </div>
           ) : (
             <ul className="space-y-2">
               {list.map(t => (

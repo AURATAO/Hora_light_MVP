@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'         // ← 加 useRef
-import { useLocation, useNavigate } from 'react-router-dom' // ← 加這兩個
+import { useLocation, useNavigate, Link } from 'react-router-dom' // ← 加這兩個
 import { api } from '../api/client'
 import { ProfileCard } from '../components/ProfileCard'
 import TaskCard from '../components/TaskCard'
@@ -295,11 +295,41 @@ export default function My() {
 )
 }
 
+const EMPTY_STATES = {
+  available: {
+    message: 'No tasks available right now.',
+    cta: null,
+  },
+  assigned: {
+    message: "You haven't accepted any tasks yet.",
+    cta: null,
+  },
+  posted: {
+    message: "No tasks yet — post your first one!",
+    cta: { label: 'Post a task', to: '/tasks/new' },
+  },
+  done: {
+    message: 'No completed tasks yet.',
+    cta: null,
+  },
+}
+
 function TaskList({ items, next, loading, variant, onAccept, onAfterChange, onLoadMore }) {
+  const empty = EMPTY_STATES[variant] || { message: 'Nothing here yet.', cta: null }
   return (
     <div className="min-w-0">
-      {(!items || items.length === 0) ? (
-        <div className="text-white/70">No items.</div>
+      {(!items || items.length === 0) && !loading ? (
+        <div className="py-8 flex flex-col items-center gap-3 text-center">
+          <p className="text-white/60 text-sm">{empty.message}</p>
+          {empty.cta && (
+            <Link
+              to={empty.cta.to}
+              className="rounded-md border border-white/20 px-4 py-1.5 text-sm hover:border-white/40 transition-colors"
+            >
+              {empty.cta.label}
+            </Link>
+          )}
+        </div>
       ) : (
         <ul className="space-y-2">
           {items.map(t => (
@@ -318,13 +348,18 @@ function TaskList({ items, next, loading, variant, onAccept, onAfterChange, onLo
           <button
             disabled={loading}
             onClick={onLoadMore}
-            className="rounded-md border border-white/20 px-3 py-1 text-sm hover:border-white/40 disabled:opacity-50"
+            className="rounded-md border border-white/20 px-3 py-1 text-sm hover:border-white/40 disabled:opacity-50 flex items-center gap-2"
           >
-            {loading ? 'Loading…' : 'Load more'}
+            {loading ? (
+              <>
+                <span className="inline-block w-3 h-3 border-2 border-white/30 border-t-white/80 rounded-full animate-spin" />
+                Loading…
+              </>
+            ) : 'Load more'}
           </button>
-        ) : (
-          <div className="text-xs text-white/50">{loading ? 'Loading…' : 'No more'}</div>
-        )}
+        ) : items?.length > 0 ? (
+          <p className="text-xs text-white/40">You've reached the end.</p>
+        ) : null}
       </div>
     </div>
   )
