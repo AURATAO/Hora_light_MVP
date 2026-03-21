@@ -1,11 +1,14 @@
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "./AuthContext.jsx";
 import { useEffect, useState } from "react";
+import BetaModal from "../components/BetaModal.jsx";
+import { useProfileGate } from "../hooks/useProfileGate.js";
 
 export default function ProtectedLayout() {
   const { user, loading } = useAuth();
   const loc = useLocation();
   const [timeoutHit, setTimeoutHit] = useState(false);
+  const { checking } = useProfileGate();
 
   // 最多等 8 秒就不再顯示空白
   useEffect(() => {
@@ -14,7 +17,6 @@ export default function ProtectedLayout() {
     return () => clearTimeout(t);
   }, [loading]);
 
-  // ✅ 放到這裡（宣告之後）
   console.log("[Guard]", { loading, user, timeoutHit });
 
   if (loading && !timeoutHit) {
@@ -31,5 +33,12 @@ export default function ProtectedLayout() {
     );
   }
 
-  return <Outlet />;
+  if (checking) return null
+
+  return (
+    <>
+      <BetaModal />
+      <Outlet />
+    </>
+  )
 }

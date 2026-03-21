@@ -10,6 +10,7 @@ import PublicProfilePage from "./pages/PublicProfilePage.jsx";
 import OpsFeed from "./pages/OpsFeed.jsx";
 import Terms from "./pages/Terms.jsx";
 import Privacy from "./pages/Privacy.jsx";
+import Profile from "./pages/Profile.jsx";
 
 export default function App() {
   console.log("[App] routes boot");
@@ -29,6 +30,7 @@ export default function App() {
           <Route path="tasks/new" element={<NewTask />} />
           <Route path="tasks/:id" element={<TaskDetail />} />
           <Route path="my" element={<My />} />
+          <Route path="profile" element={<Profile />} />
            <Route path="u/:id" element={<PublicProfilePage />} />
         </Route>
       </Route>

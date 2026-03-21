@@ -15,7 +15,8 @@ export async function createTask({
     .from("tasks")
     .insert([
       {
-        requester: user.id,
+        requester: user.email,
+        requester_id: user.id,
         title,
         description,
         category,
@@ -46,7 +47,7 @@ export async function acceptTask(taskId) {
   if (!user) throw new Error("未登入");
   const { data, error } = await supabase
     .from("tasks")
-    .update({ assigned_to: user.id })
+    .update({ assigned_to: user.email, assigned_to_id: user.id })
     .eq("id", taskId)
     .is("assigned_to", null)
     .eq("status", "open")

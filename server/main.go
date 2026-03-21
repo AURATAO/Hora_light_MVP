@@ -102,14 +102,15 @@ type createTaskInput struct {
 }
 
 type Profile struct {
-	Email     string    `json:"email"`
-	Name      string    `json:"name"`
-	Phone     string    `json:"phone"`
-	City      string    `json:"city"`
-	AvatarURL string    `json:"avatar_url"`
-	Bio       string    `json:"bio"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Email        string    `json:"email"`
+	Name         string    `json:"name"`
+	Phone        string    `json:"phone"`
+	City         string    `json:"city"`
+	AvatarURL    string    `json:"avatar_url"`
+	Bio          string    `json:"bio"`
+	BetaAccepted bool      `json:"beta_accepted"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 type PublicProfile struct {
@@ -659,10 +660,10 @@ func getMyProfile(c *gin.Context) {
 
 	// 以 email 先找一筆（你本來就這樣）
 	err := db.QueryRow(ctx, `
-    select id::text, email, name, phone, city, avatar_url, bio, created_at, updated_at
+    select id::text, email, name, phone, city, avatar_url, bio, beta_accepted, created_at, updated_at
     from public.profiles
     where email = $1
-  `, email).Scan(&existingID, &p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.CreatedAt, &p.UpdatedAt)
+  `, email).Scan(&existingID, &p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.BetaAccepted, &p.CreatedAt, &p.UpdatedAt)
 
 	now := time.Now()
 
@@ -704,9 +705,9 @@ func getMyProfile(c *gin.Context) {
 
 	// 回傳最新資料
 	_ = db.QueryRow(ctx, `
-    select email, name, phone, city, avatar_url, bio, created_at, updated_at
+    select email, name, phone, city, avatar_url, bio, beta_accepted, created_at, updated_at
     from public.profiles where email = $1
-  `, email).Scan(&p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.CreatedAt, &p.UpdatedAt)
+  `, email).Scan(&p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.BetaAccepted, &p.CreatedAt, &p.UpdatedAt)
 
 	c.JSON(http.StatusOK, p)
 }
@@ -720,11 +721,12 @@ func patchMyProfile(c *gin.Context) {
 	}
 
 	var in struct {
-		Name      *string `json:"name"`
-		Phone     *string `json:"phone"`
-		City      *string `json:"city"`
-		AvatarURL *string `json:"avatar_url"`
-		Bio       *string `json:"bio"`
+		Name         *string `json:"name"`
+		Phone        *string `json:"phone"`
+		City         *string `json:"city"`
+		AvatarURL    *string `json:"avatar_url"`
+		Bio          *string `json:"bio"`
+		BetaAccepted *bool   `json:"beta_accepted"`
 	}
 	if err := c.BindJSON(&in); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
@@ -734,9 +736,9 @@ func patchMyProfile(c *gin.Context) {
 	ctx := c.Request.Context()
 	var p Profile
 	_ = db.QueryRow(ctx, `
-    select email, name, phone, city, avatar_url, bio, created_at, updated_at
+    select email, name, phone, city, avatar_url, bio, beta_accepted, created_at, updated_at
     from public.profiles where email = $1
-  `, email).Scan(&p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.CreatedAt, &p.UpdatedAt)
+  `, email).Scan(&p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.BetaAccepted, &p.CreatedAt, &p.UpdatedAt)
 
 	if in.Name != nil {
 		p.Name = strings.TrimSpace(*in.Name)
@@ -753,6 +755,9 @@ func patchMyProfile(c *gin.Context) {
 	if in.Bio != nil {
 		p.Bio = strings.TrimSpace(*in.Bio)
 	}
+	if in.BetaAccepted != nil {
+		p.BetaAccepted = *in.BetaAccepted
+	}
 	p.Email = email
 	if p.CreatedAt.IsZero() {
 		p.CreatedAt = time.Now()
@@ -760,11 +765,11 @@ func patchMyProfile(c *gin.Context) {
 	p.UpdatedAt = time.Now()
 
 	_, err := db.Exec(ctx, `
-	insert into public.profiles(id,email,name,phone,city,avatar_url,bio,created_at,updated_at)
-	values ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)
+	insert into public.profiles(id,email,name,phone,city,avatar_url,bio,beta_accepted,created_at,updated_at)
+	values ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 	on conflict (email) do update
-		set name=$3, phone=$4, city=$5, avatar_url=$6, bio=$7, updated_at=$9
-	`, uid, p.Email, p.Name, p.Phone, p.City, p.AvatarURL, p.Bio, p.CreatedAt, p.UpdatedAt)
+		set name=$3, phone=$4, city=$5, avatar_url=$6, bio=$7, beta_accepted=$8, updated_at=$10
+	`, uid, p.Email, p.Name, p.Phone, p.City, p.AvatarURL, p.Bio, p.BetaAccepted, p.CreatedAt, p.UpdatedAt)
 	if err != nil {
 		log.Printf("[profile][upsert] email=%s err=%v", email, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
