@@ -127,7 +127,7 @@ function ProfileCard() {
           <>
             {/* 顯示模式：手機直排、桌機橫排 */}
             <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2">
-              <div className="text-lg font-semibold truncate">{profile?.name || '—'}</div>
+              <div className="text-xl font-heading truncate">{profile?.name || '—'}</div>
               {/* 手機允許換行；桌機可截斷 */}
               <span className="text-xs text-white/70 wrap-break-words sm:truncate">
                 {profile?.email}

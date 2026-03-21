@@ -214,8 +214,10 @@ export default function My() {
                 {tabs.map(t => (
                   <button
                     key={t.key}
-                    className={`shrink-0 px-3 py-1.5 rounded-md border text-sm md:text-base ${
-                      tab === t.key ? 'border-white/40 bg-white/10' : 'border-white/10 hover:border-white/30'
+                    className={`shrink-0 px-3 py-1.5 rounded-full border text-sm font-secondary tracking-wide transition-colors ${
+                      tab === t.key
+                        ? 'border-secondary/50 bg-secondary/10 text-secondary'
+                        : 'border-white/10 text-white/60 hover:border-white/25 hover:text-white/80'
                     }`}
                     onClick={() => {
                       setTab(t.key)

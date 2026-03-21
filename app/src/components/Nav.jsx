@@ -81,7 +81,12 @@ export default function Nav() {
           <img src={`${import.meta.env.BASE_URL}Logo.svg`} className="h-7 w-30" alt="Hora" />
         </Link>
         <div className="flex justify-center gap-4 ml-auto items-center">
-          <Link to="/tasks/new">Post a Task</Link>
+          <Link
+            to="/tasks/new"
+            className="rounded-full border border-secondary/50 text-secondary px-3 py-1 text-sm hover:bg-secondary/10 transition-colors"
+          >
+            Post a Task
+          </Link>
 
           
          <div className="relative">

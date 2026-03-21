@@ -3,7 +3,6 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { AuthAPI } from '../api/client.js'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useLoader } from '../providers/LoaderProvider.jsx'
-import { Link } from "react-router-dom";
 
 export default function Login() {
   const [email, setEmail] = useState('')
@@ -189,7 +188,7 @@ export default function Login() {
                     className="mr-2 accent-secondary"
                     />
                     <span className="text-primary text-sm">
-                    I have read and agree to the <Link to="/privacy" className="underline text-secondary">Privacy Policy</Link> and <Link to="/terms" className="underline text-secondary">Terms of Use</Link>.
+                    I have read and agree to the <a href="https://www.my-hora.com/privacy" target="_blank" rel="noopener noreferrer" className="underline text-secondary">Privacy Policy</a> and <a href="https://www.my-hora.com/terms" target="_blank" rel="noopener noreferrer" className="underline text-secondary">Terms of Use</a>.
                     </span>
                 </div>
       </div>

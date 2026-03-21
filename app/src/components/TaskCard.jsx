@@ -1,6 +1,7 @@
 // app/src/components/TaskCard.jsx
 import { useNavigate } from 'react-router-dom'
 import CancelTaskButton from './CancelTaskButton'
+import StatusBadge from './StatusBadge'
 
 export default function TaskCard({ task, variant, onAccept, className = '', onAfterChange }) {
   const navigate = useNavigate()
@@ -27,7 +28,7 @@ export default function TaskCard({ task, variant, onAccept, className = '', onAf
       tabIndex={0}
       onClick={openDetail}
       onKeyDown={onKey}
-      className={`group cursor-pointer border border-white/15 rounded-lg p-3 bg-white/5 hover:border-white/40 transition ${className}`}
+      className={`group cursor-pointer border border-white/15 rounded-lg p-3 bg-white/5 hover:border-white/30 hover:bg-white/8 transition-colors ${className}`}
       aria-label={`Open task ${task.title}`}
     >
       <div className="flex items-start gap-3">
@@ -37,6 +38,9 @@ export default function TaskCard({ task, variant, onAccept, className = '', onAf
             {whenText}<span className="mx-2">•</span>{task.estimated_minutes} min
             {advance > 0 && <><span className="mx-2">•</span>Advance ${advance.toFixed(2)}</>}
           </div>
+          <div className="mt-1.5">
+            <StatusBadge status={task.status} />
+          </div>
         </div>
 
         {/* 右上角動作 */}
@@ -44,7 +48,7 @@ export default function TaskCard({ task, variant, onAccept, className = '', onAf
           <div className="flex items-center gap-2">
             <button
               onClick={(e) => { e.stopPropagation(); onAccept?.(task.id) }}
-              className="rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40"
+              className="rounded-md border border-secondary/50 bg-secondary/15 text-secondary px-2 py-1 text-xs hover:bg-secondary/25 transition-colors"
             >
               Accept
             </button>
