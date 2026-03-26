@@ -41,6 +41,7 @@ import (
 	"github.com/joho/godotenv"
 
 	opsroutes "hora-auth/ops"
+	"hora-auth/helpers"
 
 	storage_go "github.com/supabase-community/storage-go"
 )
@@ -375,6 +376,19 @@ func main() {
 		tasksAPI.POST("/:id/gps-ping", saveGpsPing)
 		tasksAPI.GET("/:id/gps-latest", getLatestGps)
 	}
+
+	// dev-only WhatsApp test route
+	if os.Getenv("GO_ENV") == "development" {
+		r.GET("/test-whatsapp", func(c *gin.Context) {
+			to := os.Getenv("TEST_WHATSAPP_NUMBER")
+			if err := helpers.SendWhatsApp(to, "Hi! This is Hora. WhatsApp integration is working!"); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"success": true})
+		})
+	}
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -1772,6 +1786,23 @@ func clockIn(c *gin.Context) {
 		ID: id, TaskID: taskID, User: meEmail, Start: startAt, End: nil,
 		CreatedAt: createdAt, UpdatedAt: createdAt,
 	})
+
+	// WhatsApp: notify requester that supporter has clocked in
+	go func() {
+		var requesterEmail string
+		var requesterPhone string
+		if err := db.QueryRow(context.Background(), `
+			select t.requester, p.phone
+			from public.tasks t
+			join public.profiles p on p.email = t.requester
+			where t.id = $1::uuid
+		`, taskID).Scan(&requesterEmail, &requesterPhone); err == nil && requesterPhone != "" {
+			_ = helpers.SendWhatsApp(requesterPhone, fmt.Sprintf(
+				"Hi! Your supporter has arrived and clocked in at %s. Need anything? Just reply here.",
+				startAt.Format("15:04"),
+			))
+		}
+	}()
 }
 
 func clockOut(c *gin.Context) {
@@ -1811,6 +1842,29 @@ func clockOut(c *gin.Context) {
 		ID: wlID, TaskID: taskID, User: meEmail,
 		Start: startAt, End: &endAt, CreatedAt: createdAt, UpdatedAt: updatedAt,
 	})
+
+	// WhatsApp: notify requester that supporter has clocked out
+	go func() {
+		duration := endAt.Sub(startAt).Round(time.Minute)
+		hours := int(duration.Hours())
+		mins := int(duration.Minutes()) % 60
+		durationStr := fmt.Sprintf("%d min", int(duration.Minutes()))
+		if hours > 0 {
+			durationStr = fmt.Sprintf("%dh %dmin", hours, mins)
+		}
+		var requesterPhone string
+		if err := db.QueryRow(context.Background(), `
+			select p.phone
+			from public.tasks t
+			join public.profiles p on p.email = t.requester
+			where t.id = $1::uuid
+		`, taskID).Scan(&requesterPhone); err == nil && requesterPhone != "" {
+			_ = helpers.SendWhatsApp(requesterPhone, fmt.Sprintf(
+				"Task complete! Your supporter logged %s. Payment has been processed. Reply 1-5 to rate your experience.",
+				durationStr,
+			))
+		}
+	}()
 
 	notifyRequester(c, taskID, "CLOCK_OUT",
 		"Supporter clocked out",
