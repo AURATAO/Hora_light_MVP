@@ -359,6 +359,9 @@ func main() {
 		tasksAPI.POST("/:id/clock-in", clockIn)
 		tasksAPI.POST("/:id/clock-out", clockOut)
 		tasksAPI.GET("/:id/worklogs", getWorklogs)
+
+		tasksAPI.POST("/:id/gps-ping", saveGpsPing)
+		tasksAPI.GET("/:id/gps-latest", getLatestGps)
 	}
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -1801,6 +1804,100 @@ func clockOut(c *gin.Context) {
 		"Supporter clocked out",
 		"Work session ended. We'll compute the bill and show the breakdown.",
 	)
+}
+
+// POST /tasks/:id/gps-ping — assignee saves current location while clocked in
+func saveGpsPing(c *gin.Context) {
+	taskID := c.Param("id")
+	meEmail := c.GetString("email")
+	uid := c.GetString("uid")
+	if meEmail == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+		return
+	}
+	ctx := c.Request.Context()
+
+	// must have an active clock-in session
+	var exists bool
+	_ = db.QueryRow(ctx, `
+		select exists(
+			select 1 from public.worklogs
+			where task_id=$1 and "user"=$2 and end_at is null
+		)
+	`, taskID, meEmail).Scan(&exists)
+	if !exists {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not clocked in"})
+		return
+	}
+
+	var in struct {
+		Lat      float64 `json:"lat" binding:"required"`
+		Lng      float64 `json:"lng" binding:"required"`
+		Accuracy *int    `json:"accuracy"`
+	}
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	_, err := db.Exec(ctx, `
+		insert into public.task_gps_pings(task_id, user_id, lat, lng, accuracy)
+		values ($1::uuid, $2::uuid, $3, $4, $5)
+	`, taskID, uid, in.Lat, in.Lng, in.Accuracy)
+	if err != nil {
+		log.Printf("[gps-ping] err=%v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// GET /tasks/:id/gps-latest — requester or assignee fetches last known location
+func getLatestGps(c *gin.Context) {
+	taskID := c.Param("id")
+	meEmail := c.GetString("email")
+	if meEmail == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+		return
+	}
+	ctx := c.Request.Context()
+
+	// only requester or assignee can view
+	var requesterEmail, assignedEmail *string
+	err := db.QueryRow(ctx, `
+		select requester, assigned_to from public.tasks where id=$1::uuid
+	`, taskID).Scan(&requesterEmail, &assignedEmail)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+		return
+	}
+	allowed := (requesterEmail != nil && *requesterEmail == meEmail) ||
+		(assignedEmail != nil && *assignedEmail == meEmail)
+	if !allowed {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+
+	var lat, lng float64
+	var accuracy *int
+	var createdAt time.Time
+	err = db.QueryRow(ctx, `
+		select lat, lng, accuracy, created_at
+		from public.task_gps_pings
+		where task_id=$1::uuid
+		order by created_at desc limit 1
+	`, taskID).Scan(&lat, &lng, &accuracy, &createdAt)
+	if err != nil {
+		// no ping yet
+		c.JSON(http.StatusOK, nil)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"lat":        lat,
+		"lng":        lng,
+		"accuracy":   accuracy,
+		"created_at": createdAt,
+	})
 }
 
 func getWorklogs(c *gin.Context) {

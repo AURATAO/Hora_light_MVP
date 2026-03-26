@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import TaskChatBox from '../components/TaskChatBox'
@@ -19,6 +19,11 @@ export default function TaskDetail() {
   const toast = useToast()
   const [task, setTask] = useState(null)
   const [work, setWork] = useState({ items: [], total_minutes: 0, total_cost_cents: 0, has_open: false })
+  const [gpsPos, setGpsPos] = useState(null)       // { lat, lng, accuracy } — assignee live
+  const [gpsError, setGpsError] = useState('')
+  const [latestGps, setLatestGps] = useState(null)  // last saved ping — shown to requester
+  const watchIdRef = useRef(null)
+  const pingIntervalRef = useRef(null)
 
   const [error, setError] = useState('')
   const [editing, setEditing] = useState(false)
@@ -129,6 +134,73 @@ function updateLocation(i, v) {
 function removeLocation(i) {
   setLocations(prev => prev.filter((_, idx) => idx !== i))
 }
+
+  const isActivelyWorking = Boolean(
+    user?.id && task?.assigned_to_id && user.id === task.assigned_to_id && work.has_open
+  )
+  const isOwnerWatching = Boolean(
+    user?.id && task?.requester_id && user.id === task.requester_id && task?.assigned_to_id && task.status === 'open'
+  )
+
+  // Assignee: watch GPS + ping backend every 30s while clocked in
+  useEffect(() => {
+    if (!isActivelyWorking) {
+      if (watchIdRef.current != null) {
+        navigator.geolocation.clearWatch(watchIdRef.current)
+        watchIdRef.current = null
+      }
+      clearInterval(pingIntervalRef.current)
+      pingIntervalRef.current = null
+      return
+    }
+    if (!navigator.geolocation) {
+      setGpsError('GPS not supported on this device')
+      return
+    }
+    let lastPos = null
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      (pos) => {
+        lastPos = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: Math.round(pos.coords.accuracy) }
+        setGpsPos(lastPos)
+        setGpsError('')
+      },
+      (err) => setGpsError(err.message),
+      { enableHighAccuracy: true, maximumAge: 5000 }
+    )
+    // ping backend every 30s
+    pingIntervalRef.current = setInterval(async () => {
+      if (!lastPos) return
+      try {
+        await api(`/tasks/${id}/gps-ping`, {
+          method: 'POST',
+          body: { lat: lastPos.lat, lng: lastPos.lng, accuracy: lastPos.accuracy },
+        })
+      } catch { /* silent — don't interrupt UX */ }
+    }, 30_000)
+    return () => {
+      if (watchIdRef.current != null) {
+        navigator.geolocation.clearWatch(watchIdRef.current)
+        watchIdRef.current = null
+      }
+      clearInterval(pingIntervalRef.current)
+      pingIntervalRef.current = null
+    }
+  }, [isActivelyWorking, id])
+
+  // Requester: poll latest GPS ping every 30s while task is open and assigned
+  useEffect(() => {
+    if (!isOwnerWatching) return
+    let alive = true
+    async function fetchLatest() {
+      try {
+        const data = await api(`/tasks/${id}/gps-latest`)
+        if (alive) setLatestGps(data)
+      } catch { /* ignore */ }
+    }
+    fetchLatest()
+    const interval = setInterval(fetchLatest, 30_000)
+    return () => { alive = false; clearInterval(interval) }
+  }, [isOwnerWatching, id])
 
   // ✅ 用 UUID 判斷身分
   const isOwner    = Boolean(user?.id && task?.requester_id && user.id === task.requester_id)
@@ -444,7 +516,7 @@ function removeLocation(i) {
             <DebugMe />
 
             {(isOwner || isAssignee) && (
-              <div className="border border-white/20 rounded-md p-3">
+              <div className="border border-white/20 rounded-md p-3 space-y-2">
                 <div className="flex items-center justify-between">
                   <div className="text-sm">Logged: <b>{work.total_minutes} min</b> · Est. <b>${totalEUR.toFixed(2)}</b></div>
                   {isAssignee && task.status === 'open' && (
@@ -459,6 +531,56 @@ function removeLocation(i) {
                     )
                   )}
                 </div>
+
+                {/* Assignee: live GPS while clocked in */}
+                {isAssignee && work.has_open && (
+                  <div className="mt-1">
+                    {gpsError ? (
+                      <span className="inline-flex items-center gap-1 rounded-full border border-red-400/30 bg-red-400/10 px-2 py-0.5 text-xs text-red-300">
+                        ⚠ GPS: {gpsError}
+                      </span>
+                    ) : gpsPos ? (
+                      <a
+                        href={`https://www.google.com/maps?q=${gpsPos.lat},${gpsPos.lng}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 rounded-full border border-white/20 bg-white/5 px-2 py-0.5 text-xs hover:border-white/40"
+                      >
+                        📍 {gpsPos.lat.toFixed(5)}, {gpsPos.lng.toFixed(5)}
+                        <span className="text-white/50">±{gpsPos.accuracy}m</span>
+                      </a>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 rounded-full border border-white/15 bg-white/5 px-2 py-0.5 text-xs text-white/60">
+                        📡 Acquiring GPS…
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {/* Requester: last known supporter location */}
+                {isOwner && task.assigned_to_id && task.status === 'open' && (
+                  <div className="mt-1">
+                    <div className="text-xs text-white/50 mb-1">Supporter location</div>
+                    {latestGps ? (
+                      <a
+                        href={`https://www.google.com/maps?q=${latestGps.lat},${latestGps.lng}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 rounded-full border border-white/20 bg-white/5 px-2 py-0.5 text-xs hover:border-white/40"
+                      >
+                        📍 {Number(latestGps.lat).toFixed(5)}, {Number(latestGps.lng).toFixed(5)}
+                        {latestGps.accuracy && <span className="text-white/50">±{latestGps.accuracy}m</span>}
+                        <span className="text-white/40 ml-1">
+                          {new Date(latestGps.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </a>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 rounded-full border border-white/15 bg-white/5 px-2 py-0.5 text-xs text-white/50">
+                        No location yet
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
