@@ -361,6 +361,15 @@ function removeLocation(i) {
     return Number.isNaN(n) ? 0 : Math.max(0, n)
   }, [prepay])
   const totalEUR = useMemo(() => (work.total_cost_cents || 0) / 100, [work.total_cost_cents])
+  const totalDuration = useMemo(() => {
+    const m = work.total_minutes || 0
+    if (m === 0) return '0 min'
+    const h = Math.floor(m / 60)
+    const rem = m % 60
+    if (h === 0) return `${rem} min`
+    if (rem === 0) return `${h}h`
+    return `${h}h ${rem}min`
+  }, [work.total_minutes])
 
   async function saveEdit() {
   await wrap(async () => {
@@ -518,7 +527,7 @@ function removeLocation(i) {
             {(isOwner || isAssignee) && (
               <div className="border border-white/20 rounded-md p-3 space-y-2">
                 <div className="flex items-center justify-between">
-                  <div className="text-sm">Logged: <b>{work.total_minutes} min</b> · Est. <b>${totalEUR.toFixed(2)}</b></div>
+                  <div className="text-sm">Logged: <b>{totalDuration}</b> · Est. <b>${totalEUR.toFixed(2)}</b></div>
                   {isAssignee && task.status === 'open' && (
                     work.has_open ? (
                       <button onClick={clockOut} className="text-xs rounded-md border border-white/20 px-2 py-1 hover:border-white/40">

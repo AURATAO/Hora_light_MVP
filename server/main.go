@@ -2102,15 +2102,46 @@ func completeTask(c *gin.Context) {
 		return
 	}
 
-	notifyRequester(c, taskID, "COMPLETED",
-		"Job completed",
-		"Everything is done. Please leave a rating when you have a moment.",
-	)
+	// calculate final total across all sessions
+	totalMin, _ := totalClosedMinutes(ctx, taskID)
+	totalCents := totalMin * centsPerMinute
+
+	// TODO: trigger Stripe capture here
+	// e.g. stripe.CapturePaymentIntent(task.PaymentIntentID, totalCents)
 
 	if _, err := db.Exec(ctx, `update public.tasks set status='completed' WHERE id = $1::uuid`, taskID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
 	}
+
+	notifyRequester(c, taskID, "COMPLETED",
+		"Job completed",
+		"Everything is done. Please leave a rating when you have a moment.",
+	)
+
+	// WhatsApp: send final summary to requester
+	go func() {
+		var requesterPhone string
+		if err := db.QueryRow(context.Background(), `
+			select p.phone
+			from public.tasks t
+			join public.profiles p on p.email = t.requester
+			where t.id = $1::uuid
+		`, taskID).Scan(&requesterPhone); err == nil && requesterPhone != "" {
+			hours := totalMin / 60
+			mins := totalMin % 60
+			durationStr := fmt.Sprintf("%d min", totalMin)
+			if hours > 0 {
+				durationStr = fmt.Sprintf("%dh %dmin", hours, mins)
+			}
+			totalDollars := float64(totalCents) / 100.0
+			_ = helpers.SendWhatsApp(requesterPhone, fmt.Sprintf(
+				"Task complete! Your supporter logged %s. Total: $%.2f",
+				durationStr, totalDollars,
+			))
+		}
+	}()
+
 	getTask(c)
 }
 

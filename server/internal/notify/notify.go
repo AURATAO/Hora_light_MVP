@@ -1,15 +1,15 @@
 package notify
 
 import (
+	"bytes"
 	"context"
-	"crypto/tls"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
-	"net"
-	"net/smtp"
+	"net/http"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -20,71 +20,48 @@ type EmailPayload struct {
 }
 
 func SendEmail(p EmailPayload) error {
-	log.Printf("[email] dialing host=%s port=%s to=%s",
-		os.Getenv("SMTP_HOST"), os.Getenv("SMTP_PORT"), p.To)
-
-	host := os.Getenv("SMTP_HOST")
-	port := os.Getenv("SMTP_PORT")
-	user := os.Getenv("SMTP_USER")
-	pass := os.Getenv("SMTP_PASS")
+	token := os.Getenv("POSTMARK_API_TOKEN")
 	from := os.Getenv("EMAIL_FROM")
-
-	if host == "" || port == "" || user == "" || pass == "" || from == "" {
-		return fmt.Errorf("SMTP not configured")
+	if token == "" {
+		return fmt.Errorf("POSTMARK_API_TOKEN not set")
+	}
+	if from == "" {
+		from = "Ho:ra <no-reply@horaapp.co>"
 	}
 
-	addr := net.JoinHostPort(host, port)
-	auth := smtp.PlainAuth("", user, pass, host)
+	log.Printf("[email] postmark to=%s subject=%s", p.To, p.Subject)
 
-	headers := []string{
-		fmt.Sprintf("From: %s", from),
-		fmt.Sprintf("To: %s", p.To),
-		fmt.Sprintf("Subject: %s", p.Subject),
-		"MIME-Version: 1.0",
-		"Content-Type: text/html; charset=UTF-8",
+	payload := map[string]string{
+		"From":     from,
+		"To":       p.To,
+		"Subject":  p.Subject,
+		"HtmlBody": p.Html,
 	}
-	if rt := os.Getenv("REPLY_TO"); rt != "" {
-		headers = append(headers, fmt.Sprintf("Reply-To: %s", rt))
-	}
-	msg := strings.Join(append(headers, "", p.Html), "\r\n")
-
-	c, err := smtp.Dial(addr)
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	defer c.Close()
 
-	if err := c.Hello("localhost"); err != nil {
-		return err
-	}
-	if ok, _ := c.Extension("STARTTLS"); ok {
-		cfg := &tls.Config{ServerName: host}
-		if err := c.StartTLS(cfg); err != nil {
-			return err
-		}
-	}
-	if err := c.Auth(auth); err != nil {
-		return err
-	}
-
-	fromAddr := strings.TrimSpace(from)
-	if i := strings.LastIndex(fromAddr, "<"); i >= 0 {
-		fromAddr = strings.Trim(fromAddr[i+1:], ">")
-	}
-	if err := c.Mail(fromAddr); err != nil {
-		return err
-	}
-	if err := c.Rcpt(p.To); err != nil {
-		return err
-	}
-	wc, err := c.Data()
+	req, err := http.NewRequest(http.MethodPost, "https://api.postmarkapp.com/email", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
-	if _, err := wc.Write([]byte(msg)); err != nil {
+	req.Header.Set("X-Postmark-Server-Token", token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
 		return err
 	}
-	return wc.Close()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		log.Printf("[email] postmark error status=%d body=%s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("postmark returned %d", resp.StatusCode)
+	}
+	return nil
 }
 
 type CreateNotificationInput struct {
