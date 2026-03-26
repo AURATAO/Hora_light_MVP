@@ -241,10 +241,22 @@ func main() {
 	// --- Gin & CORS ---
 	r := gin.Default()
 	r.SetTrustedProxies(nil)
-	origins := os.Getenv("CORS_ALLOW_ORIGINS") // "http://localhost:5173,https://mvp.horaapp.co,https://horaapp.co,https://app.horaapp.co"
-	allow := strings.Split(origins, ",")
+	origins := os.Getenv("CORS_ALLOW_ORIGINS") // comma-separated exact origins
+	exactOrigins := strings.Split(origins, ",")
 	c := cors.Config{
-		AllowOrigins:     allow,
+		AllowOriginFunc: func(origin string) bool {
+			// always allow exact matches from env
+			for _, o := range exactOrigins {
+				if strings.TrimSpace(o) == origin {
+					return true
+				}
+			}
+			// allow all Vercel preview deployments for this project
+			if strings.HasSuffix(origin, ".vercel.app") {
+				return true
+			}
+			return false
+		},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Authorization", "Content-Type"},
 		AllowCredentials: true,
