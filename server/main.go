@@ -354,9 +354,18 @@ func main() {
 			return
 		}
 
-		// Validate Supabase JWT via JWKS
-		tok, err := jwt.Parse(body.AccessToken, jwks.Keyfunc)
+		// Validate Supabase JWT — support both HS256 (default) and RS256 (JWKS).
+		// Supabase signs access tokens with HS256 using the JWT secret as raw bytes.
+		tok, err := jwt.Parse(body.AccessToken, func(t *jwt.Token) (interface{}, error) {
+			switch t.Method.Alg() {
+			case "HS256":
+				return []byte(os.Getenv("SUPABASE_JWT_SECRET")), nil
+			default:
+				return jwks.Keyfunc(t)
+			}
+		})
 		if err != nil || !tok.Valid {
+			log.Printf("[exchange] token validation failed: %v", err)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 			return
 		}
