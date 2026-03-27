@@ -22,6 +22,13 @@ export default function Modal({ open, onClose, title, children, actions, autoClo
   }, [open, onClose])
 
   useEffect(() => {
+    if (!open) return
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => { document.body.style.overflow = prev }
+  }, [open])
+
+  useEffect(() => {
     if (!open || !autoCloseMs) return
     const id = setTimeout(() => onClose?.(), autoCloseMs)
     return () => clearTimeout(id)
@@ -34,11 +41,11 @@ export default function Modal({ open, onClose, title, children, actions, autoClo
       {/* 背景遮罩 */}
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
       {/* 內容卡片 */}
-      <div className="relative z-10 w-[90%] max-w-sm rounded-2xl border border-white/20 bg-primary/90 backdrop-blur-md p-6 shadow-xl">
-        <div className="flex items-start justify-between gap-4">
+      <div className="relative z-10 w-[90%] max-w-sm max-h-[85vh] flex flex-col rounded-2xl border border-white/20 bg-primary/90 backdrop-blur-md shadow-xl">
+        <div className="flex items-start justify-between gap-4 px-6 pt-6 pb-2 shrink-0">
           {title ? <h3 className="text-lg font-semibold">{title}</h3> : <span />}
           <button
-            className=" px-1 py-1 hover:border-white/40"
+            className="px-1 py-1 hover:border-white/40"
             onClick={onClose}
             aria-label="Close"
           >
@@ -46,12 +53,12 @@ export default function Modal({ open, onClose, title, children, actions, autoClo
           </button>
         </div>
 
-        <div className="mt-2 text-sm text-white/80">
+        <div className="overflow-y-auto min-h-0 px-6 py-2 text-sm text-white/80">
           {children}
         </div>
 
         {actions && (
-          <div className="mt-5 flex justify-end gap-2">
+          <div className="px-6 pb-6 pt-3 flex justify-end gap-2 shrink-0 border-t border-white/10 mt-2">
             {actions}
           </div>
         )}

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import Modal from '../components/Modal'
+import InfoModal from '../components/InfoModal'
 import PlaceInput from '../components/PlaceInput'
 import { useToast } from '../providers/ToastProvider'
 
@@ -18,7 +19,7 @@ export default function NewTask() {
   const [category, setCategory] = useState('task') // task | companion
   // const [locations, setLocations] = useState([''])
   const [locations, setLocations] = useState([{ label: '' }])
-  const [minutes, setMinutes] = useState(30)
+  const [minutes, setMinutes] = useState('30')
   const [prepay, setPrepay] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [touched, setTouched] = useState(false)
@@ -26,6 +27,8 @@ export default function NewTask() {
   const [date, setDate] = useState('')
   const [timeStr, setTimeStr] = useState('')
   const [successOpen, setSuccessOpen] = useState(false)
+
+  const [transport, setTransport] = useState('none')
 
   const [compPolicyOpen, setCompPolicyOpen] = useState(false)
   const [compPolicyAgreed, setCompPolicyAgreed] = useState(false)
@@ -62,7 +65,7 @@ export default function NewTask() {
   const errors = useMemo(() => {
     const e = {}
     if (!title.trim()) e.title = 'Title is required'
-    if (!minutes || Number(minutes) <= 0) e.minutes = 'Minutes must be > 0'
+    if (!minutes || Number(minutes) < 10) e.minutes = 'Minimum 10 minutes'
     if (prepay !== '' && (Number.isNaN(Number(prepay)) || Number(prepay) < 0)) e.prepay = 'Invalid advance'
     if (mode === 'schedule' && (!date || !timeStr)) e.when = 'Pick date & time'
     if (category === 'companion' && !compPolicyAgreed) e.category = 'Please review & agree to the companionship policy'
@@ -124,11 +127,12 @@ export default function NewTask() {
       description,
       category,
       location_text,
-      locations_geo, // ← 現在已定義
+      locations_geo,
       estimated_minutes: Number(minutes) || 30,
       prepay_amount_cents: Math.round((advance || 0) * 100),
       is_immediate: mode === 'now',
       scheduled_at: mode === 'schedule' ? scheduledAtISO : '',
+      transport_required: transport,
     }
 
     await api('/tasks', { method: 'POST', body: payload, noRedirect: true })
@@ -223,20 +227,14 @@ function confirmCompanionPolicy() {
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  if (compPolicyAgreed) {
-                    setCategory('companion')
-                    return
-                  }
-                  openCompanionPolicy()
-                }}
+                onClick={openCompanionPolicy}
                 className={`px-3 py-1.5 rounded-md border ${
                   category==='companion'
                     ? 'bg-white text-black border-white'
                     : 'border-white/20 hover:border-white/40'
                 }`}
               >
-                Companion {compPolicyAgreed ? '✓' : ''}
+                Companion
               </button>
             </div>
                {touched && errors.category && <div className="text-sm text-red-400">{errors.category}</div>}
@@ -312,40 +310,148 @@ function confirmCompanionPolicy() {
           </div>
 
           {/* Minutes + Advance */}
-          <div className="grid gap-1">
-            <label className="text-sm">Estimated minutes <span className="text-red-500">*</span></label>
+          <InfoModal
+            label="How long will this take?"
+            required
+            title="How long will this take?"
+            body={
+              <div className="space-y-3">
+                <p>This gives you a cost preview so you know roughly what to expect once billing goes live.</p>
+
+                <div>
+                  <p className="font-semibold text-white mb-1">How pricing will work</p>
+                  <p className="mb-2">Rates are based on your supporter's actual time (clock-in to clock-out), tracked minute-by-minute.</p>
+                  <ul className="space-y-1">
+                    <li>☀️ 8:00am – 11:59pm → $0.50 / min</li>
+                    <li>🌙 12:00am – 7:59am → $1.00 / min</li>
+                  </ul>
+                  <p className="mt-2">If your task crosses a time boundary, the rate adjusts automatically for each minute.</p>
+                </div>
+
+                <div>
+                  <p className="font-semibold text-white mb-1">Your supporter clocks in and out</p>
+                  <p>Their route is tracked throughout the task. You're only charged for actual time spent — no more, no less.</p>
+                </div>
+
+                <div>
+                  <p className="font-semibold text-white mb-1">Example — crosses 8:00am boundary</p>
+                  <p className="mb-1">Task starts at 7:50am, runs for 30 min:</p>
+                  <ul className="space-y-1">
+                    <li>7:50am – 8:00am = 10 min × $1.00 = $10.00 🌙</li>
+                    <li>8:00am – 8:20am = 20 min × $0.50 = $10.00 ☀️</li>
+                  </ul>
+                  <p className="mt-1">→ Estimated total: $20.00</p>
+                </div>
+
+                <p className="border border-white/20 rounded px-3 py-2 text-white/60 text-xs">
+                  Pricing is not active yet. This is a preview only.
+                </p>
+              </div>
+            }
+          >
             <input
-              type="number" min={5} step={5}
+              type="number" min={10} step={5}
               className={`rounded-md px-3 py-2 bg-transparent outline-none border ${touched && errors.minutes ? 'border-red-400' : 'border-white/20'} focus:border-white/40`}
               value={minutes}
-              onChange={(e)=>setMinutes(Number(e.target.value))}
+              onChange={(e) => setMinutes(e.target.value)}
             />
-            {touched && errors.minutes && <div className="text-sm text-red-400">{errors.minutes}</div>}
-            <div className="text-xs text-white/80">
-              Time cost (~${MINUTE_RATE_EUR.toFixed(2)}/min): <b>${timeCost.toFixed(2)}</b>
-            </div>
+            {minutes !== '' && Number(minutes) < 10
+              ? <div className="text-sm text-red-400">Minimum is 10 minutes. Any unused time will be returned to you.</div>
+              : touched && errors.minutes && <div className="text-sm text-red-400">{errors.minutes}</div>
+            }
+          </InfoModal>
 
-            <div className="grid gap-1 mt-2">
-              <label className="text-sm">Advance for purchase ($)</label>
-              <input
-                type="number" min={0} step={0.01}
-                className={`rounded-md px-3 py-2 bg-transparent outline-none border ${touched && errors.prepay ? 'border-red-400' : 'border-white/20'} focus:border-white/40`}
-                value={prepay}
-                onChange={(e)=>setPrepay(e.target.value)}
-                placeholder="e.g., 12.50"
-              />
-              {touched && errors.prepay && <div className="text-sm text-red-400">{errors.prepay}</div>}
+          <InfoModal
+            label="Shopping budget ($)"
+            title="Shopping budget ($)"
+            body={
+              <div className="space-y-3">
+                <p>If your task requires your supporter to purchase something on your behalf (e.g. groceries, supplies), enter the maximum amount they may need to spend.</p>
+                <p>This is separate from the time cost.</p>
+
+                <div>
+                  <p className="font-semibold text-white mb-1">How it works</p>
+                  <ul className="space-y-1">
+                    <li>Your supporter will only buy after getting your confirmation first</li>
+                    <li>They upload the receipt after purchase — we verify it before any amount is deducted</li>
+                    <li>You are only charged for what was actually spent:</li>
+                  </ul>
+                  <ul className="mt-1 ml-3 space-y-0.5">
+                    <li>spent less → refund of difference</li>
+                    <li>spent more → difference collected</li>
+                  </ul>
+                </div>
+
+                <div>
+                  <p className="font-semibold text-white mb-1">Beta limits</p>
+                  <ul className="space-y-1">
+                    <li>Maximum shopping budget during beta: $30.00</li>
+                    <li>This portion is settled separately after the task is completed</li>
+                  </ul>
+                </div>
+
+                <p className="border border-white/20 rounded px-3 py-2 text-white/60 text-xs">
+                  🎉 Shopping budget settlement is coming soon. During beta, please arrange payment directly with your supporter.
+                </p>
+              </div>
+            }
+          >
+            <input
+              type="number" min={0} step={0.01}
+              className={`rounded-md px-3 py-2 bg-transparent outline-none border ${touched && errors.prepay ? 'border-red-400' : 'border-white/20'} focus:border-white/40`}
+              value={prepay}
+              onChange={(e)=>setPrepay(e.target.value)}
+              placeholder="e.g., 12.50"
+            />
+            {touched && errors.prepay && <div className="text-sm text-red-400">{errors.prepay}</div>}
+          </InfoModal>
+
+          {/* Transport */}
+          <div className="grid gap-2">
+            <label className="text-sm">Helper needs a…</label>
+            <div className="flex flex-wrap gap-2">
+              {[
+                { value: 'none', label: 'None' },
+                { value: 'car', label: 'Car' },
+                { value: 'bike', label: 'Bike' },
+                { value: 'public', label: 'Public transport is fine' },
+              ].map(opt => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setTransport(opt.value)}
+                  className={`px-3 py-1.5 rounded-full border text-sm transition-colors ${
+                    transport === opt.value
+                      ? 'bg-white text-black border-white'
+                      : 'border-white/20 hover:border-white/40'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
             </div>
           </div>
 
           {/* Estimate summary */}
-          <div className="text-xs text-white/80 rounded-md px-3 py-2 bg-transparent outline-none border flex flex-col items-start">
-            Start: <b>{mode === 'now' ? 'ASAP' : (date && timeStr ? new Date(`${date}T${timeStr}`).toLocaleString() : '—')}</b>
-            <span className="mx-2">•</span>
-            Time cost (~${MINUTE_RATE_EUR.toFixed(2)}/min): <b>${timeCost.toFixed(2)}</b>
-            {advance > 0 && <> <span className="mx-2">•</span> Advance: <b>${advance.toFixed(2)}</b> </>}
-            <span className="mx-2">•</span>
-            Total estimate: <b>${totalEstimate.toFixed(2)}</b>
+          <div className="text-xs text-white/80 rounded-md px-3 py-2 border border-white/20 grid gap-1">
+            <div className="flex justify-between">
+              <span>Start</span>
+              <b>{mode === 'now' ? 'ASAP' : (date && timeStr ? new Date(`${date}T${timeStr}`).toLocaleString() : '—')}</b>
+            </div>
+            <div className="flex justify-between">
+              <span>Time cost (~${MINUTE_RATE_EUR.toFixed(2)}/min)</span>
+              <b>${timeCost.toFixed(2)}</b>
+            </div>
+            {advance > 0 && (
+              <div className="flex justify-between">
+                <span>Shopping budget</span>
+                <b>${advance.toFixed(2)}</b>
+              </div>
+            )}
+            <div className="flex justify-between border-t border-white/20 pt-1 mt-0.5">
+              <span>Total estimate</span>
+              <b>${totalEstimate.toFixed(2)}</b>
+            </div>
           </div>
 
           {/* Actions */}
@@ -357,8 +463,9 @@ function confirmCompanionPolicy() {
             <button type="button"
               onClick={()=>{
                 setTitle(''); setDescription(''); setCategory('task');
-                setLocations([{ label: '' }]); setMinutes(30); setPrepay(''); setTouched(false);setCompPolicyAgreed(false); setCompPolicyChecked(false); setCompPolicyOpen(false);
-                
+                setLocations([{ label: '' }]); setMinutes('30'); setPrepay('');
+                setTransport('none'); setTouched(false);
+                setCompPolicyAgreed(false); setCompPolicyChecked(false); setCompPolicyOpen(false);
               }}
               className="rounded-md px-4 py-2 border border-white/20 hover:border-white/40">
               Clear

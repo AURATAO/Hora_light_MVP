@@ -92,14 +92,15 @@ type Task struct {
 }
 
 type createTaskInput struct {
-	Title             string `json:"title"`
-	Description       string `json:"description"`
-	Category          string `json:"category"`
-	LocationText      string `json:"location_text"`
-	EstimatedMinutes  int    `json:"estimated_minutes"`
-	PrepayAmountCents int    `json:"prepay_amount_cents"`
-	IsImmediate       bool   `json:"is_immediate"`
-	ScheduledAt       string `json:"scheduled_at"` // ISO8601 (RFC3339) 或空字串
+	Title              string `json:"title"`
+	Description        string `json:"description"`
+	Category           string `json:"category"`
+	LocationText       string `json:"location_text"`
+	EstimatedMinutes   int    `json:"estimated_minutes"`
+	PrepayAmountCents  int    `json:"prepay_amount_cents"`
+	IsImmediate        bool   `json:"is_immediate"`
+	ScheduledAt        string `json:"scheduled_at"` // ISO8601 (RFC3339) 或空字串
+	TransportRequired  string `json:"transport_required"`
 }
 
 type Profile struct {
@@ -1170,19 +1171,25 @@ func createTask(c *gin.Context) {
 	// 3) 插入 task（用 users.id / profiles.id 對齊後的 uid）
 	var taskID string
 	var createdAt time.Time
+	transport := in.TransportRequired
+	if transport == "" {
+		transport = "none"
+	}
 	if err := tx.QueryRowContext(ctx, `
     INSERT INTO public.tasks
       (title,description,category,location_text,
        estimated_minutes,prepay_amount_cents,is_immediate,scheduled_at,
-       requester, requester_id, status, assigned_to, assigned_to_id)
+       requester, requester_id, status, assigned_to, assigned_to_id,
+       transport_required)
     VALUES
       ($1,$2,$3,$4,
        $5,$6,$7,$8,
-       $9, $10::uuid, 'open', '', NULL)
+       $9, $10::uuid, 'open', '', NULL,
+       $11)
     RETURNING id, created_at
   `, in.Title, in.Description, in.Category, in.LocationText,
 		in.EstimatedMinutes, in.PrepayAmountCents, in.IsImmediate, when,
-		email, uid,
+		email, uid, transport,
 	).Scan(&taskID, &createdAt); err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok {
 			log.Printf("[tasks.insert] code=%s tbl=%s col=%s detail=%s where=%s msg=%s",
