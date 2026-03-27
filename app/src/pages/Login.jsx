@@ -84,19 +84,27 @@ export default function Login() {
           {/* <p className="mt-1 text-sm text-slate-500">Choose a sign-in method</p> */}
         </div>
 
+        <div className="flex items-center mb-4">
+          <input
+            type="checkbox"
+            checked={agree}
+            onChange={(e) => setAgree(e.target.checked)}
+            className="mr-2 accent-secondary"
+          />
+          <span className="text-primary text-sm">
+            I have read and agree to the <a href="https://www.my-hora.com/privacy" target="_blank" rel="noopener noreferrer" className="underline text-secondary">Privacy Policy</a> and <a href="https://www.my-hora.com/terms" target="_blank" rel="noopener noreferrer" className="underline text-secondary">Terms of Use</a>.
+          </span>
+        </div>
+
         <div className="flex items-center justify-center gap-4">
           <button
-            onClick={() => {
-              if (!agree) return
-              AuthAPI.loginWithGoogle(from)
-            }}
+            onClick={() => { if (!agree) return; AuthAPI.loginWithGoogle(from) }}
             disabled={!agree}
             title={!agree ? "Please agree to Privacy Policy and Terms to continue" : "Continue with Google"}
             aria-label="Continue with Google"
             className={`group h-12 w-12 rounded-full border border-slate-200 bg-white shadow-sm transition active:scale-95 flex items-center justify-center
               ${!agree ? "opacity-40 cursor-not-allowed" : "hover:shadow-md"}`}
           >
-            {/* Google SVG */}
             <svg viewBox="0 0 48 48" className="h-6 w-6" aria-hidden>
               <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32 29.3 35 24 35c-7.2 0-13-5.8-13-13S16.8 9 24 9c3.3 0 6.3 1.2 8.6 3.2l5.7-5.7C34.6 3.4 29.6 1.5 24 1.5 11.5 1.5 1.5 11.5 1.5 24S11.5 46.5 24 46.5c12 0 22-9 22-22 0-1.5-.2-3-.4-4z"/>
               <path fill="#FF3D00" d="M6.3 14.6l6.6 4.9C14.5 15.9 18.9 13 24 13c3.3 0 6.3 1.2 8.6 3.2l5.7-5.7C34.6 7.4 29.6 5.5 24 5.5c-7.8 0-14.4 4.3-17.7 10.6z"/>
@@ -106,10 +114,12 @@ export default function Login() {
           </button>
 
           <button
-            onClick={() => setStep(prev => (prev === 'email' ? 'idle' : 'email'))}
-            title="Sign in with email"
+            onClick={() => { if (!agree) return; setStep(prev => (prev === 'email' ? 'idle' : 'email')) }}
+            disabled={!agree}
+            title={!agree ? "Please agree to Privacy Policy and Terms to continue" : "Sign in with email"}
             aria-label="Sign in with email"
-            className="group h-12 w-12 rounded-full border border-slate-200 bg-white shadow-sm transition hover:shadow-md active:scale-95 flex items-center justify-center"
+            className={`group h-12 w-12 rounded-full border border-slate-200 bg-white shadow-sm transition active:scale-95 flex items-center justify-center
+              ${!agree ? "opacity-40 cursor-not-allowed" : "hover:shadow-md"}`}
           >
             <svg viewBox="0 0 24 24" className="h-6 w-6 text-slate-700" aria-hidden>
               <path d="M2 6.5A2.5 2.5 0 0 1 4.5 4h15A2.5 2.5 0 0 1 22 6.5v11A2.5 2.5 0 0 1 19.5 20h-15A2.5 2.5 0 0 1 2 17.5v-11Z" fill="none" stroke="currentColor" strokeWidth="1.5"/>
@@ -178,20 +188,6 @@ export default function Login() {
           </div>
         )}
 
-        {/* <div className="mt-6 text-center text-xs text-slate-500">
-          By continuing, you agree to our <a href="https://www.horaapp.co/terms" className="underline">Terms</a> & <a href="https://www.horaapp.co/privacy" className="underline">Privacy</a>.
-        </div> */}
-        <div className="flex items-center mb-4">
-                    <input 
-                    type="checkbox"
-                    checked={agree}
-                    onChange={(e) => setAgree(e.target.checked)}
-                    className="mr-2 accent-secondary"
-                    />
-                    <span className="text-primary text-sm">
-                    I have read and agree to the <a href="https://www.my-hora.com/privacy" target="_blank" rel="noopener noreferrer" className="underline text-secondary">Privacy Policy</a> and <a href="https://www.my-hora.com/terms" target="_blank" rel="noopener noreferrer" className="underline text-secondary">Terms of Use</a>.
-                    </span>
-                </div>
       </div>
     </div>
   )
