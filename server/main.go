@@ -372,12 +372,21 @@ func main() {
 			return
 		}
 
-		// Upsert user in public.users
+		// Upsert user in public.users — with email-based account linking.
+		// Priority: supabase_sub match → email match (link accounts) → new row.
 		var internalID string
 		err = sqldb.QueryRowContext(c.Request.Context(),
 			`select id from public.users where supabase_sub = $1::uuid`, extSub,
 		).Scan(&internalID)
+		if errors.Is(err, sql.ErrNoRows) && email != "" {
+			// Try to find existing account by email (e.g. user already signed in via Google)
+			err = sqldb.QueryRowContext(c.Request.Context(),
+				`update public.users set supabase_sub = $1::uuid where email = $2 returning id`,
+				extSub, email,
+			).Scan(&internalID)
+		}
 		if errors.Is(err, sql.ErrNoRows) {
+			// Truly new user — create a fresh row
 			name := deriveName(email)
 			err = sqldb.QueryRowContext(c.Request.Context(), `
 				insert into public.users (supabase_sub, email, name)
@@ -2634,18 +2643,20 @@ func dualAuth(db *sql.DB) gin.HandlerFunc {
 				if claims, ok := token.Claims.(jwt.MapClaims); ok {
 					// Supabase sub（uuid）
 					if extSub, _ := claims["sub"].(string); extSub != "" {
-						// optional：取 email
 						email, _ := claims["email"].(string)
 
-						// 映射：supabase_sub(uuid) -> internal id(uuid)
+						// Map supabase_sub → internal id, with email-based account linking
 						var internalID string
-						// 先找
 						err := db.QueryRowContext(c.Request.Context(),
 							`select id from public.users where supabase_sub = $1::uuid`, extSub,
 						).Scan(&internalID)
-
+						if errors.Is(err, sql.ErrNoRows) && email != "" {
+							err = db.QueryRowContext(c.Request.Context(),
+								`update public.users set supabase_sub = $1::uuid where email = $2 returning id`,
+								extSub, email,
+							).Scan(&internalID)
+						}
 						if errors.Is(err, sql.ErrNoRows) {
-							// 沒有就建一筆，email/名稱可先帶 email 前綴
 							name := deriveName(email)
 							err = db.QueryRowContext(c.Request.Context(), `
                 insert into public.users (supabase_sub, email, name)
@@ -2654,7 +2665,7 @@ func dualAuth(db *sql.DB) gin.HandlerFunc {
               `, extSub, email, name).Scan(&internalID)
 						}
 						if err == nil && internalID != "" {
-							c.Set("uid", internalID) // 統一設成 internal UUID
+							c.Set("uid", internalID)
 							if email != "" {
 								c.Set("email", email)
 							}
@@ -2699,11 +2710,17 @@ func tryAuth(db *sql.DB) gin.HandlerFunc {
 						if extSub, _ := claims["sub"].(string); extSub != "" {
 							email, _ := claims["email"].(string)
 
+							// Map supabase_sub → internal id, with email-based account linking
 							var internalID string
 							err := db.QueryRowContext(c.Request.Context(),
 								`select id from public.users where supabase_sub = $1::uuid`, extSub,
 							).Scan(&internalID)
-
+							if errors.Is(err, sql.ErrNoRows) && email != "" {
+								err = db.QueryRowContext(c.Request.Context(),
+									`update public.users set supabase_sub = $1::uuid where email = $2 returning id`,
+									extSub, email,
+								).Scan(&internalID)
+							}
 							if errors.Is(err, sql.ErrNoRows) {
 								name := deriveName(email)
 								err = db.QueryRowContext(c.Request.Context(), `
