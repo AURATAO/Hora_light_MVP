@@ -92,7 +92,15 @@ export const AuthAPI = {
       type: "email",
     });
     if (error) throw error;
-    return data; // 之後 api() 會自動帶 Bearer
+    return data;
+  },
+
+  // Exchange a Supabase access token for an internal hora_session cookie.
+  async exchangeToken(accessToken) {
+    return api("/auth/exchange", {
+      method: "POST",
+      body: { access_token: accessToken },
+    });
   },
 
   loginWithGoogle(next = "/") {

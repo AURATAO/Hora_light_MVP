@@ -343,6 +343,89 @@ func main() {
 		c.Status(http.StatusNoContent)
 	})
 
+	// POST /auth/exchange — swap a Supabase access token for an internal hora_session cookie.
+	// Called after magic-link / OTP verification so the user gets the same cookie as Google OAuth.
+	r.POST("/auth/exchange", func(c *gin.Context) {
+		var body struct {
+			AccessToken string `json:"access_token"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil || body.AccessToken == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "missing access_token"})
+			return
+		}
+
+		// Validate Supabase JWT via JWKS
+		tok, err := jwt.Parse(body.AccessToken, jwks.Keyfunc)
+		if err != nil || !tok.Valid {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+			return
+		}
+		claims, ok := tok.Claims.(jwt.MapClaims)
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "bad claims"})
+			return
+		}
+		extSub, _ := claims["sub"].(string)
+		email, _ := claims["email"].(string)
+		if extSub == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing sub"})
+			return
+		}
+
+		// Upsert user in public.users
+		var internalID string
+		err = sqldb.QueryRowContext(c.Request.Context(),
+			`select id from public.users where supabase_sub = $1::uuid`, extSub,
+		).Scan(&internalID)
+		if errors.Is(err, sql.ErrNoRows) {
+			name := deriveName(email)
+			err = sqldb.QueryRowContext(c.Request.Context(), `
+				insert into public.users (supabase_sub, email, name)
+				values ($1::uuid, $2, $3)
+				returning id
+			`, extSub, email, name).Scan(&internalID)
+		}
+		if err != nil || internalID == "" {
+			log.Printf("[exchange] upsert user err=%v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "user upsert failed"})
+			return
+		}
+
+		// Issue internal hora_session cookie (same as Google OAuth path)
+		isProd := strings.EqualFold(os.Getenv("APP_ENV"), "prod") || strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true")
+		ttl := 24 * time.Hour
+		now := time.Now()
+		j := jwt.NewWithClaims(jwt.SigningMethodHS256, auth.Claims{
+			Email: email,
+			Name:  deriveName(email),
+			RegisteredClaims: jwt.RegisteredClaims{
+				Subject:   internalID,
+				IssuedAt:  jwt.NewNumericDate(now),
+				ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+			},
+		})
+		signed, err := j.SignedString([]byte(os.Getenv("SESSION_JWT_SECRET")))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "session error"})
+			return
+		}
+		cookie := &http.Cookie{
+			Name:     "hora_session",
+			Value:    signed,
+			Path:     "/",
+			HttpOnly: true,
+			Secure:   isProd,
+			MaxAge:   int(ttl.Seconds()),
+		}
+		if isProd {
+			cookie.SameSite = http.SameSiteNoneMode
+		} else {
+			cookie.SameSite = http.SameSiteLaxMode
+		}
+		http.SetCookie(c.Writer, cookie)
+		c.JSON(http.StatusOK, gin.H{"auth": true, "id": internalID, "email": email, "name": deriveName(email)})
+	})
+
 	// 需要登入的 API
 	meAPI := r.Group("/profile")
 	meAPI.Use(dualAuth(sqldb))
