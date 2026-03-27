@@ -6,7 +6,7 @@ serve(async (req) => {
 
   const body = {
     From: "Ho:ra <no-reply@horaapp.co>",
-    To: "liang.you@horaapp.co",
+    To: "liang.you@arcodiax.com, daniele@arcodiax.com",
     Subject: "New task posted on HO:RA",
     TextBody: [
       `Task ID: ${record.id}`,
