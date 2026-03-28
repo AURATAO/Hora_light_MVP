@@ -17,7 +17,8 @@ function deriveName(email) {
  *  - height?: number (default 320)
  *  - className?: string
  */
-export default function TaskChatBox({ task, me, height = 320, className = '' }) {
+export default function TaskChatBox({ task, me, height, fullscreen = false, className = '' }) {
+  const resolvedHeight = fullscreen ? '100%' : (height ?? Math.min(Math.round(window.innerHeight * 0.55), 600))
   const appId = import.meta.env.VITE_TALKJS_APP_ID
   const assigned = task?.assigned_to
 
@@ -91,8 +92,9 @@ export default function TaskChatBox({ task, me, height = 320, className = '' }) 
     <Session appId={appId} syncUser={syncUser}>
       <Chatbox
         syncConversation={syncConversation}
-        className={`rounded bg-white/5 border border-white/10 ${className}`}
-        style={{ width: '100%', height }}
+        className={fullscreen ? className : `rounded bg-white/5 border border-white/10 ${className}`}
+        style={{ width: '100%', height: resolvedHeight }}
+        messageField={{ placeholder: 'Type here…' }}
       />
     </Session>
   )

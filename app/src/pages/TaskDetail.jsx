@@ -27,6 +27,7 @@ export default function TaskDetail() {
 
   const [error, setError] = useState('')
   const [editing, setEditing] = useState(false)
+  const [chatOpen, setChatOpen] = useState(false)
   
 
 
@@ -593,10 +594,41 @@ function removeLocation(i) {
               </div>
             )}
 
-            <div className="border border-white/20 rounded-md p-3">
-              <div className="text-sm mb-2">Chat</div>
-              <TaskChatBox task={task} me={user} height={320} />
-            </div>
+            <button
+              type="button"
+              onClick={() => setChatOpen(true)}
+              className="w-full rounded-2xl border border-secondary/40 bg-surface/60 py-3.5 text-sm font-medium text-secondary hover:bg-surface hover:border-secondary/70 transition-all"
+            >
+              💬 Open Chat
+            </button>
+
+            {chatOpen && (
+              <div className="fixed inset-0 z-50 flex flex-col rounded-b-lg">
+                {/* Header bar */}
+                <div className="flex items-center gap-3 px-4 py-4 rounded-b-lg shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setChatOpen(false)}
+                    className="flex items-center gap-1.5 text-secondary text-sm font-medium hover:opacity-80 transition-opacity rounded-b-lg"
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="15 18 9 12 15 6" />
+                    </svg>
+                    Back
+                  </button>
+                  <div className="flex-1 text-center">
+                    <p className="text-sm font-semibold text-accent truncate">{task.title}</p>
+                    <p className="text-xs text-white/40">Task chat</p>
+                  </div>
+                  {/* spacer to balance the back button */}
+                  <div className="w-12 rounded-b-lg" />
+                </div>
+                {/* Chat fills remaining space */}
+                <div className="flex-1 min-h-0">
+                  <TaskChatBox task={task} me={user} fullscreen />
+                </div>
+              </div>
+            )}
           </>
         ) : (
           /* 編輯區（原本邏輯保留） */
