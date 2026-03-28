@@ -95,6 +95,7 @@ export default function TaskChatBox({ task, me, height, fullscreen = false, clas
         className={fullscreen ? className : `rounded bg-white/5 border border-white/10 ${className}`}
         style={{ width: '100%', height: resolvedHeight }}
         messageField={{ placeholder: 'Type here…' }}
+        showChatHeader={!fullscreen}
       />
     </Session>
   )

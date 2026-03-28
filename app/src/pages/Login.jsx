@@ -25,17 +25,17 @@ export default function Login() {
 
   useEffect(() => {
     let alive = true
-    ;(async () => {
-     await wrap(async () => {
-        const me = await AuthAPI.me()
-        if (alive && me) {
-          nav(from, { replace: true })
-          return
-        }
-      }).finally(() => {
-        if (alive) setChecking(false)
-      })
-    })()
+      ; (async () => {
+        await wrap(async () => {
+          const me = await AuthAPI.me()
+          if (alive && me) {
+            nav(from, { replace: true })
+            return
+          }
+        }).finally(() => {
+          if (alive) setChecking(false)
+        })
+      })()
     return () => { alive = false }
   }, [from, nav])
 
@@ -79,22 +79,12 @@ export default function Login() {
     <div className="min-h-screen flex items-center justify-center px-4">
       <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white/80 backdrop-blur p-6 shadow-sm">
         <div className="mb-6 text-center">
-          <div className="mx-auto h-2 w-2 pb-6 "><img src="/Loading_logo.png" alt="logo"/></div>
+          <div className="mx-auto h-2 w-2 pb-6 "><img src="/Loading_logo.png" alt="logo" /></div>
           <h1 className="mt-3 text-xl font-semibold text-slate-900">Welcome to HO:RA</h1>
           {/* <p className="mt-1 text-sm text-slate-500">Choose a sign-in method</p> */}
         </div>
 
-        <div className="flex items-center mb-4">
-          <input
-            type="checkbox"
-            checked={agree}
-            onChange={(e) => setAgree(e.target.checked)}
-            className="mr-2 accent-secondary"
-          />
-          <span className="text-primary text-sm">
-            I have read and agree to the <a href="https://www.my-hora.com/privacy" target="_blank" rel="noopener noreferrer" className="underline text-secondary">Privacy Policy</a> and <a href="https://www.my-hora.com/terms" target="_blank" rel="noopener noreferrer" className="underline text-secondary">Terms of Use</a>.
-          </span>
-        </div>
+
 
         <div className="flex items-center justify-center gap-4">
           <button
@@ -106,10 +96,10 @@ export default function Login() {
               ${!agree ? "opacity-40 cursor-not-allowed" : "hover:shadow-md"}`}
           >
             <svg viewBox="0 0 48 48" className="h-6 w-6" aria-hidden>
-              <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32 29.3 35 24 35c-7.2 0-13-5.8-13-13S16.8 9 24 9c3.3 0 6.3 1.2 8.6 3.2l5.7-5.7C34.6 3.4 29.6 1.5 24 1.5 11.5 1.5 1.5 11.5 1.5 24S11.5 46.5 24 46.5c12 0 22-9 22-22 0-1.5-.2-3-.4-4z"/>
-              <path fill="#FF3D00" d="M6.3 14.6l6.6 4.9C14.5 15.9 18.9 13 24 13c3.3 0 6.3 1.2 8.6 3.2l5.7-5.7C34.6 7.4 29.6 5.5 24 5.5c-7.8 0-14.4 4.3-17.7 10.6z"/>
-              <path fill="#4CAF50" d="M24 42.5c5.1 0 9.7-1.7 13.3-4.7l-6.1-5.1C29.1 34 26.7 35 24 35c-5.2 0-9.6-3.5-11.2-8.3l-6.6 5.1C9.4 38.1 16.1 42.5 24 42.5z"/>
-              <path fill="#1976D2" d="M46 24c0-1.5-.2-3-.4-4H24v8h11.3c-.8 3.7-3.2 6.2-6 7.7l6.1 5.1C38.3 38.7 46 32.5 46 24z"/>
+              <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32 29.3 35 24 35c-7.2 0-13-5.8-13-13S16.8 9 24 9c3.3 0 6.3 1.2 8.6 3.2l5.7-5.7C34.6 3.4 29.6 1.5 24 1.5 11.5 1.5 1.5 11.5 1.5 24S11.5 46.5 24 46.5c12 0 22-9 22-22 0-1.5-.2-3-.4-4z" />
+              <path fill="#FF3D00" d="M6.3 14.6l6.6 4.9C14.5 15.9 18.9 13 24 13c3.3 0 6.3 1.2 8.6 3.2l5.7-5.7C34.6 7.4 29.6 5.5 24 5.5c-7.8 0-14.4 4.3-17.7 10.6z" />
+              <path fill="#4CAF50" d="M24 42.5c5.1 0 9.7-1.7 13.3-4.7l-6.1-5.1C29.1 34 26.7 35 24 35c-5.2 0-9.6-3.5-11.2-8.3l-6.6 5.1C9.4 38.1 16.1 42.5 24 42.5z" />
+              <path fill="#1976D2" d="M46 24c0-1.5-.2-3-.4-4H24v8h11.3c-.8 3.7-3.2 6.2-6 7.7l6.1 5.1C38.3 38.7 46 32.5 46 24z" />
             </svg>
           </button>
 
@@ -122,8 +112,8 @@ export default function Login() {
               ${!agree ? "opacity-40 cursor-not-allowed" : "hover:shadow-md"}`}
           >
             <svg viewBox="0 0 24 24" className="h-6 w-6 text-slate-700" aria-hidden>
-              <path d="M2 6.5A2.5 2.5 0 0 1 4.5 4h15A2.5 2.5 0 0 1 22 6.5v11A2.5 2.5 0 0 1 19.5 20h-15A2.5 2.5 0 0 1 2 17.5v-11Z" fill="none" stroke="currentColor" strokeWidth="1.5"/>
-              <path d="M3 7l8.5 6a2 2 0 0 0 2 0L22 7" fill="none" stroke="currentColor" strokeWidth="1.5"/>
+              <path d="M2 6.5A2.5 2.5 0 0 1 4.5 4h15A2.5 2.5 0 0 1 22 6.5v11A2.5 2.5 0 0 1 19.5 20h-15A2.5 2.5 0 0 1 2 17.5v-11Z" fill="none" stroke="currentColor" strokeWidth="1.5" />
+              <path d="M3 7l8.5 6a2 2 0 0 0 2 0L22 7" fill="none" stroke="currentColor" strokeWidth="1.5" />
             </svg>
           </button>
         </div>
@@ -187,6 +177,18 @@ export default function Login() {
             )}
           </div>
         )}
+
+        <div className="flex items-center mb-4">
+          <input
+            type="checkbox"
+            checked={agree}
+            onChange={(e) => setAgree(e.target.checked)}
+            className="mr-2 accent-secondary"
+          />
+          <span className="text-primary text-sm">
+            I have read and agree to the <a href="https://www.my-hora.com/privacy" target="_blank" rel="noopener noreferrer" className="underline text-secondary">Privacy Policy</a> and <a href="https://www.my-hora.com/terms" target="_blank" rel="noopener noreferrer" className="underline text-secondary">Terms of Use</a>.
+          </span>
+        </div>
 
       </div>
     </div>
