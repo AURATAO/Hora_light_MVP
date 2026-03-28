@@ -74,7 +74,7 @@ type CreateNotificationInput struct {
 	SendEmail bool
 	EmailTo   string
 
-	// Optional extra fields for richer emails
+	// Extra fields for branded emails
 	SupporterName  string
 	TaskTitle      string
 	ClockInTime    string
@@ -114,7 +114,6 @@ func Create(ctx context.Context, in CreateNotificationInput) error {
 	return err
 }
 
-// buildEmail picks the right branded template based on notification type
 func buildEmail(in CreateNotificationInput, taskURL string) string {
 	switch in.Type {
 	case "CLOCK_IN":
@@ -130,18 +129,28 @@ func buildEmail(in CreateNotificationInput, taskURL string) string {
 	}
 }
 
-const emailWrapper = `<!DOCTYPE html>
+// -----------------------------------------------------------------------------
+// Shared wrapper — logo + card + footer
+// -----------------------------------------------------------------------------
+
+func wrapEmail(title, cardHTML string) string {
+	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>%s</title>
+<style>
+body{margin:0;padding:0;background-color:#f4f4f0;font-family:Georgia,'Times New Roman',serif;}
+a{color:inherit;text-decoration:none;}
+@media(max-width:600px){.wrapper{padding:24px 16px!important}.card{padding:32px 24px!important}}
+</style>
 </head>
-<body style="margin:0;padding:0;background-color:#f4f4f0;font-family:Georgia,'Times New Roman',serif;">
-<div style="padding:40px 20px;">
-<table width="100%%" cellpadding="0" cellspacing="0">
+<body>
+<div class="wrapper" style="background-color:#f4f4f0;padding:40px 20px;">
+<table width="100%%" cellpadding="0" cellspacing="0" role="presentation">
 <tr><td align="center">
-<table width="100%%" cellpadding="0" cellspacing="0" style="max-width:560px;">
+<table width="100%%" cellpadding="0" cellspacing="0" role="presentation" style="max-width:560px;">
 
   <!-- Logo -->
   <tr><td align="center" style="padding-bottom:28px;">
@@ -152,7 +161,7 @@ const emailWrapper = `<!DOCTYPE html>
   </td></tr>
 
   <!-- Card -->
-  <tr><td style="background:#ffffff;border-radius:12px;padding:40px 36px;">
+  <tr><td class="card" style="background:#ffffff;border-radius:12px;padding:40px 36px;">
     %s
   </td></tr>
 
@@ -160,12 +169,15 @@ const emailWrapper = `<!DOCTYPE html>
   <tr><td style="padding:28px 0 8px;" align="center">
     <a href="https://instagram.com/horaapp" style="display:inline-block;margin-bottom:16px;">
       <img src="https://upload.wikimedia.org/wikipedia/commons/a/a5/Instagram_icon.png"
-           alt="Instagram" width="20" height="20" style="display:block;border-radius:5px;margin:0 auto;"/>
+           alt="Instagram" width="20" height="20"
+           style="display:block;border-radius:5px;margin:0 auto;"/>
     </a>
     <p style="margin:0 0 6px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#9a9a8a;">
       <a href="https://horaapp.co" style="color:#9a9a8a;text-decoration:underline;">horaapp.co</a>
     </p>
-    <p style="margin:0;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:11px;color:#b8b8aa;">© 2026 HORA. All rights reserved.</p>
+    <p style="margin:0;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:11px;color:#b8b8aa;">
+      &copy; 2026 HORA. All rights reserved.
+    </p>
   </td></tr>
 
 </table>
@@ -173,187 +185,221 @@ const emailWrapper = `<!DOCTYPE html>
 </table>
 </div>
 </body>
-</html>`
-
-func wrapEmail(title, cardHTML string) string {
-	return fmt.Sprintf(emailWrapper, title, cardHTML)
+</html>`, title, cardHTML)
 }
 
-func ctaButton(label, url string) string {
-	return fmt.Sprintf(`
-<table cellpadding="0" cellspacing="0">
-  <tr>
-    <td style="border-radius:8px;background:#1a1a16;">
-      <a href="%s" style="display:inline-block;padding:14px 28px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;font-weight:500;color:#f4f4f0;text-decoration:none;border-radius:8px;">
-        %s
-      </a>
-    </td>
-  </tr>
-</table>`, url, label)
-}
-
-func pill(color, textColor, label string) string {
-	return fmt.Sprintf(`
-<table cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
-  <tr>
-    <td style="background:%s;border-radius:20px;padding:5px 14px;">
-      <span style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;font-weight:600;color:%s;letter-spacing:0.06em;">%s</span>
-    </td>
-  </tr>
-</table>`, color, textColor, label)
-}
-
-func detailsTable(rows [][2]string) string {
-	var out string
-	for _, r := range rows {
-		out += fmt.Sprintf(`
-<tr>
-  <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;padding-bottom:8px;width:40%%;">%s</td>
-  <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;padding-bottom:8px;">%s</td>
-</tr>`, r[0], r[1])
-	}
-	return fmt.Sprintf(`
-<div style="background:#f4f4f0;border-radius:8px;padding:18px 20px;margin-bottom:28px;">
-  <table width="100%%" cellpadding="0" cellspacing="0">%s</table>
-</div>`, out)
-}
-
-// ── Clock In ──────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
+// Clock In
+// -----------------------------------------------------------------------------
 
 func clockInEmail(in CreateNotificationInput, taskURL string) string {
-	supporterName := in.SupporterName
-	if supporterName == "" {
-		supporterName = "Your supporter"
-	}
-	taskTitle := in.TaskTitle
-	if taskTitle == "" {
-		taskTitle = "your task"
-	}
-	clockInTime := in.ClockInTime
-	if clockInTime == "" {
-		clockInTime = time.Now().Format("15:04")
-	}
+	supporterName := fallback(in.SupporterName, "Your supporter")
+	taskTitle := fallback(in.TaskTitle, "your task")
+	clockInTime := fallback(in.ClockInTime, time.Now().Format("15:04"))
 
-	card := pill("#e8f5e9", "#2e7d32", "● CLOCKED IN") +
-		fmt.Sprintf(`<h1 style="margin:0 0 12px;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:400;line-height:1.3;color:#1a1a16;">%s has started working</h1>`, supporterName) +
-		`<p style="margin:0 0 24px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.65;color:#555550;">Your supporter just clocked in. The timer is now running.</p>` +
-		detailsTable([][2]string{
-			{"Task", taskTitle},
-			{"Supporter", supporterName},
-			{"Clocked in at", clockInTime},
-		}) +
-		ctaButton("View task →", taskURL)
+	card := fmt.Sprintf(`
+<table cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
+  <tr><td style="background:#e8f5e9;border-radius:20px;padding:5px 14px;">
+    <span style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;font-weight:600;color:#2e7d32;letter-spacing:0.06em;">&#9679; CLOCKED IN</span>
+  </td></tr>
+</table>
+<h1 style="margin:0 0 12px;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:400;line-height:1.3;color:#1a1a16;">%s has started working</h1>
+<p style="margin:0 0 24px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.65;color:#555550;">Your supporter just clocked in on your task. The timer is now running.</p>
+<div style="background:#f4f4f0;border-radius:8px;padding:18px 20px;margin-bottom:28px;">
+  <table width="100%%" cellpadding="0" cellspacing="0">
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;padding-bottom:8px;width:40%%;">Task</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;font-weight:500;padding-bottom:8px;">%s</td>
+    </tr>
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;padding-bottom:8px;">Supporter</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;padding-bottom:8px;">%s</td>
+    </tr>
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;">Clocked in at</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;">%s</td>
+    </tr>
+  </table>
+</div>
+<table cellpadding="0" cellspacing="0"><tr>
+  <td style="border-radius:8px;background:#1a1a16;">
+    <a href="%s" style="display:inline-block;padding:14px 28px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;font-weight:500;color:#f4f4f0;text-decoration:none;border-radius:8px;">View task &rarr;</a>
+  </td>
+</tr></table>`,
+		supporterName, taskTitle, supporterName, clockInTime, taskURL)
 
 	return wrapEmail("Supporter clocked in", card)
 }
 
-// ── Clock Out ─────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
+// Clock Out
+// -----------------------------------------------------------------------------
 
 func clockOutEmail(in CreateNotificationInput, taskURL string) string {
-	supporterName := in.SupporterName
-	if supporterName == "" {
-		supporterName = "Your supporter"
-	}
-	taskTitle := in.TaskTitle
-	if taskTitle == "" {
-		taskTitle = "your task"
-	}
+	supporterName := fallback(in.SupporterName, "Your supporter")
+	taskTitle := fallback(in.TaskTitle, "your task")
 
-	card := pill("#fff3e0", "#e65100", "● CLOCKED OUT") +
-		fmt.Sprintf(`<h1 style="margin:0 0 12px;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:400;line-height:1.3;color:#1a1a16;">%s has clocked out</h1>`, supporterName) +
-		`<p style="margin:0 0 24px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.65;color:#555550;">Here's a summary of this session.</p>` +
-		detailsTable([][2]string{
-			{"Task", taskTitle},
-			{"Supporter", supporterName},
-			{"Session time", in.SessionTime},
-			{"Total logged", in.TotalLogged},
-			{"Est. cost so far", in.EstimatedCost},
-		}) +
-		ctaButton("View task →", taskURL)
+	card := fmt.Sprintf(`
+<table cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
+  <tr><td style="background:#fff3e0;border-radius:20px;padding:5px 14px;">
+    <span style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;font-weight:600;color:#e65100;letter-spacing:0.06em;">&#9679; CLOCKED OUT</span>
+  </td></tr>
+</table>
+<h1 style="margin:0 0 12px;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:400;line-height:1.3;color:#1a1a16;">%s has clocked out</h1>
+<p style="margin:0 0 24px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.65;color:#555550;">Here's a summary of this session on your task.</p>
+<div style="background:#f4f4f0;border-radius:8px;padding:18px 20px;margin-bottom:28px;">
+  <table width="100%%" cellpadding="0" cellspacing="0">
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;padding-bottom:8px;width:40%%;">Task</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;font-weight:500;padding-bottom:8px;">%s</td>
+    </tr>
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;padding-bottom:8px;">Supporter</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;padding-bottom:8px;">%s</td>
+    </tr>
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;padding-bottom:8px;">Session time</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;padding-bottom:8px;">%s</td>
+    </tr>
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;padding-bottom:8px;">Total logged</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;padding-bottom:8px;">%s</td>
+    </tr>
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;">Est. cost so far</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;font-weight:500;">%s</td>
+    </tr>
+  </table>
+</div>
+<table cellpadding="0" cellspacing="0"><tr>
+  <td style="border-radius:8px;background:#1a1a16;">
+    <a href="%s" style="display:inline-block;padding:14px 28px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;font-weight:500;color:#f4f4f0;text-decoration:none;border-radius:8px;">View task &rarr;</a>
+  </td>
+</tr></table>`,
+		supporterName, taskTitle, supporterName,
+		fallback(in.SessionTime, "—"),
+		fallback(in.TotalLogged, "—"),
+		fallback(in.EstimatedCost, "—"),
+		taskURL)
 
 	return wrapEmail("Supporter clocked out", card)
 }
 
-// ── Task Completed ────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
+// Task Completed
+// -----------------------------------------------------------------------------
 
 func taskCompletedEmail(in CreateNotificationInput, taskURL string) string {
-	supporterName := in.SupporterName
-	if supporterName == "" {
-		supporterName = "Your supporter"
-	}
-	taskTitle := in.TaskTitle
-	if taskTitle == "" {
-		taskTitle = "your task"
-	}
-	reviewURL := fmt.Sprintf("%s?review=true", taskURL)
+	supporterName := fallback(in.SupporterName, "Your supporter")
+	taskTitle := fallback(in.TaskTitle, "your task")
+	reviewURL := taskURL + "?review=true"
 
-	card := pill("#e8f5e9", "#2e7d32", "✓ TASK COMPLETE") +
-		`<h1 style="margin:0 0 12px;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:400;line-height:1.3;color:#1a1a16;">Your task has been completed</h1>` +
-		fmt.Sprintf(`<p style="margin:0 0 24px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.65;color:#555550;">%s has marked your task as complete. Here's the final summary.</p>`, supporterName) +
-		detailsTable([][2]string{
-			{"Task", taskTitle},
-			{"Supporter", supporterName},
-			{"Total time", in.TotalLogged},
-			{"Final cost", in.FinalCost},
-		}) +
-		fmt.Sprintf(`<div style="border-left:3px solid #1a1a16;padding-left:16px;margin-bottom:28px;">
-  <p style="margin:0;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;line-height:1.6;color:#555550;">
-    Happy with the work? Leave %s a review — it helps them get more tasks on HORA.
-  </p>
-</div>`, supporterName) +
-		fmt.Sprintf(`<table cellpadding="0" cellspacing="0"><tr>
+	card := fmt.Sprintf(`
+<table cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
+  <tr><td style="background:#e8f5e9;border-radius:20px;padding:5px 14px;">
+    <span style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;font-weight:600;color:#2e7d32;letter-spacing:0.06em;">&#10003; TASK COMPLETE</span>
+  </td></tr>
+</table>
+<h1 style="margin:0 0 12px;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:400;line-height:1.3;color:#1a1a16;">Your task has been completed</h1>
+<p style="margin:0 0 24px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.65;color:#555550;">%s has marked your task as complete. Here's the final summary.</p>
+<div style="background:#f4f4f0;border-radius:8px;padding:18px 20px;margin-bottom:24px;">
+  <table width="100%%" cellpadding="0" cellspacing="0">
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;padding-bottom:8px;width:40%%;">Task</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;font-weight:500;padding-bottom:8px;">%s</td>
+    </tr>
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;padding-bottom:8px;">Supporter</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;padding-bottom:8px;">%s</td>
+    </tr>
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;padding-bottom:8px;">Total time</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;padding-bottom:8px;">%s</td>
+    </tr>
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;">Final cost</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;font-weight:600;">%s</td>
+    </tr>
+  </table>
+</div>
+<div style="border-left:3px solid #1a1a16;padding-left:16px;margin-bottom:28px;">
+  <p style="margin:0;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;line-height:1.6;color:#555550;">Happy with the work? Leave %s a review &mdash; it helps them get more tasks on HORA.</p>
+</div>
+<table cellpadding="0" cellspacing="0"><tr>
   <td style="border-radius:8px;background:#1a1a16;padding-right:12px;">
-    <a href="%s" style="display:inline-block;padding:14px 28px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;font-weight:500;color:#f4f4f0;text-decoration:none;border-radius:8px;">View task →</a>
+    <a href="%s" style="display:inline-block;padding:14px 28px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;font-weight:500;color:#f4f4f0;text-decoration:none;border-radius:8px;">View task &rarr;</a>
   </td>
   <td style="border-radius:8px;border:1px solid #1a1a16;">
     <a href="%s" style="display:inline-block;padding:13px 24px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;font-weight:500;color:#1a1a16;text-decoration:none;border-radius:8px;">Leave a review</a>
   </td>
-</tr></table>`, taskURL, reviewURL)
+</tr></table>`,
+		supporterName,
+		taskTitle, supporterName,
+		fallback(in.TotalLogged, "—"),
+		fallback(in.FinalCost, "—"),
+		supporterName,
+		taskURL, reviewURL)
 
 	return wrapEmail("Task completed", card)
 }
 
-// ── New Message ───────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
+// New Message — works both directions (poster <-> supporter)
+// -----------------------------------------------------------------------------
 
 func newMessageEmail(in CreateNotificationInput, taskURL string) string {
-	senderName := in.SenderName
-	if senderName == "" {
-		senderName = "Someone"
-	}
-	taskTitle := in.TaskTitle
-	if taskTitle == "" {
-		taskTitle = "your task"
-	}
-	messagePreview := in.MessagePreview
-	if messagePreview == "" {
-		messagePreview = in.Body
-	}
+	senderName := fallback(in.SenderName, "Someone")
+	taskTitle := fallback(in.TaskTitle, "your task")
+	messagePreview := fallback(in.MessagePreview, in.Body)
 
-	card := `<p style="margin:0 0 12px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:11px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:#9a9a8a;">New message</p>` +
-		fmt.Sprintf(`<h1 style="margin:0 0 20px;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:400;line-height:1.3;color:#1a1a16;">%s sent you a message</h1>`, senderName) +
-		fmt.Sprintf(`<div style="background:#f4f4f0;border-radius:4px 12px 12px 12px;padding:16px 20px;margin-bottom:24px;border-left:3px solid #1a1a16;">
-  <p style="margin:0;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:15px;line-height:1.65;color:#1a1a16;font-style:italic;">"%s"</p>
-</div>`, messagePreview) +
-		fmt.Sprintf(`<div style="margin-bottom:28px;">
+	card := fmt.Sprintf(`
+<p style="margin:0 0 12px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:11px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:#9a9a8a;">New message</p>
+<h1 style="margin:0 0 20px;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:400;line-height:1.3;color:#1a1a16;">%s sent you a message</h1>
+<div style="background:#f4f4f0;border-radius:4px 12px 12px 12px;padding:16px 20px;margin-bottom:24px;border-left:3px solid #1a1a16;">
+  <p style="margin:0;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:15px;line-height:1.65;color:#1a1a16;font-style:italic;">&ldquo;%s&rdquo;</p>
+</div>
+<div style="margin-bottom:28px;">
   <p style="margin:0 0 4px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:11px;color:#9a9a8a;text-transform:uppercase;letter-spacing:0.08em;">Re: task</p>
   <p style="margin:0;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;color:#1a1a16;font-weight:500;">%s</p>
-</div>`, taskTitle) +
-		ctaButton("Reply →", taskURL)
+</div>
+<table cellpadding="0" cellspacing="0"><tr>
+  <td style="border-radius:8px;background:#1a1a16;">
+    <a href="%s" style="display:inline-block;padding:14px 28px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;font-weight:500;color:#f4f4f0;text-decoration:none;border-radius:8px;">Reply &rarr;</a>
+  </td>
+</tr></table>`,
+		senderName, messagePreview, taskTitle, taskURL)
 
 	return wrapEmail("New message on HORA", card)
 }
 
-// ── Default (ORDER_ACCEPTED, CANCELLED, etc.) ─────────────────────────────────
+// -----------------------------------------------------------------------------
+// Default (ORDER_ACCEPTED, CANCELLED, etc.)
+// -----------------------------------------------------------------------------
 
 func defaultEmail(in CreateNotificationInput, taskURL string) string {
 	card := fmt.Sprintf(`
 <p style="margin:0 0 12px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:11px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:#9a9a8a;">Notification</p>
 <h1 style="margin:0 0 16px;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:400;line-height:1.3;color:#1a1a16;">%s</h1>
-<p style="margin:0 0 28px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.65;color:#555550;">%s</p>`,
-		in.Title, in.Body) +
-		ctaButton("View task →", taskURL)
+<p style="margin:0 0 28px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.65;color:#555550;">%s</p>
+<table cellpadding="0" cellspacing="0"><tr>
+  <td style="border-radius:8px;background:#1a1a16;">
+    <a href="%s" style="display:inline-block;padding:14px 28px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;font-weight:500;color:#f4f4f0;text-decoration:none;border-radius:8px;">View task &rarr;</a>
+  </td>
+</tr></table>`,
+		in.Title, in.Body, taskURL)
 
 	return wrapEmail(in.Title, card)
+}
+
+// -----------------------------------------------------------------------------
+// Helpers
+// -----------------------------------------------------------------------------
+
+func fallback(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
 }
 
 func getenv(k, def string) string {
