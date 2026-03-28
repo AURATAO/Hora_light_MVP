@@ -167,7 +167,7 @@ a{color:inherit;text-decoration:none;}
 
   <!-- Footer -->
   <tr><td style="padding:28px 0 8px;" align="center">
-    <a href="https://instagram.com/horaapp" style="display:inline-block;margin-bottom:16px;">
+    <a href="https://www.instagram.com/my_hora_app?igsh=Njk2Y2x3dDQyOGUx&utm_source=qr" style="display:inline-block;margin-bottom:16px;">
       <img src="https://upload.wikimedia.org/wikipedia/commons/a/a5/Instagram_icon.png"
            alt="Instagram" width="20" height="20"
            style="display:block;border-radius:5px;margin:0 auto;"/>
