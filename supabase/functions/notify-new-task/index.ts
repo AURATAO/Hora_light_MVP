@@ -2,7 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
 const LOGO_URL = "https://horaapp.co/Logo.svg";
 const APP_URL = "https://horaapp.co";
-const IG_URL = "https://www.instagram.com/my_hora_app?igsh=Njk2Y2x3dDQyOGUx&utm_source=qr";
+const IG_URL = "https://www.instagram.com/my_hora_app/";
 
 function buildHtml(record: Record<string, string>): string {
   return `<!DOCTYPE html>
