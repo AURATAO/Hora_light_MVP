@@ -86,9 +86,13 @@ type Task struct {
 	CreatedAt         time.Time  `json:"created_at"`
 	AssignedTo        string     `json:"assigned_to"`
 
-	// 新：uuid（後端查詢/權限全靠它）
+	// uuid（後端查詢/權限全靠它）
 	RequesterID  string  `json:"requester_id"`
 	AssignedToID *string `json:"assigned_to_id,omitempty"`
+
+	// Travel time estimate (populated after supporter accepts)
+	TravelTimeMinutes    *int `json:"travel_time_minutes,omitempty"`
+	TotalEstimateMinutes *int `json:"total_estimate_minutes,omitempty"`
 }
 
 type createTaskInput struct {
@@ -477,6 +481,7 @@ func main() {
 
 		tasksAPI.POST("/:id/gps-ping", saveGpsPing)
 		tasksAPI.GET("/:id/gps-latest", getLatestGps)
+		tasksAPI.POST("/:id/estimate-travel", estimateTravel)
 	}
 
 	// dev-only WhatsApp test route
@@ -1068,9 +1073,13 @@ func createTask(c *gin.Context) {
 		in.EstimatedMinutes = 30
 	}
 	if in.Category == "" {
-		in.Category = "task"
+		in.Category = "quick_errand"
 	}
-	if in.Category != "task" && in.Category != "companion" {
+	validCategories := map[string]bool{
+		"task": true, "companion": true,
+		"quick_errand": true, "standard": true, "half_day": true, "full_day": true,
+	}
+	if !validCategories[in.Category] {
 		c.JSON(400, gin.H{"error": "invalid category"})
 		return
 	}
@@ -1245,6 +1254,42 @@ func scanTask(rows interface{ Scan(dest ...any) error }) (Task, error) {
 	return t, nil
 }
 
+// scanTaskFull scans all task columns including travel_time_minutes and total_estimate_minutes.
+// Use only with SELECT queries that include those two columns.
+func scanTaskFull(rows interface{ Scan(dest ...any) error }) (Task, error) {
+	var t Task
+	var reqIDNS, assigneeIDNS sql.NullString
+	var travelMin, totalEstMin sql.NullInt64
+
+	err := rows.Scan(
+		&t.ID, &t.Title, &t.Description, &t.Category, &t.LocationText,
+		&t.EstimatedMinutes, &t.PrepayAmountCents, &t.IsImmediate,
+		&t.ScheduledAt,
+		&t.Requester, &reqIDNS,
+		&t.Status, &t.CreatedAt,
+		&t.AssignedTo, &assigneeIDNS,
+		&travelMin, &totalEstMin,
+	)
+	if err != nil {
+		return t, err
+	}
+
+	t.RequesterID = reqIDNS.String
+	if assigneeIDNS.Valid {
+		id := assigneeIDNS.String
+		t.AssignedToID = &id
+	}
+	if travelMin.Valid {
+		v := int(travelMin.Int64)
+		t.TravelTimeMinutes = &v
+	}
+	if totalEstMin.Valid {
+		v := int(totalEstMin.Int64)
+		t.TotalEstimateMinutes = &v
+	}
+	return t, nil
+}
+
 func listMyTasks(c *gin.Context) {
 	meUID := c.GetString("uid")
 	if meUID == "" {
@@ -1327,20 +1372,41 @@ func getTask(c *gin.Context) {
       scheduled_at,
       requester, requester_id,
       status, created_at,
-      assigned_to, assigned_to_id
+      assigned_to, assigned_to_id,
+      travel_time_minutes, total_estimate_minutes
     from public.tasks
     where id = $1::uuid
   `, id)
 
-	t, err := scanTask(row)
+	t, err := scanTaskFull(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
-		} else {
-			log.Printf("[getTask][ERROR] id=%s scan error: %v", id, err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "scan error"})
+			return
 		}
-		return
+		// Fallback: travel columns may not exist in DB yet — retry without them
+		log.Printf("[getTask] scanTaskFull failed (id=%s): %v — retrying without travel columns", id, err)
+		row2 := db.QueryRow(ctx, `
+      select
+        id, title, description, category, location_text,
+        estimated_minutes, prepay_amount_cents, is_immediate,
+        scheduled_at,
+        requester, requester_id,
+        status, created_at,
+        assigned_to, assigned_to_id
+      from public.tasks
+      where id = $1::uuid
+    `, id)
+		t, err = scanTask(row2)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			} else {
+				log.Printf("[getTask][ERROR] id=%s fallback scan error: %v", id, err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "scan error"})
+			}
+			return
+		}
 	}
 
 	// 檢查是否是指派者
@@ -1427,9 +1493,13 @@ func updateTask(c *gin.Context) {
 		in.EstimatedMinutes = 30
 	}
 	if in.Category == "" {
-		in.Category = "task"
+		in.Category = "quick_errand"
 	}
-	if in.Category != "task" && in.Category != "companion" {
+	validCats := map[string]bool{
+		"task": true, "companion": true,
+		"quick_errand": true, "standard": true, "half_day": true, "full_day": true,
+	}
+	if !validCats[in.Category] {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid category"})
 		return
 	}
@@ -1786,12 +1856,12 @@ func acceptTask(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	var requesterID, status string
+	var requesterID, status, acceptTaskTitle string
 	var assignedToID *string
 	err := db.QueryRow(ctx, `
-    select requester_id, status, assigned_to_id
+    select requester_id, status, assigned_to_id, COALESCE(title,'')
     from public.tasks where id=$1
-  `, id).Scan(&requesterID, &status, &assignedToID)
+  `, id).Scan(&requesterID, &status, &assignedToID, &acceptTaskTitle)
 	if err != nil {
 		c.JSON(404, gin.H{"error": "not found"})
 		return
@@ -1817,14 +1887,16 @@ func acceptTask(c *gin.Context) {
 		return
 	}
 
+	notifyRequesterRich(c, notify.CreateNotificationInput{
+		TaskID:        id,
+		Type:          "ORDER_ACCEPTED",
+		Title:         "Your task has been accepted",
+		Body:          fmt.Sprintf("%s has accepted your task.", displayName(meEmail)),
+		SupporterName: displayName(meEmail),
+		TaskTitle:     acceptTaskTitle,
+	})
+	// TODO: WhatsApp notification here
 	getTask(c)
-	notifyRequester(
-		c,
-		id, // taskID
-		"ORDER_ACCEPTED",
-		"Your request was accepted",
-		"Your supporter has accepted the job. You'll be notified when they clock in.",
-	)
 }
 
 // -------- WorkLog handlers --------
@@ -1841,13 +1913,13 @@ func clockIn(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	// 用 uuid 判斷是否為受派者
-	var status string
+	var status, clockInTaskTitle string
 	var assignedToID sql.NullString
 	if err := db.QueryRow(ctx, `
-      select assigned_to_id, status
+      select assigned_to_id, status, COALESCE(title,'')
       from public.tasks
       WHERE id = $1::uuid
-    `, taskID).Scan(&assignedToID, &status); err != nil {
+    `, taskID).Scan(&assignedToID, &status, &clockInTaskTitle); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
@@ -1872,12 +1944,6 @@ func clockIn(c *gin.Context) {
 		return
 	}
 
-	// 通知 requester
-	notifyRequester(c, taskID, "CLOCK_IN",
-		"Supporter clocked in",
-		"The job has started. You can track progress in your dashboard.",
-	)
-
 	var id string
 	var createdAt, startAt time.Time
 	err := db.QueryRow(ctx, `
@@ -1890,27 +1956,21 @@ func clockIn(c *gin.Context) {
 		return
 	}
 
+	notifyRequesterRich(c, notify.CreateNotificationInput{
+		TaskID:        taskID,
+		Type:          "CLOCK_IN",
+		Title:         "Your supporter has arrived and started the task",
+		Body:          "The timer is now running. You can track progress in your dashboard.",
+		SupporterName: displayName(meEmail),
+		TaskTitle:     clockInTaskTitle,
+		ClockInTime:   startAt.Format("15:04"),
+	})
+	// TODO: WhatsApp notification here
+
 	c.JSON(http.StatusCreated, WorkLog{
 		ID: id, TaskID: taskID, User: meEmail, Start: startAt, End: nil,
 		CreatedAt: createdAt, UpdatedAt: createdAt,
 	})
-
-	// WhatsApp: notify requester that supporter has clocked in
-	go func() {
-		var requesterEmail string
-		var requesterPhone string
-		if err := db.QueryRow(context.Background(), `
-			select t.requester, p.phone
-			from public.tasks t
-			join public.profiles p on p.email = t.requester
-			where t.id = $1::uuid
-		`, taskID).Scan(&requesterEmail, &requesterPhone); err == nil && requesterPhone != "" {
-			_ = helpers.SendWhatsApp(requesterPhone, fmt.Sprintf(
-				"Hi! Your supporter has arrived and clocked in at %s. Need anything? Just reply here.",
-				startAt.Format("15:04"),
-			))
-		}
-	}()
 }
 
 func clockOut(c *gin.Context) {
@@ -1946,38 +2006,38 @@ func clockOut(c *gin.Context) {
 		return
 	}
 
+	// Compute session duration and running total for notification email
+	sessionDur := endAt.Sub(startAt).Round(time.Minute)
+	sessionHrs := int(sessionDur.Hours())
+	sessionMins := int(sessionDur.Minutes()) % 60
+	sessionStr := fmt.Sprintf("%d min", int(sessionDur.Minutes()))
+	if sessionHrs > 0 {
+		sessionStr = fmt.Sprintf("%dh %dmin", sessionHrs, sessionMins)
+	}
+	totalMin, _ := totalClosedMinutes(ctx, taskID)
+	totalStr := fmt.Sprintf("%d min", totalMin)
+	if h := totalMin / 60; h > 0 {
+		totalStr = fmt.Sprintf("%dh %dmin", h, totalMin%60)
+	}
+	var clockOutTaskTitle string
+	_ = db.QueryRow(ctx, `SELECT COALESCE(title,'') FROM public.tasks WHERE id=$1::uuid`, taskID).Scan(&clockOutTaskTitle)
+
+	notifyRequesterRich(c, notify.CreateNotificationInput{
+		TaskID:        taskID,
+		Type:          "CLOCK_OUT",
+		Title:         fmt.Sprintf("Your supporter has clocked out. Time logged: %s", sessionStr),
+		Body:          fmt.Sprintf("Session ended. Total time logged so far: %s", totalStr),
+		SupporterName: displayName(meEmail),
+		TaskTitle:     clockOutTaskTitle,
+		SessionTime:   sessionStr,
+		TotalLogged:   totalStr,
+	})
+	// TODO: WhatsApp notification here
+
 	c.JSON(http.StatusOK, WorkLog{
 		ID: wlID, TaskID: taskID, User: meEmail,
 		Start: startAt, End: &endAt, CreatedAt: createdAt, UpdatedAt: updatedAt,
 	})
-
-	// WhatsApp: notify requester that supporter has clocked out
-	go func() {
-		duration := endAt.Sub(startAt).Round(time.Minute)
-		hours := int(duration.Hours())
-		mins := int(duration.Minutes()) % 60
-		durationStr := fmt.Sprintf("%d min", int(duration.Minutes()))
-		if hours > 0 {
-			durationStr = fmt.Sprintf("%dh %dmin", hours, mins)
-		}
-		var requesterPhone string
-		if err := db.QueryRow(context.Background(), `
-			select p.phone
-			from public.tasks t
-			join public.profiles p on p.email = t.requester
-			where t.id = $1::uuid
-		`, taskID).Scan(&requesterPhone); err == nil && requesterPhone != "" {
-			_ = helpers.SendWhatsApp(requesterPhone, fmt.Sprintf(
-				"Task complete! Your supporter logged %s. Payment has been processed. Reply 1-5 to rate your experience.",
-				durationStr,
-			))
-		}
-	}()
-
-	notifyRequester(c, taskID, "CLOCK_OUT",
-		"Supporter clocked out",
-		"Work session ended. We'll compute the bill and show the breakdown.",
-	)
 }
 
 // POST /tasks/:id/gps-ping — assignee saves current location while clocked in
@@ -2163,12 +2223,12 @@ func completeTask(c *gin.Context) {
 	}
 	ctx := c.Request.Context()
 
-	var status, assigneeEmail string
+	var status, assigneeEmail, completeTaskTitle string
 	var requesterID, assignedToID sql.NullString
 	if err := db.QueryRow(ctx, `
-      select requester_id, assigned_to_id, assigned_to, status
+      select requester_id, assigned_to_id, assigned_to, status, COALESCE(title,'')
       from public.tasks where id=$1
-    `, taskID).Scan(&requesterID, &assignedToID, &assigneeEmail, &status); err != nil {
+    `, taskID).Scan(&requesterID, &assignedToID, &assigneeEmail, &status, &completeTaskTitle); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
@@ -2214,6 +2274,14 @@ func completeTask(c *gin.Context) {
 	totalMin, _ := totalClosedMinutes(ctx, taskID)
 	totalCents := totalMin * centsPerMinute
 
+	completeHrs := totalMin / 60
+	completeMins := totalMin % 60
+	completeTotalStr := fmt.Sprintf("%d min", totalMin)
+	if completeHrs > 0 {
+		completeTotalStr = fmt.Sprintf("%dh %dmin", completeHrs, completeMins)
+	}
+	completeCostStr := fmt.Sprintf("$%.2f", float64(totalCents)/100.0)
+
 	// TODO: trigger Stripe capture here
 	// e.g. stripe.CapturePaymentIntent(task.PaymentIntentID, totalCents)
 
@@ -2222,33 +2290,30 @@ func completeTask(c *gin.Context) {
 		return
 	}
 
-	notifyRequester(c, taskID, "COMPLETED",
-		"Job completed",
-		"Everything is done. Please leave a rating when you have a moment.",
-	)
+	// Email requester: summary with time logged + final cost
+	notifyRequesterRich(c, notify.CreateNotificationInput{
+		TaskID:        taskID,
+		Type:          "COMPLETED",
+		Title:         "Your task has been completed",
+		Body:          "Everything is done. Please leave a rating when you have a moment.",
+		SupporterName: displayName(assigneeEmail),
+		TaskTitle:     completeTaskTitle,
+		TotalLogged:   completeTotalStr,
+		FinalCost:     completeCostStr,
+	})
+	// TODO: WhatsApp notification here
 
-	// WhatsApp: send final summary to requester
-	go func() {
-		var requesterPhone string
-		if err := db.QueryRow(context.Background(), `
-			select p.phone
-			from public.tasks t
-			join public.profiles p on p.email = t.requester
-			where t.id = $1::uuid
-		`, taskID).Scan(&requesterPhone); err == nil && requesterPhone != "" {
-			hours := totalMin / 60
-			mins := totalMin % 60
-			durationStr := fmt.Sprintf("%d min", totalMin)
-			if hours > 0 {
-				durationStr = fmt.Sprintf("%dh %dmin", hours, mins)
-			}
-			totalDollars := float64(totalCents) / 100.0
-			_ = helpers.SendWhatsApp(requesterPhone, fmt.Sprintf(
-				"Task complete! Your supporter logged %s. Total: $%.2f",
-				durationStr, totalDollars,
-			))
-		}
-	}()
+	// Email supporter: confirmation with time logged + earnings
+	notifyAssignee(c, notify.CreateNotificationInput{
+		TaskID:      taskID,
+		Type:        "COMPLETED_SUPPORTER",
+		Title:       "Task marked complete — great work!",
+		Body:        fmt.Sprintf("The task has been marked complete. Time logged: %s", completeTotalStr),
+		TaskTitle:   completeTaskTitle,
+		TotalLogged: completeTotalStr,
+		FinalCost:   completeCostStr,
+	})
+	// TODO: WhatsApp notification here
 
 	getTask(c)
 }
@@ -2295,13 +2360,13 @@ func cancelTask(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	// 讀任務狀態與擁有者
-	var requesterID, status string
+	var requesterID, status, cancelTaskTitle string
 	var assignedToID *string
 	err := db.QueryRow(ctx, `
-		select requester_id, status, assigned_to_id
+		select requester_id, status, assigned_to_id, COALESCE(title,'')
 		from public.tasks
 		WHERE id = $1::uuid
-	`, taskID).Scan(&requesterID, &status, &assignedToID)
+	`, taskID).Scan(&requesterID, &status, &assignedToID, &cancelTaskTitle)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
@@ -2378,18 +2443,88 @@ func cancelTask(c *gin.Context) {
 	// 	))
 	// `, taskID, meUID, in.Reason, totalMin, billCents, refundCents)
 
-	// 通知 requester（自己），也可選擇通知 assignee（如果允許被接單後取消）
-	// 這裡沿用你既有的 notifyRequester，如果你要寄給 assignee 就寫一個 notifyAssignee。
-	notifyRequester(c, taskID, "CANCELLED",
-		"Task cancelled",
-		fmt.Sprintf("Reason: %s", in.Reason),
-	)
+	// Email requester: cancellation confirmation with reason
+	notifyRequesterRich(c, notify.CreateNotificationInput{
+		TaskID:    taskID,
+		Type:      "CANCELLED",
+		Title:     "Task cancelled",
+		Body:      fmt.Sprintf("Your task has been cancelled. Reason: %s", in.Reason),
+		TaskTitle: cancelTaskTitle,
+	})
+	// TODO: WhatsApp notification here
+
+	// Email supporter (if task was already accepted before cancellation policy changes)
+	notifyAssignee(c, notify.CreateNotificationInput{
+		TaskID:    taskID,
+		Type:      "CANCELLED",
+		Title:     "A task you accepted has been cancelled",
+		Body:      fmt.Sprintf("The requester cancelled the task. Reason: %s", in.Reason),
+		TaskTitle: cancelTaskTitle,
+	})
+	// TODO: WhatsApp notification here
 
 	// 前端期望的回傳格式
 	c.JSON(http.StatusOK, gin.H{
 		"total_minutes": totalMin,
 		"bill_cents":    billCents,
 		"refund_cents":  refundCents,
+	})
+}
+
+// -------- Travel Estimate --------
+
+func estimateTravel(c *gin.Context) {
+	var body struct {
+		SupporterLat float64 `json:"supporter_lat"`
+		SupporterLng float64 `json:"supporter_lng"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.SupporterLat == 0 || body.SupporterLng == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "supporter_lat and supporter_lng required"})
+		return
+	}
+
+	taskID := c.Param("id")
+	ctx := c.Request.Context()
+
+	var locationText string
+	var estimatedMinutes int
+	if err := db.QueryRow(ctx,
+		"SELECT COALESCE(location_text,''), estimated_minutes FROM public.tasks WHERE id = $1::uuid",
+		taskID,
+	).Scan(&locationText, &estimatedMinutes); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		}
+		return
+	}
+
+	if locationText == "" {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "task has no location"})
+		return
+	}
+
+	travelMinutes, err := helpers.GetTravelTime(body.SupporterLat, body.SupporterLng, locationText)
+	if err != nil {
+		log.Printf("[estimate-travel] GetTravelTime error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not calculate travel time"})
+		return
+	}
+
+	total := estimatedMinutes + travelMinutes
+
+	_, _ = db.Exec(ctx, `
+		UPDATE public.tasks
+		SET travel_time_minutes = $1, total_estimate_minutes = $2
+		WHERE id = $3::uuid
+	`, travelMinutes, total, taskID)
+
+	c.JSON(http.StatusOK, gin.H{
+		"travel_minutes": travelMinutes,
+		"task_minutes":   estimatedMinutes,
+		"total_minutes":  total,
+		"display":        fmt.Sprintf("~ %d min (%d min task + %d min travel)", total, estimatedMinutes, travelMinutes),
 	})
 }
 
@@ -2591,6 +2726,58 @@ func requesterUIDAndEmail(ctx context.Context, taskID string) (uid string, email
 		WHERE id = $1
 	`, taskID).Scan(&uid, &email)
 	return
+}
+
+// displayName derives a human-readable name from an email address.
+// "john.doe@example.com" → "John Doe"
+func displayName(email string) string {
+	if i := strings.Index(email, "@"); i > 0 {
+		return cases.Title(language.English).String(
+			strings.ReplaceAll(email[:i], ".", " "),
+		)
+	}
+	return email
+}
+
+// notifyRequesterRich looks up the requester uid+email for the given task and
+// calls notify.Create with all extra template fields pre-filled in `in`.
+// Callers must set: TaskID, Type, Title, Body, and any SupporterName/TaskTitle/etc.
+func notifyRequesterRich(c *gin.Context, in notify.CreateNotificationInput) {
+	ctx := c.Request.Context()
+	uid, email, err := requesterUIDAndEmail(ctx, in.TaskID)
+	if err != nil {
+		log.Printf("[notify][skip] lookup requester uid/email task=%s: %v", in.TaskID, err)
+		return
+	}
+	in.DB = sqldb
+	in.UserID = uid
+	in.SendEmail = email != ""
+	in.EmailTo = email
+	if err := notify.Create(ctx, in); err != nil {
+		log.Printf("[notify][ERROR] %s: %v", in.Type, err)
+	}
+	// TODO: WhatsApp notification here
+}
+
+// notifyAssignee looks up the assignee uid+email for the given task and calls
+// notify.Create. No-op if the task has no assignee.
+func notifyAssignee(c *gin.Context, in notify.CreateNotificationInput) {
+	ctx := c.Request.Context()
+	var uid, email string
+	if err := sqldb.QueryRowContext(ctx, `
+		SELECT COALESCE(assigned_to_id::text,''), COALESCE(assigned_to,'')
+		FROM public.tasks WHERE id = $1
+	`, in.TaskID).Scan(&uid, &email); err != nil || uid == "" || email == "" {
+		return
+	}
+	in.DB = sqldb
+	in.UserID = uid
+	in.SendEmail = email != ""
+	in.EmailTo = email
+	if err := notify.Create(ctx, in); err != nil {
+		log.Printf("[notify][ERROR] %s assignee: %v", in.Type, err)
+	}
+	// TODO: WhatsApp notification here
 }
 
 // 共用通知 helper：用 uid 寫入 notifications，用 email 寄信

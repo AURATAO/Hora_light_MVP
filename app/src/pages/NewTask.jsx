@@ -5,6 +5,7 @@ import { useAuth } from '../auth/AuthContext'
 import Modal from '../components/Modal'
 import InfoModal from '../components/InfoModal'
 import PlaceInput from '../components/PlaceInput'
+import DurationPicker from '../components/DurationPicker'
 import { useToast } from '../providers/ToastProvider'
 
 const MINUTE_RATE_EUR = 0.5
@@ -16,7 +17,7 @@ export default function NewTask() {
 
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
-  const [category, setCategory] = useState('task') // task | companion
+  const [category, setCategory] = useState('quick_errand')
   // const [locations, setLocations] = useState([''])
   const [locations, setLocations] = useState([{ label: '' }])
   const [minutes, setMinutes] = useState('30')
@@ -29,6 +30,7 @@ export default function NewTask() {
   const [successOpen, setSuccessOpen] = useState(false)
 
   const [transport, setTransport] = useState('none')
+  const [taskType, setTaskType] = useState('task') // 'task' | 'companion'
 
   const [compPolicyOpen, setCompPolicyOpen] = useState(false)
   const [compPolicyAgreed, setCompPolicyAgreed] = useState(false)
@@ -68,7 +70,7 @@ export default function NewTask() {
     if (!minutes || Number(minutes) < 10) e.minutes = 'Minimum 10 minutes'
     if (prepay !== '' && (Number.isNaN(Number(prepay)) || Number(prepay) < 0)) e.prepay = 'Invalid advance'
     if (mode === 'schedule' && (!date || !timeStr)) e.when = 'Pick date & time'
-    if (category === 'companion' && !compPolicyAgreed) e.category = 'Please review & agree to the companionship policy'
+    // companion policy is enforced via its own modal
     return e
   }, [title, minutes, prepay, mode, date, timeStr,category, compPolicyAgreed])
 
@@ -125,7 +127,7 @@ export default function NewTask() {
     const payload = {
       title,
       description,
-      category,
+      category: taskType === 'companion' ? 'companion' : category,
       location_text,
       locations_geo,
       estimated_minutes: Number(minutes) || 30,
@@ -185,7 +187,7 @@ function closeCompanionPolicy() {
 function confirmCompanionPolicy() {
   setCompPolicyAgreed(true)
   setCompPolicyOpen(false)
-  setCategory('companion')
+  setTaskType('companion')
 }
 
   return (
@@ -217,28 +219,44 @@ function confirmCompanionPolicy() {
             />
           </div>
 
-          {/* Category */}
-          <div className="grid gap-1">
-            <label className="text-sm">Category</label>
-            <div className="flex gap-2">
-              <button type="button" onClick={()=>setCategory('task')}
-                className={`px-3 py-1.5 rounded-md border ${category==='task'?'bg-white text-black border-white':'border-white/20 hover:border-white/40'}`}>
-                Task
+          {/* Service type: Task vs Companion */}
+          <div className="grid gap-2">
+            <label className="text-sm text-white/70">Service type <span className="text-red-500">*</span></label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setTaskType('task')}
+                className={`rounded-xl p-3 text-left border transition-all ${
+                  taskType === 'task'
+                    ? 'border-[#9aab3a] bg-[#9aab3a]/10'
+                    : 'border-white/10 bg-white/5 hover:border-white/20'
+                }`}
+              >
+                <div className={`text-sm font-semibold ${taskType === 'task' ? 'text-[#9aab3a]' : 'text-white'}`}>Task</div>
+                <div className="text-xs text-white/40 mt-0.5 leading-snug">Errands, delivery, cleaning…</div>
               </button>
               <button
                 type="button"
-                onClick={openCompanionPolicy}
-                className={`px-3 py-1.5 rounded-md border ${
-                  category==='companion'
-                    ? 'bg-white text-black border-white'
-                    : 'border-white/20 hover:border-white/40'
+                onClick={() => {
+                  if (taskType !== 'companion') openCompanionPolicy()
+                }}
+                className={`rounded-xl p-3 text-left border transition-all ${
+                  taskType === 'companion'
+                    ? 'border-[#9aab3a] bg-[#9aab3a]/10'
+                    : 'border-white/10 bg-white/5 hover:border-white/20'
                 }`}
               >
-                Companion
+                <div className={`text-sm font-semibold ${taskType === 'companion' ? 'text-[#9aab3a]' : 'text-white'}`}>Companion</div>
+                <div className="text-xs text-white/40 mt-0.5 leading-snug">Accompany me to appointments…</div>
               </button>
             </div>
-               {touched && errors.category && <div className="text-sm text-red-400">{errors.category}</div>}
           </div>
+
+          {/* Duration + category (DurationPicker) */}
+          <DurationPicker
+            value={Number(minutes)}
+            onChange={(mins, cat) => { setMinutes(String(mins)); setCategory(cat) }}
+          />
 
           {/* Locations */}
           <div className="grid gap-1">
@@ -308,58 +326,6 @@ function confirmCompanionPolicy() {
             )}
             {errors.when && <div className="text-sm text-red-400">{errors.when}</div>}
           </div>
-
-          {/* Minutes + Advance */}
-          <InfoModal
-            label="How long will this take?"
-            required
-            title="How long will this take?"
-            body={
-              <div className="space-y-3">
-                <p>This gives you a cost preview so you know roughly what to expect once billing goes live.</p>
-
-                <div>
-                  <p className="font-semibold text-white mb-1">How pricing will work</p>
-                  <p className="mb-2">Rates are based on your supporter's actual time (clock-in to clock-out), tracked minute-by-minute.</p>
-                  <ul className="space-y-1">
-                    <li>☀️ 8:00am – 11:59pm → $0.50 / min</li>
-                    <li>🌙 12:00am – 7:59am → $1.00 / min</li>
-                  </ul>
-                  <p className="mt-2">If your task crosses a time boundary, the rate adjusts automatically for each minute.</p>
-                </div>
-
-                <div>
-                  <p className="font-semibold text-white mb-1">Your supporter clocks in and out</p>
-                  <p>Their route is tracked throughout the task. You're only charged for actual time spent — no more, no less.</p>
-                </div>
-
-                <div>
-                  <p className="font-semibold text-white mb-1">Example — crosses 8:00am boundary</p>
-                  <p className="mb-1">Task starts at 7:50am, runs for 30 min:</p>
-                  <ul className="space-y-1">
-                    <li>7:50am – 8:00am = 10 min × $1.00 = $10.00 🌙</li>
-                    <li>8:00am – 8:20am = 20 min × $0.50 = $10.00 ☀️</li>
-                  </ul>
-                  <p className="mt-1">→ Estimated total: $20.00</p>
-                </div>
-
-                <p className="border border-white/20 rounded px-3 py-2 text-white/60 text-xs">
-                  Pricing is not active yet. This is a preview only.
-                </p>
-              </div>
-            }
-          >
-            <input
-              type="number" min={10} step={5}
-              className={`rounded-md px-3 py-2 bg-transparent outline-none border ${touched && errors.minutes ? 'border-red-400' : 'border-white/20'} focus:border-white/40`}
-              value={minutes}
-              onChange={(e) => setMinutes(e.target.value)}
-            />
-            {minutes !== '' && Number(minutes) < 10
-              ? <div className="text-sm text-red-400">Minimum is 10 minutes. Any unused time will be returned to you.</div>
-              : touched && errors.minutes && <div className="text-sm text-red-400">{errors.minutes}</div>
-            }
-          </InfoModal>
 
           <InfoModal
             label="Shopping budget ($)"
@@ -462,9 +428,9 @@ function confirmCompanionPolicy() {
             </button>
             <button type="button"
               onClick={()=>{
-                setTitle(''); setDescription(''); setCategory('task');
+                setTitle(''); setDescription(''); setCategory('quick_errand');
                 setLocations([{ label: '' }]); setMinutes('30'); setPrepay('');
-                setTransport('none'); setTouched(false);
+                setTransport('none'); setTouched(false); setTaskType('task');
                 setCompPolicyAgreed(false); setCompPolicyChecked(false); setCompPolicyOpen(false);
               }}
               className="rounded-md px-4 py-2 border border-white/20 hover:border-white/40">
@@ -494,8 +460,7 @@ function confirmCompanionPolicy() {
         open={compPolicyOpen}
         onClose={() => {
           closeCompanionPolicy()
-          // 沒同意就不要切到 companion
-          if (!compPolicyAgreed) setCategory('task')
+          if (!compPolicyAgreed) setTaskType('task')
         }}
         title="Companionship Policy"
         actions={
@@ -504,7 +469,7 @@ function confirmCompanionPolicy() {
               className="rounded-md px-4 py-2 border border-white/20 hover:border-white/40"
               onClick={() => {
                 closeCompanionPolicy()
-                if (!compPolicyAgreed) setCategory('task')
+                if (!compPolicyAgreed) setTaskType('task')
               }}
             >
               Cancel

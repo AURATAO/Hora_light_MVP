@@ -29,6 +29,11 @@ export default function TaskDetail() {
   const [editing, setEditing] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
 
+  // Travel time estimate (supporter only, after task is accepted)
+  const [travelEst, setTravelEst] = useState(null)   // { travel_minutes, task_minutes, total_minutes }
+  const [travelLoading, setTravelLoading] = useState(false)
+  const travelCalledRef = useRef(false)
+
 
 
   // 編輯表單狀態
@@ -48,6 +53,49 @@ export default function TaskDetail() {
       console.debug('[TASK]', task)
     }
   }, [task])
+
+  // Auto-fetch travel estimate for the assignee (supporter) once task is accepted
+  useEffect(() => {
+    if (!task?.assigned_to_id) return
+    if (!user?.id || task.assigned_to_id !== user.id) return
+    if (travelCalledRef.current) return
+
+    // If already stored in task, use it directly
+    if (task.travel_time_minutes != null && task.total_estimate_minutes != null) {
+      setTravelEst({
+        travel_minutes: task.travel_time_minutes,
+        task_minutes: task.estimated_minutes,
+        total_minutes: task.total_estimate_minutes,
+      })
+      travelCalledRef.current = true
+      return
+    }
+
+    if (!navigator.geolocation) return
+    travelCalledRef.current = true
+    setTravelLoading(true)
+
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        try {
+          const res = await api(`/tasks/${task.id}/estimate-travel`, {
+            method: 'POST',
+            body: {
+              supporter_lat: pos.coords.latitude,
+              supporter_lng: pos.coords.longitude,
+            },
+          })
+          setTravelEst(res)
+        } catch {
+          // silently ignore — GPS denied or Maps error
+        } finally {
+          setTravelLoading(false)
+        }
+      },
+      () => setTravelLoading(false), // GPS denied
+      { timeout: 8000 }
+    )
+  }, [task?.assigned_to_id, task?.id, user?.id])
 
 
   const locs = (() => {
@@ -524,6 +572,37 @@ export default function TaskDetail() {
               {task.description || 'No description.'}
             </div>
             <DebugMe />
+
+            {/* Travel estimate card — shown to assignee only */}
+            {isAssignee && task.assigned_to_id && (travelLoading || travelEst) && (
+              <div className="border border-white/20 rounded-md p-3 space-y-2 text-sm">
+                {travelLoading ? (
+                  <div className="text-white/50 text-xs">Calculating travel time…</div>
+                ) : travelEst && (
+                  <>
+                    <div className="flex justify-between text-white/70">
+                      <span>Expected duration</span>
+                      <span className="text-white font-medium">
+                        {task.estimated_minutes} min
+                      </span>
+                    </div>
+                    <a
+                      href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(task.location_text || '')}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex justify-between text-white/70 hover:text-white transition-colors"
+                    >
+                      <span>Travel time</span>
+                      <span className="text-white font-medium">~ {travelEst.travel_minutes} min driving ↗</span>
+                    </a>
+                    <div className="border-t border-white/10 pt-2 flex justify-between font-semibold">
+                      <span>Total estimate</span>
+                      <span>~ {travelEst.total_minutes} min</span>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
 
             {(isOwner || isAssignee) && (
               <div className="border border-white/20 rounded-md p-3 space-y-2">

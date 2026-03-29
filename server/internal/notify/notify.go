@@ -116,12 +116,18 @@ func Create(ctx context.Context, in CreateNotificationInput) error {
 
 func buildEmail(in CreateNotificationInput, taskURL string) string {
 	switch in.Type {
+	case "ORDER_ACCEPTED":
+		return orderAcceptedEmail(in, taskURL)
 	case "CLOCK_IN":
 		return clockInEmail(in, taskURL)
 	case "CLOCK_OUT":
 		return clockOutEmail(in, taskURL)
 	case "COMPLETED":
 		return taskCompletedEmail(in, taskURL)
+	case "COMPLETED_SUPPORTER":
+		return taskCompletedSupporterEmail(in, taskURL)
+	case "CANCELLED":
+		return taskCancelledEmail(in, taskURL)
 	case "NEW_MESSAGE":
 		return newMessageEmail(in, taskURL)
 	default:
@@ -186,6 +192,125 @@ a{color:inherit;text-decoration:none;}
 </div>
 </body>
 </html>`, title, cardHTML)
+}
+
+// -----------------------------------------------------------------------------
+// Order Accepted — email to requester
+// -----------------------------------------------------------------------------
+
+func orderAcceptedEmail(in CreateNotificationInput, taskURL string) string {
+	supporterName := fallback(in.SupporterName, "A supporter")
+	taskTitle := fallback(in.TaskTitle, "your task")
+
+	card := fmt.Sprintf(`
+<table cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
+  <tr><td style="background:#e8f5e9;border-radius:20px;padding:5px 14px;">
+    <span style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;font-weight:600;color:#2e7d32;letter-spacing:0.06em;">&#10003; ACCEPTED</span>
+  </td></tr>
+</table>
+<h1 style="margin:0 0 12px;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:400;line-height:1.3;color:#1a1a16;">%s accepted your task</h1>
+<p style="margin:0 0 24px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.65;color:#555550;">Your request has been accepted. You'll be notified as soon as they clock in and the timer starts.</p>
+<div style="background:#f4f4f0;border-radius:8px;padding:18px 20px;margin-bottom:28px;">
+  <table width="100%%" cellpadding="0" cellspacing="0">
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;padding-bottom:8px;width:40%%;">Task</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;font-weight:500;padding-bottom:8px;">%s</td>
+    </tr>
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;">Supporter</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;">%s</td>
+    </tr>
+  </table>
+</div>
+<table cellpadding="0" cellspacing="0"><tr>
+  <td style="border-radius:8px;background:#1a1a16;">
+    <a href="%s" style="display:inline-block;padding:14px 28px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;font-weight:500;color:#f4f4f0;text-decoration:none;border-radius:8px;">View task &rarr;</a>
+  </td>
+</tr></table>`,
+		supporterName, taskTitle, supporterName, taskURL)
+
+	return wrapEmail("Task accepted", card)
+}
+
+// -----------------------------------------------------------------------------
+// Task Cancelled — email to requester or supporter
+// -----------------------------------------------------------------------------
+
+func taskCancelledEmail(in CreateNotificationInput, taskURL string) string {
+	taskTitle := fallback(in.TaskTitle, "your task")
+	reason := fallback(in.Body, "No reason provided.")
+
+	card := fmt.Sprintf(`
+<table cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
+  <tr><td style="background:#fce8e8;border-radius:20px;padding:5px 14px;">
+    <span style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;font-weight:600;color:#b71c1c;letter-spacing:0.06em;">&#10005; CANCELLED</span>
+  </td></tr>
+</table>
+<h1 style="margin:0 0 12px;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:400;line-height:1.3;color:#1a1a16;">%s</h1>
+<div style="background:#f4f4f0;border-radius:8px;padding:18px 20px;margin-bottom:28px;">
+  <table width="100%%" cellpadding="0" cellspacing="0">
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;padding-bottom:8px;width:40%%;">Task</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;font-weight:500;padding-bottom:8px;">%s</td>
+    </tr>
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;">Reason</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;">%s</td>
+    </tr>
+  </table>
+</div>
+<table cellpadding="0" cellspacing="0"><tr>
+  <td style="border-radius:8px;background:#1a1a16;">
+    <a href="%s" style="display:inline-block;padding:14px 28px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;font-weight:500;color:#f4f4f0;text-decoration:none;border-radius:8px;">View task &rarr;</a>
+  </td>
+</tr></table>`,
+		in.Title, taskTitle, reason, taskURL)
+
+	return wrapEmail("Task cancelled", card)
+}
+
+// -----------------------------------------------------------------------------
+// Task Completed — confirmation email to supporter
+// -----------------------------------------------------------------------------
+
+func taskCompletedSupporterEmail(in CreateNotificationInput, taskURL string) string {
+	taskTitle := fallback(in.TaskTitle, "the task")
+
+	card := fmt.Sprintf(`
+<table cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
+  <tr><td style="background:#e8f5e9;border-radius:20px;padding:5px 14px;">
+    <span style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;font-weight:600;color:#2e7d32;letter-spacing:0.06em;">&#10003; TASK COMPLETE</span>
+  </td></tr>
+</table>
+<h1 style="margin:0 0 12px;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:400;line-height:1.3;color:#1a1a16;">Great work — task complete!</h1>
+<p style="margin:0 0 24px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.65;color:#555550;">The task has been marked as complete. Here's a summary of your session.</p>
+<div style="background:#f4f4f0;border-radius:8px;padding:18px 20px;margin-bottom:28px;">
+  <table width="100%%" cellpadding="0" cellspacing="0">
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;padding-bottom:8px;width:40%%;">Task</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;font-weight:500;padding-bottom:8px;">%s</td>
+    </tr>
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;padding-bottom:8px;">Time logged</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;padding-bottom:8px;">%s</td>
+    </tr>
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;">Earnings</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;font-weight:600;">%s</td>
+    </tr>
+  </table>
+</div>
+<table cellpadding="0" cellspacing="0"><tr>
+  <td style="border-radius:8px;background:#1a1a16;">
+    <a href="%s" style="display:inline-block;padding:14px 28px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;font-weight:500;color:#f4f4f0;text-decoration:none;border-radius:8px;">View task &rarr;</a>
+  </td>
+</tr></table>`,
+		taskTitle,
+		fallback(in.TotalLogged, "—"),
+		fallback(in.FinalCost, "—"),
+		taskURL)
+
+	return wrapEmail("Task complete — great work!", card)
 }
 
 // -----------------------------------------------------------------------------
