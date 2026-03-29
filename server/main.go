@@ -297,6 +297,7 @@ func main() {
 	{
 		profilesAPI.GET("/:id", getProfileByID)
 		profilesAPI.GET("/:id/tasks", listProfileTasks)
+		profilesAPI.GET("/:id/reviews", listProfileReviews)
 	}
 
 	// Google OAuth
@@ -482,6 +483,7 @@ func main() {
 		tasksAPI.POST("/:id/gps-ping", saveGpsPing)
 		tasksAPI.GET("/:id/gps-latest", getLatestGps)
 		tasksAPI.POST("/:id/estimate-travel", estimateTravel)
+		tasksAPI.POST("/:id/review", createReview)
 	}
 
 	// dev-only WhatsApp test route
@@ -2525,6 +2527,155 @@ func estimateTravel(c *gin.Context) {
 		"task_minutes":   estimatedMinutes,
 		"total_minutes":  total,
 		"display":        fmt.Sprintf("~ %d min (%d min task + %d min travel)", total, estimatedMinutes, travelMinutes),
+	})
+}
+
+// -------- Reviews --------
+
+type Review struct {
+	ID          string     `json:"id"`
+	TaskID      string     `json:"task_id"`
+	ReviewerID  string     `json:"reviewer_id"`
+	SupporterID string     `json:"supporter_id"`
+	Stars       int        `json:"stars"`
+	ValueRating string     `json:"value_rating"`
+	WouldRehire *bool      `json:"would_rehire"`
+	Comment     string     `json:"comment"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
+func createReview(c *gin.Context) {
+	taskID := c.Param("id")
+	meUID := c.GetString("uid")
+	if meUID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+		return
+	}
+
+	var in struct {
+		Stars       int     `json:"stars"`
+		ValueRating string  `json:"value_rating"`
+		WouldRehire *bool   `json:"would_rehire"`
+		Comment     string  `json:"comment"`
+	}
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+		return
+	}
+	if in.Stars < 1 || in.Stars > 5 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "stars must be between 1 and 5"})
+		return
+	}
+	validValueRatings := map[string]bool{"not_worth": true, "fair": true, "great": true}
+	if in.ValueRating != "" && !validValueRatings[in.ValueRating] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid value_rating"})
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	// Load task — verify requester and status
+	var requesterID, supporterID, status string
+	if err := db.QueryRow(ctx, `
+		SELECT COALESCE(requester_id::text,''), COALESCE(assigned_to_id::text,''), status
+		FROM public.tasks WHERE id = $1::uuid
+	`, taskID).Scan(&requesterID, &supporterID, &status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		}
+		return
+	}
+	if requesterID != meUID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only the requester can review"})
+		return
+	}
+	if status != "completed" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "task must be completed before reviewing"})
+		return
+	}
+	if supporterID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no supporter to review"})
+		return
+	}
+
+	// One review per task
+	var existing bool
+	_ = db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM public.reviews WHERE task_id=$1::uuid)`, taskID).Scan(&existing)
+	if existing {
+		c.JSON(http.StatusConflict, gin.H{"error": "already reviewed"})
+		return
+	}
+
+	var r Review
+	if err := db.QueryRow(ctx, `
+		INSERT INTO public.reviews (task_id, reviewer_id, supporter_id, stars, value_rating, would_rehire, comment)
+		VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7)
+		RETURNING id, task_id, reviewer_id::text, supporter_id::text, stars, value_rating, would_rehire, comment, created_at
+	`, taskID, meUID, supporterID, in.Stars, in.ValueRating, in.WouldRehire, strings.TrimSpace(in.Comment),
+	).Scan(&r.ID, &r.TaskID, &r.ReviewerID, &r.SupporterID, &r.Stars, &r.ValueRating, &r.WouldRehire, &r.Comment, &r.CreatedAt); err != nil {
+		log.Printf("[createReview] db error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, r)
+}
+
+func listProfileReviews(c *gin.Context) {
+	supporterID := c.Param("id")
+	ctx := c.Request.Context()
+
+	type ReviewItem struct {
+		ID          string    `json:"id"`
+		TaskID      string    `json:"task_id"`
+		TaskTitle   string    `json:"task_title"`
+		Stars       int       `json:"stars"`
+		ValueRating string    `json:"value_rating"`
+		WouldRehire *bool     `json:"would_rehire"`
+		Comment     string    `json:"comment"`
+		CreatedAt   time.Time `json:"created_at"`
+	}
+
+	rows, err := db.Query(ctx, `
+		SELECT r.id, r.task_id, COALESCE(t.title,''), r.stars,
+		       COALESCE(r.value_rating,''), r.would_rehire,
+		       COALESCE(r.comment,''), r.created_at
+		FROM public.reviews r
+		LEFT JOIN public.tasks t ON t.id = r.task_id
+		WHERE r.supporter_id = $1::uuid
+		ORDER BY r.created_at DESC
+	`, supporterID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+	defer rows.Close()
+
+	items := []ReviewItem{}
+	var totalStars int
+	for rows.Next() {
+		var item ReviewItem
+		if err := rows.Scan(&item.ID, &item.TaskID, &item.TaskTitle, &item.Stars,
+			&item.ValueRating, &item.WouldRehire, &item.Comment, &item.CreatedAt); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "scan error"})
+			return
+		}
+		totalStars += item.Stars
+		items = append(items, item)
+	}
+
+	var avgStars *float64
+	if len(items) > 0 {
+		v := float64(totalStars) / float64(len(items))
+		avgStars = &v
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"reviews":    items,
+		"count":      len(items),
+		"avg_stars":  avgStars,
 	})
 }
 

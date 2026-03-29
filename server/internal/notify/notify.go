@@ -417,7 +417,7 @@ func clockOutEmail(in CreateNotificationInput, taskURL string) string {
 func taskCompletedEmail(in CreateNotificationInput, taskURL string) string {
 	supporterName := fallback(in.SupporterName, "Your supporter")
 	taskTitle := fallback(in.TaskTitle, "your task")
-	reviewURL := taskURL + "?review=true"
+	reviewURL := taskURL + "/review"
 
 	card := fmt.Sprintf(`
 <table cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
