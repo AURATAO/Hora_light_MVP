@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { api } from '../api/client'
 import TaskChatBox from '../components/TaskChatBox'
 import { useAuth } from '../auth/AuthContext'
@@ -13,6 +13,7 @@ import { useToast } from '../providers/ToastProvider'
 export default function TaskDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const location = useLocation()
   // const { user, loading: authLoading } = useAuth()
   const { user } = useAuth()
   const { wrap } = useLoader()
@@ -97,6 +98,15 @@ export default function TaskDetail() {
     )
   }, [task?.assigned_to_id, task?.id, user?.id])
 
+  // ?review=true → redirect to review page (for old completion emails)
+  useEffect(() => {
+    if (!task || !user) return
+    const params = new URLSearchParams(location.search)
+    if (params.get('review') !== 'true') return
+    if (task.status !== 'completed') return
+    if (task.requester_id !== user.id) return
+    navigate(`/tasks/${id}/review`, { replace: true })
+  }, [task, user, location.search, id, navigate])
 
   const locs = (() => {
     // 1) 嘗試讀 locations_geo（支援 string / null / []）
