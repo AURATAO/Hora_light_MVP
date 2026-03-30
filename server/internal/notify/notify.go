@@ -161,7 +161,7 @@ a{color:inherit;text-decoration:none;}
   <!-- Logo -->
   <tr><td align="center" style="padding-bottom:28px;">
     <a href="https://horaapp.co">
-      <img src="https://akxsdkerudurzcemurrb.supabase.co/storage/v1/object/public/HORA%%20LOGO/HORALOGO.svg"
+      <img src="https://akxsdkerudurzcemurrb.supabase.co/storage/v1/object/public/HORA%20LOGO/HORALOGO.svg"
            alt="HORA" width="90" style="display:block;height:auto;"/>
     </a>
   </td></tr>
