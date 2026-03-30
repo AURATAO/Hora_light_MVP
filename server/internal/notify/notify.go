@@ -65,16 +65,14 @@ func SendEmail(p EmailPayload) error {
 }
 
 type CreateNotificationInput struct {
-	DB        *sql.DB
-	UserID    string
-	TaskID    string
-	Type      string // ORDER_ACCEPTED / CLOCK_IN / CLOCK_OUT / CANCELLED / COMPLETED / NEW_MESSAGE
-	Title     string
-	Body      string
-	SendEmail bool
-	EmailTo   string
-
-	// Extra fields for branded emails
+	DB             *sql.DB
+	UserID         string
+	TaskID         string
+	Type           string
+	Title          string
+	Body           string
+	SendEmail      bool
+	EmailTo        string
 	SupporterName  string
 	TaskTitle      string
 	ClockInTime    string
@@ -95,9 +93,7 @@ func Create(ctx context.Context, in CreateNotificationInput) error {
 	if in.SendEmail && in.EmailTo != "" {
 		baseURL := getenv("APP_BASE_URL", "https://horaapp.co")
 		taskURL := fmt.Sprintf("%s/tasks/%s", baseURL, in.TaskID)
-
 		html := buildEmail(in, taskURL)
-
 		if err := SendEmail(EmailPayload{To: in.EmailTo, Subject: in.Title, Html: html}); err != nil {
 			log.Printf("SendEmail error: %v", err)
 		} else {
@@ -107,9 +103,9 @@ func Create(ctx context.Context, in CreateNotificationInput) error {
 	}
 
 	_, err := in.DB.ExecContext(ctx, `
-        INSERT INTO notifications (user_id, task_id, type, title, body, unread, via_email, email_sent_at)
-        VALUES ($1,$2,$3,$4,$5,true,$6,$7)
-    `, in.UserID, in.TaskID, in.Type, in.Title, in.Body, in.SendEmail, emailSentAt)
+		INSERT INTO notifications (user_id, task_id, type, title, body, unread, via_email, email_sent_at)
+		VALUES ($1,$2,$3,$4,$5,true,$6,$7)
+	`, in.UserID, in.TaskID, in.Type, in.Title, in.Body, in.SendEmail, emailSentAt)
 
 	return err
 }
@@ -135,10 +131,6 @@ func buildEmail(in CreateNotificationInput, taskURL string) string {
 	}
 }
 
-// -----------------------------------------------------------------------------
-// Shared wrapper — logo + card + footer
-// -----------------------------------------------------------------------------
-
 func wrapEmail(title, cardHTML string) string {
 	header := `<!DOCTYPE html>
 <html lang="en">
@@ -157,37 +149,30 @@ a{color:inherit;text-decoration:none;}
 <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
 <tr><td align="center">
 <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="max-width:560px;">
-
-  <!-- Logo -->
-  <tr><td align="center" style="padding-bottom:28px;">
-    <a href="https://horaapp.co">
-      <img src="https://akxsdkerudurzcemurrb.supabase.co/storage/v1/object/public/HORA%20LOGO/HO_RA%20(2).png"
-           alt="HORA" width="90" style="display:block;height:auto;"/>
-    </a>
-  </td></tr>
-
-  <!-- Card -->
-  <tr><td class="card" style="background:#ffffff;border-radius:12px;padding:40px 36px;">
+<tr><td align="center" style="padding-bottom:28px;">
+  <a href="https://horaapp.co">
+    <img src="https://akxsdkerudurzcemurrb.supabase.co/storage/v1/object/public/HORA%20LOGO/HO_RA%20(2).png"
+         alt="HORA" width="90" style="display:block;height:auto;"/>
+  </a>
+</td></tr>
+<tr><td class="card" style="background:#ffffff;border-radius:12px;padding:40px 36px;">
 `
 
 	footer := `
-  </td></tr>
-
-  <!-- Footer -->
-  <tr><td style="padding:28px 0 8px;" align="center">
-    <a href="https://www.instagram.com/my_hora_app/" style="display:inline-block;margin-bottom:16px;">
-      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="#9a9a8a">
-        <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/>
-      </svg>
-    </a>
-    <p style="margin:0 0 6px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#9a9a8a;">
-      <a href="https://horaapp.co" style="color:#9a9a8a;text-decoration:underline;">horaapp.co</a>
-    </p>
-    <p style="margin:0;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:11px;color:#b8b8aa;">
-      &copy; 2026 HORA. All rights reserved.
-    </p>
-  </td></tr>
-
+</td></tr>
+<tr><td style="padding:28px 0 8px;" align="center">
+  <a href="https://www.instagram.com/my_hora_app/" style="display:inline-block;margin-bottom:16px;">
+    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="#9a9a8a">
+      <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/>
+    </svg>
+  </a>
+  <p style="margin:0 0 6px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#9a9a8a;">
+    <a href="https://horaapp.co" style="color:#9a9a8a;text-decoration:underline;">horaapp.co</a>
+  </p>
+  <p style="margin:0;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:11px;color:#b8b8aa;">
+    &copy; 2026 HORA. All rights reserved.
+  </p>
+</td></tr>
 </table>
 </td></tr>
 </table>
@@ -198,14 +183,9 @@ a{color:inherit;text-decoration:none;}
 	return header + cardHTML + footer
 }
 
-// -----------------------------------------------------------------------------
-// Order Accepted — email to requester
-// -----------------------------------------------------------------------------
-
 func orderAcceptedEmail(in CreateNotificationInput, taskURL string) string {
 	supporterName := fallback(in.SupporterName, "A supporter")
 	taskTitle := fallback(in.TaskTitle, "your task")
-
 	card := fmt.Sprintf(`
 <table cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
   <tr><td style="background:#e8f5e9;border-radius:20px;padding:5px 14px;">
@@ -232,18 +212,12 @@ func orderAcceptedEmail(in CreateNotificationInput, taskURL string) string {
   </td>
 </tr></table>`,
 		supporterName, taskTitle, supporterName, taskURL)
-
 	return wrapEmail("Task accepted", card)
 }
-
-// -----------------------------------------------------------------------------
-// Task Cancelled — email to requester or supporter
-// -----------------------------------------------------------------------------
 
 func taskCancelledEmail(in CreateNotificationInput, taskURL string) string {
 	taskTitle := fallback(in.TaskTitle, "your task")
 	reason := fallback(in.Body, "No reason provided.")
-
 	card := fmt.Sprintf(`
 <table cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
   <tr><td style="background:#fce8e8;border-radius:20px;padding:5px 14px;">
@@ -269,17 +243,11 @@ func taskCancelledEmail(in CreateNotificationInput, taskURL string) string {
   </td>
 </tr></table>`,
 		in.Title, taskTitle, reason, taskURL)
-
 	return wrapEmail("Task cancelled", card)
 }
 
-// -----------------------------------------------------------------------------
-// Task Completed — confirmation email to supporter
-// -----------------------------------------------------------------------------
-
 func taskCompletedSupporterEmail(in CreateNotificationInput, taskURL string) string {
 	taskTitle := fallback(in.TaskTitle, "the task")
-
 	card := fmt.Sprintf(`
 <table cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
   <tr><td style="background:#e8f5e9;border-radius:20px;padding:5px 14px;">
@@ -313,19 +281,13 @@ func taskCompletedSupporterEmail(in CreateNotificationInput, taskURL string) str
 		fallback(in.TotalLogged, "—"),
 		fallback(in.FinalCost, "—"),
 		taskURL)
-
 	return wrapEmail("Task complete — great work!", card)
 }
-
-// -----------------------------------------------------------------------------
-// Clock In
-// -----------------------------------------------------------------------------
 
 func clockInEmail(in CreateNotificationInput, taskURL string) string {
 	supporterName := fallback(in.SupporterName, "Your supporter")
 	taskTitle := fallback(in.TaskTitle, "your task")
 	clockInTime := fallback(in.ClockInTime, time.Now().Format("15:04"))
-
 	card := fmt.Sprintf(`
 <table cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
   <tr><td style="background:#e8f5e9;border-radius:20px;padding:5px 14px;">
@@ -356,18 +318,12 @@ func clockInEmail(in CreateNotificationInput, taskURL string) string {
   </td>
 </tr></table>`,
 		supporterName, taskTitle, supporterName, clockInTime, taskURL)
-
 	return wrapEmail("Supporter clocked in", card)
 }
-
-// -----------------------------------------------------------------------------
-// Clock Out
-// -----------------------------------------------------------------------------
 
 func clockOutEmail(in CreateNotificationInput, taskURL string) string {
 	supporterName := fallback(in.SupporterName, "Your supporter")
 	taskTitle := fallback(in.TaskTitle, "your task")
-
 	card := fmt.Sprintf(`
 <table cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
   <tr><td style="background:#fff3e0;border-radius:20px;padding:5px 14px;">
@@ -410,19 +366,13 @@ func clockOutEmail(in CreateNotificationInput, taskURL string) string {
 		fallback(in.TotalLogged, "—"),
 		fallback(in.EstimatedCost, "—"),
 		taskURL)
-
 	return wrapEmail("Supporter clocked out", card)
 }
-
-// -----------------------------------------------------------------------------
-// Task Completed
-// -----------------------------------------------------------------------------
 
 func taskCompletedEmail(in CreateNotificationInput, taskURL string) string {
 	supporterName := fallback(in.SupporterName, "Your supporter")
 	taskTitle := fallback(in.TaskTitle, "your task")
 	reviewURL := taskURL + "/review"
-
 	card := fmt.Sprintf(`
 <table cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
   <tr><td style="background:#e8f5e9;border-radius:20px;padding:5px 14px;">
@@ -468,19 +418,13 @@ func taskCompletedEmail(in CreateNotificationInput, taskURL string) string {
 		fallback(in.FinalCost, "—"),
 		supporterName,
 		taskURL, reviewURL)
-
 	return wrapEmail("Task completed", card)
 }
-
-// -----------------------------------------------------------------------------
-// New Message — works both directions (poster <-> supporter)
-// -----------------------------------------------------------------------------
 
 func newMessageEmail(in CreateNotificationInput, taskURL string) string {
 	senderName := fallback(in.SenderName, "Someone")
 	taskTitle := fallback(in.TaskTitle, "your task")
 	messagePreview := fallback(in.MessagePreview, in.Body)
-
 	card := fmt.Sprintf(`
 <p style="margin:0 0 12px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:11px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:#9a9a8a;">New message</p>
 <h1 style="margin:0 0 20px;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:400;line-height:1.3;color:#1a1a16;">%s sent you a message</h1>
@@ -497,13 +441,8 @@ func newMessageEmail(in CreateNotificationInput, taskURL string) string {
   </td>
 </tr></table>`,
 		senderName, messagePreview, taskTitle, taskURL)
-
 	return wrapEmail("New message on HORA", card)
 }
-
-// -----------------------------------------------------------------------------
-// Default (ORDER_ACCEPTED, CANCELLED, etc.)
-// -----------------------------------------------------------------------------
 
 func defaultEmail(in CreateNotificationInput, taskURL string) string {
 	card := fmt.Sprintf(`
@@ -516,13 +455,8 @@ func defaultEmail(in CreateNotificationInput, taskURL string) string {
   </td>
 </tr></table>`,
 		in.Title, in.Body, taskURL)
-
 	return wrapEmail(in.Title, card)
 }
-
-// -----------------------------------------------------------------------------
-// Helpers
-// -----------------------------------------------------------------------------
 
 func fallback(s, def string) string {
 	if s == "" {
