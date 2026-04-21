@@ -4,8 +4,8 @@ import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import Modal from '../components/Modal'
 import InfoModal from '../components/InfoModal'
-import PlaceInput from '../components/PlaceInput'
 import DurationPicker from '../components/DurationPicker'
+import AddressInput from '../components/AddressInput'
 import { useToast } from '../providers/ToastProvider'
 
 const MINUTE_RATE_EUR = 0.5
@@ -18,8 +18,7 @@ export default function NewTask() {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [category, setCategory] = useState('quick_errand')
-  // const [locations, setLocations] = useState([''])
-  const [locations, setLocations] = useState([{ label: '' }])
+  const [location, setLocation] = useState(null)
   const [minutes, setMinutes] = useState('30')
   const [prepay, setPrepay] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -44,25 +43,6 @@ export default function NewTask() {
   // ✅ 不要在 hook 後面用條件 return，改成條件渲染
   const notReady = authLoading || !user
 
-  function normalizeLocationItem(x) {
-  if (!x) return { label: '' }
-  if (typeof x === 'string') return { label: x }
-  if (typeof x === 'object') {
-    const label = x.label || x.description || x.formatted || ''
-    return { ...x, label }
-  }
-  return { label: String(x) }
-}
-
-  // function addLocation() { setLocations(prev => [...prev, '']) }
-  // function updateLocation(i, v) { setLocations(prev => prev.map((x, idx) => idx === i ? v : x)) }
-  function addLocation() { setLocations(prev => [...prev, { label: '' }]) }
-  function updateLocation(i, v) {
-  setLocations(prev =>
-    prev.map((x, idx) => (idx === i ? normalizeLocationItem(v) : x))
-  )
-}
-  function removeLocation(i) { setLocations(prev => prev.filter((_, idx) => idx !== i)) }
 
   const errors = useMemo(() => {
     const e = {}
@@ -105,24 +85,10 @@ export default function NewTask() {
   try {
     if (!user) throw new Error('Please sign in')
 
-    // 先正規化 locations
-    const locItems = locations.map(normalizeLocationItem)
-
-    // 1) 給人看的文字（後端/列表用）
-    const location_text = locItems
-      .map(it => (it.label || '').trim())
-      .filter(Boolean)
-      .join(' | ')
-
-    // 2) 給機器用的結構（之後要落 DB 再用）
-    const locations_geo = locItems
-      .filter(x => (x.label || '').trim())
-      .map(x => ({
-        label: (x.label || '').trim(),
-        placeId: x.placeId || x.id || null,
-        lat: typeof x.lat === 'number' ? x.lat : null,
-        lng: typeof x.lng === 'number' ? x.lng : null,
-      }))
+    const location_text = (location?.label || '').trim()
+    const locations_geo = location_text
+      ? [{ label: location_text, placeId: location?.placeId || null, lat: location?.lat || null, lng: location?.lng || null }]
+      : []
 
     const payload = {
       title,
@@ -258,40 +224,10 @@ function confirmCompanionPolicy() {
             onChange={(mins, cat) => { setMinutes(String(mins)); setCategory(cat) }}
           />
 
-          {/* Locations */}
+          {/* Location */}
           <div className="grid gap-1">
-            <label className="text-sm">Location(s)</label>
-            <div className="space-y-2">
-              {locations.map((loc, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  {/* <input
-                    className="flex-1 rounded-md px-3 py-2 bg-transparent outline-none border border-white/20 focus:border-white/40"
-                    value={loc}
-                    onChange={(e) => updateLocation(i, e.target.value)}
-                    placeholder={i === 0 ? 'Address or meeting point' : 'Add another point'}
-                  /> */}
-                  <div className="flex-1">
-                   <PlaceInput
-                      value={locations[i]}
-                      placeholder={i === 0 ? 'Address or meeting point' : 'Add another point'}
-                      // 跨國就別傳 countryCodes；或傳 []
-                     onChange={(val) => updateLocation(i, val)}
-                    />
-                    {/* 除錯用：選到地標時顯示經緯度，可刪 */}
-                    {loc?.lat && loc?.lng && (
-                      <div className="mt-1 text-xs text-white/60">
-                        ({loc.lat.toFixed(6)}, {loc.lng.toFixed(6)})
-                      </div>
-                    )}
-                  </div>
-                  {i === locations.length - 1 ? (
-                    <button type="button" onClick={addLocation} className="px-2 py-1 rounded-md border border-white/20 hover:border-white/40">＋</button>
-                  ) : (
-                    <button type="button" onClick={() => removeLocation(i)} className="px-2 py-1 rounded-md border border-white/20 hover:border-white/40">×</button>
-                  )}
-                </div>
-              ))}
-            </div>
+            <label className="text-sm">Location</label>
+            <AddressInput onChange={setLocation} />
           </div>
 
           {/* When */}
@@ -429,7 +365,7 @@ function confirmCompanionPolicy() {
             <button type="button"
               onClick={()=>{
                 setTitle(''); setDescription(''); setCategory('quick_errand');
-                setLocations([{ label: '' }]); setMinutes('30'); setPrepay('');
+                setLocation(null); setMinutes('30'); setPrepay('');
                 setTransport('none'); setTouched(false); setTaskType('task');
                 setCompPolicyAgreed(false); setCompPolicyChecked(false); setCompPolicyOpen(false);
               }}

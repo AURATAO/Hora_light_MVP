@@ -578,8 +578,11 @@ export default function TaskDetail() {
               <div className="text-xs opacity-80">ID: {task.id}</div>
             </div>
 
-            <div className="border border-white/20 rounded-md p-3 whitespace-pre-wrap">
-              {task.description || 'No description.'}
+            <div className="border border-white/20 rounded-md p-4 space-y-1 overflow-hidden">
+              <div className="text-xs font-semibold uppercase tracking-wide text-white/50">Notes</div>
+              <p className="text-sm leading-relaxed whitespace-pre-wrap break-words overflow-wrap-anywhere text-white/90 select-text">
+                {task.description || <span className="text-white/40 italic">No notes provided.</span>}
+              </p>
             </div>
             <DebugMe />
 
