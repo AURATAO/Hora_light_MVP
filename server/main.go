@@ -272,6 +272,7 @@ func main() {
 	r.OPTIONS("/*path", func(c *gin.Context) { c.Status(http.StatusNoContent) })
 
 	// --- 路由 ---
+	RegisterWhatsAppWebhooks(r)
 	RegisterNotificationRoutes(r, sqldb)
 
 	addAvatarUploadRouteV1(r)
@@ -490,7 +491,7 @@ func main() {
 	if os.Getenv("GO_ENV") == "development" {
 		r.GET("/test-whatsapp", func(c *gin.Context) {
 			to := os.Getenv("TEST_WHATSAPP_NUMBER")
-			if err := helpers.SendWhatsApp(to, "Hi! This is Hora. WhatsApp integration is working!"); err != nil {
+			if err := helpers.SendWhatsAppMessage(to, "Hi! This is Hora. WhatsApp integration is working!"); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 				return
 			}

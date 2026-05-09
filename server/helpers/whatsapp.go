@@ -10,13 +10,13 @@ import (
 	"os"
 )
 
-// SendWhatsApp sends a plain text WhatsApp message via Meta Cloud API.
+// SendWhatsAppMessage sends a plain text WhatsApp message via Meta Cloud API.
 // to must include country code, e.g. "+886912345678".
-func SendWhatsApp(to, message string) error {
-	token := os.Getenv("META_WHATSAPP_TOKEN")
-	phoneNumberID := os.Getenv("META_PHONE_NUMBER_ID")
+func SendWhatsAppMessage(to, message string) error {
+	token := os.Getenv("WHATSAPP_ACCESS_TOKEN")
+	phoneNumberID := os.Getenv("WHATSAPP_PHONE_NUMBER_ID")
 	if token == "" || phoneNumberID == "" {
-		return fmt.Errorf("META_WHATSAPP_TOKEN or META_PHONE_NUMBER_ID not set")
+		return fmt.Errorf("WHATSAPP_ACCESS_TOKEN or WHATSAPP_PHONE_NUMBER_ID not set")
 	}
 
 	payload := map[string]any{
@@ -30,7 +30,7 @@ func SendWhatsApp(to, message string) error {
 		return err
 	}
 
-	url := fmt.Sprintf("https://graph.facebook.com/v19.0/%s/messages", phoneNumberID)
+	url := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/messages", phoneNumberID)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
