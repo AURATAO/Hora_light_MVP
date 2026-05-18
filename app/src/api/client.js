@@ -65,7 +65,12 @@ export const AuthAPI = {
   async me() {
     const res = await api("/auth/me"); // 自帶 credentials
     return res && res.auth
-      ? { id: res.id, email: res.email, name: res.name || res.email }
+      ? {
+          id: res.id,
+          email: res.email,
+          name: res.name || res.email,
+          is_verified_supporter: res.is_verified_supporter ?? false,
+        }
       : null;
   },
 

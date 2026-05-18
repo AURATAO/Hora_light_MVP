@@ -249,15 +249,19 @@ export default function My() {
         </div>
 
         {tab === 'available' && (
-          <TaskList
-            items={lists.available.items}
-            next={lists.available.next}
-            loading={lists.available.loading}
-            variant="available"
-            onAccept={acceptTask}
-            onAfterChange={refreshLists}
-            onLoadMore={() => fetchPage('available', lists.available.next)}
-          />
+          !user?.is_verified_supporter ? (
+            <VerificationBanner />
+          ) : (
+            <TaskList
+              items={lists.available.items}
+              next={lists.available.next}
+              loading={lists.available.loading}
+              variant="available"
+              onAccept={acceptTask}
+              onAfterChange={refreshLists}
+              onLoadMore={() => fetchPage('available', lists.available.next)}
+            />
+          )
         )}
 
         {tab === 'assigned' && (
@@ -296,6 +300,31 @@ export default function My() {
     </div>
   </div>
 )
+}
+
+const CHECKR_URL = 'https://checkr.com'
+
+function VerificationBanner() {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-surface p-6 flex flex-col gap-4 text-center items-center">
+      <div className="space-y-1">
+        <h2 className="font-heading text-xl text-white">Become a Verified Supporter</h2>
+        <p className="text-sm text-white/60 max-w-sm">
+          To accept tasks on HO:RA, complete a quick background check. Takes ~5 minutes.
+        </p>
+      </div>
+      <a
+        href={CHECKR_URL}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="rounded-xl px-6 py-2.5 text-sm font-secondary font-semibold text-white transition-all hover:brightness-110"
+        style={{ backgroundColor: '#9aab3a' }}
+      >
+        Get Verified →
+      </a>
+      <p className="text-xs text-white/40">Already applied? We'll notify you once approved.</p>
+    </div>
+  )
 }
 
 const EMPTY_STATES = {

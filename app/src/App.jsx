@@ -2,6 +2,7 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import ShellLayout from "./pages/ShellLayout.jsx";
 import ProtectedLayout from "./auth/ProtectLayout.jsx";
 import Login from "./pages/Login.jsx";
+import CategoryHome from "./pages/CategoryHome.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import NewTask from "./pages/NewTask.jsx";
 import TaskDetail from "./pages/TaskDetail.jsx";
@@ -21,19 +22,19 @@ export default function App() {
       <Route path="/login" element={<Login />} />
       <Route path="/terms" element={<Terms />} />
       <Route path="/privacy" element={<Privacy />} />
-     
 
       {/* 受保護區：唯一守門 */}
       <Route element={<ProtectedLayout />}>
         <Route element={<ShellLayout />}>
           <Route path="ops" element={<OpsFeed />} />
-          <Route index element={<Dashboard />} />     
+          <Route index element={<CategoryHome />} />
+          <Route path="dashboard" element={<Dashboard />} />
           <Route path="tasks/new" element={<NewTask />} />
           <Route path="tasks/:id" element={<TaskDetail />} />
           <Route path="tasks/:id/review" element={<ReviewPage />} />
           <Route path="my" element={<My />} />
           <Route path="profile" element={<Profile />} />
-           <Route path="u/:id" element={<PublicProfilePage />} />
+          <Route path="u/:id" element={<PublicProfilePage />} />
         </Route>
       </Route>
 

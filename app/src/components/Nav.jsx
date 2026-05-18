@@ -121,6 +121,11 @@ export default function Nav() {
             <>
               {/* Desktop: show links directly */}
               <div className="hidden sm:flex items-center gap-4">
+                {user?.is_verified_supporter && (
+                  <span className="text-xs font-secondary font-semibold px-2 py-0.5 rounded-full border" style={{ color: '#9aab3a', borderColor: '#9aab3a' }}>
+                    ✓ Verified
+                  </span>
+                )}
                 <div className="relative">
                   <Link
                     to="/my"
@@ -159,6 +164,13 @@ export default function Nav() {
 
                 {menuOpen && (
                   <div className="absolute right-0 top-full mt-2 w-48 rounded-xl border border-white/10 bg-surface shadow-xl overflow-hidden">
+                    {user?.is_verified_supporter && (
+                      <div className="px-4 py-2 border-b border-white/10">
+                        <span className="text-xs font-secondary font-semibold" style={{ color: '#9aab3a' }}>
+                          ✓ Verified
+                        </span>
+                      </div>
+                    )}
                     <Link
                       to="/my"
                       onClick={(e) => {

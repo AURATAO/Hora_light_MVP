@@ -108,15 +108,17 @@ type createTaskInput struct {
 }
 
 type Profile struct {
-	Email        string    `json:"email"`
-	Name         string    `json:"name"`
-	Phone        string    `json:"phone"`
-	City         string    `json:"city"`
-	AvatarURL    string    `json:"avatar_url"`
-	Bio          string    `json:"bio"`
-	BetaAccepted bool      `json:"beta_accepted"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	Email               string     `json:"email"`
+	Name                string     `json:"name"`
+	Phone               string     `json:"phone"`
+	City                string     `json:"city"`
+	AvatarURL           string     `json:"avatar_url"`
+	Bio                 string     `json:"bio"`
+	BetaAccepted        bool       `json:"beta_accepted"`
+	IsVerifiedSupporter bool       `json:"is_verified_supporter"`
+	SupporterAppliedAt  *time.Time `json:"supporter_applied_at,omitempty"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
 }
 
 type PublicProfile struct {
@@ -313,11 +315,21 @@ func main() {
 			c.JSON(http.StatusOK, gin.H{"auth": false})
 			return
 		}
+		var name string
+		var isVerified bool
+		_ = db.QueryRow(c.Request.Context(),
+			`select coalesce(name,''), coalesce(is_verified_supporter, false) from public.profiles where email = $1`,
+			email,
+		).Scan(&name, &isVerified)
+		if name == "" {
+			name = deriveName(email)
+		}
 		c.JSON(http.StatusOK, gin.H{
-			"auth":  true,
-			"id":    uid,
-			"email": email,
-			"name":  deriveName(email),
+			"auth":                 true,
+			"id":                   uid,
+			"email":                email,
+			"name":                 name,
+			"is_verified_supporter": isVerified,
 		})
 	})
 
@@ -799,10 +811,12 @@ func getMyProfile(c *gin.Context) {
 
 	// 以 email 先找一筆（你本來就這樣）
 	err := db.QueryRow(ctx, `
-    select id::text, email, name, phone, city, avatar_url, bio, beta_accepted, created_at, updated_at
+    select id::text, email, name, phone, city, avatar_url, bio, beta_accepted,
+           coalesce(is_verified_supporter, false), supporter_applied_at,
+           created_at, updated_at
     from public.profiles
     where email = $1
-  `, email).Scan(&existingID, &p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.BetaAccepted, &p.CreatedAt, &p.UpdatedAt)
+  `, email).Scan(&existingID, &p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.BetaAccepted, &p.IsVerifiedSupporter, &p.SupporterAppliedAt, &p.CreatedAt, &p.UpdatedAt)
 
 	now := time.Now()
 
@@ -844,9 +858,11 @@ func getMyProfile(c *gin.Context) {
 
 	// 回傳最新資料
 	_ = db.QueryRow(ctx, `
-    select email, name, phone, city, avatar_url, bio, beta_accepted, created_at, updated_at
+    select email, name, phone, city, avatar_url, bio, beta_accepted,
+           coalesce(is_verified_supporter, false), supporter_applied_at,
+           created_at, updated_at
     from public.profiles where email = $1
-  `, email).Scan(&p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.BetaAccepted, &p.CreatedAt, &p.UpdatedAt)
+  `, email).Scan(&p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.BetaAccepted, &p.IsVerifiedSupporter, &p.SupporterAppliedAt, &p.CreatedAt, &p.UpdatedAt)
 
 	c.JSON(http.StatusOK, p)
 }
@@ -875,9 +891,11 @@ func patchMyProfile(c *gin.Context) {
 	ctx := c.Request.Context()
 	var p Profile
 	_ = db.QueryRow(ctx, `
-    select email, name, phone, city, avatar_url, bio, beta_accepted, created_at, updated_at
+    select email, name, phone, city, avatar_url, bio, beta_accepted,
+           coalesce(is_verified_supporter, false), supporter_applied_at,
+           created_at, updated_at
     from public.profiles where email = $1
-  `, email).Scan(&p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.BetaAccepted, &p.CreatedAt, &p.UpdatedAt)
+  `, email).Scan(&p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.BetaAccepted, &p.IsVerifiedSupporter, &p.SupporterAppliedAt, &p.CreatedAt, &p.UpdatedAt)
 
 	if in.Name != nil {
 		p.Name = strings.TrimSpace(*in.Name)
@@ -1561,6 +1579,26 @@ func listAvailableTasks(c *gin.Context) {
 		return
 	}
 
+	meEmail := c.GetString("email")
+	var isVerified bool
+	if meEmail != "" {
+		_ = db.QueryRow(c.Request.Context(),
+			`select coalesce(is_verified_supporter, false) from public.profiles where email = $1`,
+			meEmail,
+		).Scan(&isVerified)
+	} else {
+		// fallback: email not in token — try by internal UUID
+		_ = db.QueryRow(c.Request.Context(),
+			`select coalesce(is_verified_supporter, false) from public.profiles where id = $1::uuid`,
+			meUID,
+		).Scan(&isVerified)
+	}
+	log.Printf("[listAvailableTasks] uid=%s email=%s is_verified_supporter=%v", meUID, meEmail, isVerified)
+	if !isVerified {
+		c.JSON(403, gin.H{"error": "verification_required"})
+		return
+	}
+
 	limit := parseLimit(c.Query("limit"), 10, 50)
 	var beforeCreatedAt *time.Time
 	var beforeID *string
@@ -1962,7 +2000,7 @@ func clockIn(c *gin.Context) {
 	notifyRequesterRich(c, notify.CreateNotificationInput{
 		TaskID:        taskID,
 		Type:          "CLOCK_IN",
-		Title:         "Your supporter has arrived and started the task",
+		Title:         "Your supporter has clocked in",
 		Body:          "The timer is now running. You can track progress in your dashboard.",
 		SupporterName: displayName(meEmail),
 		TaskTitle:     clockInTaskTitle,
@@ -2028,7 +2066,7 @@ func clockOut(c *gin.Context) {
 	notifyRequesterRich(c, notify.CreateNotificationInput{
 		TaskID:        taskID,
 		Type:          "CLOCK_OUT",
-		Title:         fmt.Sprintf("Your supporter has clocked out. Time logged: %s", sessionStr),
+		Title:         "Your supporter has clocked out",
 		Body:          fmt.Sprintf("Session ended. Total time logged so far: %s", totalStr),
 		SupporterName: displayName(meEmail),
 		TaskTitle:     clockOutTaskTitle,
@@ -2873,7 +2911,7 @@ func RegisterNotificationRoutes(g *gin.Engine, db *sql.DB) {
 // 由 taskID 取得 requester 的 uid（uuid）與 email
 func requesterUIDAndEmail(ctx context.Context, taskID string) (uid string, email string, err error) {
 	err = sqldb.QueryRowContext(ctx, `
-		SELECT requester_id::text, requester
+		SELECT COALESCE(requester_id::text,''), COALESCE(requester,'')
 		FROM public.tasks
 		WHERE id = $1
 	`, taskID).Scan(&uid, &email)

@@ -1,5 +1,5 @@
-import { useMemo, useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useMemo, useState, useEffect, useRef } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import Modal from '../components/Modal'
@@ -10,6 +10,15 @@ import { useToast } from '../providers/ToastProvider'
 
 const MINUTE_RATE_EUR = 0.5
 
+const CATEGORY_LABELS = {
+  delivery:     '🚀 Same-day Delivery',
+  grocery:      '🛒 Grocery & Errands',
+  laundry:      '👕 Laundry Service',
+  companionship:'🤝 Companionship',
+  queue:        '⏳ Queue & Wait',
+  anything_else:'✨ Anything Else',
+}
+
 export default function NewTask() {
   const nav = useNavigate()
   const { user, loading: authLoading } = useAuth()
@@ -18,7 +27,8 @@ export default function NewTask() {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [category, setCategory] = useState('quick_errand')
-  const [location, setLocation] = useState(null)
+  const [locs, setLocs] = useState([{ id: 0, result: null }])
+  const nextLocId = useRef(1)
   const [minutes, setMinutes] = useState('30')
   const [prepay, setPrepay] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -30,6 +40,31 @@ export default function NewTask() {
 
   const [transport, setTransport] = useState('none')
   const [taskType, setTaskType] = useState('task') // 'task' | 'companion'
+  const [urlCategory, setUrlCategory] = useState(null) // locked when navigated from CategoryHome
+  const [searchParams] = useSearchParams()
+
+  // Read category from URL once on mount and pre-configure form
+  useEffect(() => {
+    const cat = searchParams.get('category')
+    if (!cat) return
+    setUrlCategory(cat)
+    if (cat === 'companionship') {
+      // open policy modal — user must agree before companion is confirmed
+      openCompanionPolicy()
+    } else {
+      setTaskType('task')
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  function updateLoc(i, result) {
+    setLocs(prev => prev.map((l, idx) => idx === i ? { ...l, result } : l))
+  }
+  function addLoc() {
+    setLocs(prev => [...prev, { id: nextLocId.current++, result: null }])
+  }
+  function removeLoc(i) {
+    setLocs(prev => prev.filter((_, idx) => idx !== i))
+  }
 
   const [compPolicyOpen, setCompPolicyOpen] = useState(false)
   const [compPolicyAgreed, setCompPolicyAgreed] = useState(false)
@@ -85,15 +120,19 @@ export default function NewTask() {
   try {
     if (!user) throw new Error('Please sign in')
 
-    const location_text = (location?.label || '').trim()
-    const locations_geo = location_text
-      ? [{ label: location_text, placeId: location?.placeId || null, lat: location?.lat || null, lng: location?.lng || null }]
-      : []
+    const validLocs = locs.filter(l => l.result?.label)
+    const location_text = (validLocs[0]?.result?.label || '').trim()
+    const locations_geo = validLocs.map(l => ({
+      label: l.result.label,
+      placeId: l.result.placeId || null,
+      lat: l.result.lat || null,
+      lng: l.result.lng || null,
+    }))
 
     const payload = {
       title,
       description,
-      category: taskType === 'companion' ? 'companion' : category,
+      category: taskType === 'companion' ? 'companion' : (urlCategory || category),
       location_text,
       locations_geo,
       estimated_minutes: Number(minutes) || 30,
@@ -188,34 +227,44 @@ function confirmCompanionPolicy() {
           {/* Service type: Task vs Companion */}
           <div className="grid gap-2">
             <label className="text-sm text-white/70">Service type <span className="text-red-500">*</span></label>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setTaskType('task')}
-                className={`rounded-xl p-3 text-left border transition-all ${
-                  taskType === 'task'
-                    ? 'border-[#9aab3a] bg-[#9aab3a]/10'
-                    : 'border-white/10 bg-white/5 hover:border-white/20'
-                }`}
-              >
-                <div className={`text-sm font-semibold ${taskType === 'task' ? 'text-[#9aab3a]' : 'text-white'}`}>Task</div>
-                <div className="text-xs text-white/40 mt-0.5 leading-snug">Errands, delivery, cleaning…</div>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (taskType !== 'companion') openCompanionPolicy()
-                }}
-                className={`rounded-xl p-3 text-left border transition-all ${
-                  taskType === 'companion'
-                    ? 'border-[#9aab3a] bg-[#9aab3a]/10'
-                    : 'border-white/10 bg-white/5 hover:border-white/20'
-                }`}
-              >
-                <div className={`text-sm font-semibold ${taskType === 'companion' ? 'text-[#9aab3a]' : 'text-white'}`}>Companion</div>
-                <div className="text-xs text-white/40 mt-0.5 leading-snug">Accompany me to appointments…</div>
-              </button>
-            </div>
+            {urlCategory ? (
+              /* Read-only pill when navigated from CategoryHome */
+              <div className="flex items-center gap-2">
+                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-[#9aab3a] bg-[#9aab3a]/10 text-sm font-semibold text-[#9aab3a]">
+                  {taskType === 'companion' ? '🤝 Companion' : CATEGORY_LABELS[urlCategory] || urlCategory}
+                </span>
+              </div>
+            ) : (
+              /* Interactive selector */
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setTaskType('task')}
+                  className={`rounded-xl p-3 text-left border transition-all ${
+                    taskType === 'task'
+                      ? 'border-[#9aab3a] bg-[#9aab3a]/10'
+                      : 'border-white/10 bg-white/5 hover:border-white/20'
+                  }`}
+                >
+                  <div className={`text-sm font-semibold ${taskType === 'task' ? 'text-[#9aab3a]' : 'text-white'}`}>Task</div>
+                  <div className="text-xs text-white/40 mt-0.5 leading-snug">Errands, delivery, cleaning…</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (taskType !== 'companion') openCompanionPolicy()
+                  }}
+                  className={`rounded-xl p-3 text-left border transition-all ${
+                    taskType === 'companion'
+                      ? 'border-[#9aab3a] bg-[#9aab3a]/10'
+                      : 'border-white/10 bg-white/5 hover:border-white/20'
+                  }`}
+                >
+                  <div className={`text-sm font-semibold ${taskType === 'companion' ? 'text-[#9aab3a]' : 'text-white'}`}>Companion</div>
+                  <div className="text-xs text-white/40 mt-0.5 leading-snug">Accompany me to appointments…</div>
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Duration + category (DurationPicker) */}
@@ -225,9 +274,33 @@ function confirmCompanionPolicy() {
           />
 
           {/* Location */}
-          <div className="grid gap-1">
-            <label className="text-sm">Location</label>
-            <AddressInput onChange={setLocation} />
+          <div className="grid gap-3">
+            {locs.map((loc, i) => (
+              <div key={loc.id} className="grid gap-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm">{i === 0 ? 'Location' : `Location ${i + 1}`}</label>
+                  {i > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => removeLoc(i)}
+                      className="text-xs text-white/40 hover:text-white/60"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+                <AddressInput key={loc.id} onChange={(result) => updateLoc(i, result)} />
+              </div>
+            ))}
+            {locs.length < 3 && (
+              <button
+                type="button"
+                onClick={addLoc}
+                className="flex items-center gap-1.5 text-sm text-white/60 hover:text-white/80 border border-dashed border-white/20 hover:border-white/40 rounded-md px-3 py-2 transition-colors w-fit"
+              >
+                <span className="text-base leading-none">+</span> Add Location
+              </button>
+            )}
           </div>
 
           {/* When */}
@@ -365,7 +438,7 @@ function confirmCompanionPolicy() {
             <button type="button"
               onClick={()=>{
                 setTitle(''); setDescription(''); setCategory('quick_errand');
-                setLocation(null); setMinutes('30'); setPrepay('');
+                setLocs([{ id: nextLocId.current++, result: null }]); setMinutes('30'); setPrepay('');
                 setTransport('none'); setTouched(false); setTaskType('task');
                 setCompPolicyAgreed(false); setCompPolicyChecked(false); setCompPolicyOpen(false);
               }}
@@ -396,7 +469,7 @@ function confirmCompanionPolicy() {
         open={compPolicyOpen}
         onClose={() => {
           closeCompanionPolicy()
-          if (!compPolicyAgreed) setTaskType('task')
+          if (!compPolicyAgreed) { setTaskType('task'); setUrlCategory(null) }
         }}
         title="Companionship Policy"
         actions={
@@ -405,7 +478,7 @@ function confirmCompanionPolicy() {
               className="rounded-md px-4 py-2 border border-white/20 hover:border-white/40"
               onClick={() => {
                 closeCompanionPolicy()
-                if (!compPolicyAgreed) setTaskType('task')
+                if (!compPolicyAgreed) { setTaskType('task'); setUrlCategory(null) }
               }}
             >
               Cancel

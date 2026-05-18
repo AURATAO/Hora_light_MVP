@@ -542,40 +542,38 @@ export default function TaskDetail() {
               <div><b>When:</b> {whenText}</div>
               <div><b>Estimated:</b> {task.estimated_minutes} min</div>
               <div><b>Advance:</b> ${advanceEUR.toFixed(2)}</div>
-              {/* <div><b>Locations:</b> {task.location_text || '—'}</div> */}
-              <div><b className="block mb-2">Locations:</b>{' '}
+              <div>
+                <b className="block mb-2">Locations:</b>
                 {locs.length ? (
-                  <span className="inline-flex flex-wrap gap-2 align-middle ">
+                  <div className="space-y-1">
                     {locs.map((p, i) => (
-                      <a
-                        key={i}
-                        href={gmapsPlaceUrl(p)}
-                        target="_blank" rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 rounded-full border border-white/20 px-2 py-0.5 text-xs hover:border-white/40"
-                        title="Open in Google Maps"
-                      >
-                        {/* 你可以換成自己的 icon */}
-                        <span aria-hidden>📍</span>
-                        {p.label || 'Open in Maps'}
-                      </a>
+                      <div key={i} className="flex items-start gap-1.5 text-sm">
+                        <span>📍</span>
+                        <span>
+                          {locs.length > 1 && <span className="text-white/50 mr-1">Stop {i + 1}:</span>}
+                          {p.label || '—'}
+                        </span>
+                      </div>
                     ))}
-                  </span>
-                ) : '—'}
+                  </div>
+                ) : <span>—</span>}
+                {locs.length >= 1 && (
+                  <div className="mt-2">
+                    <a
+                      href={
+                        locs.length === 1
+                          ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(locs[0].label || '')}`
+                          : gmapsDirectionsUrl(locs)
+                      }
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-2 rounded-md border border-white/20 px-3 py-1 text-xs hover:border-white/40"
+                    >
+                      View Route →
+                    </a>
+                  </div>
+                )}
               </div>
-              {/* （可選）兩點以上顯示一鍵路線 */}
-              {locs.length >= 2 && (
-                <div className="mt-2">
-                  <a
-                    href={gmapsDirectionsUrl(locs)}
-                    target="_blank" rel="noopener noreferrer"
-                    className="inline-flex items-center gap-2 rounded-md border border-white/20 px-3 py-1 text-xs hover:border-white/40"
-                    title="Open route in Google Maps"
-                  >
-                    🧭 Open route
-                  </a>
-                </div>
-              )}
-              <div className="text-xs opacity-80">ID: {task.id}</div>
             </div>
 
             <div className="border border-white/20 rounded-md p-4 space-y-1 overflow-hidden">
