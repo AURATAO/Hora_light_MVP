@@ -126,6 +126,7 @@ type PublicProfile struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	City      string    `json:"city"`
+	Phone     string    `json:"phone"`
 	AvatarURL string    `json:"avatar_url"`
 	Bio       string    `json:"bio"`
 	CreatedAt time.Time `json:"created_at"`
@@ -238,6 +239,13 @@ func main() {
 	sqldb.SetMaxIdleConns(8)
 	sqldb.SetConnMaxLifetime(time.Hour)
 	log.Println("[sqldb] connected (simple protocol)")
+
+	// Email diagnostics
+	postmarkSet := os.Getenv("POSTMARK_API_TOKEN") != ""
+	log.Printf("[email] POSTMARK_API_TOKEN set: %v", postmarkSet)
+	if !postmarkSet {
+		log.Println("[email] WARNING: POSTMARK_API_TOKEN is empty — emails will not be sent")
+	}
 
 	// --- Google OAuth 初始化 & 注入 DB（只做一次！）---
 	if err := auth.InitGoogleOAuth(); err != nil {
@@ -941,10 +949,10 @@ func getProfileByID(c *gin.Context) {
 
 	var p PublicProfile
 	err := db.QueryRow(ctx, `
-    select id, name, city, avatar_url, bio, created_at
+    select id, name, city, phone, avatar_url, bio, created_at
     from public.profiles
     where id = $1::uuid
-  `, id).Scan(&p.ID, &p.Name, &p.City, &p.AvatarURL, &p.Bio, &p.CreatedAt)
+  `, id).Scan(&p.ID, &p.Name, &p.City, &p.Phone, &p.AvatarURL, &p.Bio, &p.CreatedAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Fallback: 先從 users 抓 email
@@ -1928,6 +1936,7 @@ func acceptTask(c *gin.Context) {
 		return
 	}
 
+	log.Printf("[debug] about to notify requester for task %s", id)
 	notifyRequesterRich(c, notify.CreateNotificationInput{
 		TaskID:        id,
 		Type:          "ORDER_ACCEPTED",
@@ -2939,6 +2948,7 @@ func notifyRequesterRich(c *gin.Context, in notify.CreateNotificationInput) {
 		log.Printf("[notify][skip] lookup requester uid/email task=%s: %v", in.TaskID, err)
 		return
 	}
+	log.Printf("[notify][rich] task=%s type=%s uid=%q email=%q sendEmail=%v", in.TaskID, in.Type, uid, email, email != "")
 	in.DB = sqldb
 	in.UserID = uid
 	in.SendEmail = email != ""

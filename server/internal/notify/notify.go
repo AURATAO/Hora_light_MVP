@@ -29,8 +29,6 @@ func SendEmail(p EmailPayload) error {
 		from = "Ho:ra <no-reply@horaapp.co>"
 	}
 
-	log.Printf("[email] postmark to=%s subject=%s", p.To, p.Subject)
-
 	payload := map[string]string{
 		"From":     from,
 		"To":       p.To,
@@ -50,17 +48,20 @@ func SendEmail(p EmailPayload) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
+	log.Printf("[email] postmark sending to=%s subject=%q", p.To, p.Subject)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		log.Printf("[email] postmark request error to=%s: %v", p.To, err)
 		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		log.Printf("[email] postmark error status=%d body=%s", resp.StatusCode, string(respBody))
+		log.Printf("[email] postmark error to=%s status=%d body=%s", p.To, resp.StatusCode, string(respBody))
 		return fmt.Errorf("postmark returned %d", resp.StatusCode)
 	}
+	log.Printf("[email] postmark ok to=%s subject=%q status=200", p.To, p.Subject)
 	return nil
 }
 
@@ -95,7 +96,7 @@ func Create(ctx context.Context, in CreateNotificationInput) error {
 		taskURL := fmt.Sprintf("%s/tasks/%s", baseURL, in.TaskID)
 		html := buildEmail(in, taskURL)
 		if err := SendEmail(EmailPayload{To: in.EmailTo, Subject: in.Title, Html: html}); err != nil {
-			log.Printf("SendEmail error: %v", err)
+			log.Printf("[email] SEND FAILED to=%s type=%s err=%v", in.EmailTo, in.Type, err)
 		} else {
 			t := nowRome()
 			emailSentAt = &t

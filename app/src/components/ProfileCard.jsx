@@ -124,41 +124,19 @@ function ProfileCard() {
 
       <div className="flex-1 min-w-0 p-3">
         {!editing ? (
-          <>
-            {/* 顯示模式：手機直排、桌機橫排 */}
-            <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2">
-              <div className="text-xl font-heading truncate">{profile?.name || '—'}</div>
-              {/* 手機允許換行；桌機可截斷 */}
-              <span className="text-xs text-white/70 wrap-break-words sm:truncate">
-                {profile?.email}
-              </span>
-
-              {/* Edit：手機獨立一行滿寬；桌機靠右 */}
-              <div className="sm:ml-auto">
-                <button
-                  onClick={startEdit}
-                  className="w-full sm:w-auto rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40"
-                  title="Edit"
-                >
-                  ✎ Edit
-                </button>
-              </div>
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="font-heading text-base truncate">{profile?.name || '—'}</div>
+            <span className="text-xs text-white/50 truncate min-w-0">{profile?.email}</span>
+            <div className="ml-auto shrink-0">
+              <button
+                onClick={startEdit}
+                className="rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40"
+                title="Edit"
+              >
+                ✎ Edit
+              </button>
             </div>
-
-            <div className="mt-2 grid gap-2 grid-cols-1 sm:grid-cols-3">
-              <div className="text-sm text-white/80 min-w-0">
-                <span className="opacity-70">Phone:</span> {profile?.phone || '—'}
-              </div>
-              <div className="text-sm text-white/80 min-w-0">
-                <span className="opacity-70">City:</span> {profile?.city || '—'}
-              </div>
-            </div>
-
-            {/* 文字可換行避免撐爆 */}
-            <div className="mt-2 text-sm text-white/80 whitespace-pre-wrap wrap-break-words">
-              {profile?.bio || '—'}
-            </div>
-          </>
+          </div>
         ) : (
           <>
             {/* 編輯模式：表單在手機直排；桌機橫排不擠 */}

@@ -105,7 +105,7 @@ export default function Nav() {
         <div className="flex items-center gap-3 ml-auto">
           {/* Post a Task — always visible */}
           <Link
-            to="/tasks/new"
+            to="/category"
             className="rounded-full border border-secondary/50 text-secondary px-3 py-1 text-sm hover:bg-secondary/10 transition-colors"
           >
             Post a Task

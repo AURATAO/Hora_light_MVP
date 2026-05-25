@@ -38,8 +38,13 @@ export default function TaskCard({ task, variant, onAccept, className = '', onAf
             {whenText}<span className="mx-2">•</span>{task.estimated_minutes} min
             {advance > 0 && <><span className="mx-2">•</span>Advance ${advance.toFixed(2)}</>}
           </div>
-          <div className="mt-1.5">
+          <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
             <StatusBadge status={task.status} />
+            {task.category && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-white/10 text-white/60 border border-white/10">
+                {task.category.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+              </span>
+            )}
           </div>
         </div>
 
@@ -48,7 +53,8 @@ export default function TaskCard({ task, variant, onAccept, className = '', onAf
           <div className="flex items-center gap-2">
             <button
               onClick={(e) => { e.stopPropagation(); onAccept?.(task.id) }}
-              className="rounded-md border border-secondary/50 bg-secondary/15 text-secondary px-2 py-1 text-xs hover:bg-secondary/25 transition-colors"
+              className="rounded-full text-white px-3 py-1 text-xs font-semibold transition-all hover:brightness-110"
+              style={{ backgroundColor: '#9aab3a' }}
             >
               Accept
             </button>

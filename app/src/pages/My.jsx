@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'         // ← 加 useRef
 import { useLocation, useNavigate, Link } from 'react-router-dom' // ← 加這兩個
+import { Hand, Settings } from 'lucide-react'
 import { api } from '../api/client'
-import { ProfileCard } from '../components/ProfileCard'
 import TaskCard from '../components/TaskCard'
 import SkeletonCard from '../components/SkeletonCard'
 import { useAuth } from '../auth/AuthContext'
@@ -82,7 +82,12 @@ export default function My() {
       await wrap(async () => {
         const p = await api('/profile')
         setProfile(p)
-        await fetchPage(tab, null) // 只抓目前 tab
+        await Promise.all([
+          fetchPage('available', null),
+          fetchPage('assigned', null),
+          fetchPage('posted', null),
+          fetchPage('done', null),
+        ])
       })
     })()
   }, [authLoading, user])
@@ -197,12 +202,72 @@ export default function My() {
 
   return (
   <div className="bg-linear-to-br from-primary to-primary/30 text-accent min-h-screen py-[100px] px-4">
-    <div className="mx-auto max-w-3xl space-y-6">
-      <div className="min-w-0">
-        <ProfileCard />
+    <div className="mx-auto max-w-3xl space-y-3">
+
+      {/* Top bar + stat pills grouped tightly */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <Link
+              to="/profile"
+              className="w-14 h-14 rounded-full shrink-0 select-none hover:brightness-110 transition-all overflow-hidden"
+              style={profile?.avatar_url ? undefined : { backgroundColor: '#9aab3a' }}
+            >
+              {profile?.avatar_url ? (
+                <img src={profile.avatar_url} alt="" className="w-14 h-14 rounded-full object-cover" />
+              ) : (
+                <span className="w-14 h-14 flex items-center justify-center text-white font-bold text-lg">
+                  {(profile?.name || user?.email || '?')[0].toUpperCase()}
+                </span>
+              )}
+            </Link>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="font-heading text-lg text-white truncate inline-flex items-center gap-1">
+                  Hey, {profile?.name || user?.email?.split('@')[0] || 'there'}
+                  <Hand size={18} className="opacity-80 shrink-0" />
+                </span>
+                {user?.is_verified_supporter && (
+                  <span
+                    className="text-xs font-semibold px-2 py-0.5 rounded-full border"
+                    style={{ color: '#9aab3a', borderColor: '#9aab3a' }}
+                  >
+                    ✓ Verified Supporter
+                  </span>
+                )}
+                <Link to="/profile" className="opacity-40 hover:opacity-80 transition-opacity" title="Edit profile">
+                  <Settings size={15} />
+                </Link>
+              </div>
+            </div>
+          </div>
+          <Link
+            to="/category"
+            className="shrink-0 rounded-full border px-3 py-1.5 text-sm transition-colors hover:bg-white/5"
+            style={{ borderColor: '#9aab3a', color: '#9aab3a' }}
+          >
+            + Post a Task
+          </Link>
+        </div>
+
+        {/* Stat pills */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/5 border border-white/15 text-xs">
+            <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
+            Active&nbsp;<span className="font-semibold">{lists.assigned.items.length}{lists.assigned.next ? '+' : ''}</span>
+          </span>
+          <span className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/5 border border-white/15 text-xs">
+            <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: '#9aab3a' }} />
+            Posted&nbsp;<span className="font-semibold">{lists.posted.items.length}{lists.posted.next ? '+' : ''}</span>
+          </span>
+          <span className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/5 border border-white/15 text-xs">
+            <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: '#5dcaa5' }} />
+            Completed&nbsp;<span className="font-semibold">{lists.done.items.length}{lists.done.next ? '+' : ''}</span>
+          </span>
+        </div>
       </div>
 
-     <NotificationFeed key={String(loc.state?.refreshAt ?? 'static')} className="mt-4" />
+     <NotificationFeed key={String(loc.state?.refreshAt ?? 'static')} />
 
       <ThinCard>
         {/* Tabs：手機可滑動、桌機正常；Loading 位置做 RWD */}
@@ -216,9 +281,10 @@ export default function My() {
                     key={t.key}
                     className={`shrink-0 px-3 py-1.5 rounded-full border text-sm font-secondary tracking-wide transition-colors ${
                       tab === t.key
-                        ? 'border-secondary/50 bg-secondary/10 text-secondary'
+                        ? 'border-transparent text-white'
                         : 'border-white/10 text-white/60 hover:border-white/25 hover:text-white/80'
                     }`}
+                    style={tab === t.key ? { backgroundColor: '#9aab3a' } : undefined}
                     onClick={() => {
                       setTab(t.key)
                       const u = new URL(window.location.href)
@@ -338,7 +404,7 @@ const EMPTY_STATES = {
   },
   posted: {
     message: "No tasks yet — post your first one!",
-    cta: { label: 'Post a task', to: '/tasks/new' },
+    cta: { label: 'Post a task', to: '/category' },
   },
   done: {
     message: 'No completed tasks yet.',
