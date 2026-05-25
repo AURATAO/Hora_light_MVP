@@ -495,6 +495,7 @@ export default function TaskDetail() {
   }
 
   return (
+    <>
     <div className="bg-linear-to-br from-primary to-primary/30 text-accent min-h-screen py-[100px] px-4">
       <div className="mx-auto max-w-md space-y-4 border border-primary/30 backdrop-blur-md p-8 rounded-lg shadow">
         {!editing ? (
@@ -698,28 +699,6 @@ export default function TaskDetail() {
               </div>
             )}
 
-            {chatOpen && (
-              <div className="fixed inset-0 z-50 flex flex-col bg-primary">
-                {/* Header bar */}
-                <div className="flex items-center px-4 py-4 bg-surface border-b border-white/10 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => setChatOpen(false)}
-                    className="flex items-center gap-1.5 text-secondary text-sm font-medium hover:opacity-80 transition-opacity"
-                  >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="15 18 9 12 15 6" />
-                    </svg>
-                    Back
-                  </button>
-                  <p className="flex-1 text-center text-sm font-semibold text-accent truncate px-4">{task.title}</p>
-                </div>
-                {/* Chat fills remaining space */}
-                <div className="flex-1 min-h-0">
-                  <TaskChatBox task={task} me={user} fullscreen />
-                </div>
-              </div>
-            )}
           </>
         ) : (
           /* 編輯區（原本邏輯保留） */
@@ -900,5 +879,28 @@ export default function TaskDetail() {
         )}
       </div>
     </div>
+
+    {/* Chat overlay — rendered outside the backdrop-blur card so z-index is at root stacking context */}
+    {chatOpen && (
+      <div className="fixed inset-0 z-[200] flex flex-col bg-primary">
+        <div className="flex items-center px-4 py-4 bg-surface border-b border-white/10 shrink-0">
+          <button
+            type="button"
+            onClick={() => setChatOpen(false)}
+            className="flex items-center gap-1.5 text-secondary text-sm font-medium hover:opacity-80 transition-opacity"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="15 18 9 12 15 6" />
+            </svg>
+            Back
+          </button>
+          <p className="flex-1 text-center text-sm font-semibold text-accent truncate px-4">{task.title}</p>
+        </div>
+        <div className="flex-1 min-h-0">
+          <TaskChatBox task={task} me={user} fullscreen />
+        </div>
+      </div>
+    )}
+    </>
   )
 }
