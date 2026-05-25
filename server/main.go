@@ -1956,6 +1956,7 @@ func clockIn(c *gin.Context) {
 	taskID := c.Param("id")
 	meUID := c.GetString("uid")
 	meEmail := c.GetString("email")
+	log.Printf("[debug] clockIn called for task %s uid %s", taskID, meUID)
 	if meUID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
 		return
@@ -2006,6 +2007,7 @@ func clockIn(c *gin.Context) {
 		return
 	}
 
+	log.Printf("[debug] clockIn about to notify for task %s", taskID)
 	notifyRequesterRich(c, notify.CreateNotificationInput{
 		TaskID:        taskID,
 		Type:          "CLOCK_IN",

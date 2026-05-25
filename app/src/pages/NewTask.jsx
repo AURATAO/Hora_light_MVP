@@ -121,7 +121,7 @@ export default function NewTask() {
     if (!user) throw new Error('Please sign in')
 
     const validLocs = locs.filter(l => l.result?.label)
-    const location_text = (validLocs[0]?.result?.label || '').trim()
+    const location_text = validLocs.map(l => l.result.label.trim()).filter(Boolean).join(' | ')
     const locations_geo = validLocs.map(l => ({
       label: l.result.label,
       placeId: l.result.placeId || null,
