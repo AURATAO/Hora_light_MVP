@@ -1107,8 +1107,11 @@ func createTask(c *gin.Context) {
 	validCategories := map[string]bool{
 		"task": true, "companion": true,
 		"quick_errand": true, "standard": true, "half_day": true, "full_day": true,
+		"delivery": true, "grocery": true, "laundry": true,
+		"queue": true, "anything_else": true, "companionship": true,
 	}
 	if !validCategories[in.Category] {
+		log.Printf("[createTask] invalid category: %q", in.Category)
 		c.JSON(400, gin.H{"error": "invalid category"})
 		return
 	}
@@ -1527,6 +1530,8 @@ func updateTask(c *gin.Context) {
 	validCats := map[string]bool{
 		"task": true, "companion": true,
 		"quick_errand": true, "standard": true, "half_day": true, "full_day": true,
+		"delivery": true, "grocery": true, "laundry": true,
+		"queue": true, "anything_else": true, "companionship": true,
 	}
 	if !validCats[in.Category] {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid category"})
