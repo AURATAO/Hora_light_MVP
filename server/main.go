@@ -1086,6 +1086,7 @@ func listProfileTasks(c *gin.Context) {
 func createTask(c *gin.Context) {
 	var in createTaskInput
 	if err := c.BindJSON(&in); err != nil {
+		log.Printf("[createTask] BindJSON error: %v", err)
 		c.JSON(400, gin.H{"error": "invalid payload"})
 		return
 	}
@@ -1094,6 +1095,7 @@ func createTask(c *gin.Context) {
 	in.Description = strings.TrimSpace(in.Description)
 	in.Category = strings.TrimSpace(in.Category)
 	in.LocationText = strings.TrimSpace(in.LocationText)
+	log.Printf("[createTask] body: %+v", in)
 	if in.Title == "" {
 		c.JSON(400, gin.H{"error": "title required"})
 		return
@@ -1143,6 +1145,7 @@ func createTask(c *gin.Context) {
 	ctx := c.Request.Context()
 	tx, err := sqldb.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
+		log.Printf("[createTask] BeginTx error: %v", err)
 		c.JSON(500, gin.H{"error": "db error"})
 		return
 	}
@@ -1178,7 +1181,7 @@ func createTask(c *gin.Context) {
       INSERT INTO public.profiles (id, email, name, created_at, updated_at)
       VALUES ($1::uuid, $2, $3, now(), now())
     `, uid, email, deriveName(email)); err != nil {
-			log.Printf("[profiles.insert] %v", err)
+			log.Printf("[createTask] profiles.insert error: %v", err)
 			c.JSON(500, gin.H{"error": "db error"})
 			return
 		}
@@ -1188,7 +1191,7 @@ func createTask(c *gin.Context) {
 			var exists bool
 			_ = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM public.users WHERE id=$1::uuid)`, uid).Scan(&exists)
 			if !exists {
-				log.Printf("[profiles.align] users missing uid=%s", uid)
+				log.Printf("[createTask] profiles.align users missing uid=%s", uid)
 				c.JSON(500, gin.H{"error": "db error"})
 				return
 			}
@@ -1198,13 +1201,13 @@ func createTask(c *gin.Context) {
         SET id = $1::uuid, updated_at = now()
         WHERE id = $2::uuid
       `, uid, profID); err != nil {
-				log.Printf("[profiles.align.update-id] %v", err)
+				log.Printf("[createTask] profiles.align.update-id error: %v", err)
 				c.JSON(500, gin.H{"error": "db error"})
 				return
 			}
 		}
 	default:
-		log.Printf("[profiles.lookup] %v", err)
+		log.Printf("[createTask] profiles.lookup error: %v", err)
 		c.JSON(500, gin.H{"error": "db error"})
 		return
 	}
@@ -1243,7 +1246,7 @@ func createTask(c *gin.Context) {
 	}
 
 	if err := tx.Commit(); err != nil {
-		log.Printf("[tx.commit] %v", err)
+		log.Printf("[createTask] tx.commit error: %v", err)
 		c.JSON(500, gin.H{"error": "db error"})
 		return
 	}
