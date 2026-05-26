@@ -495,6 +495,7 @@ func main() {
 
 		tasksAPI.POST("/:id/accept", acceptTask)
 		tasksAPI.POST("/:id/complete", completeTask)
+		tasksAPI.POST("/:id/completion-photo", uploadTaskCompletionPhoto)
 		tasksAPI.POST("/:id/cancel", cancelTask)
 
 		tasksAPI.POST("/:id/clock-in", clockIn)
@@ -2268,6 +2269,124 @@ func getWorklogs(c *gin.Context) {
 	})
 }
 
+// POST /tasks/:id/completion-photo — upload a completion photo to Supabase Storage.
+// Returns { url: "https://..." } for use in the complete request.
+func uploadTaskCompletionPhoto(c *gin.Context) {
+	taskID := c.Param("id")
+	uid := c.GetString("uid")
+	if uid == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+		return
+	}
+
+	// Verify caller is requester or assignee
+	var requesterID, assignedToID sql.NullString
+	if err := db.QueryRow(c.Request.Context(), `
+		SELECT requester_id, assigned_to_id FROM public.tasks WHERE id=$1
+	`, taskID).Scan(&requesterID, &assignedToID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	if (!requesterID.Valid || requesterID.String != uid) &&
+		(!assignedToID.Valid || assignedToID.String != uid) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not allowed"})
+		return
+	}
+
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 5<<20)
+
+	f, hdr, err := c.Request.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file required (multipart/form-data; field name 'file')"})
+		return
+	}
+	defer f.Close()
+
+	contentType := hdr.Header.Get("Content-Type")
+	// Normalise browser quirks (image/jpg is invalid; some browsers omit Content-Type entirely).
+	if contentType == "application/octet-stream" || contentType == "" || contentType == "image/jpg" {
+		switch strings.ToLower(filepath.Ext(hdr.Filename)) {
+		case ".jpg", ".jpeg":
+			contentType = "image/jpeg"
+		case ".png":
+			contentType = "image/png"
+		case ".webp":
+			contentType = "image/webp"
+		case ".gif":
+			contentType = "image/gif"
+		case ".heic":
+			contentType = "image/heic"
+		case ".heif":
+			contentType = "image/heif"
+		default:
+			contentType = "image/jpeg" // safe fallback for camera photos with no extension
+		}
+	}
+
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, f); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "read file failed"})
+		return
+	}
+
+	ext := strings.ToLower(filepath.Ext(hdr.Filename))
+	if ext == "" {
+		ext = ".jpg"
+	}
+	key := fmt.Sprintf("completions/%s/%d%s", taskID, time.Now().Unix(), ext)
+	const bucket = "task-completions"
+
+	base := strings.TrimSuffix(os.Getenv("SUPABASE_PROJECT_URL"), "/")
+	serviceKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+	// Sanity-check env vars are present
+	if base == "" || serviceKey == "" {
+		log.Printf("[completion-photo][ERR] missing env: SUPABASE_PROJECT_URL=%q keyLen=%d", base, len(serviceKey))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "storage not configured"})
+		return
+	}
+	log.Printf("[completion-photo] projectURL=%s keyPrefix=%.8s keyLen=%d", base, serviceKey, len(serviceKey))
+
+	// Direct upload using service role key — bypasses RLS, no signed-URL round-trip.
+	// Supabase Storage sits behind Kong which requires BOTH Authorization and apikey headers.
+	uploadURL := fmt.Sprintf("%s/storage/v1/object/%s/%s", base, bucket, key)
+	log.Printf("[completion-photo] uploading key=%s ct=%s size=%d", key, contentType, buf.Len())
+
+	req, err := http.NewRequest("POST", uploadURL, bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "build request failed"})
+		return
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Authorization", "Bearer "+serviceKey)
+	req.Header.Set("apikey", serviceKey) // Kong gateway requires this
+	req.Header.Set("x-upsert", "true")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("[completion-photo][upload][ERR] %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "upload failed"})
+		return
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	log.Printf("[completion-photo] supabase response status: %d", resp.StatusCode)
+	log.Printf("[completion-photo] supabase response body: %s", string(b))
+	if resp.StatusCode >= 300 {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  fmt.Sprintf("upload failed (%d)", resp.StatusCode),
+			"detail": string(b), // visible in browser devtools for debugging
+		})
+		return
+	}
+	log.Printf("[completion-photo][upload][OK] key=%s status=%d", key, resp.StatusCode)
+
+	publicURL := fmt.Sprintf("%s/storage/v1/object/public/%s/%s", base, bucket, key)
+	log.Printf("[completion-photo] task=%s url=%s", taskID, publicURL)
+
+	c.JSON(http.StatusOK, gin.H{"url": publicURL})
+}
+
 // Completion rules:
 // 1) Requester or assignee can complete.
 // 2) Task must be open and assigned.
@@ -2282,6 +2401,19 @@ func completeTask(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
+
+	var body struct {
+		CompletionPhotoURL string `json:"completion_photo_url"`
+		CompletionNote     string `json:"completion_note"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if strings.TrimSpace(body.CompletionPhotoURL) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Completion photo is required"})
+		return
+	}
 
 	var status, assigneeEmail, completeTaskTitle string
 	var requesterID, assignedToID sql.NullString
@@ -2345,21 +2477,29 @@ func completeTask(c *gin.Context) {
 	// TODO: trigger Stripe capture here
 	// e.g. stripe.CapturePaymentIntent(task.PaymentIntentID, totalCents)
 
-	if _, err := db.Exec(ctx, `update public.tasks set status='completed' WHERE id = $1::uuid`, taskID); err != nil {
+	if _, err := db.Exec(ctx, `
+		UPDATE public.tasks
+		SET status='completed', completion_photo_url=$2, completion_note=$3, completed_at=now()
+		WHERE id = $1::uuid`,
+		taskID, body.CompletionPhotoURL, body.CompletionNote); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
 	}
 
+	log.Printf("[completeTask] sending completion email for task %s", taskID)
+
 	// Email requester: summary with time logged + final cost
 	notifyRequesterRich(c, notify.CreateNotificationInput{
-		TaskID:        taskID,
-		Type:          "COMPLETED",
-		Title:         "Your task has been completed",
-		Body:          "Everything is done. Please leave a rating when you have a moment.",
-		SupporterName: displayName(assigneeEmail),
-		TaskTitle:     completeTaskTitle,
-		TotalLogged:   completeTotalStr,
-		FinalCost:     completeCostStr,
+		TaskID:             taskID,
+		Type:               "COMPLETED",
+		Title:              "Your task has been completed",
+		Body:               "Everything is done. Please leave a rating when you have a moment.",
+		SupporterName:      displayName(assigneeEmail),
+		TaskTitle:          completeTaskTitle,
+		TotalLogged:        completeTotalStr,
+		FinalCost:          completeCostStr,
+		CompletionPhotoURL: body.CompletionPhotoURL,
+		CompletionNote:     body.CompletionNote,
 	})
 	// TODO: WhatsApp notification here
 

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
-import { api } from '../api/client'
+import { api, API_BASE } from '../api/client'
 import TaskChatBox from '../components/TaskChatBox'
 import { useAuth } from '../auth/AuthContext'
 import UserPill from '../components/UserPill'
@@ -29,6 +29,13 @@ export default function TaskDetail() {
   const [error, setError] = useState('')
   const [editing, setEditing] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
+
+  // Complete-task modal
+  const [showCompleteModal, setShowCompleteModal] = useState(false)
+  const [completionPhotoURL, setCompletionPhotoURL] = useState('')
+  const [completionNote, setCompletionNote] = useState('')
+  const [photoUploading, setPhotoUploading] = useState(false)
+  const completionPhotoInputRef = useRef(null)
 
   // Travel time estimate (supporter only, after task is accepted)
   const [travelEst, setTravelEst] = useState(null)   // { travel_minutes, task_minutes, total_minutes }
@@ -337,16 +344,55 @@ export default function TaskDetail() {
     })
   }
 
+  async function uploadCompletionPhoto(file) {
+    if (!file) return
+    if (file.size > 5 * 1024 * 1024) {
+      toast('Max 5MB — please choose a smaller image', 'error')
+      return
+    }
+    setPhotoUploading(true)
+    try {
+      const fd = new FormData()
+      fd.append('file', file)
+
+      // Re-use the same auth pattern as api() in client.js
+      const { supabase } = await import('../lib/supabaseClient')
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token || null
+
+      const headers = {}
+      if (token) headers['Authorization'] = `Bearer ${token}`
+
+      console.log('[uploadCompletionPhoto] task=%s file=%s size=%d', id, file.name, file.size)
+
+      const res = await fetch(`${API_BASE}/tasks/${id}/completion-photo`, {
+        method: 'POST',
+        credentials: 'include',
+        headers,
+        body: fd,
+      })
+      const data = await res.json().catch(() => ({}))
+      console.log('[uploadCompletionPhoto] status=%d body=', res.status, data)
+      if (!res.ok) throw new Error(data?.error || `Upload failed (${res.status})`)
+      setCompletionPhotoURL(data.url)
+    } catch (err) {
+      console.error('[uploadCompletionPhoto] error:', err)
+      toast(err.message || 'Photo upload failed', 'error')
+    } finally {
+      setPhotoUploading(false)
+    }
+  }
+
   async function markCompleted() {
-    // try {
-    //   await api(`/tasks/${id}/complete`, { method: 'POST' })
-    //   navigate('/my?tab=done', { replace: true })
-    // } catch (e) {
-    //   alert(e.message || 'Complete failed')
-    // }
     await wrap(async () => {
       try {
-        await api(`/tasks/${id}/complete`, { method: 'POST' })
+        const completeBody = { completion_photo_url: completionPhotoURL, completion_note: completionNote }
+        console.log('[completeTask] body:', completeBody)
+        await api(`/tasks/${id}/complete`, {
+          method: 'POST',
+          body: completeBody,
+        })
+        setShowCompleteModal(false)
         navigate('/my?tab=done', { replace: true })
       } catch (e) {
         toast(e.message || 'Complete failed')
@@ -511,7 +557,7 @@ export default function TaskDetail() {
                 </button>
               )}
               {canComplete ? (
-                <button onClick={markCompleted} className="ml-2 rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40">
+                <button onClick={() => { setCompletionPhotoURL(''); setCompletionNote(''); setShowCompleteModal(true) }} className="ml-2 rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40">
                   Mark completed
                 </button>
               ) : ((isOwner || isAssignee) && task?.status === 'open') ? (
@@ -879,6 +925,88 @@ export default function TaskDetail() {
         )}
       </div>
     </div>
+
+    {/* Complete Task modal */}
+    {showCompleteModal && (
+      <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/60 px-4">
+        <div className="w-full max-w-sm rounded-xl bg-surface border border-white/10 p-6 flex flex-col gap-4">
+          <h3 className="text-base font-semibold">Complete Task</h3>
+
+          {/* Photo upload */}
+          <div>
+            <p className="text-xs text-white/60 mb-2">
+              Completion photo <span className="text-red-400">*</span>
+            </p>
+            {completionPhotoURL ? (
+              <div className="relative">
+                <img
+                  src={completionPhotoURL}
+                  alt="Completion preview"
+                  className="w-full rounded-lg object-cover max-h-48"
+                />
+                <button
+                  type="button"
+                  onClick={() => { setCompletionPhotoURL(''); if (completionPhotoInputRef.current) completionPhotoInputRef.current.value = '' }}
+                  className="absolute top-1 right-1 bg-black/60 text-white rounded-full w-6 h-6 text-xs flex items-center justify-center hover:bg-black/80"
+                >
+                  ✕
+                </button>
+              </div>
+            ) : (
+              <label className={[
+                'flex flex-col items-center justify-center gap-2 w-full h-32 rounded-lg',
+                'border-2 border-dashed border-white/20 hover:border-white/40',
+                'cursor-pointer transition text-white/50 text-sm',
+                photoUploading ? 'opacity-60 pointer-events-none' : '',
+              ].join(' ')}>
+                {photoUploading ? 'Uploading…' : (
+                  <>
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    <span>Tap to upload photo</span>
+                  </>
+                )}
+                <input
+                  ref={completionPhotoInputRef}
+                  type="file"
+                  className="sr-only"
+                  accept="image/png,image/jpeg,image/webp,image/gif,image/heic,image/heif"
+                  onChange={e => uploadCompletionPhoto(e.target.files?.[0])}
+                  disabled={photoUploading}
+                />
+              </label>
+            )}
+          </div>
+
+          {/* Note */}
+          <textarea
+            className="w-full rounded-lg bg-white/5 border border-white/15 px-3 py-2 text-sm text-white placeholder-white/40 resize-none focus:outline-none focus:border-white/30"
+            rows={3}
+            placeholder="Any notes for the requester? (optional)"
+            value={completionNote}
+            onChange={e => setCompletionNote(e.target.value)}
+          />
+
+          {/* Buttons */}
+          <div className="flex gap-3 justify-end">
+            <button
+              type="button"
+              onClick={() => setShowCompleteModal(false)}
+              className="px-4 py-2 text-sm rounded-lg border border-white/20 hover:border-white/40 transition"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={markCompleted}
+              disabled={!completionPhotoURL || photoUploading}
+              className="px-4 py-2 text-sm rounded-lg bg-white text-black font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/90 transition"
+            >
+              Confirm Complete
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
 
     {/* Chat overlay — rendered outside the backdrop-blur card so z-index is at root stacking context */}
     {chatOpen && (

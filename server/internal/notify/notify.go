@@ -81,8 +81,10 @@ type CreateNotificationInput struct {
 	TotalLogged    string
 	EstimatedCost  string
 	FinalCost      string
-	SenderName     string
-	MessagePreview string
+	SenderName         string
+	MessagePreview     string
+	CompletionPhotoURL string
+	CompletionNote     string
 }
 
 func Create(ctx context.Context, in CreateNotificationInput) error {
@@ -370,6 +372,18 @@ func taskCompletedEmail(in CreateNotificationInput, taskURL string) string {
 	supporterName := fallback(in.SupporterName, "Your supporter")
 	taskTitle := fallback(in.TaskTitle, "your task")
 	reviewURL := taskURL + "/review"
+
+	var photoSection string
+	if in.CompletionPhotoURL != "" {
+		photoSection += `<img src="` + in.CompletionPhotoURL + `" style="width:100%;max-width:500px;border-radius:8px;margin-top:16px;" alt="Completion photo"/>`
+	}
+	if in.CompletionNote != "" {
+		photoSection += `<div style="margin-top:16px;padding:12px 16px;background:#f5f5f0;border-radius:8px;">` +
+			`<p style="margin:0;font-size:13px;color:#888;text-transform:uppercase;letter-spacing:0.05em;">Note from your supporter</p>` +
+			`<p style="margin:8px 0 0;font-size:15px;color:#333;">` + in.CompletionNote + `</p>` +
+			`</div>`
+	}
+
 	card := fmt.Sprintf(`
 <table cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
   <tr><td style="background:#e8f5e9;border-radius:20px;padding:5px 14px;">
@@ -398,7 +412,7 @@ func taskCompletedEmail(in CreateNotificationInput, taskURL string) string {
     </tr>
   </table>
 </div>
-<div style="border-left:3px solid #1a1a16;padding-left:16px;margin-bottom:28px;">
+%s<div style="border-left:3px solid #1a1a16;padding-left:16px;margin-bottom:28px;">
   <p style="margin:0;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;line-height:1.6;color:#555550;">Happy with the work? Leave %s a review &mdash; it helps them get more tasks on HORA.</p>
 </div>
 <table cellpadding="0" cellspacing="0"><tr>
@@ -413,6 +427,7 @@ func taskCompletedEmail(in CreateNotificationInput, taskURL string) string {
 		taskTitle, supporterName,
 		fallback(in.TotalLogged, "—"),
 		fallback(in.FinalCost, "—"),
+		photoSection,
 		supporterName,
 		taskURL, reviewURL)
 	return wrapEmail("Task completed", card)
