@@ -1959,7 +1959,7 @@ func acceptTask(c *gin.Context) {
 }
 
 // -------- WorkLog handlers --------
-const centsPerMinute = 50 // 0.5 EUR/min
+const overtimeRateCents = 50 // $0.50/min for every minute over the 15-min included block
 
 func clockIn(c *gin.Context) {
 	taskID := c.Param("id")
@@ -2264,7 +2264,7 @@ func getWorklogs(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"items":            items,
 		"total_minutes":    totalMin,
-		"total_cost_cents": totalMin * centsPerMinute,
+		"total_cost_cents": calcTaskCostCents(ctx, taskID, totalMin),
 		"has_open":         hasOpen,
 	})
 }
@@ -2464,7 +2464,7 @@ func completeTask(c *gin.Context) {
 
 	// calculate final total across all sessions
 	totalMin, _ := totalClosedMinutes(ctx, taskID)
-	totalCents := totalMin * centsPerMinute
+	totalCents := calcTaskCostCents(ctx, taskID, totalMin)
 
 	completeHrs := totalMin / 60
 	completeMins := totalMin % 60
@@ -2533,6 +2533,32 @@ func totalClosedMinutes(ctx context.Context, taskID string) (int, error) {
 		select coalesce(sum(greatest(m,1)),0) from x
 	`, taskID).Scan(&total)
 	return total, err
+}
+
+// calcTaskCostCents returns the service charge in cents for totalMinutes of work on taskID.
+// Base fee: $25 (companionship/companion), $18 (estimated_minutes > 90), $12 (everything else).
+// Overtime: $0.50/min for every minute worked beyond the first 15.
+func calcTaskCostCents(ctx context.Context, taskID string, totalMinutes int) int {
+	var category string
+	var estimatedMinutes int
+	_ = db.QueryRow(ctx,
+		`SELECT COALESCE(category,''), COALESCE(estimated_minutes,0) FROM public.tasks WHERE id=$1::uuid`,
+		taskID,
+	).Scan(&category, &estimatedMinutes)
+
+	baseCents := 1200
+	switch {
+	case category == "companionship" || category == "companion":
+		baseCents = 2500
+	case estimatedMinutes > 90:
+		baseCents = 1800
+	}
+
+	overtimeCents := 0
+	if totalMinutes > 15 {
+		overtimeCents = (totalMinutes - 15) * overtimeRateCents
+	}
+	return baseCents + overtimeCents
 }
 
 func cancelTask(c *gin.Context) {
@@ -2616,7 +2642,7 @@ func cancelTask(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
 	}
-	billCents := totalMin * centsPerMinute
+	billCents := calcTaskCostCents(ctx, taskID, totalMin)
 	refundCents := prepayCents - billCents
 	if refundCents < 0 {
 		refundCents = 0

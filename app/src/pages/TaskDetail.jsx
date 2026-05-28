@@ -556,15 +556,6 @@ export default function TaskDetail() {
                   Accept
                 </button>
               )}
-              {canComplete ? (
-                <button onClick={() => { setCompletionPhotoURL(''); setCompletionNote(''); setShowCompleteModal(true) }} className="ml-2 rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40">
-                  Mark completed
-                </button>
-              ) : ((isOwner || isAssignee) && task?.status === 'open') ? (
-                <button disabled className="ml-2 text-xs opacity-60 border border-white/10 px-2 py-1 rounded-md cursor-not-allowed" title="Clock in & out at least once to complete">
-                  Complete (needs clock)
-                </button>
-              ) : null}
               {isOwner && task.status === 'open' && (
                 <button onClick={startEdit} className="ml-2 rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40">
                   Edit
@@ -743,6 +734,22 @@ export default function TaskDetail() {
               <div className="w-full rounded-2xl border border-white/10 bg-surface/30 py-3.5 text-sm text-center text-white/30">
                 💬 Chat available once a supporter accepts
               </div>
+            )}
+
+            {isAssignee && !!task?.assigned_to_id && (
+              <button
+                type="button"
+                disabled={!canComplete}
+                onClick={() => { setCompletionPhotoURL(''); setCompletionNote(''); setShowCompleteModal(true) }}
+                style={{ background: canComplete ? '#9aab3a' : undefined }}
+                className={[
+                  'w-full rounded-xl py-[14px] text-sm font-medium text-white transition-opacity',
+                  canComplete ? 'opacity-100' : 'opacity-40 bg-white/10 cursor-not-allowed',
+                ].join(' ')}
+                title={canComplete ? undefined : 'Clock in & out at least once before completing'}
+              >
+                Mark as Complete
+              </button>
             )}
 
           </>
