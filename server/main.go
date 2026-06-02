@@ -1252,6 +1252,17 @@ func createTask(c *gin.Context) {
 		return
 	}
 
+	go notify.NotifyAdminNewTask(notify.AdminNewTaskInput{
+		TaskID:           taskID,
+		Title:            in.Title,
+		Category:         in.Category,
+		RequesterEmail:   email,
+		LocationText:     in.LocationText,
+		EstimatedMinutes: in.EstimatedMinutes,
+		IsImmediate:      in.IsImmediate,
+		ScheduledAt:      when,
+	})
+
 	c.JSON(201, Task{
 		ID: taskID, Title: in.Title, Description: in.Description, Category: in.Category,
 		LocationText: in.LocationText, EstimatedMinutes: in.EstimatedMinutes,

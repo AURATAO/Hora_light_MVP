@@ -160,9 +160,9 @@ export default function My() {
 
 
   const tabs = [
+    { key:'posted',    label:'Posted' },
     { key:'available', label:'Available' },
     { key:'assigned',  label:'Assigned' },
-    { key:'posted',    label:'Posted' },
     { key:'done',      label:'Done' },
   ]
 

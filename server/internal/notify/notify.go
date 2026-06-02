@@ -470,6 +470,80 @@ func defaultEmail(in CreateNotificationInput, taskURL string) string {
 	return wrapEmail(in.Title, card)
 }
 
+type AdminNewTaskInput struct {
+	TaskID           string
+	Title            string
+	Category         string
+	RequesterEmail   string
+	LocationText     string
+	EstimatedMinutes int
+	IsImmediate      bool
+	ScheduledAt      *time.Time
+}
+
+func NotifyAdminNewTask(in AdminNewTaskInput) {
+	baseURL := getenv("APP_BASE_URL", "https://horaapp.co")
+	taskURL := fmt.Sprintf("%s/tasks/%s", baseURL, in.TaskID)
+
+	when := "ASAP"
+	if !in.IsImmediate && in.ScheduledAt != nil {
+		when = in.ScheduledAt.Format("2006-01-02 15:04 MST")
+	}
+
+	loc := in.LocationText
+	if loc == "" {
+		loc = "—"
+	}
+
+	card := fmt.Sprintf(`
+<p style="margin:0 0 12px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:11px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:#9a9a8a;">New task posted</p>
+<h1 style="margin:0 0 20px;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:400;line-height:1.3;color:#1a1a16;">%s</h1>
+<div style="background:#f4f4f0;border-radius:8px;padding:18px 20px;margin-bottom:28px;">
+  <table width="100%%" cellpadding="0" cellspacing="0">
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;padding-bottom:8px;width:36%%;">Category</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;font-weight:500;padding-bottom:8px;">%s</td>
+    </tr>
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;padding-bottom:8px;">Requester</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;padding-bottom:8px;">%s</td>
+    </tr>
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;padding-bottom:8px;">Location</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;padding-bottom:8px;">%s</td>
+    </tr>
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;padding-bottom:8px;">Duration</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;padding-bottom:8px;">%d min</td>
+    </tr>
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;">When</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;">%s</td>
+    </tr>
+  </table>
+</div>
+<table cellpadding="0" cellspacing="0"><tr>
+  <td style="border-radius:8px;background:#1a1a16;">
+    <a href="%s" style="display:inline-block;padding:14px 28px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;font-weight:500;color:#f4f4f0;text-decoration:none;border-radius:8px;">View task &rarr;</a>
+  </td>
+</tr></table>`,
+		in.Title, in.Category, in.RequesterEmail, loc, in.EstimatedMinutes, when, taskURL)
+
+	html := wrapEmail("New task posted: "+in.Title, card)
+	subject := fmt.Sprintf("New task posted: %s", in.Title)
+
+	adminEmails := []string{
+		getenv("ADMIN_EMAIL", "liang.you@horaapp.co"),
+		"daniele@arcodiax.com",
+		"liang.you@arcodiax.com",
+	}
+	for _, email := range adminEmails {
+		if err := SendEmail(EmailPayload{To: email, Subject: subject, Html: html}); err != nil {
+			log.Printf("[notify] admin new-task email failed to=%s taskID=%s err=%v", email, in.TaskID, err)
+		}
+	}
+}
+
 func fallback(s, def string) string {
 	if s == "" {
 		return def

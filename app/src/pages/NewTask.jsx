@@ -284,7 +284,9 @@ function confirmCompanionPolicy() {
             {locs.map((loc, i) => (
               <div key={loc.id} className="grid gap-1">
                 <div className="flex items-center justify-between">
-                  <label className="text-sm">{i === 0 ? 'Location' : `Location ${i + 1}`}</label>
+                  <label className="text-sm">
+                    {i === 0 ? '📍 Pick-up / Starting point' : `📍 Drop-off / Stop ${i + 1}`}
+                  </label>
                   {i > 0 && (
                     <button
                       type="button"
@@ -304,7 +306,7 @@ function confirmCompanionPolicy() {
                 onClick={addLoc}
                 className="flex items-center gap-1.5 text-sm text-white/60 hover:text-white/80 border border-dashed border-white/20 hover:border-white/40 rounded-md px-3 py-2 transition-colors w-fit"
               >
-                <span className="text-base leading-none">+</span> Add Location
+                <span className="text-base leading-none">+</span> Add drop-off / stop
               </button>
             )}
           </div>
