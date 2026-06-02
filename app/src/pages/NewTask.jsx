@@ -422,12 +422,12 @@ function confirmCompanionPolicy() {
               <b>{mode === 'now' ? 'ASAP' : (date && timeStr ? new Date(`${date}T${timeStr}`).toLocaleString() : '—')}</b>
             </div>
             <div className="flex justify-between">
-              <span>Base fee + overtime</span>
+              <span>Base fee</span>
               <b>${baseFee.toFixed(2)}</b>
             </div>
             {overtimeCost > 0 && (
               <div className="flex justify-between">
-                <span>Extra time</span>
+                <span>Overtime ({Math.max(0, Number(minutes) - 15)} min × $0.50)</span>
                 <b>${overtimeCost.toFixed(2)}</b>
               </div>
             )}

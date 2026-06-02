@@ -476,6 +476,18 @@ export default function TaskDetail() {
     return `${h}h ${rem}min`
   }, [work.total_minutes])
 
+  const costBreakdown = useMemo(() => {
+    const cat = task?.category || ''
+    const isCompanion = cat === 'companionship' || cat === 'companion'
+    const baseFee = isCompanion ? 25 : (task?.estimated_minutes > 90 ? 18 : 12)
+    const OVERTIME_RATE = 0.50
+    const minutesToUse = (work.total_minutes || 0) > 0 ? work.total_minutes : (task?.estimated_minutes || 0)
+    const overtimeMinutes = Math.max(0, minutesToUse - 15)
+    const overtimeCost = overtimeMinutes * OVERTIME_RATE
+    const totalCost = baseFee + overtimeCost
+    return { baseFee, overtimeMinutes, overtimeCost, totalCost }
+  }, [task?.category, task?.estimated_minutes, work.total_minutes])
+
   async function saveEdit() {
     await wrap(async () => {
       try {
@@ -656,7 +668,44 @@ export default function TaskDetail() {
             {(isOwner || isAssignee) && (
               <div className="border border-white/20 rounded-md p-3 space-y-2">
                 <div className="flex items-center justify-between">
-                  <div className="text-sm">Logged: <b>{totalDuration}</b> · Est. <b>${totalEUR.toFixed(2)}</b></div>
+                  <div>
+                    {work.total_minutes === 0 ? (
+                      <div className="space-y-1">
+                        <div className="text-sm text-white/60">
+                          Estimated cost (based on {task.estimated_minutes} min):
+                        </div>
+                        <div className="text-sm">
+                          Base fee <b>${costBreakdown.baseFee.toFixed(2)}</b>
+                          {costBreakdown.overtimeCost > 0 && (
+                            <span className="text-white/60"> + overtime ({costBreakdown.overtimeMinutes} min) <b>${costBreakdown.overtimeCost.toFixed(2)}</b></span>
+                          )}
+                          <span> = <b>${costBreakdown.totalCost.toFixed(2)}</b></span>
+                        </div>
+                      </div>
+                    ) : task?.status === 'completed' ? (
+                      <div className="text-sm">
+                        Final cost: <b>${totalEUR.toFixed(2)}</b>
+                      </div>
+                    ) : (
+                      <div className="space-y-1">
+                        <div className="text-sm">
+                          Logged: <b>{totalDuration}</b>
+                        </div>
+                        <div className="text-sm">
+                          Base fee <b>${costBreakdown.baseFee.toFixed(2)}</b>
+                          {costBreakdown.overtimeCost > 0 && (
+                            <span className="text-white/60"> + overtime ({costBreakdown.overtimeMinutes} min) <b>${costBreakdown.overtimeCost.toFixed(2)}</b></span>
+                          )}
+                          <span> = <b>${costBreakdown.totalCost.toFixed(2)}</b></span>
+                        </div>
+                      </div>
+                    )}
+                    {task?.assigned_to_id && task?.status === 'open' && (
+                      <div className="text-xs text-white/40 mt-1">
+                        Final cost based on actual time logged. More time = extra charge, less time = partial refund.
+                      </div>
+                    )}
+                  </div>
                   {isAssignee && task.status === 'open' && (
                     work.has_open ? (
                       <button onClick={clockOut} className="text-xs rounded-md border border-white/20 px-2 py-1 hover:border-white/40">
