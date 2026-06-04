@@ -18,7 +18,7 @@ export default function My() {
   const { wrap } = useLoader()
   const toast = useToast()
   const [profile, setProfile] = useState(null)
-  const [tab, setTab] = useState('available') // available | assigned | posted | done
+  const [tab, setTab] = useState('posted') // available | assigned | posted | done
   // const [lists, setLists] = useState({ available:[], assigned:[], posted:[], done:[] })
   // const [loading, setLoading] = useState(false)
   const [lists, setLists] = useState({
