@@ -15,6 +15,7 @@ export default function Profile() {
   const [avatarUrl, setAvatarUrl] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [submitted, setSubmitted] = useState(false)
 
   useEffect(() => {
     api('/profile')
@@ -30,6 +31,8 @@ export default function Profile() {
   }, [])
 
   async function handleSave() {
+    setSubmitted(true)
+    if (!phone.trim() || !avatarUrl) return
     setSaving(true)
     try {
       await api('/profile', {
@@ -63,13 +66,22 @@ export default function Profile() {
             <div className="text-sm text-white/40 text-center py-4">Loading…</div>
           ) : (
             <>
+              {submitted && (!phone.trim() || !avatarUrl) && (
+                <div className="rounded-lg bg-red-500/10 border border-red-500/30 px-4 py-3 text-sm text-red-400">
+                  Please complete your profile before continuing — photo and phone number are required.
+                </div>
+              )}
+
               {/* Avatar */}
-              <div className="flex justify-center">
+              <div className="flex justify-center flex-col items-center">
                 <AvatarUploader
                   value={avatarUrl}
                   size={112}
                   onChange={url => setAvatarUrl(url)}
                 />
+                {submitted && !avatarUrl && (
+                  <p className="text-xs text-red-400 mt-1">Please upload a profile photo</p>
+                )}
               </div>
 
               {/* Name */}
@@ -96,6 +108,9 @@ export default function Profile() {
                   className="w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white
                              placeholder-white/30 outline-none focus:border-secondary/50 transition-colors"
                 />
+                {submitted && !phone.trim() && (
+                  <p className="text-xs text-red-400 mt-1">Phone number is required</p>
+                )}
               </label>
 
               {/* City */}
@@ -127,9 +142,8 @@ export default function Profile() {
               {/* Save */}
               <button
                 onClick={handleSave}
-                disabled={saving}
                 className="w-full rounded-xl py-3 text-sm font-secondary font-semibold text-white
-                           hover:brightness-110 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                           hover:brightness-110 transition-all"
                 style={{ backgroundColor: '#3A5A2D' }}
               >
                 {saving ? 'Saving…' : 'Save changes'}
