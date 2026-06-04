@@ -315,30 +315,51 @@ function confirmCompanionPolicy() {
           <div className="grid gap-2">
             <label className="text-sm">When</label>
             <div className="flex items-center gap-3">
-              <label className="inline-flex items-center gap-2">
-                <input type="radio" name="when" checked={mode==='now'} onChange={()=>setMode('now')} />
+              <label className="inline-flex items-center gap-2 relative group opacity-40 cursor-not-allowed">
+                <input 
+                  type="radio" 
+                  name="when" 
+                  disabled
+                />
                 <span>ASAP</span>
+                {/* Tooltip */}
+                <div className="absolute bottom-full left-0 mb-2 w-64 bg-gray-800 text-white text-xs rounded-lg px-3 py-2 hidden group-hover:block z-10 pointer-events-none">
+                  Instant Support coming soon — use Scheduled Task for now 💚
+                </div>
               </label>
               <label className="inline-flex items-center gap-2">
-                <input type="radio" name="when" checked={mode==='schedule'} onChange={()=>setMode('schedule')} />
+                <input 
+                  type="radio" 
+                  name="when" 
+                  checked={mode==='schedule'} 
+                  onChange={()=>setMode('schedule')} 
+                />
                 <span>Schedule</span>
               </label>
             </div>
-            {mode === 'schedule' && (
+           {mode === 'schedule' && (
               <div className="flex gap-2">
                 <input
                   type="date"
                   className={`rounded-md px-3 py-2 bg-transparent outline-none border ${errors.when ? 'border-red-400' : 'border-white/20'} focus:border-white/40 flex-1`}
                   value={date}
                   min={new Date().toISOString().split('T')[0]}
-                  onChange={(e)=>setDate(e.target.value)}
+                  onChange={(e) => setDate(e.target.value)}
                 />
-                <input
-                  type="time"
+                <select
                   className={`rounded-md px-3 py-2 bg-transparent outline-none border ${errors.when ? 'border-red-400' : 'border-white/20'} focus:border-white/40 w-40`}
                   value={timeStr}
-                  onChange={(e)=>setTimeStr(e.target.value)}
-                />
+                  onChange={(e) => setTimeStr(e.target.value)}
+                >
+                  <option value="">Select time</option>
+                  {Array.from({ length: 25 }, (_, i) => {
+                    const hour = Math.floor(i / 2) + 9;
+                    const min = i % 2 === 0 ? '00' : '30';
+                    if (hour > 21 || (hour === 21 && min === '30')) return null;
+                    const val = `${String(hour).padStart(2, '0')}:${min}`;
+                    return <option key={val} value={val}>{val}</option>;
+                  })}
+                </select>
               </div>
             )}
             {errors.when && <div className="text-sm text-red-400">{errors.when}</div>}
