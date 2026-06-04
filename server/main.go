@@ -2565,11 +2565,7 @@ func calcTaskCostCents(ctx context.Context, taskID string, totalMinutes int) int
 		baseCents = 1800
 	}
 
-	overtimeCents := 0
-	if totalMinutes > 15 {
-		overtimeCents = (totalMinutes - 15) * overtimeRateCents
-	}
-	return baseCents + overtimeCents
+	return baseCents + totalMinutes*overtimeRateCents
 }
 
 func cancelTask(c *gin.Context) {

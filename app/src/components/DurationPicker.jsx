@@ -1,30 +1,10 @@
 import { useState } from 'react'
 
 const PRESETS = [
-  {
-    label: 'Quick errand',
-    minutes: 30,
-    category: 'quick_errand',
-    examples: 'Pharmacy, convenience store',
-  },
-  {
-    label: 'Standard task',
-    minutes: 90,
-    category: 'standard',
-    examples: 'Grocery shopping, delivery',
-  },
-  {
-    label: 'Half day',
-    minutes: 210,
-    category: 'half_day',
-    examples: 'Deep cleaning, moving help',
-  },
-  {
-    label: 'Full day',
-    minutes: 420,
-    category: 'full_day',
-    examples: 'Renovation, big events',
-  },
+  { label: '15 min',  minutes: 15,  category: 'quick_errand' },
+  { label: '30 min',  minutes: 30,  category: 'standard' },
+  { label: '1 hour',  minutes: 60,  category: 'standard' },
+  { label: '2 hours', minutes: 120, category: 'standard' },
 ]
 
 /**
@@ -79,7 +59,7 @@ export default function DurationPicker({ value, onChange }) {
                 {preset.label}
               </div>
               <div className="text-xs text-white/50 mt-0.5">{preset.minutes} min</div>
-              <div className="text-xs text-white/30 mt-1 leading-snug">{preset.examples}</div>
+              <div className="text-xs text-[#9aab3a] mt-1">${(preset.minutes * 0.50).toFixed(2)}</div>
             </button>
           )
         })}

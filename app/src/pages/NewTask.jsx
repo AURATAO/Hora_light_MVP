@@ -8,7 +8,6 @@ import DurationPicker from '../components/DurationPicker'
 import AddressInput from '../components/AddressInput'
 import { useToast } from '../providers/ToastProvider'
 
-const OVERTIME_RATE = 0.50
 
 const CATEGORY_LABELS = {
   delivery:     '🚀 Same-day Delivery',
@@ -96,14 +95,13 @@ export default function NewTask() {
     if (Number(minutes) > 90) return 18
     return 12
   }, [taskType, urlCategory, minutes])
-  const overtimeCost = useMemo(() => Math.max(0, (Number(minutes || 0) - 15)) * OVERTIME_RATE, [minutes])
-  const timeCost = useMemo(() => baseFee + overtimeCost, [baseFee, overtimeCost])
+  const timeCost = useMemo(() => Number(minutes || 0) * 0.50, [minutes])
   const advance = useMemo(() => {
     if (prepay === '') return 0
     const n = Number(prepay)
     return Number.isNaN(n) ? 0 : Math.max(0, n)
   }, [prepay])
-  const totalEstimate = useMemo(() => (timeCost + advance), [timeCost, advance])
+  const totalEstimate = useMemo(() => baseFee + timeCost + advance, [baseFee, timeCost, advance])
 
   const scheduledAtISO = useMemo(() => {
     if (mode !== 'schedule' || !date || !timeStr) return ''
@@ -446,15 +444,13 @@ function confirmCompanionPolicy() {
               <span>Base fee</span>
               <b>${baseFee.toFixed(2)}</b>
             </div>
-            {overtimeCost > 0 && (
-              <div className="flex justify-between">
-                <span>Overtime ({Math.max(0, Number(minutes) - 15)} min × $0.50)</span>
-                <b>${overtimeCost.toFixed(2)}</b>
-              </div>
-            )}
+            <div className="flex justify-between">
+              <span>Time ({Number(minutes || 0)} min × $0.50)</span>
+              <b>${timeCost.toFixed(2)}</b>
+            </div>
             {advance > 0 && (
               <div className="flex justify-between">
-                <span>Shopping budget</span>
+                <span>Shopping</span>
                 <b>${advance.toFixed(2)}</b>
               </div>
             )}

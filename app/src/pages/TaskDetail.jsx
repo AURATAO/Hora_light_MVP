@@ -480,12 +480,10 @@ export default function TaskDetail() {
     const cat = task?.category || ''
     const isCompanion = cat === 'companionship' || cat === 'companion'
     const baseFee = isCompanion ? 25 : (task?.estimated_minutes > 90 ? 18 : 12)
-    const OVERTIME_RATE = 0.50
     const minutesToUse = (work.total_minutes || 0) > 0 ? work.total_minutes : (task?.estimated_minutes || 0)
-    const overtimeMinutes = Math.max(0, minutesToUse - 15)
-    const overtimeCost = overtimeMinutes * OVERTIME_RATE
-    const totalCost = baseFee + overtimeCost
-    return { baseFee, overtimeMinutes, overtimeCost, totalCost }
+    const timeCost = minutesToUse * 0.50
+    const totalCost = baseFee + timeCost
+    return { baseFee, minutesToUse, timeCost, totalCost }
   }, [task?.category, task?.estimated_minutes, work.total_minutes])
 
   async function saveEdit() {
@@ -676,9 +674,7 @@ export default function TaskDetail() {
                         </div>
                         <div className="text-sm">
                           Base fee <b>${costBreakdown.baseFee.toFixed(2)}</b>
-                          {costBreakdown.overtimeCost > 0 && (
-                            <span className="text-white/60"> + overtime ({costBreakdown.overtimeMinutes} min) <b>${costBreakdown.overtimeCost.toFixed(2)}</b></span>
-                          )}
+                          <span className="text-white/60"> + time ({costBreakdown.minutesToUse} min × $0.50) <b>${costBreakdown.timeCost.toFixed(2)}</b></span>
                           <span> = <b>${costBreakdown.totalCost.toFixed(2)}</b></span>
                         </div>
                       </div>
@@ -693,9 +689,7 @@ export default function TaskDetail() {
                         </div>
                         <div className="text-sm">
                           Base fee <b>${costBreakdown.baseFee.toFixed(2)}</b>
-                          {costBreakdown.overtimeCost > 0 && (
-                            <span className="text-white/60"> + overtime ({costBreakdown.overtimeMinutes} min) <b>${costBreakdown.overtimeCost.toFixed(2)}</b></span>
-                          )}
+                          <span className="text-white/60"> + time ({costBreakdown.minutesToUse} min × $0.50) <b>${costBreakdown.timeCost.toFixed(2)}</b></span>
                           <span> = <b>${costBreakdown.totalCost.toFixed(2)}</b></span>
                         </div>
                       </div>
