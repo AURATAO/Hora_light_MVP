@@ -13,6 +13,7 @@ import Terms from "./pages/Terms.jsx";
 import Privacy from "./pages/Privacy.jsx";
 import Profile from "./pages/Profile.jsx";
 import ReviewPage from "./pages/ReviewPage.jsx";
+import BecomeSupporter from "./pages/BecomeSupporter.jsx";
 
 export default function App() {
   console.log("[App] routes boot");
@@ -34,6 +35,7 @@ export default function App() {
           <Route path="tasks/:id/review" element={<ReviewPage />} />
           <Route path="my" element={<My />} />
           <Route path="profile" element={<Profile />} />
+          <Route path="become-supporter" element={<BecomeSupporter />} />
           <Route path="u/:id" element={<PublicProfilePage />} />
         </Route>
       </Route>

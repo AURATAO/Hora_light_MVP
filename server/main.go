@@ -117,8 +117,20 @@ type Profile struct {
 	BetaAccepted        bool       `json:"beta_accepted"`
 	IsVerifiedSupporter bool       `json:"is_verified_supporter"`
 	SupporterAppliedAt  *time.Time `json:"supporter_applied_at,omitempty"`
+	SupporterStatus     string     `json:"supporter_status"`
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
+}
+
+func (p *Profile) deriveSupporterStatus() {
+	switch {
+	case p.IsVerifiedSupporter:
+		p.SupporterStatus = "approved"
+	case p.SupporterAppliedAt != nil:
+		p.SupporterStatus = "applied"
+	default:
+		p.SupporterStatus = "none"
+	}
 }
 
 type PublicProfile struct {
@@ -478,6 +490,8 @@ func main() {
 		meAPI.GET("", getMyProfile)
 		meAPI.PATCH("", patchMyProfile)
 	}
+
+	r.POST("/supporter/apply", dualAuth(sqldb), applySupporterHandler)
 
 	tasksAPI := r.Group("/tasks")
 	tasksAPI.Use(dualAuth(sqldb))
@@ -873,6 +887,7 @@ func getMyProfile(c *gin.Context) {
     from public.profiles where email = $1
   `, email).Scan(&p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.BetaAccepted, &p.IsVerifiedSupporter, &p.SupporterAppliedAt, &p.CreatedAt, &p.UpdatedAt)
 
+	p.deriveSupporterStatus()
 	c.JSON(http.StatusOK, p)
 }
 
@@ -942,6 +957,51 @@ func patchMyProfile(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, p)
+}
+
+func applySupporterHandler(c *gin.Context) {
+	uid := c.GetString("uid")
+	email := c.GetString("email")
+	if uid == "" || email == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	ctx := c.Request.Context()
+
+	var body struct {
+		FirstName string `json:"first_name"`
+		LastName  string `json:"last_name"`
+	}
+	_ = c.ShouldBindJSON(&body)
+
+	now := time.Now()
+	_, err := db.Exec(ctx, `
+		UPDATE public.profiles
+		SET supporter_applied_at = $1, updated_at = $1
+		WHERE email = $2
+	`, now, email)
+	if err != nil {
+		log.Printf("[supporter/apply] db error uid=%s err=%v", uid, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+
+	var phone, city string
+	_ = db.QueryRow(ctx, `
+		SELECT coalesce(phone,''), coalesce(city,'')
+		FROM public.profiles WHERE email = $1
+	`, email).Scan(&phone, &city)
+
+	go notify.NotifyAdminSupporterApply(notify.SupporterApplyInput{
+		FirstName: body.FirstName,
+		LastName:  body.LastName,
+		Phone:     phone,
+		City:      city,
+		Email:     email,
+		AppliedAt: now,
+	})
+
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 func getProfileByID(c *gin.Context) {

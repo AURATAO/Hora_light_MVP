@@ -544,6 +544,66 @@ func NotifyAdminNewTask(in AdminNewTaskInput) {
 	}
 }
 
+type SupporterApplyInput struct {
+	FirstName string
+	LastName  string
+	Phone     string
+	City      string
+	Email     string
+	AppliedAt time.Time
+}
+
+func NotifyAdminSupporterApply(in SupporterApplyInput) {
+	fullName := in.FirstName + " " + in.LastName
+	card := fmt.Sprintf(`
+<p style="margin:0 0 12px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:11px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:#9a9a8a;">New supporter application</p>
+<h1 style="margin:0 0 20px;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:400;line-height:1.3;color:#1a1a16;">New Supporter Application: %s</h1>
+<div style="background:#f4f4f0;border-radius:8px;padding:18px 20px;margin-bottom:28px;">
+  <table width="100%%" cellpadding="0" cellspacing="0">
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;padding-bottom:8px;width:36%%;">First name</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;font-weight:500;padding-bottom:8px;">%s</td>
+    </tr>
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;padding-bottom:8px;">Last name</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;font-weight:500;padding-bottom:8px;">%s</td>
+    </tr>
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;padding-bottom:8px;">Phone</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;padding-bottom:8px;">%s</td>
+    </tr>
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;padding-bottom:8px;">City</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;padding-bottom:8px;">%s</td>
+    </tr>
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;padding-bottom:8px;">Email</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;padding-bottom:8px;">%s</td>
+    </tr>
+    <tr>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;">Applied at</td>
+      <td style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;">%s</td>
+    </tr>
+  </table>
+</div>`,
+		fullName, in.FirstName, in.LastName, in.Phone, in.City, in.Email,
+		in.AppliedAt.Format("2006-01-02 15:04 MST"))
+
+	html := wrapEmail("New Supporter Application: "+fullName, card)
+	subject := fmt.Sprintf("New Supporter Application: %s", fullName)
+
+	adminEmails := []string{
+		"liang.you@horaapp.co",
+		"daniele@arcodiax.com",
+		"liang.you@arcodiax.com",
+	}
+	for _, email := range adminEmails {
+		if err := SendEmail(EmailPayload{To: email, Subject: subject, Html: html}); err != nil {
+			log.Printf("[notify] admin supporter-apply email failed to=%s err=%v", email, err)
+		}
+	}
+}
+
 func fallback(s, def string) string {
 	if s == "" {
 		return def
