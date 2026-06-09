@@ -3,6 +3,7 @@ import { useAuth } from "./AuthContext.jsx";
 import { useEffect, useState } from "react";
 import BetaModal from "../components/BetaModal.jsx";
 import { useProfileGate } from "../hooks/useProfileGate.js";
+import WhatsAppFloat from "../components/WhatsAppFloat.jsx";
 
 export default function ProtectedLayout() {
   const { user, loading } = useAuth();
@@ -39,6 +40,7 @@ export default function ProtectedLayout() {
     <>
       <BetaModal />
       <Outlet />
+      <WhatsAppFloat />
     </>
   )
 }

@@ -159,7 +159,6 @@ export default function BecomeSupporter() {
             </>
           )}
         </div>
-
       </div>
     </div>
   )
