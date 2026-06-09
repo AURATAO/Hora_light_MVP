@@ -613,6 +613,28 @@ export default function TaskDetail() {
                           ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(locs[0].label || '')}`
                           : gmapsDirectionsUrl(locs)
                       }
+                      onClick={
+                        isAssignee && locs.length > 1
+                          ? (e) => {
+                              e.preventDefault()
+                              if (!navigator.geolocation) {
+                                window.open(gmapsDirectionsUrl(locs), '_blank', 'noopener,noreferrer')
+                                return
+                              }
+                              navigator.geolocation.getCurrentPosition(
+                                (pos) => {
+                                  const { latitude, longitude } = pos.coords
+                                  const stops = locs.map(p => encodeURIComponent(p.label || '')).join('/')
+                                  const url = `https://www.google.com/maps/dir/${latitude},${longitude}/${stops}`
+                                  window.open(url, '_blank', 'noopener,noreferrer')
+                                },
+                                () => {
+                                  window.open(gmapsDirectionsUrl(locs), '_blank', 'noopener,noreferrer')
+                                }
+                              )
+                            }
+                          : undefined
+                      }
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-2 rounded-md border border-white/20 px-3 py-1 text-xs hover:border-white/40"
