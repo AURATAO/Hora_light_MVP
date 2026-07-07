@@ -493,6 +493,8 @@ func main() {
 
 	r.POST("/supporter/apply", dualAuth(sqldb), applySupporterHandler)
 
+	r.POST("/ai/parse-task", dualAuth(sqldb), parseTaskWithAI)
+
 	tasksAPI := r.Group("/tasks")
 	tasksAPI.Use(dualAuth(sqldb))
 	{

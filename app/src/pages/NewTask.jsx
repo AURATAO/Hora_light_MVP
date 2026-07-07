@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect, useRef } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import Modal from '../components/Modal'
@@ -36,22 +36,40 @@ export default function NewTask() {
   const [date, setDate] = useState('')
   const [timeStr, setTimeStr] = useState('')
   const [successOpen, setSuccessOpen] = useState(false)
+  const [prefillBannerDismissed, setPrefillBannerDismissed] = useState(false)
 
   const [transport, setTransport] = useState('none')
   const [taskType, setTaskType] = useState('task') // 'task' | 'companion'
   const [urlCategory, setUrlCategory] = useState(null) // locked when navigated from CategoryHome
   const [searchParams] = useSearchParams()
+  const { state } = useLocation()
+  const prefill = state?.aiPrefill
 
   // Read category from URL once on mount and pre-configure form
   useEffect(() => {
     const cat = searchParams.get('category')
-    if (!cat) return
-    setUrlCategory(cat)
-    if (cat === 'companionship') {
-      // open policy modal — user must agree before companion is confirmed
-      openCompanionPolicy()
-    } else {
-      setTaskType('task')
+    if (cat) {
+      setUrlCategory(cat)
+      if (cat === 'companionship') {
+        // open policy modal — user must agree before companion is confirmed
+        openCompanionPolicy()
+      } else {
+        setTaskType('task')
+      }
+    }
+
+    if (prefill) {
+      if (prefill.title) setTitle(prefill.title)
+      if (prefill.description) setDescription(prefill.description)
+      if (prefill.category) setUrlCategory(prefill.category)
+      if (prefill.duration_minutes) setMinutes(String(prefill.duration_minutes))
+      if (prefill.scheduled && prefill.scheduled_time) {
+        setMode('schedule')
+        const d = new Date(prefill.scheduled_time)
+        const pad = n => String(n).padStart(2, '0')
+        setDate(`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`)
+        setTimeStr(`${pad(d.getHours())}:${pad(d.getMinutes())}`)
+      }
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -203,6 +221,19 @@ function confirmCompanionPolicy() {
     <div className="bg-linear-to-br from-primary to-primary/30 text-accent min-h-screen py-[100px] px-4">
       <div className="mx-auto max-w-md space-y-4 border border-primary/30 backdrop-blur-md p-8 rounded-lg shadow">
         <h2 className="text-2xl font-semibold">Post a Task</h2>
+        {prefill && !prefillBannerDismissed && (
+          <div className="flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-sm"
+               style={{ backgroundColor: '#9aab3a20', border: '1px solid #9aab3a50' }}>
+            <span style={{ color: '#9aab3a' }}>✨ AI filled this in — review before posting</span>
+            <button
+              type="button"
+              onClick={() => setPrefillBannerDismissed(true)}
+              className="text-white/40 hover:text-white/70"
+            >
+              ✕
+            </button>
+          </div>
+        )}
         <form onSubmit={onSubmit} className="grid gap-5">
           {/* Title */}
           <div className="grid gap-1">
