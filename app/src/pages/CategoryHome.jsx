@@ -73,7 +73,7 @@ export default function CategoryHome() {
       <div className="max-w-2xl mx-auto space-y-8">
 
         {/* AI Input Section */}
-        <div>
+        <div className="mb-8">
           <h1 className="text-3xl font-heading text-white mb-2">
             What do you need help with?
           </h1>
@@ -82,13 +82,13 @@ export default function CategoryHome() {
           </p>
 
           {/* Input + Button */}
-          <div className="flex gap-2 items-start">
+          <div className="relative">
             <textarea
-              rows={2}
-              className="flex-1 rounded-xl border border-white/15 bg-white/5
-                         px-4 py-3 text-sm text-white placeholder-white/30
+              rows={4}
+              className="w-full rounded-xl border border-white/15 bg-white/5
+                         px-4 py-3 pr-16 text-base text-white placeholder-white/30
                          outline-none focus:border-secondary/50 resize-none"
-              placeholder='e.g. "Pick up my dry cleaning from 34th St and drop it at my office on Lex Ave tomorrow 2pm"'
+              placeholder='e.g. Pick up dry cleaning from 34th St, drop at my office on Lex Ave'
               value={aiInput}
               onChange={e => setAiInput(e.target.value)}
               onKeyDown={e => {
@@ -101,8 +101,9 @@ export default function CategoryHome() {
             <button
               onClick={handleAiSubmit}
               disabled={!aiInput.trim() || aiLoading}
-              className="shrink-0 rounded-xl px-4 py-3 text-sm font-semibold
-                         text-white disabled:opacity-40 transition-all"
+              className="absolute bottom-3 right-3 rounded-lg px-3 py-2
+                         text-sm font-semibold text-white
+                         disabled:opacity-40 transition-all"
               style={{ backgroundColor: '#9aab3a' }}
             >
               {aiLoading ? '...' : '→'}
