@@ -1,0 +1,24 @@
+# D-03: Mobile app foundation — scaffold, shared tokens, Google OAuth divergence
+
+**Date:** 2026-07-11
+**Status:** Accepted
+**Trigger:** First `mobile/` scaffold (Expo Router, Supabase auth, Go API client, tab shell). Resolves two open items from D-01 and declares one interpretation made during the build (S-40 conditional-approval rule).
+
+## Decision
+1. `mobile/` is now scaffolded (Expo SDK 57, TypeScript strict, expo-router, NativeWind). I-04 and I-06 in `constitution/INVARIANTS.md` are no longer dormant.
+2. **S-30 shared design-token location (was `TODO(confirm)`):** tokens live in a new root-level `design-tokens/colors.js` (plain CommonJS object), mirroring the values in `app/src/assets/css/color.css`. `mobile/tailwind.config.js` consumes it via `theme.extend.colors` — a plain Node `require()` at Tailwind-CLI build time, which resolves the `../design-tokens` relative path fine since it never goes through Metro. All NativeWind `className` styling in `mobile/` therefore draws from this one file. The one runtime (non-className) use — `tabBarActiveTintColor` in `src/app/(tabs)/_layout.tsx` — could not cleanly reuse it: Metro refuses to resolve modules outside its project root by relative path, and the `extraNodeModules`/`watchFolders` workaround (tried and reverted) added real config fragility for one hex constant. That one value is hardcoded with a comment pointing back at the source of truth instead. `app/` was out of scope for this task (explicit constraint) and still defines the same values independently in its CSS `@theme` block — the two are not yet wired together. Follow-up: migrate `app/` to import from `design-tokens/colors.js` so there is one source, not two copies that can drift; revisit the runtime-import problem only if a second non-className consumer appears (at which point a proper monorepo Metro setup, e.g. via `expo-yarn-workspaces` conventions, is worth the cost).
+3. **Google OAuth implementation diverges from the web app's actual flow (declared interpretation).** Research before building found that `app/`'s Google button does not use the Supabase JS SDK at all — it redirects to `${API_BASE}/auth/login` and the Go backend owns the entire OAuth round-trip server-side, setting `hora_session` directly on `/auth/callback`. That pattern doesn't transfer cleanly to a native app (no shared cookie jar between an in-app browser session and the app's own fetch calls in the general case). Mobile instead uses the client-driven pattern implied by S-04 and the task spec: `supabase.auth.signInWithOAuth` (PKCE) opened via `expo-web-browser`, deep-linked back via `hora://`, then `POST /auth/exchange` with the resulting Supabase access token — same exchange endpoint, same `hora_session` outcome, different path to get there. Magic link (`signInWithOtp`) *does* match `app/` exactly.
+
+## Constitution impact
+- Standards added: none
+- Standards modified/retired: none (S-30's `TODO(confirm)` resolved, not changed)
+- Invariants added/changed: I-04 and I-06 (`constitution/INVARIANTS.md`) activate now that `mobile/` exists
+
+## Context and alternatives
+- Considered mirroring the web's server-redirect OAuth flow exactly (open `/auth/login` in a browser, have the backend redirect to a `hora://` deep link post-callback instead of a web page). Rejected for now: it requires a backend change (a mobile-aware `next`/redirect target on `/auth/callback`) that's out of scope for a client-only foundation task, and doesn't change the invariant that matters (both paths end at the same `hora_session` cookie via the same identity mapping, S-04). Revisit if the client-driven PKCE flow proves unreliable in practice.
+- Considered `hora-mobile/` as the directory name and StyleSheet-only styling, per the literal task wording — both were confirmed against the user as violating settled S-02/S-30 before writing any code; user chose to follow the constitution as written for both.
+
+## Evidence
+- `app/src/lib/supabaseClient.js`, `app/src/api/client.js`, `app/src/pages/Login.jsx` — web auth flow, confirms server-driven Google OAuth vs. SDK-driven OTP.
+- `app/src/assets/css/color.css` — source values copied into `design-tokens/colors.js`.
+- `skills/constitution/STANDARDS.md` S-02, S-04, S-30; `skills/decisions/D-01-instantiate-library.md` open items.
