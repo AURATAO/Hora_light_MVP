@@ -53,6 +53,21 @@ var jwks *keyfunc.JWKS
 var db *pgxpool.Pool
 var sqldb *sql.DB
 
+// supabaseKeyfunc validates a Supabase-issued access token, whether it's a
+// Bearer header or the body of /auth/exchange. HS256 uses the legacy shared
+// secret; every other alg (RS256, ES256, ...) resolves via JWKS. Keeping both
+// branches lets already-issued HS256 tokens and post-rotation JWKS-signed
+// tokens verify side by side during a signing-key rotation.
+// TODO: remove the HS256 branch once the legacy JWT secret is revoked.
+func supabaseKeyfunc(t *jwt.Token) (interface{}, error) {
+	switch t.Method.Alg() {
+	case "HS256":
+		return []byte(os.Getenv("SUPABASE_JWT_SECRET")), nil
+	default:
+		return jwks.Keyfunc(t)
+	}
+}
+
 var DB *sql.DB
 
 func SetDB(db *sql.DB) { DB = db }
@@ -393,16 +408,9 @@ func main() {
 			return
 		}
 
-		// Validate Supabase JWT — support both HS256 (default) and RS256 (JWKS).
-		// Supabase signs access tokens with HS256 using the JWT secret as raw bytes.
-		tok, err := jwt.Parse(body.AccessToken, func(t *jwt.Token) (interface{}, error) {
-			switch t.Method.Alg() {
-			case "HS256":
-				return []byte(os.Getenv("SUPABASE_JWT_SECRET")), nil
-			default:
-				return jwks.Keyfunc(t)
-			}
-		})
+		// Validate Supabase JWT — support both HS256 (legacy secret) and JWKS-based
+		// algs (RS256, ES256) so a signing-key rotation doesn't break in-flight tokens.
+		tok, err := jwt.Parse(body.AccessToken, supabaseKeyfunc)
 		if err != nil || !tok.Valid {
 			log.Printf("[exchange] token validation failed: %v", err)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
@@ -3286,7 +3294,7 @@ func dualAuth(db *sql.DB) gin.HandlerFunc {
 		authz := c.GetHeader("Authorization")
 		if strings.HasPrefix(authz, "Bearer ") {
 			raw := strings.TrimSpace(authz[7:])
-			token, err := jwt.Parse(raw, jwks.Keyfunc)
+			token, err := jwt.Parse(raw, supabaseKeyfunc)
 			if err == nil && token != nil && token.Valid {
 				if claims, ok := token.Claims.(jwt.MapClaims); ok {
 					// Supabase sub（uuid）
@@ -3353,7 +3361,7 @@ func tryAuth(db *sql.DB) gin.HandlerFunc {
 			authz := c.GetHeader("Authorization")
 			if strings.HasPrefix(authz, "Bearer ") {
 				raw := strings.TrimSpace(authz[7:])
-				if tok, err := jwt.Parse(raw, jwks.Keyfunc); err == nil && tok.Valid {
+				if tok, err := jwt.Parse(raw, supabaseKeyfunc); err == nil && tok.Valid {
 					if claims, ok := tok.Claims.(jwt.MapClaims); ok {
 						if extSub, _ := claims["sub"].(string); extSub != "" {
 							email, _ := claims["email"].(string)
