@@ -23,11 +23,11 @@ select tablename, policyname from pg_policies where schemaname = 'public';
 **On violation:** block merge.
 
 ### I-01b: No client-direct data access. Frontend and mobile code contains no `supabase.from(` / `supabase.rpc(` calls; permitted direct Supabase usage is exactly `supabase.auth.*` and public `avatars` URL reads.
-**Check:** `grep -rn "supabase.from(\|supabase.rpc(" app/src mobile/ 2>/dev/null` → expected: no matches.
+**Check:** `grep -rn "supabase.from(\|supabase.rpc(" app/src mobile/src 2>/dev/null` → expected: no matches. (D-04: scoped to `mobile/src`, not all of `mobile/`, so the `@supabase/*` package source under `mobile/node_modules` — which contains these exact strings in its own docs/typings — can't produce a false red.)
 **On violation:** block merge (this is an unprotected access path — S-01).
 
 ### I-02: No privileged keys in client code or tracked files. `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_DB_URL`, `SESSION_JWT_SECRET` exist only in server-side env.
-**Check:** `grep -rn "service_role\|SUPABASE_DB_URL\|SESSION_JWT_SECRET" app/src mobile/ 2>/dev/null` → no matches; secret scanner (gitleaks) → no findings.
+**Check:** `grep -rn "service_role\|SUPABASE_DB_URL\|SESSION_JWT_SECRET" app/src mobile/src 2>/dev/null` → no matches; secret scanner (gitleaks) → no findings. (D-04: same `mobile/src` scoping fix as I-01b — `mobile/node_modules/@supabase/*` ships files with `service_role` in comments/types.)
 **On violation:** block merge + rotate the exposed credential immediately.
 
 ### I-03: Backend compiles, vets, tests green.
@@ -35,14 +35,14 @@ select tablename, policyname from pg_policies where schemaname = 'public';
 **On violation:** block merge; main frozen until green.
 
 ### I-04: Web (and mobile, once created) typechecks green.
-**Check:** `cd app && npx tsc --noEmit` (and `cd mobile && npx tsc --noEmit`) → exit 0. `TODO(confirm: tsconfig strict is on)`
+**Check:** `cd app && npx tsc --noEmit` (and `cd mobile && npx tsc --noEmit`) → exit 0. `tsconfig strict confirmed on` for `mobile/` (extends `expo/tsconfig.base` + `"strict": true`, D-03).
 **On violation:** block merge.
 
 ### I-05: Schema matches committed migrations — zero drift. **(Dormant until the S-21 baseline migration lands; activating this is a D-01 open item.)**
 **Check:** `supabase db diff --linked` → empty diff.
 **On violation:** block merge; reconcile before any new migration.
 
-### I-06: The mobile app builds. **(Dormant until `mobile/` exists.)**
+### I-06: The mobile app builds. **ACTIVE (D-03: `mobile/` scaffolded 2026-07-11).**
 **Check:** `cd mobile && npx expo export --platform ios` (or the chosen cheapest signal) → exit 0.
 **On violation:** block merge.
 

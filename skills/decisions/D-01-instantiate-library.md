@@ -25,7 +25,7 @@ BACKEND_REFERENCE.md documents the schema, the no-RLS design, the two-project sp
 - [x] D-02 CLOSED: exposure tested, rowsecurity=true on all tables, I-01a activated. Follow-ups: correct BACKEND_REFERENCE §1.3; confirm pg_policies is empty.
 - [ ] **S-21 baseline:** `supabase db pull` → commit baseline migration → activate I-05.
 - [ ] **S-60.4 zombie Edge Function:** check the Supabase dashboard for a live DB webhook pointing at `notify-new-task`; if none, delete the function (duplicate admin emails risk).
-- [ ] `TODO(confirm)` in S-30: shared design-token location (decide when `mobile/` is scaffolded).
+- [x] `TODO(confirm)` in S-30 RESOLVED by D-03: shared tokens live in root `design-tokens/colors.js`; `mobile/` scaffolded 2026-07-11.
 - [ ] `TODO(confirm)` in I-04: confirm `tsconfig` strict mode is on in `app/`.
 - [ ] verify.sh: install gitleaks (or chosen scanner); wire the I-01a SQL connection.
 - [ ] Run verify.sh once on main; record the first baseline result here.

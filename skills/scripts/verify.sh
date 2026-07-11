@@ -22,13 +22,13 @@ fi
 
 # --- I-01b: no client-direct data access -------------------------------------
 step "no supabase data calls from clients (I-01b / S-01)"
-if grep -rn "supabase\.from(\|supabase\.rpc(" app/src mobile/ 2>/dev/null; then
+if grep -rn "supabase\.from(\|supabase\.rpc(" app/src mobile/src 2>/dev/null; then
   red "client-direct DB access found"
 else echo "ok"; fi
 
 # --- I-02: no privileged keys in client code ----------------------------------
 step "no privileged keys in clients (I-02)"
-if grep -rn "service_role\|SUPABASE_DB_URL\|SESSION_JWT_SECRET" app/src mobile/ 2>/dev/null; then
+if grep -rn "service_role\|SUPABASE_DB_URL\|SESSION_JWT_SECRET" app/src mobile/src 2>/dev/null; then
   red "privileged key reference in client code"
 else echo "ok"; fi
 
