@@ -12,8 +12,8 @@ step "go build / vet / test (I-03)"
 ( cd server && go build ./... && go vet ./... && go test ./... ) || red "server checks"
 
 # --- I-04: typecheck ---------------------------------------------------------
-step "web typecheck (I-04)"
-( cd app && npx tsc --noEmit ) || red "app typecheck"
+step "web build check (I-04)"
+( cd app && npm run build ) || red "app build"
 
 if [ -d mobile ]; then
   step "mobile typecheck (I-04)"
