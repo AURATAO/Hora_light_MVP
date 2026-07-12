@@ -1,7 +1,9 @@
-// Shared color tokens for HO:RA mobile (S-30). Single source of truth —
-// consumed by mobile/tailwind.config.js (NativeWind) and re-exported as
-// hex strings by mobile/src/theme/tokens.ts for runtime (non-className) use.
-// Canonical spec: mobile/DESIGN.md §1.
+// Shared color tokens for HO:RA mobile (S-30). Consumed by
+// mobile/tailwind.config.js (NativeWind) via Node `require()`.
+// mobile/src/theme/tokens.ts duplicates these same values by hand for
+// runtime (non-className) use — Metro can't import across this package
+// boundary the way Tailwind's Node-side require can (decisions/D-03).
+// Canonical spec: mobile/DESIGN.md §1. Keep both files in sync.
 module.exports = {
   ink: "#222831",
   brand: "#3A5A2D",

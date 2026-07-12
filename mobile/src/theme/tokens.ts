@@ -1,22 +1,26 @@
 // Single source of truth for HO:RA mobile design values (DESIGN.md §1-4).
 // Never hardcode a hex value, spacing number, radius, or type size outside this file.
-import rawColors from "../../../design-tokens/colors";
-
+//
+// `color` mirrors ../../../design-tokens/colors.js (S-30) by value, not by
+// import: Metro refuses to resolve modules outside mobile/'s project root,
+// so a runtime (non-className) consumer here can't cross that boundary the
+// way tailwind.config.js's Node `require()` can (see decisions/D-03, which
+// hit the same wall for a single color). Keep these two files in sync by hand.
 export const color = {
-  ink: rawColors.ink,
-  brand: rawColors.brand,
-  brandTint: rawColors["brand-tint"],
-  gold: rawColors.gold,
-  goldTint: rawColors["gold-tint"],
-  goldText: rawColors["gold-text"],
-  muted: rawColors.muted,
-  line: rawColors.line,
-  inactive: rawColors.inactive,
-  page: rawColors.page,
-  surface: rawColors.surface,
-  danger: rawColors.danger,
-  transparent: rawColors.transparent,
-  white: rawColors.white,
+  ink: "#222831",
+  brand: "#3A5A2D",
+  brandTint: "#EAF2DF",
+  gold: "#E1B145",
+  goldTint: "#FBF3DD",
+  goldText: "#7A5D14",
+  muted: "#8A8F87",
+  line: "#E5E7EB",
+  inactive: "#B4B7B2",
+  page: "#F6F7F4",
+  surface: "#FFFFFF",
+  danger: "#C24E3A",
+  transparent: "transparent",
+  white: "#FFFFFF",
 } as const;
 
 export const space = {

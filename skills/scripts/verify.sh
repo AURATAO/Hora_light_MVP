@@ -66,6 +66,23 @@ if [ -d mobile ]; then
   ( cd mobile && npx expo export --platform ios ) || red "mobile build"
 fi
 
+# --- mobile UI design-system checks (DESIGN.md §8) -----------------------------
+if [ -d mobile ]; then
+  step "mobile UI design-system checks (DESIGN.md §8)"
+
+  if grep -rn --include='*.tsx' --include='*.ts' -E '#[0-9a-fA-F]{3,8}\b' mobile/src --exclude-dir=theme; then
+    red "raw hex outside theme folder"
+  else echo "ok: no raw hex"; fi
+
+  if grep -rn --include='*.tsx' -E 'fontSize:\s*[0-9]|fontWeight:\s*["'\'']?[0-9]' mobile/src/app mobile/src/components --exclude-dir=ui; then
+    red "raw fontSize/fontWeight in screens or components"
+  else echo "ok: no raw type values"; fi
+
+  if grep -rn --include='*.tsx' --include='*.ts' -E 'font-(bold|medium)|fontWeight:\s*["'\'']?(500|700|800|900)' mobile/src; then
+    red "forbidden font weight"
+  else echo "ok: no forbidden weights"; fi
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then echo "=== VERIFY: GREEN ==="; else echo "=== VERIFY: RED ==="; fi
 exit $FAIL
