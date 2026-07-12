@@ -1,9 +1,10 @@
-import { View, Text } from "react-native";
+import { Text } from "react-native";
+import { Screen } from "../../components/ui";
 
 export default function Profile() {
   return (
-    <View className="flex-1 items-center justify-center bg-neutralbg">
-      <Text className="text-lg text-primary">Profile</Text>
-    </View>
+    <Screen headline="Profile">
+      <Text className="text-body text-muted">Your profile will show up here.</Text>
+    </Screen>
   );
 }

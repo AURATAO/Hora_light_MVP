@@ -1,34 +1,54 @@
 import { Tabs } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
+import { StyleSheet } from "react-native";
+import { House, ListChecks, User } from "lucide-react-native";
+import { color, size, type as typeScale } from "../../theme/tokens";
 
-// Mirrors `brand` in ../../../../design-tokens/colors.js (S-30). Metro can't
-// resolve a runtime import across the package boundary the way the Node-side
-// tailwind.config.js require can; className-based colors elsewhere in the app
-// still flow through that shared file via NativeWind.
-const BRAND_COLOR = "#3A5A2D";
+const TAB_ICON_SIZE = 22;
 
 export default function TabsLayout() {
   return (
-    <Tabs screenOptions={{ tabBarActiveTintColor: BRAND_COLOR }}>
+    <Tabs
+      screenOptions={{
+        headerShown: false,
+        tabBarActiveTintColor: color.ink,
+        tabBarInactiveTintColor: color.inactive,
+        tabBarStyle: {
+          backgroundColor: color.surface,
+          borderTopWidth: StyleSheet.hairlineWidth,
+          borderTopColor: color.line,
+        },
+        tabBarLabelStyle: {
+          fontSize: typeScale.micro.fontSize,
+          lineHeight: typeScale.micro.lineHeight,
+          fontWeight: typeScale.micro.fontWeight,
+        },
+      }}
+    >
       <Tabs.Screen
         name="home"
         options={{
           title: "Home",
-          tabBarIcon: ({ color, size }) => <Ionicons name="home" color={color} size={size} />,
+          tabBarIcon: ({ color: tintColor }) => (
+            <House color={tintColor} size={TAB_ICON_SIZE} strokeWidth={size.iconStroke} />
+          ),
         }}
       />
       <Tabs.Screen
         name="my-tasks"
         options={{
-          title: "My Tasks",
-          tabBarIcon: ({ color, size }) => <Ionicons name="list" color={color} size={size} />,
+          title: "My tasks",
+          tabBarIcon: ({ color: tintColor }) => (
+            <ListChecks color={tintColor} size={TAB_ICON_SIZE} strokeWidth={size.iconStroke} />
+          ),
         }}
       />
       <Tabs.Screen
         name="profile"
         options={{
           title: "Profile",
-          tabBarIcon: ({ color, size }) => <Ionicons name="person" color={color} size={size} />,
+          tabBarIcon: ({ color: tintColor }) => (
+            <User color={tintColor} size={TAB_ICON_SIZE} strokeWidth={size.iconStroke} />
+          ),
         }}
       />
     </Tabs>

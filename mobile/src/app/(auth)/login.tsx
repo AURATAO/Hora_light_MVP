@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { View, Text, TextInput, Pressable, ActivityIndicator } from "react-native";
+import { useState } from "react";
+import { View, Text, ActivityIndicator } from "react-native";
 import { useRouter } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
 import * as Linking from "expo-linking";
@@ -7,9 +7,13 @@ import * as SecureStore from "expo-secure-store";
 import { makeRedirectUri } from "expo-auth-session";
 import { supabase } from "../../lib/supabase";
 import { apiFetch } from "../../lib/api";
+import { Screen, Input, PressableScale } from "../../components/ui";
+import { color } from "../../theme/tokens";
 
 WebBrowser.maybeCompleteAuthSession();
 
+// Google's callback comes back as a `?code=` param (PKCE) via WebBrowser's
+// result URL, which we exchange for a Supabase session directly.
 async function completeSessionFromUrl(url: string) {
   const { queryParams } = Linking.parse(url);
   const code = typeof queryParams?.code === "string" ? queryParams.code : undefined;
@@ -23,9 +27,11 @@ async function completeSessionFromUrl(url: string) {
 export default function Login() {
   const router = useRouter();
   const [email, setEmail] = useState("");
-  const [magicLinkSent, setMagicLinkSent] = useState(false);
+  const [code, setCode] = useState("");
+  const [codeSent, setCodeSent] = useState(false);
   const [loadingGoogle, setLoadingGoogle] = useState(false);
-  const [loadingEmail, setLoadingEmail] = useState(false);
+  const [loadingSendCode, setLoadingSendCode] = useState(false);
+  const [loadingVerifyCode, setLoadingVerifyCode] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function finishLogin(accessToken: string) {
@@ -37,25 +43,6 @@ export default function Login() {
     if (me?.email) await SecureStore.setItemAsync("hora_user_email", String(me.email));
     router.replace("/(tabs)/home");
   }
-
-  // Magic link returns to the app via the `hora://` deep link; catch it both
-  // on cold start and while the app is already open.
-  useEffect(() => {
-    async function handleUrl(url: string | null) {
-      if (!url) return;
-      try {
-        const session = await completeSessionFromUrl(url);
-        if (session?.access_token) await finishLogin(session.access_token);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Could not complete sign-in");
-      }
-    }
-
-    const subscription = Linking.addEventListener("url", ({ url }) => handleUrl(url));
-    Linking.getInitialURL().then(handleUrl);
-
-    return () => subscription.remove();
-  }, []);
 
   async function handleGoogleLogin() {
     setError(null);
@@ -82,71 +69,109 @@ export default function Login() {
     }
   }
 
-  async function handleSendMagicLink() {
+  async function handleSendCode() {
     setError(null);
-    setLoadingEmail(true);
+    setLoadingSendCode(true);
     try {
-      const redirectTo = makeRedirectUri({ scheme: "hora" });
       const { error: otpError } = await supabase.auth.signInWithOtp({
         email,
-        options: { emailRedirectTo: redirectTo },
+        options: { shouldCreateUser: true },
       });
       if (otpError) throw otpError;
-      setMagicLinkSent(true);
+      setCodeSent(true);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not send magic link");
+      setError(e instanceof Error ? e.message : "Could not send code");
     } finally {
-      setLoadingEmail(false);
+      setLoadingSendCode(false);
+    }
+  }
+
+  async function handleVerifyCode() {
+    setError(null);
+    setLoadingVerifyCode(true);
+    try {
+      const { data, error: verifyError } = await supabase.auth.verifyOtp({
+        email,
+        token: code,
+        type: "email",
+      });
+      if (verifyError) throw verifyError;
+      if (data.session?.access_token) await finishLogin(data.session.access_token);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Invalid or expired code");
+    } finally {
+      setLoadingVerifyCode(false);
     }
   }
 
   return (
-    <View className="flex-1 justify-center bg-neutralbg px-6">
-      <Text className="mb-8 text-center text-3xl font-bold text-primary">HO:RA</Text>
+    <Screen scroll={false} className="justify-center">
+      <Text className="mb-8 text-center text-display text-ink">HO:RA</Text>
 
-      {error && <Text className="mb-4 text-center text-danger">{error}</Text>}
+      {error && <Text className="mb-4 text-center text-caption text-danger">{error}</Text>}
 
-      <Pressable
+      <PressableScale
         onPress={handleGoogleLogin}
         disabled={loadingGoogle}
-        className="mb-4 items-center rounded-lg bg-primary py-3"
+        className="mb-4 h-[52px] flex-row items-center justify-center rounded-pill bg-ink"
       >
         {loadingGoogle ? (
-          <ActivityIndicator color="#F9FAFB" />
+          <ActivityIndicator color={color.white} />
         ) : (
-          <Text className="font-semibold text-neutralbg">Continue with Google</Text>
+          <Text className="text-body font-semibold text-white">Continue with Google</Text>
         )}
-      </Pressable>
+      </PressableScale>
 
-      <View className="my-4 h-px bg-border" />
+      <View className="my-4 h-px bg-line" />
 
-      {magicLinkSent ? (
-        <Text className="text-center text-secondary">
-          Check {email} for a sign-in link.
-        </Text>
+      {codeSent ? (
+        <>
+          <Text className="mb-4 text-center text-caption text-muted">
+            Enter the code sent to {email}
+          </Text>
+          <Input
+            value={code}
+            onChangeText={setCode}
+            placeholder="123456"
+            keyboardType="number-pad"
+            maxLength={6}
+            className="mb-4 text-center tracking-widest"
+          />
+          <PressableScale
+            onPress={handleVerifyCode}
+            disabled={loadingVerifyCode || code.length !== 6}
+            className="h-[52px] flex-row items-center justify-center rounded-pill border border-line"
+          >
+            {loadingVerifyCode ? (
+              <ActivityIndicator />
+            ) : (
+              <Text className="text-body font-semibold text-ink">Verify code</Text>
+            )}
+          </PressableScale>
+        </>
       ) : (
         <>
-          <TextInput
+          <Input
             value={email}
             onChangeText={setEmail}
             placeholder="you@example.com"
             autoCapitalize="none"
             keyboardType="email-address"
-            className="mb-4 rounded-lg border border-border px-4 py-3"
+            className="mb-4"
           />
-          <Pressable
-            onPress={handleSendMagicLink}
-            disabled={loadingEmail || !email}
-            className="items-center rounded-lg border border-primary py-3"
+          <PressableScale
+            onPress={handleSendCode}
+            disabled={loadingSendCode || !email}
+            className="h-[52px] flex-row items-center justify-center rounded-pill border border-line"
           >
-            {loadingEmail ? (
+            {loadingSendCode ? (
               <ActivityIndicator />
             ) : (
-              <Text className="font-semibold text-primary">Send magic link</Text>
+              <Text className="text-body font-semibold text-ink">Send code</Text>
             )}
-          </Pressable>
+          </PressableScale>
         </>
       )}
-    </View>
+    </Screen>
   );
 }
