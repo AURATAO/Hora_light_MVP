@@ -1,6 +1,6 @@
 import "../global.css";
 import { createContext, useContext, useEffect, useState } from "react";
-import { Slot } from "expo-router";
+import { Stack } from "expo-router";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { supabase } from "../lib/supabase";
 import { getMe } from "../lib/api";
@@ -46,7 +46,12 @@ export default function RootLayout() {
   return (
     <SafeAreaProvider>
       <AuthContext.Provider value={state}>
-        <Slot />
+        {/* Every screen builds its own header (Screen's headline, or a custom
+            back/close row) rather than native Stack chrome — consistent with
+            every existing screen in the app. */}
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="post-task" options={{ presentation: "modal" }} />
+        </Stack>
       </AuthContext.Provider>
     </SafeAreaProvider>
   );
