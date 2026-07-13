@@ -59,7 +59,8 @@ function TaskRow({ task, onPress }: { task: Task; onPress: () => void }) {
 export default function Home() {
   const router = useRouter();
   const [firstName, setFirstName] = useState<string | null>(null);
-  const [tasks, setTasks] = useState<Task[] | null>(null);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -96,7 +97,9 @@ export default function Home() {
   const loadTasks = useCallback(async () => {
     try {
       const posted = await getPostedTasks();
-      setTasks(posted);
+      // getPostedTasks() already guarantees an array, but never let a non-array
+      // reach state regardless — a screen crash should never be one API change away.
+      setTasks(Array.isArray(posted) ? posted : []);
       setError(null);
     } catch (e) {
       if (e instanceof ApiError && e.isAuthError) {
@@ -104,6 +107,8 @@ export default function Home() {
         return;
       }
       setError(e instanceof Error ? e.message : "Couldn't load your tasks");
+    } finally {
+      setLoading(false);
     }
   }, [router]);
 
@@ -166,13 +171,13 @@ export default function Home() {
 
       <Text className="mb-3 text-title font-semibold text-ink">Your tasks</Text>
 
-      {tasks === null && !error ? (
+      {loading ? (
         <View className="gap-3">
           <Skeleton className="h-[84px]" />
           <Skeleton className="h-[84px]" />
           <Skeleton className="h-[84px]" />
         </View>
-      ) : tasks === null && error ? (
+      ) : error && tasks.length === 0 ? (
         <EmptyState
           icon={CircleAlert}
           title="Couldn't load your tasks"
@@ -180,7 +185,7 @@ export default function Home() {
           actionLabel="Retry"
           onAction={loadTasks}
         />
-      ) : tasks && tasks.length === 0 ? (
+      ) : tasks.length === 0 ? (
         <EmptyState
           icon={ClipboardList}
           title="No active tasks"
@@ -190,7 +195,7 @@ export default function Home() {
         />
       ) : (
         <View>
-          {tasks?.map((task) => (
+          {tasks.map((task) => (
             <TaskRow key={task.id} task={task} onPress={() => router.push(`/task/${task.id}`)} />
           ))}
         </View>

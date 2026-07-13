@@ -78,6 +78,20 @@ export interface KeysetParams {
   before_id?: string;
 }
 
+// Every keyset-paginated task list endpoint (/tasks/posted, /posted/closed,
+// /available, /assigned, /done) wraps its rows in { items, next }, not a bare
+// array — and a handler that ever built `items` from a nil slice would
+// serialize it as JSON `null`. Route every caller through this so a
+// missing/null list can never reach a screen's .map().
+interface KeysetEnvelope<T> {
+  items: T[] | null;
+  next?: unknown;
+}
+
+function unwrapItems<T>(envelope: KeysetEnvelope<T> | null | undefined): T[] {
+  return Array.isArray(envelope?.items) ? envelope.items : [];
+}
+
 export interface UploadResponse {
   url: string;
 }
@@ -129,8 +143,19 @@ export function getProfileTasks(id: string, params?: ProfileTasksParams): Promis
   return apiFetch<Task[]>(`/profiles/${id}/tasks${toQueryString(params)}`);
 }
 
+// server/main.go's listProfileReviews wraps rows under a `reviews` key
+// ({ reviews, count, avg_stars }), not a bare array — unwrapped here so a
+// null/missing list can't reach a screen's .map().
+interface ReviewsEnvelope {
+  reviews: Review[] | null;
+  count: number;
+  avg_stars: number | null;
+}
+
 export function getProfileReviews(id: string): Promise<Review[]> {
-  return apiFetch<Review[]>(`/profiles/${id}/reviews`);
+  return apiFetch<ReviewsEnvelope>(`/profiles/${id}/reviews`).then((envelope) =>
+    Array.isArray(envelope?.reviews) ? envelope.reviews : []
+  );
 }
 
 // ---- Supporter ------------------------------------------------------------
@@ -163,11 +188,11 @@ export function createTask(payload: CreateTaskPayload): Promise<Task> {
 }
 
 export function getPostedTasks(params?: KeysetParams): Promise<Task[]> {
-  return apiFetch<Task[]>(`/tasks/posted${toQueryString(params)}`);
+  return apiFetch<KeysetEnvelope<Task>>(`/tasks/posted${toQueryString(params)}`).then(unwrapItems);
 }
 
 export function getPostedClosedTasks(params?: KeysetParams): Promise<Task[]> {
-  return apiFetch<Task[]>(`/tasks/posted/closed${toQueryString(params)}`);
+  return apiFetch<KeysetEnvelope<Task>>(`/tasks/posted/closed${toQueryString(params)}`).then(unwrapItems);
 }
 
 export function getTask(id: string): Promise<Task> {
@@ -220,15 +245,15 @@ export function submitReview(id: string, payload: SubmitReviewPayload): Promise<
 // ---- Tasks (supporter) -----------------------------------------------------
 
 export function getAvailableTasks(params?: KeysetParams): Promise<Task[]> {
-  return apiFetch<Task[]>(`/tasks/available${toQueryString(params)}`);
+  return apiFetch<KeysetEnvelope<Task>>(`/tasks/available${toQueryString(params)}`).then(unwrapItems);
 }
 
 export function getAssignedTasks(params?: KeysetParams): Promise<Task[]> {
-  return apiFetch<Task[]>(`/tasks/assigned${toQueryString(params)}`);
+  return apiFetch<KeysetEnvelope<Task>>(`/tasks/assigned${toQueryString(params)}`).then(unwrapItems);
 }
 
 export function getDoneTasks(params?: KeysetParams): Promise<Task[]> {
-  return apiFetch<Task[]>(`/tasks/done${toQueryString(params)}`);
+  return apiFetch<KeysetEnvelope<Task>>(`/tasks/done${toQueryString(params)}`).then(unwrapItems);
 }
 
 export function acceptTask(id: string): Promise<Task> {
@@ -264,8 +289,40 @@ export function estimateTravel(id: string, payload: EstimateTravelPayload): Prom
 
 // ---- Shared (requester + supporter) ----------------------------------------
 
+// The backend's actual envelope nests rows under `items` with `start`/`end`
+// column names (server/main.go getWorklogs), not the `worklogs`/`start_at`/
+// `end_at` shape this type implies — mapped here so a null/missing list
+// can't reach a screen, and so field names actually match the wire.
+interface WorklogDTO {
+  id: string;
+  task_id: string;
+  user: string;
+  start: string;
+  end: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface WorklogsEnvelope {
+  items: WorklogDTO[] | null;
+  total_minutes: number;
+  total_cost_cents: number;
+}
+
 export function getWorklogs(id: string): Promise<WorklogsSummary> {
-  return apiFetch<WorklogsSummary>(`/tasks/${id}/worklogs`);
+  return apiFetch<WorklogsEnvelope>(`/tasks/${id}/worklogs`).then((envelope) => ({
+    worklogs: (Array.isArray(envelope?.items) ? envelope.items : []).map((wl) => ({
+      id: wl.id,
+      task_id: wl.task_id,
+      user: wl.user,
+      start_at: wl.start,
+      end_at: wl.end,
+      created_at: wl.created_at,
+      updated_at: wl.updated_at,
+    })),
+    total_minutes: envelope?.total_minutes ?? 0,
+    total_cost_cents: envelope?.total_cost_cents ?? 0,
+  }));
 }
 
 export function uploadCompletionPhoto(id: string, fileUri: string): Promise<UploadResponse> {
@@ -289,8 +346,13 @@ export interface NotificationsParams {
   before?: string;
 }
 
+// GET /notifications replies 204 (empty body) when tryAuth finds no session,
+// which apiFetch parses as `null` rather than throwing — guarded here so a
+// missing/null list can't reach a screen's .map().
 export function getNotifications(params?: NotificationsParams): Promise<AppNotification[]> {
-  return apiFetch<AppNotification[]>(`/notifications${toQueryString(params)}`);
+  return apiFetch<AppNotification[] | null>(`/notifications${toQueryString(params)}`).then((list) =>
+    Array.isArray(list) ? list : []
+  );
 }
 
 export function markNotificationRead(id: string): Promise<AppNotification> {
