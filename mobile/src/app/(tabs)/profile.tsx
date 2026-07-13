@@ -1,6 +1,7 @@
 import { Text } from "react-native";
 import { useRouter } from "expo-router";
-import { Screen, PressableScale } from "../../components/ui";
+import { User } from "lucide-react-native";
+import { EmptyState, PressableScale, Screen } from "../../components/ui";
 
 export default function Profile() {
   const router = useRouter();
@@ -11,7 +12,7 @@ export default function Profile() {
       <PressableScale onLongPress={() => router.push("/dev-components")}>
         <Text className="mb-6 mt-4 text-display text-ink">Profile</Text>
       </PressableScale>
-      <Text className="text-body text-muted">Your profile will show up here.</Text>
+      <EmptyState icon={User} title="Your profile" caption="Profile details will show up here." />
     </Screen>
   );
 }
