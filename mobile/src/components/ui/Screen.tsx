@@ -1,5 +1,5 @@
-import type { ReactNode } from "react";
-import { View, Text, ScrollView } from "react-native";
+import type { ReactElement, ReactNode } from "react";
+import { View, Text, ScrollView, type RefreshControlProps } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 export interface ScreenProps {
@@ -7,10 +7,11 @@ export interface ScreenProps {
   headline?: string;
   scroll?: boolean;
   className?: string;
+  refreshControl?: ReactElement<RefreshControlProps>;
 }
 
 // Every screen composes from this: page bg, safe area, horizontal padding 24 (DESIGN.md §5).
-export function Screen({ children, headline, scroll = true, className }: ScreenProps) {
+export function Screen({ children, headline, scroll = true, className, refreshControl }: ScreenProps) {
   const content = (
     <>
       {headline ? <Text className="mb-6 mt-4 text-display text-ink">{headline}</Text> : null}
@@ -24,6 +25,7 @@ export function Screen({ children, headline, scroll = true, className }: ScreenP
         <ScrollView
           className={`flex-1 px-6 ${className ?? ""}`}
           contentContainerStyle={{ flexGrow: 1 }}
+          refreshControl={refreshControl}
         >
           {content}
         </ScrollView>
