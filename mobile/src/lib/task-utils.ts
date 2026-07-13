@@ -8,6 +8,17 @@ export function deriveTaskStatus(task: Task): DerivedTaskStatus {
   return task.assigned_to_id ? "assigned" : "open";
 }
 
+const STATUS_LABEL: Record<DerivedTaskStatus, string> = {
+  open: "Open",
+  assigned: "Assigned",
+  completed: "Completed",
+  cancelled: "Cancelled",
+};
+
+export function statusLabel(status: DerivedTaskStatus): string {
+  return STATUS_LABEL[status];
+}
+
 export function formatCost(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }

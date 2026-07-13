@@ -237,8 +237,17 @@ export function updateTask(id: string, patch: UpdateTaskPatch): Promise<Task> {
   return apiFetch<Task>(`/tasks/${id}`, { method: "PATCH", body: patch });
 }
 
-export function cancelTask(id: string, reason: string): Promise<Task> {
-  return apiFetch<Task>(`/tasks/${id}/cancel`, { method: "POST", body: { reason } });
+// server/main.go's cancelTask does NOT return the updated Task — it returns
+// the billing summary for the (necessarily unworked, since cancellation
+// requires assigned_to_id IS NULL) cancellation.
+export interface CancelTaskResult {
+  total_minutes: number;
+  bill_cents: number;
+  refund_cents: number;
+}
+
+export function cancelTask(id: string, reason: string): Promise<CancelTaskResult> {
+  return apiFetch<CancelTaskResult>(`/tasks/${id}/cancel`, { method: "POST", body: { reason } });
 }
 
 export interface CompleteTaskPayload {
@@ -250,10 +259,13 @@ export function completeTask(id: string, payload: CompleteTaskPayload): Promise<
   return apiFetch<Task>(`/tasks/${id}/complete`, { method: "POST", body: payload });
 }
 
+// server/main.go's createReview only requires stars (1-5); value_rating is
+// validated only when non-empty and would_rehire is a nullable pointer — both
+// genuinely optional, matching web's ReviewPage.jsx which lets either go unset.
 export interface SubmitReviewPayload {
   stars: number;
-  value_rating: ValueRating;
-  would_rehire: boolean;
+  value_rating?: ValueRating;
+  would_rehire?: boolean;
   comment?: string;
 }
 
