@@ -187,6 +187,25 @@ export function createTask(payload: CreateTaskPayload): Promise<Task> {
   return apiFetch<Task>("/tasks", { method: "POST", body: payload });
 }
 
+export interface EstimateTaskCostPayload {
+  category: TaskCategory;
+  estimated_minutes: number;
+  prepay_amount_cents: number;
+}
+
+export interface TaskCostEstimate {
+  base_fee_cents: number;
+  time_cost_cents: number;
+  shopping_cents: number;
+  total_cents: number;
+}
+
+// Pricing is server-owned (S-01/S-05) — this is the only source for the
+// pre-submission estimate shown on the Post Task review screen.
+export function estimateTaskCost(payload: EstimateTaskCostPayload): Promise<TaskCostEstimate> {
+  return apiFetch<TaskCostEstimate>("/tasks/estimate", { method: "POST", body: payload });
+}
+
 export function getPostedTasks(params?: KeysetParams): Promise<Task[]> {
   return apiFetch<KeysetEnvelope<Task>>(`/tasks/posted${toQueryString(params)}`).then(unwrapItems);
 }
