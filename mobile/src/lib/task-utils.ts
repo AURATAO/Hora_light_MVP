@@ -1,0 +1,20 @@
+import type { Task } from "./types";
+
+export type DerivedTaskStatus = "open" | "assigned" | "completed" | "cancelled";
+
+export function deriveTaskStatus(task: Task): DerivedTaskStatus {
+  if (task.status === "completed") return "completed";
+  if (task.status === "cancelled") return "cancelled";
+  return task.assigned_to_id ? "assigned" : "open";
+}
+
+export function formatCost(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
+export function formatMinutes(minutes: number): string {
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder === 0 ? `${hours} hr` : `${hours} hr ${remainder} min`;
+}
