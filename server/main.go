@@ -40,8 +40,8 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/joho/godotenv"
 
-	opsroutes "hora-auth/ops"
 	"hora-auth/helpers"
+	opsroutes "hora-auth/ops"
 
 	storage_go "github.com/supabase-community/storage-go"
 )
@@ -111,15 +111,15 @@ type Task struct {
 }
 
 type createTaskInput struct {
-	Title              string `json:"title"`
-	Description        string `json:"description"`
-	Category           string `json:"category"`
-	LocationText       string `json:"location_text"`
-	EstimatedMinutes   int    `json:"estimated_minutes"`
-	PrepayAmountCents  int    `json:"prepay_amount_cents"`
-	IsImmediate        bool   `json:"is_immediate"`
-	ScheduledAt        string `json:"scheduled_at"` // ISO8601 (RFC3339) 或空字串
-	TransportRequired  string `json:"transport_required"`
+	Title             string `json:"title"`
+	Description       string `json:"description"`
+	Category          string `json:"category"`
+	LocationText      string `json:"location_text"`
+	EstimatedMinutes  int    `json:"estimated_minutes"`
+	PrepayAmountCents int    `json:"prepay_amount_cents"`
+	IsImmediate       bool   `json:"is_immediate"`
+	ScheduledAt       string `json:"scheduled_at"` // ISO8601 (RFC3339) 或空字串
+	TransportRequired string `json:"transport_required"`
 }
 
 type Profile struct {
@@ -360,10 +360,10 @@ func main() {
 			name = deriveName(email)
 		}
 		c.JSON(http.StatusOK, gin.H{
-			"auth":                 true,
-			"id":                   uid,
-			"email":                email,
-			"name":                 name,
+			"auth":                  true,
+			"id":                    uid,
+			"email":                 email,
+			"name":                  name,
 			"is_verified_supporter": isVerified,
 		})
 	})
@@ -508,6 +508,7 @@ func main() {
 	{
 		tasksAPI.POST("", createTask)
 		tasksAPI.GET("", listMyTasks)
+		tasksAPI.POST("/estimate", estimateTaskCost)
 		tasksAPI.GET("/:id", getTask)
 		tasksAPI.PATCH("/:id", updateTask)
 
@@ -2619,6 +2620,21 @@ func totalClosedMinutes(ctx context.Context, taskID string) (int, error) {
 // calcTaskCostCents returns the service charge in cents for totalMinutes of work on taskID.
 // Base fee: $25 (companionship/companion), $18 (estimated_minutes > 90), $12 (everything else).
 // Overtime: $0.50/min for every minute worked beyond the first 15.
+// taskBaseFeeCents is the sole source of the base-fee schedule (S-05: pricing
+// is computed in Go only, never re-derived client-side). Shared by the actual
+// post-completion cost calc and the pre-submission /tasks/estimate quote so
+// the two can't drift.
+func taskBaseFeeCents(category string, estimatedMinutes int) int {
+	switch {
+	case category == "companionship" || category == "companion":
+		return 2500
+	case estimatedMinutes > 90:
+		return 1800
+	default:
+		return 1200
+	}
+}
+
 func calcTaskCostCents(ctx context.Context, taskID string, totalMinutes int) int {
 	var category string
 	var estimatedMinutes int
@@ -2627,15 +2643,46 @@ func calcTaskCostCents(ctx context.Context, taskID string, totalMinutes int) int
 		taskID,
 	).Scan(&category, &estimatedMinutes)
 
-	baseCents := 1200
-	switch {
-	case category == "companionship" || category == "companion":
-		baseCents = 2500
-	case estimatedMinutes > 90:
-		baseCents = 1800
+	return taskBaseFeeCents(category, estimatedMinutes) + totalMinutes*overtimeRateCents
+}
+
+// estimateTaskCost is a pre-submission price quote for the Post Task form —
+// no task exists yet, so inputs come from the request body instead of a DB
+// row. Same formula as calcTaskCostCents, applied to the not-yet-posted
+// values instead of actual worklog minutes.
+func estimateTaskCost(c *gin.Context) {
+	meUID := c.GetString("uid")
+	if meUID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+		return
 	}
 
-	return baseCents + totalMinutes*overtimeRateCents
+	var in struct {
+		Category          string `json:"category"`
+		EstimatedMinutes  int    `json:"estimated_minutes"`
+		PrepayAmountCents int    `json:"prepay_amount_cents"`
+	}
+	if err := c.BindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+		return
+	}
+	if in.EstimatedMinutes < 0 {
+		in.EstimatedMinutes = 0
+	}
+	if in.PrepayAmountCents < 0 {
+		in.PrepayAmountCents = 0
+	}
+
+	baseFeeCents := taskBaseFeeCents(in.Category, in.EstimatedMinutes)
+	timeCostCents := in.EstimatedMinutes * overtimeRateCents
+	totalCents := baseFeeCents + timeCostCents + in.PrepayAmountCents
+
+	c.JSON(http.StatusOK, gin.H{
+		"base_fee_cents":  baseFeeCents,
+		"time_cost_cents": timeCostCents,
+		"shopping_cents":  in.PrepayAmountCents,
+		"total_cents":     totalCents,
+	})
 }
 
 func cancelTask(c *gin.Context) {
@@ -2834,15 +2881,15 @@ func estimateTravel(c *gin.Context) {
 // -------- Reviews --------
 
 type Review struct {
-	ID          string     `json:"id"`
-	TaskID      string     `json:"task_id"`
-	ReviewerID  string     `json:"reviewer_id"`
-	SupporterID string     `json:"supporter_id"`
-	Stars       int        `json:"stars"`
-	ValueRating string     `json:"value_rating"`
-	WouldRehire *bool      `json:"would_rehire"`
-	Comment     string     `json:"comment"`
-	CreatedAt   time.Time  `json:"created_at"`
+	ID          string    `json:"id"`
+	TaskID      string    `json:"task_id"`
+	ReviewerID  string    `json:"reviewer_id"`
+	SupporterID string    `json:"supporter_id"`
+	Stars       int       `json:"stars"`
+	ValueRating string    `json:"value_rating"`
+	WouldRehire *bool     `json:"would_rehire"`
+	Comment     string    `json:"comment"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 func createReview(c *gin.Context) {
@@ -2854,10 +2901,10 @@ func createReview(c *gin.Context) {
 	}
 
 	var in struct {
-		Stars       int     `json:"stars"`
-		ValueRating string  `json:"value_rating"`
-		WouldRehire *bool   `json:"would_rehire"`
-		Comment     string  `json:"comment"`
+		Stars       int    `json:"stars"`
+		ValueRating string `json:"value_rating"`
+		WouldRehire *bool  `json:"would_rehire"`
+		Comment     string `json:"comment"`
 	}
 	if err := c.ShouldBindJSON(&in); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
@@ -2974,9 +3021,9 @@ func listProfileReviews(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"reviews":    items,
-		"count":      len(items),
-		"avg_stars":  avgStars,
+		"reviews":   items,
+		"count":     len(items),
+		"avg_stars": avgStars,
 	})
 }
 
