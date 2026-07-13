@@ -107,9 +107,6 @@ export function updateProfile(patch: UpdateProfilePatch): Promise<Profile> {
   return apiFetch<Profile>("/profile", { method: "PATCH", body: patch });
 }
 
-// Response shape inferred from the sibling completion-photo endpoint, which
-// BACKEND_REFERENCE documents as returning { url } (not directly documented
-// for avatar upload).
 export function uploadAvatar(fileUri: string): Promise<UploadResponse> {
   return apiFetch<UploadResponse>("/profile/avatar", {
     method: "POST",
@@ -143,10 +140,8 @@ export interface ApplySupporterPayload {
   last_name?: string;
 }
 
-// Response shape not documented in BACKEND_REFERENCE; inferred from
-// PATCH /profile's pattern of returning the updated resource.
-export function applySupporter(payload: ApplySupporterPayload): Promise<Profile> {
-  return apiFetch<Profile>("/supporter/apply", { method: "POST", body: payload });
+export function applySupporter(payload: ApplySupporterPayload): Promise<{ ok: true }> {
+  return apiFetch<{ ok: true }>("/supporter/apply", { method: "POST", body: payload });
 }
 
 // ---- Tasks (requester) -----------------------------------------------------

@@ -272,6 +272,8 @@ All authenticated endpoints require either `hora_session` cookie or `Authorizati
 }
 ```
 
+**`POST /profile/avatar` response (200):** `{ "url": "<public avatar URL>" }` (`server/main.go` closure registered via `addAvatarUploadRouteV1`, ~line 826)
+
 #### Supporter
 
 | Method | Path | Auth | Purpose |
@@ -279,6 +281,8 @@ All authenticated endpoints require either `hora_session` cookie or `Authorizati
 | POST | `/supporter/apply` | Required | Submit supporter application; sets `supporter_applied_at`; emails admins |
 
 **Body:** `{ "first_name"?, "last_name"? }`
+
+**Response (200):** `{ "ok": true }` — does not return the updated profile; call `GET /profile` afterward if you need the refreshed `supporter_status`. (`applySupporterHandler`, `server/main.go:1014`)
 
 #### Tasks
 
