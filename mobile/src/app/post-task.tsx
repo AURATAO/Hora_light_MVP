@@ -204,20 +204,28 @@ export default function PostTask() {
 
   // Pre-submission price quote — server-computed (S-05), matching web's summary
   // line but sourced from POST /tasks/estimate instead of a client-side formula.
+  // Gated on category AND a positive duration (not just category): on the AI
+  // path estimated_minutes is always prefilled by the parser, so gating on
+  // category alone happened to look fine there — but on the "Fill manually"
+  // path duration starts empty, and defaulting it to 0 rendered a degenerate
+  // "$12 total, 0 min" card the moment a category was picked, which read as
+  // broken rather than genuinely appearing. Requiring both fields makes the
+  // two paths behave identically.
   useEffect(() => {
-    if (step !== "review" || !form.category) {
+    const minutes = form.estimatedMinutes ? Number(form.estimatedMinutes) : NaN;
+    const canEstimate = step === "review" && !!form.category && Number.isFinite(minutes) && minutes > 0;
+    if (!canEstimate) {
       setEstimate(null);
       return;
     }
     let cancelled = false;
     const id = setTimeout(async () => {
       try {
-        const minutes = form.estimatedMinutes ? Number(form.estimatedMinutes) : 0;
         const budget = form.shoppingBudget ? Number(form.shoppingBudget) : 0;
         const prepayCents = Number.isFinite(budget) && budget > 0 ? Math.round(budget * 100) : 0;
         const result = await estimateTaskCost({
           category: form.category as TaskCategory,
-          estimated_minutes: Number.isFinite(minutes) ? minutes : 0,
+          estimated_minutes: minutes,
           prepay_amount_cents: prepayCents,
         });
         if (cancelled) return;
