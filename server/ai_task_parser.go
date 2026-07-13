@@ -57,8 +57,8 @@ func parseTaskWithAI(c *gin.Context) {
 	}
 
 	reqBody, err := json.Marshal(map[string]any{
-		"model":      "claude-sonnet-4-20250514",
-		"max_tokens": 1000,
+		"model":      "claude-sonnet-5",
+		"max_tokens": 2000,
 		"system":     aiTaskParserSystemPrompt,
 		"messages": []map[string]string{
 			{"role": "user", "content": body.Input},
