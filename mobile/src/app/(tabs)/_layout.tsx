@@ -1,6 +1,6 @@
 import { Tabs } from "expo-router";
 import { StyleSheet } from "react-native";
-import { House, ListChecks, User } from "lucide-react-native";
+import { Briefcase, House, List, User } from "lucide-react-native";
 import { color, size, type as typeScale } from "../../theme/tokens";
 
 const TAB_ICON_SIZE = 22;
@@ -34,11 +34,20 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="work"
+        options={{
+          title: "Work",
+          tabBarIcon: ({ color: tintColor }) => (
+            <Briefcase color={tintColor} size={TAB_ICON_SIZE} strokeWidth={size.iconStroke} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="my-tasks"
         options={{
-          title: "My tasks",
+          title: "Tasks",
           tabBarIcon: ({ color: tintColor }) => (
-            <ListChecks color={tintColor} size={TAB_ICON_SIZE} strokeWidth={size.iconStroke} />
+            <List color={tintColor} size={TAB_ICON_SIZE} strokeWidth={size.iconStroke} />
           ),
         }}
       />
