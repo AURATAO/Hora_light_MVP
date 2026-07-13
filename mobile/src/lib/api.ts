@@ -1,46 +1,317 @@
+import { ApiError } from "./api-error";
+import type {
+  AppNotification,
+  GpsPing,
+  ParsedTask,
+  Profile,
+  PublicProfile,
+  Review,
+  Task,
+  TaskCategory,
+  TravelEstimate,
+  User,
+  ValueRating,
+  Worklog,
+  WorklogsSummary,
+} from "./types";
+
 export const API_BASE_URL = "https://core.horaapp.co";
 
 type ApiFetchOptions = Omit<RequestInit, "body"> & { body?: unknown };
 
-export class ApiError extends Error {
-  status: number;
-  body: unknown;
-
-  constructor(message: string, status: number, body: unknown) {
-    super(message);
-    this.name = "ApiError";
-    this.status = status;
-    this.body = body;
-  }
-}
-
 // All Hora business data (tasks, profiles, notifications, ...) goes through
 // the Go backend, never a direct Supabase table read (S-01). This is the one
 // fetch wrapper client code should use for that traffic.
-export async function apiFetch(path: string, options: ApiFetchOptions = {}) {
+export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): Promise<T> {
   const { body, headers, ...rest } = options;
+  const isFormData = body instanceof FormData;
 
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...rest,
     credentials: "include",
     headers: {
-      "Content-Type": "application/json",
+      ...(isFormData ? {} : { "Content-Type": "application/json" }),
       ...headers,
     },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body: isFormData ? body : body !== undefined ? JSON.stringify(body) : undefined,
   });
 
   const text = await response.text();
   const data = text ? JSON.parse(text) : null;
 
   if (!response.ok) {
-    throw new ApiError(
-      (data && typeof data === "object" && "error" in data && String(data.error)) ||
-        `Request failed: ${response.status}`,
-      response.status,
-      data
-    );
+    throw new ApiError(response.status, data);
   }
 
-  return data;
+  return data as T;
 }
+
+// Accepts the various narrow *Params interfaces below; none declare an index
+// signature, so entries are read through a cast rather than widening the
+// parameter type (which would drop excess-property checking at call sites).
+function toQueryString(params?: object): string {
+  if (!params) return "";
+  const search = new URLSearchParams();
+  const entries = Object.entries(params) as [string, string | number | boolean | undefined][];
+  for (const [key, value] of entries) {
+    if (value !== undefined) search.set(key, String(value));
+  }
+  const query = search.toString();
+  return query ? `?${query}` : "";
+}
+
+// React Native's FormData accepts { uri, name, type } file parts at runtime;
+// the DOM lib.d.ts types FormData.append as (name, value: string | Blob), so
+// this cast is required to describe RN's actual behavior (not the DOM's).
+function buildFileFormData(fileUri: string, fieldName: string): FormData {
+  const filename = fileUri.split("/").pop() ?? `upload-${Date.now()}`;
+  const ext = /\.(\w+)$/.exec(filename)?.[1]?.toLowerCase();
+  const type = ext === "png" ? "image/png" : ext === "heic" ? "image/heic" : "image/jpeg";
+
+  const formData = new FormData();
+  formData.append(fieldName, { uri: fileUri, name: filename, type } as unknown as Blob);
+  return formData;
+}
+
+export interface KeysetParams {
+  before_created_at?: string;
+  before_id?: string;
+}
+
+export interface UploadResponse {
+  url: string;
+}
+
+// ---- Auth -------------------------------------------------------------
+
+export function getMe(): Promise<User> {
+  return apiFetch<User>("/auth/me");
+}
+
+// ---- Profile ------------------------------------------------------------
+
+export function getProfile(): Promise<Profile> {
+  return apiFetch<Profile>("/profile");
+}
+
+export interface UpdateProfilePatch {
+  name?: string;
+  phone?: string;
+  city?: string;
+  avatar_url?: string;
+  bio?: string;
+  beta_accepted?: boolean;
+}
+
+export function updateProfile(patch: UpdateProfilePatch): Promise<Profile> {
+  return apiFetch<Profile>("/profile", { method: "PATCH", body: patch });
+}
+
+// Response shape inferred from the sibling completion-photo endpoint, which
+// BACKEND_REFERENCE documents as returning { url } (not directly documented
+// for avatar upload).
+export function uploadAvatar(fileUri: string): Promise<UploadResponse> {
+  return apiFetch<UploadResponse>("/profile/avatar", {
+    method: "POST",
+    body: buildFileFormData(fileUri, "file"),
+  });
+}
+
+export function getPublicProfile(id: string): Promise<PublicProfile> {
+  return apiFetch<PublicProfile>(`/profiles/${id}`);
+}
+
+export interface ProfileTasksParams {
+  role?: "requester" | "assignee";
+  status?: "open" | "completed" | "all";
+  limit?: number;
+  before?: string;
+}
+
+export function getProfileTasks(id: string, params?: ProfileTasksParams): Promise<Task[]> {
+  return apiFetch<Task[]>(`/profiles/${id}/tasks${toQueryString(params)}`);
+}
+
+export function getProfileReviews(id: string): Promise<Review[]> {
+  return apiFetch<Review[]>(`/profiles/${id}/reviews`);
+}
+
+// ---- Supporter ------------------------------------------------------------
+
+export interface ApplySupporterPayload {
+  first_name?: string;
+  last_name?: string;
+}
+
+// Response shape not documented in BACKEND_REFERENCE; inferred from
+// PATCH /profile's pattern of returning the updated resource.
+export function applySupporter(payload: ApplySupporterPayload): Promise<Profile> {
+  return apiFetch<Profile>("/supporter/apply", { method: "POST", body: payload });
+}
+
+// ---- Tasks (requester) -----------------------------------------------------
+
+export interface CreateTaskPayload {
+  title: string;
+  description?: string;
+  category: TaskCategory;
+  location_text?: string;
+  estimated_minutes?: number;
+  prepay_amount_cents?: number;
+  is_immediate: boolean;
+  scheduled_at?: string;
+  transport_required?: string;
+}
+
+export function createTask(payload: CreateTaskPayload): Promise<Task> {
+  return apiFetch<Task>("/tasks", { method: "POST", body: payload });
+}
+
+export function getPostedTasks(params?: KeysetParams): Promise<Task[]> {
+  return apiFetch<Task[]>(`/tasks/posted${toQueryString(params)}`);
+}
+
+export function getPostedClosedTasks(params?: KeysetParams): Promise<Task[]> {
+  return apiFetch<Task[]>(`/tasks/posted/closed${toQueryString(params)}`);
+}
+
+export function getTask(id: string): Promise<Task> {
+  return apiFetch<Task>(`/tasks/${id}`);
+}
+
+export type UpdateTaskPatch = Partial<
+  Pick<
+    Task,
+    | "title"
+    | "description"
+    | "category"
+    | "location_text"
+    | "estimated_minutes"
+    | "prepay_amount_cents"
+    | "is_immediate"
+    | "scheduled_at"
+    | "transport_required"
+  >
+>;
+
+export function updateTask(id: string, patch: UpdateTaskPatch): Promise<Task> {
+  return apiFetch<Task>(`/tasks/${id}`, { method: "PATCH", body: patch });
+}
+
+export function cancelTask(id: string, reason: string): Promise<Task> {
+  return apiFetch<Task>(`/tasks/${id}/cancel`, { method: "POST", body: { reason } });
+}
+
+export interface CompleteTaskPayload {
+  completion_photo_url: string;
+  completion_note?: string;
+}
+
+export function completeTask(id: string, payload: CompleteTaskPayload): Promise<Task> {
+  return apiFetch<Task>(`/tasks/${id}/complete`, { method: "POST", body: payload });
+}
+
+export interface SubmitReviewPayload {
+  stars: number;
+  value_rating: ValueRating;
+  would_rehire: boolean;
+  comment?: string;
+}
+
+export function submitReview(id: string, payload: SubmitReviewPayload): Promise<Review> {
+  return apiFetch<Review>(`/tasks/${id}/review`, { method: "POST", body: payload });
+}
+
+// ---- Tasks (supporter) -----------------------------------------------------
+
+export function getAvailableTasks(params?: KeysetParams): Promise<Task[]> {
+  return apiFetch<Task[]>(`/tasks/available${toQueryString(params)}`);
+}
+
+export function getAssignedTasks(params?: KeysetParams): Promise<Task[]> {
+  return apiFetch<Task[]>(`/tasks/assigned${toQueryString(params)}`);
+}
+
+export function getDoneTasks(params?: KeysetParams): Promise<Task[]> {
+  return apiFetch<Task[]>(`/tasks/done${toQueryString(params)}`);
+}
+
+export function acceptTask(id: string): Promise<Task> {
+  return apiFetch<Task>(`/tasks/${id}/accept`, { method: "POST" });
+}
+
+export function clockIn(id: string): Promise<Worklog> {
+  return apiFetch<Worklog>(`/tasks/${id}/clock-in`, { method: "POST" });
+}
+
+export function clockOut(id: string): Promise<Worklog> {
+  return apiFetch<Worklog>(`/tasks/${id}/clock-out`, { method: "POST" });
+}
+
+export interface GpsPingPayload {
+  lat: number;
+  lng: number;
+  accuracy?: number;
+}
+
+export function sendGpsPing(id: string, payload: GpsPingPayload): Promise<GpsPing> {
+  return apiFetch<GpsPing>(`/tasks/${id}/gps-ping`, { method: "POST", body: payload });
+}
+
+export interface EstimateTravelPayload {
+  supporter_lat: number;
+  supporter_lng: number;
+}
+
+export function estimateTravel(id: string, payload: EstimateTravelPayload): Promise<TravelEstimate> {
+  return apiFetch<TravelEstimate>(`/tasks/${id}/estimate-travel`, { method: "POST", body: payload });
+}
+
+// ---- Shared (requester + supporter) ----------------------------------------
+
+export function getWorklogs(id: string): Promise<WorklogsSummary> {
+  return apiFetch<WorklogsSummary>(`/tasks/${id}/worklogs`);
+}
+
+export function uploadCompletionPhoto(id: string, fileUri: string): Promise<UploadResponse> {
+  return apiFetch<UploadResponse>(`/tasks/${id}/completion-photo`, {
+    method: "POST",
+    body: buildFileFormData(fileUri, "file"),
+  });
+}
+
+// ---- AI ---------------------------------------------------------------
+
+export function parseTask(input: string): Promise<ParsedTask> {
+  return apiFetch<ParsedTask>("/ai/parse-task", { method: "POST", body: { input } });
+}
+
+// ---- Notifications ----------------------------------------------------
+
+export interface NotificationsParams {
+  unread?: boolean;
+  limit?: number;
+  before?: string;
+}
+
+export function getNotifications(params?: NotificationsParams): Promise<AppNotification[]> {
+  return apiFetch<AppNotification[]>(`/notifications${toQueryString(params)}`);
+}
+
+export function markNotificationRead(id: string): Promise<AppNotification> {
+  return apiFetch<AppNotification>(`/notifications/${id}/read`, { method: "PATCH" });
+}
+
+export function markAllRead(): Promise<void> {
+  return apiFetch<void>("/notifications/mark-read-all", { method: "POST" });
+}
+
+export function deleteNotification(id: string): Promise<void> {
+  return apiFetch<void>(`/notifications/${id}`, { method: "DELETE" });
+}
+
+export function deleteReadNotifications(): Promise<void> {
+  return apiFetch<void>("/notifications?read=true", { method: "DELETE" });
+}
+
+export { ApiError } from "./api-error";

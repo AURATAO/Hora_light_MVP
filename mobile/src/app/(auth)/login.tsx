@@ -35,7 +35,7 @@ export default function Login() {
   const [error, setError] = useState<string | null>(null);
 
   async function finishLogin(accessToken: string) {
-    const me = await apiFetch("/auth/exchange", {
+    const me = await apiFetch<{ id?: string; email?: string }>("/auth/exchange", {
       method: "POST",
       body: { access_token: accessToken },
     });

@@ -3,7 +3,7 @@ import { createContext, useContext, useEffect, useState } from "react";
 import { Slot } from "expo-router";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { supabase } from "../lib/supabase";
-import { apiFetch } from "../lib/api";
+import { getMe } from "../lib/api";
 
 type AuthState = {
   loading: boolean;
@@ -24,8 +24,8 @@ export default function RootLayout() {
 
     async function checkSession() {
       try {
-        const me = await apiFetch("/auth/me");
-        if (mounted) setState({ loading: false, authenticated: Boolean(me?.auth) });
+        const me = await getMe();
+        if (mounted) setState({ loading: false, authenticated: me.auth });
       } catch {
         if (mounted) setState({ loading: false, authenticated: false });
       }
