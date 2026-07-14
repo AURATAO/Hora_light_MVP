@@ -291,12 +291,41 @@ export function acceptTask(id: string): Promise<Task> {
   return apiFetch<Task>(`/tasks/${id}/accept`, { method: "POST" });
 }
 
+// server/main.go's WorkLog struct serializes as `start`/`end` (not
+// `start_at`/`end_at`), and `End *time.Time` carries `json:"end,omitempty"` —
+// when a worklog is still open (End is nil), the `end` key is OMITTED from
+// the JSON entirely rather than sent as `null`. clock-in/out and getWorklogs
+// all return this same shape; mapWorklogDTO is the one place that normalizes
+// it into mobile's Worklog type, so "open worklog" can reliably be checked
+// as `end_at === null` everywhere else instead of `undefined`.
+interface WorklogDTO {
+  id: string;
+  task_id: string;
+  user: string;
+  start: string;
+  end?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function mapWorklogDTO(wl: WorklogDTO): Worklog {
+  return {
+    id: wl.id,
+    task_id: wl.task_id,
+    user: wl.user,
+    start_at: wl.start,
+    end_at: wl.end ?? null,
+    created_at: wl.created_at,
+    updated_at: wl.updated_at,
+  };
+}
+
 export function clockIn(id: string): Promise<Worklog> {
-  return apiFetch<Worklog>(`/tasks/${id}/clock-in`, { method: "POST" });
+  return apiFetch<WorklogDTO>(`/tasks/${id}/clock-in`, { method: "POST" }).then(mapWorklogDTO);
 }
 
 export function clockOut(id: string): Promise<Worklog> {
-  return apiFetch<Worklog>(`/tasks/${id}/clock-out`, { method: "POST" });
+  return apiFetch<WorklogDTO>(`/tasks/${id}/clock-out`, { method: "POST" }).then(mapWorklogDTO);
 }
 
 export interface GpsPingPayload {
@@ -320,20 +349,10 @@ export function estimateTravel(id: string, payload: EstimateTravelPayload): Prom
 
 // ---- Shared (requester + supporter) ----------------------------------------
 
-// The backend's actual envelope nests rows under `items` with `start`/`end`
-// column names (server/main.go getWorklogs), not the `worklogs`/`start_at`/
-// `end_at` shape this type implies — mapped here so a null/missing list
-// can't reach a screen, and so field names actually match the wire.
-interface WorklogDTO {
-  id: string;
-  task_id: string;
-  user: string;
-  start: string;
-  end: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
+// The backend's actual envelope nests rows under `items` (server/main.go
+// getWorklogs), not a bare `worklogs` array — unwrapped here, via the same
+// mapWorklogDTO used by clockIn/clockOut, so a null/missing list can't reach
+// a screen and every worklog's field names/nullability match the wire.
 interface WorklogsEnvelope {
   items: WorklogDTO[] | null;
   total_minutes: number;
@@ -342,15 +361,7 @@ interface WorklogsEnvelope {
 
 export function getWorklogs(id: string): Promise<WorklogsSummary> {
   return apiFetch<WorklogsEnvelope>(`/tasks/${id}/worklogs`).then((envelope) => ({
-    worklogs: (Array.isArray(envelope?.items) ? envelope.items : []).map((wl) => ({
-      id: wl.id,
-      task_id: wl.task_id,
-      user: wl.user,
-      start_at: wl.start,
-      end_at: wl.end,
-      created_at: wl.created_at,
-      updated_at: wl.updated_at,
-    })),
+    worklogs: (Array.isArray(envelope?.items) ? envelope.items : []).map(mapWorklogDTO),
     total_minutes: envelope?.total_minutes ?? 0,
     total_cost_cents: envelope?.total_cost_cents ?? 0,
   }));

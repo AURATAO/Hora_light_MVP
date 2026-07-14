@@ -33,7 +33,21 @@
       ],
       "expo-web-browser",
       "expo-secure-store",
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "HO:RA uses your location while you're clocked in on a task so the requester can see you're on the way."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "HO:RA needs access to your photos to attach a completion photo.",
+          "cameraPermission": "HO:RA needs camera access to take a completion photo."
+        }
+      ],
+      "expo-notifications"
     ]
   }
 }
