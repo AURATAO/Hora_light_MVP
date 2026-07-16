@@ -37,10 +37,11 @@ Two sign-in methods, both finishing with the same exchange step:
 
 1. **Google OAuth** — `supabase.auth.signInWithOAuth({ provider: 'google' })`
    opens Google's consent screen in an in-app browser
-   (`expo-web-browser` + PKCE). The redirect comes back to the app via the
-   `hora://` deep link.
-2. **Magic link** — `supabase.auth.signInWithOtp({ email })` emails a link
-   that deep-links back into the app the same way.
+   (`expo-web-browser` + PKCE). The callback URL comes back with a `?code=`
+   param, exchanged via `supabase.auth.exchangeCodeForSession`.
+2. **Email code** — matches the web app: `supabase.auth.signInWithOtp({ email })`
+   emails a 6-digit code (no magic link); the user enters it and the app calls
+   `supabase.auth.verifyOtp({ email, token: code, type: 'email' })`.
 
 In both cases, once expo-router's login screen (`src/app/(auth)/login.tsx`)
 has a Supabase session, it calls `POST /auth/exchange` with the Supabase

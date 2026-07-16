@@ -60,16 +60,62 @@ function toQueryString(params?: object): string {
   return query ? `?${query}` : "";
 }
 
-// React Native's FormData accepts { uri, name, type } file parts at runtime;
-// the DOM lib.d.ts types FormData.append as (name, value: string | Blob), so
-// this cast is required to describe RN's actual behavior (not the DOM's).
-function buildFileFormData(fileUri: string, fieldName: string): FormData {
-  const filename = fileUri.split("/").pop() ?? `upload-${Date.now()}`;
+// A picked/captured local file, as expo-image-picker's asset shape gives it
+// to us: `fileName` is frequently null on iOS, `mimeType` is usually present
+// but not guaranteed.
+export interface FilePart {
+  uri: string;
+  mimeType?: string | null;
+  fileName?: string | null;
+}
+
+// React Native's global `fetch` is NOT React Native's classic fetch as of
+// this Expo SDK — `expo/winter` installs its own WinterCG-compliant fetch
+// over `globalThis.fetch` at startup (see node_modules/expo/src/winter/
+// runtime.native.ts; opt out via EXPO_PUBLIC_USE_RN_FETCH=1, which we don't
+// do repo-wide). Its multipart encoder (winter/fetch/convertFormData.ts)
+// only accepts a string, a real `Blob`, or an object with a `.bytes()`
+// method — RN's classic proprietary shorthand part, `{ uri, name, type }`,
+// matches none of those and hits its final `else` branch verbatim:
+// `throw new Error('Unsupported FormDataPart implementation')`. That
+// shorthand used to work because RN's own fetch/FormData understood it
+// directly; it silently stopped applying once Expo's fetch became the
+// global one.
+//
+// The fix is to hand it a real Blob. RN's Blob constructor only accepts
+// `Array<Blob | string>` (not ArrayBuffer), so we can't build one from raw
+// bytes directly — instead we read the local file via XMLHttpRequest
+// (unaffected by the winter runtime, which only patches `fetch`/`FormData`/
+// `AbortSignal`, not `XMLHttpRequest`) with `responseType: "blob"`, which is
+// RN's long-standing supported way to turn a local `file://` URI into a
+// Blob. A Blob's `.type` has no setter, so to guarantee our own
+// extension/mimeType-derived content type (rather than whatever the raw
+// file read happened to infer) we wrap it in `new Blob([rawBlob], { type })`.
+function uriToBlob(uri: string): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.onload = () => resolve(xhr.response);
+    xhr.onerror = () => reject(new Error("Couldn't read the selected file."));
+    xhr.responseType = "blob";
+    xhr.open("GET", uri, true);
+    xhr.send(null);
+  });
+}
+
+function inferMimeType(filename: string): string {
   const ext = /\.(\w+)$/.exec(filename)?.[1]?.toLowerCase();
-  const type = ext === "png" ? "image/png" : ext === "heic" ? "image/heic" : "image/jpeg";
+  return ext === "png" ? "image/png" : ext === "heic" ? "image/heic" : "image/jpeg";
+}
+
+async function buildFileFormData(file: FilePart, fieldName: string): Promise<FormData> {
+  const filename = file.fileName || file.uri.split("/").pop() || `upload-${Date.now()}`;
+  const type = file.mimeType || inferMimeType(filename);
+
+  const rawBlob = await uriToBlob(file.uri);
+  const blob = new Blob([rawBlob], { type });
 
   const formData = new FormData();
-  formData.append(fieldName, { uri: fileUri, name: filename, type } as unknown as Blob);
+  formData.append(fieldName, blob, filename);
   return formData;
 }
 
@@ -121,10 +167,10 @@ export function updateProfile(patch: UpdateProfilePatch): Promise<Profile> {
   return apiFetch<Profile>("/profile", { method: "PATCH", body: patch });
 }
 
-export function uploadAvatar(fileUri: string): Promise<UploadResponse> {
+export async function uploadAvatar(file: FilePart): Promise<UploadResponse> {
   return apiFetch<UploadResponse>("/profile/avatar", {
     method: "POST",
-    body: buildFileFormData(fileUri, "file"),
+    body: await buildFileFormData(file, "file"),
   });
 }
 
@@ -291,12 +337,41 @@ export function acceptTask(id: string): Promise<Task> {
   return apiFetch<Task>(`/tasks/${id}/accept`, { method: "POST" });
 }
 
+// server/main.go's WorkLog struct serializes as `start`/`end` (not
+// `start_at`/`end_at`), and `End *time.Time` carries `json:"end,omitempty"` —
+// when a worklog is still open (End is nil), the `end` key is OMITTED from
+// the JSON entirely rather than sent as `null`. clock-in/out and getWorklogs
+// all return this same shape; mapWorklogDTO is the one place that normalizes
+// it into mobile's Worklog type, so "open worklog" can reliably be checked
+// as `end_at === null` everywhere else instead of `undefined`.
+interface WorklogDTO {
+  id: string;
+  task_id: string;
+  user: string;
+  start: string;
+  end?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function mapWorklogDTO(wl: WorklogDTO): Worklog {
+  return {
+    id: wl.id,
+    task_id: wl.task_id,
+    user: wl.user,
+    start_at: wl.start,
+    end_at: wl.end ?? null,
+    created_at: wl.created_at,
+    updated_at: wl.updated_at,
+  };
+}
+
 export function clockIn(id: string): Promise<Worklog> {
-  return apiFetch<Worklog>(`/tasks/${id}/clock-in`, { method: "POST" });
+  return apiFetch<WorklogDTO>(`/tasks/${id}/clock-in`, { method: "POST" }).then(mapWorklogDTO);
 }
 
 export function clockOut(id: string): Promise<Worklog> {
-  return apiFetch<Worklog>(`/tasks/${id}/clock-out`, { method: "POST" });
+  return apiFetch<WorklogDTO>(`/tasks/${id}/clock-out`, { method: "POST" }).then(mapWorklogDTO);
 }
 
 export interface GpsPingPayload {
@@ -320,20 +395,10 @@ export function estimateTravel(id: string, payload: EstimateTravelPayload): Prom
 
 // ---- Shared (requester + supporter) ----------------------------------------
 
-// The backend's actual envelope nests rows under `items` with `start`/`end`
-// column names (server/main.go getWorklogs), not the `worklogs`/`start_at`/
-// `end_at` shape this type implies — mapped here so a null/missing list
-// can't reach a screen, and so field names actually match the wire.
-interface WorklogDTO {
-  id: string;
-  task_id: string;
-  user: string;
-  start: string;
-  end: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
+// The backend's actual envelope nests rows under `items` (server/main.go
+// getWorklogs), not a bare `worklogs` array — unwrapped here, via the same
+// mapWorklogDTO used by clockIn/clockOut, so a null/missing list can't reach
+// a screen and every worklog's field names/nullability match the wire.
 interface WorklogsEnvelope {
   items: WorklogDTO[] | null;
   total_minutes: number;
@@ -342,24 +407,16 @@ interface WorklogsEnvelope {
 
 export function getWorklogs(id: string): Promise<WorklogsSummary> {
   return apiFetch<WorklogsEnvelope>(`/tasks/${id}/worklogs`).then((envelope) => ({
-    worklogs: (Array.isArray(envelope?.items) ? envelope.items : []).map((wl) => ({
-      id: wl.id,
-      task_id: wl.task_id,
-      user: wl.user,
-      start_at: wl.start,
-      end_at: wl.end,
-      created_at: wl.created_at,
-      updated_at: wl.updated_at,
-    })),
+    worklogs: (Array.isArray(envelope?.items) ? envelope.items : []).map(mapWorklogDTO),
     total_minutes: envelope?.total_minutes ?? 0,
     total_cost_cents: envelope?.total_cost_cents ?? 0,
   }));
 }
 
-export function uploadCompletionPhoto(id: string, fileUri: string): Promise<UploadResponse> {
+export async function uploadCompletionPhoto(id: string, file: FilePart): Promise<UploadResponse> {
   return apiFetch<UploadResponse>(`/tasks/${id}/completion-photo`, {
     method: "POST",
-    body: buildFileFormData(fileUri, "file"),
+    body: await buildFileFormData(file, "file"),
   });
 }
 
