@@ -60,16 +60,62 @@ function toQueryString(params?: object): string {
   return query ? `?${query}` : "";
 }
 
-// React Native's FormData accepts { uri, name, type } file parts at runtime;
-// the DOM lib.d.ts types FormData.append as (name, value: string | Blob), so
-// this cast is required to describe RN's actual behavior (not the DOM's).
-function buildFileFormData(fileUri: string, fieldName: string): FormData {
-  const filename = fileUri.split("/").pop() ?? `upload-${Date.now()}`;
+// A picked/captured local file, as expo-image-picker's asset shape gives it
+// to us: `fileName` is frequently null on iOS, `mimeType` is usually present
+// but not guaranteed.
+export interface FilePart {
+  uri: string;
+  mimeType?: string | null;
+  fileName?: string | null;
+}
+
+// React Native's global `fetch` is NOT React Native's classic fetch as of
+// this Expo SDK — `expo/winter` installs its own WinterCG-compliant fetch
+// over `globalThis.fetch` at startup (see node_modules/expo/src/winter/
+// runtime.native.ts; opt out via EXPO_PUBLIC_USE_RN_FETCH=1, which we don't
+// do repo-wide). Its multipart encoder (winter/fetch/convertFormData.ts)
+// only accepts a string, a real `Blob`, or an object with a `.bytes()`
+// method — RN's classic proprietary shorthand part, `{ uri, name, type }`,
+// matches none of those and hits its final `else` branch verbatim:
+// `throw new Error('Unsupported FormDataPart implementation')`. That
+// shorthand used to work because RN's own fetch/FormData understood it
+// directly; it silently stopped applying once Expo's fetch became the
+// global one.
+//
+// The fix is to hand it a real Blob. RN's Blob constructor only accepts
+// `Array<Blob | string>` (not ArrayBuffer), so we can't build one from raw
+// bytes directly — instead we read the local file via XMLHttpRequest
+// (unaffected by the winter runtime, which only patches `fetch`/`FormData`/
+// `AbortSignal`, not `XMLHttpRequest`) with `responseType: "blob"`, which is
+// RN's long-standing supported way to turn a local `file://` URI into a
+// Blob. A Blob's `.type` has no setter, so to guarantee our own
+// extension/mimeType-derived content type (rather than whatever the raw
+// file read happened to infer) we wrap it in `new Blob([rawBlob], { type })`.
+function uriToBlob(uri: string): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.onload = () => resolve(xhr.response);
+    xhr.onerror = () => reject(new Error("Couldn't read the selected file."));
+    xhr.responseType = "blob";
+    xhr.open("GET", uri, true);
+    xhr.send(null);
+  });
+}
+
+function inferMimeType(filename: string): string {
   const ext = /\.(\w+)$/.exec(filename)?.[1]?.toLowerCase();
-  const type = ext === "png" ? "image/png" : ext === "heic" ? "image/heic" : "image/jpeg";
+  return ext === "png" ? "image/png" : ext === "heic" ? "image/heic" : "image/jpeg";
+}
+
+async function buildFileFormData(file: FilePart, fieldName: string): Promise<FormData> {
+  const filename = file.fileName || file.uri.split("/").pop() || `upload-${Date.now()}`;
+  const type = file.mimeType || inferMimeType(filename);
+
+  const rawBlob = await uriToBlob(file.uri);
+  const blob = new Blob([rawBlob], { type });
 
   const formData = new FormData();
-  formData.append(fieldName, { uri: fileUri, name: filename, type } as unknown as Blob);
+  formData.append(fieldName, blob, filename);
   return formData;
 }
 
@@ -121,10 +167,10 @@ export function updateProfile(patch: UpdateProfilePatch): Promise<Profile> {
   return apiFetch<Profile>("/profile", { method: "PATCH", body: patch });
 }
 
-export function uploadAvatar(fileUri: string): Promise<UploadResponse> {
+export async function uploadAvatar(file: FilePart): Promise<UploadResponse> {
   return apiFetch<UploadResponse>("/profile/avatar", {
     method: "POST",
-    body: buildFileFormData(fileUri, "file"),
+    body: await buildFileFormData(file, "file"),
   });
 }
 
@@ -367,10 +413,10 @@ export function getWorklogs(id: string): Promise<WorklogsSummary> {
   }));
 }
 
-export function uploadCompletionPhoto(id: string, fileUri: string): Promise<UploadResponse> {
+export async function uploadCompletionPhoto(id: string, file: FilePart): Promise<UploadResponse> {
   return apiFetch<UploadResponse>(`/tasks/${id}/completion-photo`, {
     method: "POST",
-    body: buildFileFormData(fileUri, "file"),
+    body: await buildFileFormData(file, "file"),
   });
 }
 

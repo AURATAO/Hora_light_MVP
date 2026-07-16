@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { Image, Modal, Pressable, Text, View } from "react-native";
 import * as ImagePicker from "expo-image-picker";
-import { Button, Input } from "./ui";
+import { Button, Input, PressableScale } from "./ui";
 
 export interface CompleteTaskPayload {
   photoUri: string;
+  photoMimeType?: string | null;
+  photoFileName?: string | null;
   note: string;
 }
 
@@ -14,14 +16,20 @@ export interface CompleteTaskSheetProps {
   onSubmit: (payload: CompleteTaskPayload) => Promise<void>;
 }
 
+interface PickedPhoto {
+  uri: string;
+  mimeType?: string | null;
+  fileName?: string | null;
+}
+
 export function CompleteTaskSheet({ visible, onClose, onSubmit }: CompleteTaskSheetProps) {
-  const [photoUri, setPhotoUri] = useState<string | null>(null);
+  const [photo, setPhoto] = useState<PickedPhoto | null>(null);
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   function reset() {
-    setPhotoUri(null);
+    setPhoto(null);
     setNote("");
     setSubmitting(false);
     setError(null);
@@ -41,7 +49,8 @@ export function CompleteTaskSheet({ visible, onClose, onSubmit }: CompleteTaskSh
     }
     const result = await ImagePicker.launchCameraAsync({ quality: 0.7 });
     if (!result.canceled && result.assets[0]) {
-      setPhotoUri(result.assets[0].uri);
+      const asset = result.assets[0];
+      setPhoto({ uri: asset.uri, mimeType: asset.mimeType, fileName: asset.fileName });
       setError(null);
     }
   }
@@ -57,20 +66,26 @@ export function CompleteTaskSheet({ visible, onClose, onSubmit }: CompleteTaskSh
       mediaTypes: ["images"],
     });
     if (!result.canceled && result.assets[0]) {
-      setPhotoUri(result.assets[0].uri);
+      const asset = result.assets[0];
+      setPhoto({ uri: asset.uri, mimeType: asset.mimeType, fileName: asset.fileName });
       setError(null);
     }
   }
 
   async function handleSubmit() {
-    if (!photoUri) {
+    if (!photo) {
       setError("Add a photo to complete this task.");
       return;
     }
     setSubmitting(true);
     setError(null);
     try {
-      await onSubmit({ photoUri, note: note.trim() });
+      await onSubmit({
+        photoUri: photo.uri,
+        photoMimeType: photo.mimeType,
+        photoFileName: photo.fileName,
+        note: note.trim(),
+      });
       reset();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't complete this task. Try again.");
@@ -88,17 +103,24 @@ export function CompleteTaskSheet({ visible, onClose, onSubmit }: CompleteTaskSh
             Add a photo so the requester can see it's done.
           </Text>
 
-          {photoUri ? (
-            <Image source={{ uri: photoUri }} className="mb-4 h-40 w-full rounded-sm" resizeMode="cover" />
-          ) : null}
-
-          <View className="flex-row gap-2">
-            <Button label="Take photo" variant="secondary" onPress={pickFromCamera} className="flex-1" />
-            <Button label="Choose photo" variant="secondary" onPress={pickFromLibrary} className="flex-1" />
-          </View>
+          {photo ? (
+            <View className="mb-4 gap-2">
+              <Image source={{ uri: photo.uri }} className="h-[180px] w-full rounded-sm" resizeMode="cover" />
+              <PressableScale onPress={() => setPhoto(null)} hitSlop={8} className="self-start">
+                <Text className="text-caption font-semibold text-brand">Change photo</Text>
+              </PressableScale>
+            </View>
+          ) : (
+            <View className="mb-4 gap-2">
+              <View className="flex-row gap-2">
+                <Button label="Take photo" variant="secondary" onPress={pickFromCamera} className="flex-1" />
+                <Button label="Choose photo" variant="secondary" onPress={pickFromLibrary} className="flex-1" />
+              </View>
+              <Text className="text-caption text-muted">A photo is required to complete this task.</Text>
+            </View>
+          )}
 
           <Input
-            className="mt-4"
             value={note}
             onChangeText={setNote}
             placeholder="Add a note (optional)"
@@ -109,8 +131,11 @@ export function CompleteTaskSheet({ visible, onClose, onSubmit }: CompleteTaskSh
 
           {error ? <Text className="mt-3 text-caption text-danger">{error}</Text> : null}
 
-          <View className="mt-5 gap-2">
-            <Button label="Complete task" onPress={handleSubmit} loading={submitting} disabled={!photoUri} />
+          <View className="mt-6 gap-2">
+            {submitting ? (
+              <Text className="text-center text-caption text-muted">Uploading photo…</Text>
+            ) : null}
+            <Button label="Complete task" onPress={handleSubmit} loading={submitting} disabled={!photo} />
             <Button label="Cancel" variant="text" onPress={handleClose} disabled={submitting} />
           </View>
         </Pressable>

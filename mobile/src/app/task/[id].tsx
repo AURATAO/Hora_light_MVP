@@ -255,9 +255,13 @@ export default function TaskDetail() {
     }
   }
 
-  async function handleCompleteSubmit({ photoUri, note }: CompleteTaskPayload) {
+  async function handleCompleteSubmit({ photoUri, photoMimeType, photoFileName, note }: CompleteTaskPayload) {
     try {
-      const { url } = await uploadCompletionPhoto(id, photoUri);
+      const { url } = await uploadCompletionPhoto(id, {
+        uri: photoUri,
+        mimeType: photoMimeType,
+        fileName: photoFileName,
+      });
       const updated = await completeTask(id, {
         completion_photo_url: url,
         completion_note: note || undefined,
