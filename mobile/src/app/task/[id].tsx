@@ -2,11 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Image, RefreshControl, ScrollView, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Location from "expo-location";
-import { Bike, Bus, Car, ChevronLeft, CircleAlert, MapPin, UserRound } from "lucide-react-native";
+import { Bike, Bus, Car, ChevronLeft, CircleAlert, MapPin } from "lucide-react-native";
 import { CancelTaskSheet } from "../../components/CancelTaskSheet";
 import { CompleteTaskSheet, type CompleteTaskPayload } from "../../components/CompleteTaskSheet";
 import { ReviewSheet, type ReviewSubmitPayload } from "../../components/ReviewSheet";
-import { Badge, Button, EmptyState, PressableScale, Screen, Skeleton } from "../../components/ui";
+import { Avatar, Badge, Button, EmptyState, PressableScale, Screen, Skeleton } from "../../components/ui";
 import {
   ApiError,
   acceptTask,
@@ -447,14 +447,11 @@ export default function TaskDetail() {
 
         {/* Supporter */}
         {isRequester && task.assigned_to_id ? (
-          <PressableScale className="mb-4 flex-row items-center gap-3 rounded-card border border-line bg-surface p-4">
-            {supporter?.avatar_url ? (
-              <Image source={{ uri: supporter.avatar_url }} className="h-11 w-11 rounded-pill" />
-            ) : (
-              <View className="h-11 w-11 items-center justify-center rounded-pill bg-page">
-                <UserRound color={color.muted} size={20} strokeWidth={size.iconStroke} />
-              </View>
-            )}
+          <PressableScale
+            onPress={() => router.push(`/profile/${task.assigned_to_id}`)}
+            className="mb-4 flex-row items-center gap-3 rounded-card border border-line bg-surface p-4"
+          >
+            <Avatar uri={supporter?.avatar_url} name={supporter?.name} size={44} />
             <View>
               <Text className="text-body font-semibold text-ink">{supporter?.name ?? "Your supporter"}</Text>
               <Text className="text-caption text-muted">Supporter</Text>
@@ -464,19 +461,16 @@ export default function TaskDetail() {
 
         {/* Requester (assignee's view) */}
         {isAssignee ? (
-          <View className="mb-4 flex-row items-center gap-3 rounded-card border border-line bg-surface p-4">
-            {requester?.avatar_url ? (
-              <Image source={{ uri: requester.avatar_url }} className="h-11 w-11 rounded-pill" />
-            ) : (
-              <View className="h-11 w-11 items-center justify-center rounded-pill bg-page">
-                <UserRound color={color.muted} size={20} strokeWidth={size.iconStroke} />
-              </View>
-            )}
+          <PressableScale
+            onPress={task.requester_id ? () => router.push(`/profile/${task.requester_id}`) : undefined}
+            className="mb-4 flex-row items-center gap-3 rounded-card border border-line bg-surface p-4"
+          >
+            <Avatar uri={requester?.avatar_url} name={requester?.name} size={44} />
             <View>
               <Text className="text-body font-semibold text-ink">{requester?.name ?? "Requester"}</Text>
               <Text className="text-caption text-muted">Requester</Text>
             </View>
-          </View>
+          </PressableScale>
         ) : null}
 
         {/* Work session (assignee's view) */}
