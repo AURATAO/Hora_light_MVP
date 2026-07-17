@@ -68,3 +68,10 @@ export async function cancelOvertimeReminders(taskId: string): Promise<void> {
   }
   await SecureStore.deleteItemAsync(key).catch(() => {});
 }
+
+// Overtime reminders are the only local notifications this app schedules, so
+// on logout it's simpler and more reliable to clear everything scheduled
+// than to enumerate every task that might have an open reminder.
+export async function cancelAllOvertimeReminders(): Promise<void> {
+  await Notifications.cancelAllScheduledNotificationsAsync().catch(() => {});
+}

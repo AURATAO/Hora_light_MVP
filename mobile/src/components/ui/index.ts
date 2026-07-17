@@ -1,4 +1,5 @@
 export * from "./PressableScale";
+export * from "./Avatar";
 export * from "./Button";
 export * from "./Pill";
 export * from "./Card";

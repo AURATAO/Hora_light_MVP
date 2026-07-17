@@ -148,6 +148,10 @@ export function getMe(): Promise<User> {
   return apiFetch<User>("/auth/me");
 }
 
+export function logout(): Promise<void> {
+  return apiFetch<void>("/auth/logout", { method: "POST" });
+}
+
 // ---- Profile ------------------------------------------------------------
 
 export function getProfile(): Promise<Profile> {
