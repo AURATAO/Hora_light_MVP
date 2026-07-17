@@ -3,7 +3,7 @@
 // app/src/components/WhatsAppFloat.jsx. Left as an obviously-fake
 // placeholder so an unfilled number fails loudly instead of silently
 // linking users to the wrong contact.
-export const HORA_WHATSAPP_NUMBER = "00000000000";
+export const HORA_WHATSAPP_NUMBER = "19083242201";
 
 export const LEGAL_URLS = {
   terms: "https://www.my-hora.com/terms",
