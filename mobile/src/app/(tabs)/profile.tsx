@@ -3,6 +3,7 @@ import { Alert, Linking, RefreshControl, Text, View } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
 import * as SecureStore from "expo-secure-store";
+import * as WebBrowser from "expo-web-browser";
 import Constants from "expo-constants";
 import {
   ChevronRight,
@@ -130,7 +131,7 @@ export default function Profile() {
     ]);
   }
 
-  function openWhatsApp() {
+  async function openWhatsApp() {
     if (!/[1-9]/.test(HORA_WHATSAPP_NUMBER)) {
       Alert.alert(
         "WhatsApp number not configured",
@@ -138,7 +139,22 @@ export default function Profile() {
       );
       return;
     }
-    Linking.openURL(`https://wa.me/${HORA_WHATSAPP_NUMBER}`);
+    // Deliberately leaves the app — this opens the WhatsApp app itself, not
+    // an in-app browser sheet. Only the failure path (WhatsApp not
+    // installed, etc.) needs handling.
+    try {
+      await Linking.openURL(`https://wa.me/${HORA_WHATSAPP_NUMBER}`);
+    } catch {
+      Alert.alert("Couldn't open WhatsApp", "Make sure WhatsApp is installed and try again.");
+    }
+  }
+
+  async function openLegalPage(url: string) {
+    try {
+      await WebBrowser.openBrowserAsync(url);
+    } catch {
+      Alert.alert("Page temporarily unavailable", "Try again later.");
+    }
   }
 
   function handleLogout() {
@@ -249,9 +265,9 @@ export default function Profile() {
         <Card>
           <ListRow icon={MessageCircle} label="Contact HO:RA on WhatsApp" onPress={openWhatsApp} />
           <View className="h-px bg-line" />
-          <ListRow icon={FileText} label="Terms of Use" onPress={() => Linking.openURL(LEGAL_URLS.terms)} />
+          <ListRow icon={FileText} label="Terms of Use" onPress={() => openLegalPage(LEGAL_URLS.terms)} />
           <View className="h-px bg-line" />
-          <ListRow icon={ShieldCheck} label="Privacy Policy" onPress={() => Linking.openURL(LEGAL_URLS.privacy)} />
+          <ListRow icon={ShieldCheck} label="Privacy Policy" onPress={() => openLegalPage(LEGAL_URLS.privacy)} />
         </Card>
         <Text className="mt-3 text-center text-caption text-muted">
           Version {Constants.expoConfig?.version ?? "—"}

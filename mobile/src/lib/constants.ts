@@ -6,6 +6,6 @@
 export const HORA_WHATSAPP_NUMBER = "00000000000";
 
 export const LEGAL_URLS = {
-  terms: "https://horaapp.co/terms",
-  privacy: "https://horaapp.co/privacy",
+  terms: "https://www.my-hora.com/terms",
+  privacy: "https://www.my-hora.com/privacy",
 } as const;
