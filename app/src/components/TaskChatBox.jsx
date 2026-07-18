@@ -1,6 +1,7 @@
 import { useMemo, useCallback, useEffect, useState } from 'react'
 import Talk from 'talkjs'
 import { Session, Chatbox } from '@talkjs/react'
+import { api } from '../api/client'
 
 function deriveName(email) {
   if (!email) return 'User'
@@ -29,6 +30,21 @@ export default function TaskChatBox({ task, me, height, fullscreen = false, clas
     Talk.ready.then(() => { if (alive) setReady(true) })
     return () => { alive = false }
   }, [])
+
+  // 1b) Identity verification signature (talkjs.com/docs/authentication) —
+  // best-effort: TalkJS ignores a missing/stale signature until "Enforce
+  // identity verification" is switched on in the dashboard, so a failed
+  // fetch here degrades to today's unverified behavior rather than
+  // blocking chat.
+  const [signature, setSignature] = useState(null)
+  useEffect(() => {
+    if (!me?.email) return
+    let alive = true
+    api('/talkjs/signature')
+      .then((res) => { if (alive) setSignature(res?.signature ?? null) })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [me?.email])
 
   // 2) Current user for TalkJS (only once ready)
   const syncUser = useCallback(() => {
@@ -89,7 +105,7 @@ export default function TaskChatBox({ task, me, height, fullscreen = false, clas
   if (!me?.email) return null
 
   return (
-    <Session appId={appId} syncUser={syncUser}>
+    <Session appId={appId} syncUser={syncUser} signature={signature ?? undefined}>
       <Chatbox
         syncConversation={syncConversation}
         className={fullscreen ? className : `rounded bg-white/5 border border-white/10 ${className}`}

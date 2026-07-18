@@ -94,6 +94,11 @@ export interface Task {
   cancel_reason: string | null;
   cancelled_at: string | null;
   created_at: string;
+  /** Legacy email columns (S-60.1) — present on every /tasks response. Only
+   * for TalkJS participant identity (matches web's existing id-by-email
+   * scheme); never for permission checks — those use requester_id/assigned_to_id. */
+  requester?: string;
+  assigned_to?: string;
 }
 
 export interface Worklog {
@@ -127,15 +132,27 @@ export interface AppNotification {
   created_at: string;
 }
 
+// Two producers, two shapes — server/main.go's Review struct (POST
+// /tasks/:id/reviews) has no `omitempty` on value_rating/comment, so they're
+// always-present strings ("" when unset), never JSON null; reviewer_id/
+// supporter_id are only on that struct, not on GET /profiles/:id/reviews'
+// anonymous ReviewItem, which instead adds task_title. would_rehire is a Go
+// *bool either way, so it's the one field that's genuinely null-able.
 export interface Review {
   id: string;
   task_id: string;
-  reviewer_id: string;
-  supporter_id: string;
+  /** Only on POST /tasks/:id/reviews responses. */
+  reviewer_id?: string;
+  /** Only on POST /tasks/:id/reviews responses. */
+  supporter_id?: string;
+  /** Only on GET /profiles/:id/reviews responses. */
+  task_title?: string;
   stars: number;
-  value_rating: ValueRating | null;
+  /** "" when unset — coalesced/zero-valued server-side, never null. */
+  value_rating: ValueRating | "";
   would_rehire: boolean | null;
-  comment: string | null;
+  /** "" when unset — coalesced/zero-valued server-side, never null. */
+  comment: string;
   created_at: string;
 }
 

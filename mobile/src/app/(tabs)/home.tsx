@@ -4,7 +4,7 @@ import { useFocusEffect, useRouter } from "expo-router";
 import * as SecureStore from "expo-secure-store";
 import { ArrowRight, Bell, CircleAlert, ClipboardList, UserRound } from "lucide-react-native";
 import { Badge, Card, EmptyState, Pill, PressableScale, Screen, Skeleton } from "../../components/ui";
-import { ApiError, getMe, getPostedTasks } from "../../lib/api";
+import { ApiError, getMe, getNotifications, getPostedTasks } from "../../lib/api";
 import { getCategoryMeta } from "../../lib/categories";
 import { deriveTaskStatus, formatRelativeTime } from "../../lib/task-utils";
 import type { Task, TaskCategory } from "../../lib/types";
@@ -63,6 +63,7 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [hasUnreadNotifications, setHasUnreadNotifications] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -112,10 +113,20 @@ export default function Home() {
     }
   }, [router]);
 
+  const loadUnreadNotifications = useCallback(async () => {
+    try {
+      const unread = await getNotifications({ unread: true, limit: 1 });
+      setHasUnreadNotifications(unread.length > 0);
+    } catch {
+      // Non-critical: leave the badge as it was rather than surface an error.
+    }
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
       loadTasks();
-    }, [loadTasks])
+      loadUnreadNotifications();
+    }, [loadTasks, loadUnreadNotifications])
   );
 
   async function onRefresh() {
@@ -145,7 +156,12 @@ export default function Home() {
           className="h-11 w-11 items-center justify-center rounded-pill"
           hitSlop={8}
         >
-          <Bell color={color.ink} size={22} strokeWidth={size.iconStroke} />
+          <View>
+            <Bell color={color.ink} size={22} strokeWidth={size.iconStroke} />
+            {hasUnreadNotifications ? (
+              <View className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-pill bg-brand" />
+            ) : null}
+          </View>
         </PressableScale>
       </View>
 

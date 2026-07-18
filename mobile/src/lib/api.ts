@@ -208,6 +208,23 @@ export function getProfileReviews(id: string): Promise<Review[]> {
   );
 }
 
+export interface SupporterReviewsSummary {
+  reviews: Review[];
+  count: number;
+  avgStars: number | null;
+}
+
+// Same endpoint as getProfileReviews, but keeps count/avg_stars instead of
+// discarding them — for screens that need to show an aggregate, not just
+// the list.
+export function getSupporterReviews(id: string): Promise<SupporterReviewsSummary> {
+  return apiFetch<ReviewsEnvelope>(`/profiles/${id}/reviews`).then((envelope) => ({
+    reviews: Array.isArray(envelope?.reviews) ? envelope.reviews : [],
+    count: envelope?.count ?? 0,
+    avgStars: envelope?.avg_stars ?? null,
+  }));
+}
+
 // ---- Supporter ------------------------------------------------------------
 
 export interface ApplySupporterPayload {
@@ -447,8 +464,11 @@ export function getNotifications(params?: NotificationsParams): Promise<AppNotif
   );
 }
 
-export function markNotificationRead(id: string): Promise<AppNotification> {
-  return apiFetch<AppNotification>(`/notifications/${id}/read`, { method: "PATCH" });
+// server/main.go's markNotificationRead returns 204 (empty body), not the
+// updated row — apiFetch resolves that to `null`, so callers must update
+// their local notification state optimistically rather than from a response.
+export function markNotificationRead(id: string): Promise<void> {
+  return apiFetch<void>(`/notifications/${id}/read`, { method: "PATCH" });
 }
 
 export function markAllRead(): Promise<void> {
@@ -461,6 +481,16 @@ export function deleteNotification(id: string): Promise<void> {
 
 export function deleteReadNotifications(): Promise<void> {
   return apiFetch<void>("/notifications?read=true", { method: "DELETE" });
+}
+
+// ---- TalkJS -------------------------------------------------------------
+
+// Hex HMAC-SHA256 of the caller's TalkJS user id (their email — matching the
+// existing Talk.User id scheme), computed server-side with TALKJS_SECRET_KEY.
+// Pass this on Session so TalkJS can verify the client isn't impersonating
+// another user's identity.
+export function getTalkjsSignature(): Promise<string> {
+  return apiFetch<{ signature: string }>("/talkjs/signature").then((res) => res.signature);
 }
 
 export { ApiError } from "./api-error";

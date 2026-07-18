@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Image, RefreshControl, ScrollView, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Location from "expo-location";
-import { Bike, Bus, Car, ChevronLeft, CircleAlert, MapPin } from "lucide-react-native";
+import { Bike, Bus, Car, ChevronLeft, CircleAlert, MapPin, MessageCircle } from "lucide-react-native";
 import { CancelTaskSheet } from "../../components/CancelTaskSheet";
 import { CompleteTaskSheet, type CompleteTaskPayload } from "../../components/CompleteTaskSheet";
 import { ReviewSheet, type ReviewSubmitPayload } from "../../components/ReviewSheet";
@@ -369,6 +369,7 @@ export default function TaskDetail() {
   const cancellable = isRequester && status === "open";
   const locations = locationParts(task.location_text);
   const TransportIcon = task.transport_required ? TRANSPORT_ICON[task.transport_required] : undefined;
+  const canChat = !!task.assigned_to_id && (isRequester || isAssignee);
   const canReview = isRequester && task.status === "completed" && !!task.assigned_to_id;
   const hasClosedWorklog = worklogs ? worklogs.worklogs.some((wl) => wl.end_at !== null) : false;
   const canComplete = isAssignee && task.status === "open" && !hasOpenWorklog && hasClosedWorklog;
@@ -470,6 +471,17 @@ export default function TaskDetail() {
               <Text className="text-body font-semibold text-ink">{requester?.name ?? "Requester"}</Text>
               <Text className="text-caption text-muted">Requester</Text>
             </View>
+          </PressableScale>
+        ) : null}
+
+        {/* Chat */}
+        {canChat ? (
+          <PressableScale
+            onPress={() => router.push(`/task/${id}/chat`)}
+            className="mb-4 flex-row items-center justify-center gap-2 rounded-pill border border-line bg-surface py-3.5"
+          >
+            <MessageCircle color={color.ink} size={18} strokeWidth={size.iconStroke} />
+            <Text className="text-body font-semibold text-ink">Open chat</Text>
           </PressableScale>
         ) : null}
 

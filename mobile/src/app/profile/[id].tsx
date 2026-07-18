@@ -1,11 +1,50 @@
 import { useCallback, useState } from "react";
 import { RefreshControl, ScrollView, Text, View } from "react-native";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
-import { ChevronLeft, MapPin, Phone, UserRound } from "lucide-react-native";
-import { Avatar, Card, EmptyState, PressableScale, Screen, Skeleton } from "../../components/ui";
-import { ApiError, getPublicProfile } from "../../lib/api";
-import type { PublicProfile } from "../../lib/types";
+import { Check, ChevronLeft, MapPin, MessageSquare, Phone, UserRound } from "lucide-react-native";
+import { Avatar, Badge, Card, EmptyState, PressableScale, Screen, Skeleton } from "../../components/ui";
+import { ApiError, getPublicProfile, getSupporterReviews, type SupporterReviewsSummary } from "../../lib/api";
+import { formatRelativeTime } from "../../lib/task-utils";
+import type { PublicProfile, Review, ValueRating } from "../../lib/types";
 import { color, size } from "../../theme/tokens";
+
+const VALUE_RATING_LABEL: Record<ValueRating, string> = {
+  great: "Great value",
+  fair: "Fair value",
+  not_worth: "Not worth it",
+};
+
+const EMPTY_REVIEWS: SupporterReviewsSummary = { reviews: [], count: 0, avgStars: null };
+
+function ReviewCard({ review }: { review: Review }) {
+  return (
+    <Card>
+      <View className="flex-row items-center justify-between">
+        <Text className="text-body text-ink">
+          {"★".repeat(review.stars)}
+          {"☆".repeat(5 - review.stars)}
+        </Text>
+        <Text className="text-caption text-muted">{formatRelativeTime(review.created_at)}</Text>
+      </View>
+      {review.value_rating || review.would_rehire ? (
+        <View className="mt-2 flex-row flex-wrap items-center gap-2">
+          {review.value_rating === "great" ? (
+            <Badge label={VALUE_RATING_LABEL.great} variant="success" />
+          ) : review.value_rating ? (
+            <Text className="text-caption text-muted">{VALUE_RATING_LABEL[review.value_rating]}</Text>
+          ) : null}
+          {review.would_rehire ? (
+            <View className="flex-row items-center gap-1">
+              <Check color={color.muted} size={14} strokeWidth={size.iconStroke} />
+              <Text className="text-caption text-muted">Would rehire</Text>
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+      {review.comment ? <Text className="mt-2 text-body text-ink">{review.comment}</Text> : null}
+    </Card>
+  );
+}
 
 export default function PublicProfileScreen() {
   const router = useRouter();
@@ -13,14 +52,16 @@ export default function PublicProfileScreen() {
   const id = Array.isArray(params.id) ? params.id[0] : (params.id ?? "");
 
   const [profile, setProfile] = useState<PublicProfile | null>(null);
+  const [reviewsSummary, setReviewsSummary] = useState<SupporterReviewsSummary>(EMPTY_REVIEWS);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const p = await getPublicProfile(id);
+      const [p, r] = await Promise.all([getPublicProfile(id), getSupporterReviews(id).catch(() => EMPTY_REVIEWS)]);
       setProfile(p);
+      setReviewsSummary(r);
       setError(null);
     } catch (e) {
       if (e instanceof ApiError && e.isAuthError) {
@@ -45,6 +86,8 @@ export default function PublicProfileScreen() {
     await load();
     setRefreshing(false);
   }
+
+  const showReviews = !!profile && (profile.asg_completed > 0 || reviewsSummary.count > 0);
 
   return (
     <Screen scroll={false}>
@@ -108,6 +151,31 @@ export default function PublicProfileScreen() {
               <Text className="mt-1 text-caption text-muted">In progress</Text>
             </Card>
           </View>
+
+          {showReviews ? (
+            <View className="mb-8">
+              <Text className="mb-2 text-title font-semibold text-ink">Reviews</Text>
+              {reviewsSummary.count > 0 ? (
+                <Text className="mb-3 text-body text-ink">
+                  {(reviewsSummary.avgStars ?? 0).toFixed(1)} · {reviewsSummary.count} review
+                  {reviewsSummary.count === 1 ? "" : "s"}
+                </Text>
+              ) : null}
+              {reviewsSummary.count === 0 ? (
+                <EmptyState
+                  icon={MessageSquare}
+                  title="No reviews yet"
+                  caption="Reviews show up here once requesters leave them."
+                />
+              ) : (
+                <View className="gap-3">
+                  {reviewsSummary.reviews.map((review) => (
+                    <ReviewCard key={review.id} review={review} />
+                  ))}
+                </View>
+              )}
+            </View>
+          ) : null}
         </ScrollView>
       ) : null}
     </Screen>

@@ -11,7 +11,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -499,6 +502,8 @@ func main() {
 		meAPI.PATCH("", patchMyProfile)
 	}
 
+	r.GET("/talkjs/signature", dualAuth(sqldb), talkjsSignatureHandler)
+
 	r.POST("/supporter/apply", dualAuth(sqldb), applySupporterHandler)
 
 	r.POST("/ai/parse-task", dualAuth(sqldb), parseTaskWithAI)
@@ -968,6 +973,23 @@ func patchMyProfile(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, p)
+}
+
+// TalkJS identity verification signature (talkjs.com/docs/authentication) —
+// a hex HMAC-SHA256 of the user's TalkJS id (email, matching the existing
+// Talk.User id scheme on web) keyed with TALKJS_SECRET_KEY. Clients pass this
+// on Session so TalkJS rejects any identity it wasn't issued for.
+func talkjsSignatureHandler(c *gin.Context) {
+	uid := c.GetString("uid")
+	email := c.GetString("email")
+	if uid == "" || email == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	mac := hmac.New(sha256.New, []byte(os.Getenv("TALKJS_SECRET_KEY")))
+	mac.Write([]byte(email))
+	c.JSON(http.StatusOK, gin.H{"signature": hex.EncodeToString(mac.Sum(nil))})
 }
 
 func applySupporterHandler(c *gin.Context) {
