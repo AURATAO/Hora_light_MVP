@@ -1,9 +1,10 @@
 import { useCallback, useState } from "react";
-import { Text, View } from "react-native";
+import { Text, View, type LayoutChangeEvent } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { Chatbox, Session, getConversationBuilder, type ConversationBuilder, type User } from "@talkjs/expo";
 import { ChevronLeft, CircleAlert } from "lucide-react-native";
+import { Avatar } from "../../../components/ui/Avatar";
 import { EmptyState } from "../../../components/ui/EmptyState";
 import { PressableScale } from "../../../components/ui/PressableScale";
 import { Skeleton } from "../../../components/ui/Skeleton";
@@ -23,6 +24,9 @@ interface ChatSetup {
   me: User;
   conversationBuilder: ConversationBuilder;
   signature: string;
+  taskTitle: string;
+  counterpartName: string;
+  counterpartAvatar: string | null;
 }
 
 export default function TaskChat() {
@@ -35,6 +39,13 @@ export default function TaskChat() {
   const [error, setError] = useState<string | null>(null);
   const [sessionAttempt, setSessionAttempt] = useState(0);
   const [sessionError, setSessionError] = useState<string | null>(null);
+  // TalkJS's Chatbox needs to know how tall our own header is to position its
+  // message field above the keyboard correctly (talkjs.com/docs — the SDK's
+  // built-in KeyboardAvoidingView offset assumes the Chatbox starts at the
+  // physical top of the screen; ours starts below this header instead).
+  // Measured via onLayout rather than a guessed constant so it stays correct
+  // across devices/safe-area sizes.
+  const [headerHeight, setHeaderHeight] = useState<number | undefined>(undefined);
 
   function handleAuthError(e: unknown): boolean {
     if (e instanceof ApiError && e.isAuthError) {
@@ -82,7 +93,14 @@ export default function TaskChat() {
       }
       builder.setAttributes({ subject: task.title || "Task", custom: { taskId: task.id } });
 
-      setSetup({ me, conversationBuilder: builder, signature });
+      setSetup({
+        me,
+        conversationBuilder: builder,
+        signature,
+        taskTitle: task.title || "Task",
+        counterpartName: otherProfile?.name ?? (otherEmail ? deriveName(otherEmail) : "Chat"),
+        counterpartAvatar: otherProfile?.avatar_url ?? null,
+      });
       setError(null);
     } catch (e) {
       if (handleAuthError(e)) return;
@@ -104,47 +122,67 @@ export default function TaskChat() {
     setSessionAttempt((n) => n + 1);
   }
 
-  return (
-    <SafeAreaView className="flex-1 bg-page" edges={["top", "left", "right"]}>
-      <View className="mb-2 mt-4 flex-row items-center px-6">
-        <PressableScale
-          onPress={() => router.back()}
-          className="h-11 w-11 items-center justify-center rounded-pill"
-          hitSlop={8}
-        >
-          <ChevronLeft color={color.ink} size={22} strokeWidth={size.iconStroke} />
-        </PressableScale>
-        <Text className="ml-1 text-title font-semibold text-ink">Chat</Text>
-      </View>
+  function onHeaderLayout(e: LayoutChangeEvent) {
+    setHeaderHeight(e.nativeEvent.layout.height);
+  }
 
-      {loading ? (
-        <View className="gap-3 px-6">
-          <Skeleton className="h-16" />
-          <Skeleton className="h-16 w-2/3" />
-          <Skeleton className="h-16 w-1/2" />
+  return (
+    <View className="flex-1 bg-page">
+      <SafeAreaView edges={["top"]} className="border-b border-line bg-surface" onLayout={onHeaderLayout}>
+        <View className="flex-row items-center gap-3 px-4 py-3">
+          <PressableScale
+            onPress={() => router.back()}
+            className="h-11 w-11 items-center justify-center rounded-pill"
+            hitSlop={8}
+          >
+            <ChevronLeft color={color.ink} size={22} strokeWidth={size.iconStroke} />
+          </PressableScale>
+          {setup ? (
+            <>
+              <Avatar uri={setup.counterpartAvatar} name={setup.counterpartName} size={32} />
+              <View className="flex-1">
+                <Text className="text-body font-semibold text-ink" numberOfLines={1}>
+                  {setup.counterpartName}
+                </Text>
+                <Text className="text-caption text-muted" numberOfLines={1}>
+                  {setup.taskTitle}
+                </Text>
+              </View>
+            </>
+          ) : (
+            <Text className="text-body font-semibold text-ink">Chat</Text>
+          )}
         </View>
-      ) : error || !TALKJS_APP_ID ? (
-        <View className="px-6">
-          <EmptyState
-            icon={CircleAlert}
-            title="Couldn't load this chat"
-            caption={error ?? "Missing TalkJS app configuration."}
-            actionLabel={error ? "Retry" : undefined}
-            onAction={error ? load : undefined}
-          />
-        </View>
-      ) : sessionError ? (
-        <View className="px-6">
-          <EmptyState
-            icon={CircleAlert}
-            title="Chat couldn't connect"
-            caption={sessionError}
-            actionLabel="Retry"
-            onAction={retrySession}
-          />
-        </View>
-      ) : setup ? (
-        <View className="flex-1">
+      </SafeAreaView>
+
+      <SafeAreaView edges={["bottom", "left", "right"]} className="flex-1">
+        {loading ? (
+          <View className="gap-3 px-6 pt-4">
+            <Skeleton className="h-16" />
+            <Skeleton className="h-16 w-2/3" />
+            <Skeleton className="h-16 w-1/2" />
+          </View>
+        ) : error || !TALKJS_APP_ID ? (
+          <View className="px-6 pt-4">
+            <EmptyState
+              icon={CircleAlert}
+              title="Couldn't load this chat"
+              caption={error ?? "Missing TalkJS app configuration."}
+              actionLabel={error ? "Retry" : undefined}
+              onAction={error ? load : undefined}
+            />
+          </View>
+        ) : sessionError ? (
+          <View className="px-6 pt-4">
+            <EmptyState
+              icon={CircleAlert}
+              title="Chat couldn't connect"
+              caption={sessionError}
+              actionLabel="Retry"
+              onAction={retrySession}
+            />
+          </View>
+        ) : setup ? (
           <Session
             key={sessionAttempt}
             appId={TALKJS_APP_ID}
@@ -156,10 +194,11 @@ export default function TaskChat() {
               conversationBuilder={setup.conversationBuilder}
               showChatHeader={false}
               messageField={{ placeholder: "Type here…" }}
+              keyboardVerticalOffset={headerHeight}
             />
           </Session>
-        </View>
-      ) : null}
-    </SafeAreaView>
+        ) : null}
+      </SafeAreaView>
+    </View>
   );
 }

@@ -58,6 +58,11 @@ function locationParts(locationText: string | null): string[] {
     .filter(Boolean);
 }
 
+function firstName(name?: string | null): string {
+  if (!name) return "them";
+  return name.trim().split(/\s+/)[0] || "them";
+}
+
 function formatClock(iso: string): string {
   return new Date(iso).toLocaleString([], {
     month: "short",
@@ -369,7 +374,6 @@ export default function TaskDetail() {
   const cancellable = isRequester && status === "open";
   const locations = locationParts(task.location_text);
   const TransportIcon = task.transport_required ? TRANSPORT_ICON[task.transport_required] : undefined;
-  const canChat = !!task.assigned_to_id && (isRequester || isAssignee);
   const canReview = isRequester && task.status === "completed" && !!task.assigned_to_id;
   const hasClosedWorklog = worklogs ? worklogs.worklogs.some((wl) => wl.end_at !== null) : false;
   const canComplete = isAssignee && task.status === "open" && !hasOpenWorklog && hasClosedWorklog;
@@ -448,41 +452,52 @@ export default function TaskDetail() {
 
         {/* Supporter */}
         {isRequester && task.assigned_to_id ? (
-          <PressableScale
-            onPress={() => router.push(`/profile/${task.assigned_to_id}`)}
-            className="mb-4 flex-row items-center gap-3 rounded-card border border-line bg-surface p-4"
-          >
-            <Avatar uri={supporter?.avatar_url} name={supporter?.name} size={44} />
-            <View>
-              <Text className="text-body font-semibold text-ink">{supporter?.name ?? "Your supporter"}</Text>
-              <Text className="text-caption text-muted">Supporter</Text>
-            </View>
-          </PressableScale>
+          <View className="mb-4 rounded-card border border-line bg-surface">
+            <PressableScale
+              onPress={() => router.push(`/profile/${task.assigned_to_id}`)}
+              className="flex-row items-center gap-3 p-4"
+            >
+              <Avatar uri={supporter?.avatar_url} name={supporter?.name} size={44} />
+              <View>
+                <Text className="text-body font-semibold text-ink">{supporter?.name ?? "Your supporter"}</Text>
+                <Text className="text-caption text-muted">Supporter</Text>
+              </View>
+            </PressableScale>
+            <PressableScale
+              onPress={() => router.push(`/task/${id}/chat`)}
+              className="min-h-11 justify-center border-t border-line p-4"
+            >
+              <View className="flex-row items-center gap-2">
+                <MessageCircle color={color.muted} size={18} strokeWidth={size.iconStroke} />
+                <Text className="text-body text-ink">Message {firstName(supporter?.name)}</Text>
+              </View>
+            </PressableScale>
+          </View>
         ) : null}
 
         {/* Requester (assignee's view) */}
         {isAssignee ? (
-          <PressableScale
-            onPress={task.requester_id ? () => router.push(`/profile/${task.requester_id}`) : undefined}
-            className="mb-4 flex-row items-center gap-3 rounded-card border border-line bg-surface p-4"
-          >
-            <Avatar uri={requester?.avatar_url} name={requester?.name} size={44} />
-            <View>
-              <Text className="text-body font-semibold text-ink">{requester?.name ?? "Requester"}</Text>
-              <Text className="text-caption text-muted">Requester</Text>
-            </View>
-          </PressableScale>
-        ) : null}
-
-        {/* Chat */}
-        {canChat ? (
-          <PressableScale
-            onPress={() => router.push(`/task/${id}/chat`)}
-            className="mb-4 flex-row items-center justify-center gap-2 rounded-pill border border-line bg-surface py-3.5"
-          >
-            <MessageCircle color={color.ink} size={18} strokeWidth={size.iconStroke} />
-            <Text className="text-body font-semibold text-ink">Open chat</Text>
-          </PressableScale>
+          <View className="mb-4 rounded-card border border-line bg-surface">
+            <PressableScale
+              onPress={task.requester_id ? () => router.push(`/profile/${task.requester_id}`) : undefined}
+              className="flex-row items-center gap-3 p-4"
+            >
+              <Avatar uri={requester?.avatar_url} name={requester?.name} size={44} />
+              <View>
+                <Text className="text-body font-semibold text-ink">{requester?.name ?? "Requester"}</Text>
+                <Text className="text-caption text-muted">Requester</Text>
+              </View>
+            </PressableScale>
+            <PressableScale
+              onPress={() => router.push(`/task/${id}/chat`)}
+              className="min-h-11 justify-center border-t border-line p-4"
+            >
+              <View className="flex-row items-center gap-2">
+                <MessageCircle color={color.muted} size={18} strokeWidth={size.iconStroke} />
+                <Text className="text-body text-ink">Message {firstName(requester?.name)}</Text>
+              </View>
+            </PressableScale>
+          </View>
         ) : null}
 
         {/* Work session (assignee's view) */}
