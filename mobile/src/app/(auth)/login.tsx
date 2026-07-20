@@ -9,6 +9,7 @@ import { supabase } from "../../lib/supabase";
 import { apiFetch } from "../../lib/api";
 import { Screen, Input, PressableScale } from "../../components/ui";
 import { color } from "../../theme/tokens";
+import { useAuthState } from "../_layout";
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -26,6 +27,7 @@ async function completeSessionFromUrl(url: string) {
 
 export default function Login() {
   const router = useRouter();
+  const { refresh } = useAuthState();
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
   const [codeSent, setCodeSent] = useState(false);
@@ -41,7 +43,11 @@ export default function Login() {
     });
     if (me?.id) await SecureStore.setItemAsync("hora_user_id", String(me.id));
     if (me?.email) await SecureStore.setItemAsync("hora_user_email", String(me.email));
-    router.replace("/(tabs)/home");
+    // Route through the root gate (index) rather than straight to the tabs, so
+    // a new / incomplete user lands in onboarding. refresh() populates the
+    // cached profile first, so the gate reads it without a bounce back here.
+    await refresh();
+    router.replace("/");
   }
 
   async function handleGoogleLogin() {

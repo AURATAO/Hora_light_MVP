@@ -57,8 +57,19 @@
         "expo-build-properties",
         {
           "android": {
-            "extraMavenRepos": ["../../node_modules/@notifee/react-native/android/libs"]
+            "extraMavenRepos": [
+              "../../node_modules/@notifee/react-native/android/libs"
+            ]
           }
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#3A5A2D",
+          "image": "./assets/splash.png",
+          "resizeMode": "cover",
+          "enableFullScreenImage_legacy": true
         }
       ]
     ],
