@@ -187,6 +187,7 @@ export default function MyTasks() {
 
   return (
     <Screen
+      insetForTabBar
       headline="My tasks"
       refreshControl={
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={color.muted} />

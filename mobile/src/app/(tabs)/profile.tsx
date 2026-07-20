@@ -182,7 +182,7 @@ export default function Profile() {
 
   if (loading) {
     return (
-      <Screen headline="Profile">
+      <Screen insetForTabBar headline="Profile">
         <View className="gap-3">
           <Skeleton className="h-[100px]" />
           <Skeleton className="h-[140px]" />
@@ -194,7 +194,7 @@ export default function Profile() {
 
   if (error && !profile) {
     return (
-      <Screen headline="Profile">
+      <Screen insetForTabBar headline="Profile">
         <EmptyState
           icon={User}
           title="Couldn't load your profile"
@@ -209,7 +209,7 @@ export default function Profile() {
   if (!profile) return null;
 
   return (
-    <Screen refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={color.muted} />}>
+    <Screen insetForTabBar refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={color.muted} />}>
       <PressableScale onLongPress={() => router.push("/dev-components")}>
         <Text className="mb-6 mt-4 text-display text-ink">Profile</Text>
       </PressableScale>

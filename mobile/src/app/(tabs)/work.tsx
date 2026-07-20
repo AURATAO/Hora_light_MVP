@@ -128,7 +128,7 @@ export default function Work() {
 
   if (profileLoading) {
     return (
-      <Screen headline="Work">
+      <Screen insetForTabBar headline="Work">
         <View className="gap-3">
           <Skeleton className="h-[84px]" />
           <Skeleton className="h-[84px]" />
@@ -139,7 +139,7 @@ export default function Work() {
 
   if (profileError && !profile) {
     return (
-      <Screen headline="Work">
+      <Screen insetForTabBar headline="Work">
         <EmptyState
           icon={Briefcase}
           title="Couldn't load this page"
@@ -155,7 +155,7 @@ export default function Work() {
 
   if (status === "none") {
     return (
-      <Screen headline="Work">
+      <Screen insetForTabBar headline="Work">
         <View className="gap-4 rounded-card border border-line bg-surface p-4">
           <Text className="text-title font-semibold text-ink">Become a supporter</Text>
           <Text className="text-body text-muted">Help people nearby and earn on your own schedule.</Text>
@@ -168,7 +168,7 @@ export default function Work() {
 
   if (status === "applied") {
     return (
-      <Screen headline="Work">
+      <Screen insetForTabBar headline="Work">
         <EmptyState icon={Hourglass} title="Application received" caption="We'll review it soon." />
       </Screen>
     );
@@ -176,6 +176,7 @@ export default function Work() {
 
   return (
     <Screen
+      insetForTabBar
       headline="Available tasks"
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={color.muted} />}
     >

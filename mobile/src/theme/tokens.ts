@@ -55,6 +55,16 @@ export const size = {
   iconStroke: 1.8,
 } as const;
 
+// Floating pill tab bar geometry (DESIGN.md §5 tab bar, restyled as a floating
+// pill). All values sit on the 4pt grid. `bottomGap` is measured above the
+// device safe-area inset; screens add `height + bottomGap + a grid step` of
+// bottom padding so scroll content never hides behind the bar.
+export const layout = {
+  tabBarHeight: 64,
+  tabBarInset: 24,
+  tabBarBottomGap: 12,
+} as const;
+
 export const motion = {
   pressScale: 0.97,
   duration: {
