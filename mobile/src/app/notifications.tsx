@@ -3,7 +3,7 @@ import { FlatList, RefreshControl, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useRouter } from "expo-router";
 import Swipeable from "react-native-gesture-handler/ReanimatedSwipeable";
-import { Bell, ChevronLeft, CircleAlert } from "lucide-react-native";
+import { Bell, ChevronLeft, CircleAlert, X } from "lucide-react-native";
 import { PressableScale } from "../components/ui/PressableScale";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Skeleton } from "../components/ui/Skeleton";
@@ -48,24 +48,33 @@ function NotificationRow({
     >
       <PressableScale
         onPress={onPress}
-        className={`flex-row gap-3 rounded-card border border-line p-4 ${
+        className={`rounded-card border border-line p-4 ${
           notification.unread ? "bg-brand-tint" : "bg-surface"
         }`}
       >
-        <View className={`h-9 w-9 items-center justify-center rounded-pill ${tint.bg}`}>
-          <Icon color={tint.iconColor} size={18} strokeWidth={size.iconStroke} />
+        <View className="flex-row items-start gap-3">
+          <View className={`h-9 w-9 items-center justify-center rounded-pill ${tint.bg}`}>
+            <Icon color={tint.iconColor} size={18} strokeWidth={size.iconStroke} />
+          </View>
+          <View className="flex-1 pr-6">
+            <Text className="text-body font-semibold text-ink" numberOfLines={2}>
+              {notification.title}
+            </Text>
+            <Text className="mt-1 text-body text-muted" numberOfLines={2}>
+              {notification.body}
+            </Text>
+            <Text className="mt-1 text-caption text-muted">
+              {formatRelativeTime(notification.created_at)}
+            </Text>
+          </View>
         </View>
-        <View className="flex-1">
-          <Text className="text-body font-semibold text-ink" numberOfLines={2}>
-            {notification.title}
-          </Text>
-          <Text className="mt-1 text-body text-muted" numberOfLines={2}>
-            {notification.body}
-          </Text>
-          <Text className="mt-1 text-caption text-muted">
-            {formatRelativeTime(notification.created_at)}
-          </Text>
-        </View>
+        <PressableScale
+          onPress={onDelete}
+          hitSlop={10}
+          className="absolute right-3 top-3 h-6 w-6 items-center justify-center"
+        >
+          <X color={color.muted} size={16} strokeWidth={size.iconStroke} />
+        </PressableScale>
       </PressableScale>
     </Swipeable>
   );
