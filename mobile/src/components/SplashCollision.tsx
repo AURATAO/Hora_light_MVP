@@ -9,10 +9,13 @@ import Animated, {
   withSequence,
   withTiming,
 } from 'react-native-reanimated';
+import { color } from '../theme/tokens';
 
 // ─── Brand & tuning ──────────────────────────────────────────────
-const GREEN = '#3A5A2D';
-const GOLD = '#E1B145';
+// Colors come from the design tokens (DESIGN.md §1 — never raw hex in a
+// component). color.brand is the green field; color.gold is the two dots.
+const GREEN = color.brand;
+const GOLD = color.gold;
 
 const DOT = 18; // dot diameter
 const GAP = 46; // resting edge-to-edge gap between the two dots
@@ -45,8 +48,8 @@ type Props = {
  * field that opens into the home screen via a circular reveal.
  *
  * Mount this as the last child of your root layout (absolute fill,
- * above app content). Keep the native splash (solid #3A5A2D with the
- * two static dots) visible via expo-splash-screen until this mounts,
+ * above app content). Keep the native splash (solid brand green with
+ * the two static gold dots) visible via expo-splash-screen until this mounts,
  * then call SplashScreen.hideAsync() — the handoff is seamless
  * because frame 0 here matches the native splash exactly.
  */
