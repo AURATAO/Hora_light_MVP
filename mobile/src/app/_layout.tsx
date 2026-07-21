@@ -9,6 +9,8 @@ import { supabase } from "../lib/supabase";
 import { getMe, getProfile } from "../lib/api";
 import type { Profile } from "../lib/types";
 import SplashCollision from "../components/SplashCollision";
+import { ErrorBoundary } from "../components/ErrorBoundary";
+import { OfflineBanner } from "../components/OfflineBanner";
 
 // Hold the native splash (solid brand green with the two static gold dots)
 // up until <SplashCollision> has mounted, so its static frame hands off
@@ -96,21 +98,30 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
-        <AuthContext.Provider value={{ ...state, refresh: checkSession }}>
-          {/* Every screen builds its own header (Screen's headline, or a custom
-              back/close row) rather than native Stack chrome — consistent with
-              every existing screen in the app. */}
-          <Stack screenOptions={{ headerShown: false }}>
-            <Stack.Screen name="post-task" options={{ presentation: "modal" }} />
-          </Stack>
-          {/* Opening animation, overlaid above all app content. Unmounts
-              itself once onFinish fires (the circular reveal completes). */}
-          {!splashDone && (
-            <View style={StyleSheet.absoluteFill} onLayout={onSplashLayout}>
-              <SplashCollision onFinish={() => setSplashDone(true)} />
-            </View>
-          )}
-        </AuthContext.Provider>
+        {/* Crash guard: any render/lifecycle error below this line shows a
+            friendly full-screen fallback with Restart instead of a blank
+            white screen. Sits under SafeAreaProvider so the fallback can use
+            the safe-area insets. */}
+        <ErrorBoundary>
+          <AuthContext.Provider value={{ ...state, refresh: checkSession }}>
+            {/* Every screen builds its own header (Screen's headline, or a custom
+                back/close row) rather than native Stack chrome — consistent with
+                every existing screen in the app. */}
+            <Stack screenOptions={{ headerShown: false }}>
+              <Stack.Screen name="post-task" options={{ presentation: "modal" }} />
+            </Stack>
+            {/* App-wide offline bar — non-blocking overlay above every screen,
+                below the splash. */}
+            <OfflineBanner />
+            {/* Opening animation, overlaid above all app content. Unmounts
+                itself once onFinish fires (the circular reveal completes). */}
+            {!splashDone && (
+              <View style={StyleSheet.absoluteFill} onLayout={onSplashLayout}>
+                <SplashCollision onFinish={() => setSplashDone(true)} />
+              </View>
+            )}
+          </AuthContext.Provider>
+        </ErrorBoundary>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );
