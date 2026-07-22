@@ -3,6 +3,7 @@ import { Platform, ScrollView, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import DateTimePicker, { DateTimePickerAndroid } from "@react-native-community/datetimepicker";
 import { Check, ChevronLeft, X } from "lucide-react-native";
+import { AddressField } from "../components/AddressField";
 import { CompanionshipPolicySheet } from "../components/CompanionshipPolicySheet";
 import { Button, Input, Pill, PressableScale, Screen } from "../components/ui";
 import { ApiError, createTask, estimateTaskCost, parseTask } from "../lib/api";
@@ -472,11 +473,10 @@ export default function PostTask() {
                       </PressableScale>
                     ) : null}
                   </View>
-                  {/* TODO(places): plain text for now — Google Places autocomplete needs
-                      EXPO_PUBLIC_GOOGLE_PLACES_KEY wired to the Places API (New) REST
-                      endpoints (no RN SDK required, see mobile/.env.example). Deferred so
-                      it doesn't block the rest of Post Task parity. */}
-                  <Input
+                  {/* Places autocomplete + Apt/Suite line, same NYC bias and same
+                      apt-splicing as web's AddressInput — see AddressField. Free
+                      text still posts fine if the user ignores the suggestions. */}
+                  <AddressField
                     value={loc.text}
                     onChangeText={(text) => updateLocation(loc.id, text)}
                     placeholder="Street address"

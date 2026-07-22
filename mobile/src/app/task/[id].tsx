@@ -3,7 +3,17 @@ import { Image, RefreshControl, ScrollView, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Clipboard from "expo-clipboard";
 import * as Location from "expo-location";
-import { Bike, Bus, Car, ChevronLeft, CircleAlert, Copy, MapPin, MessageCircle } from "lucide-react-native";
+import {
+  Bike,
+  Bus,
+  Car,
+  ChevronLeft,
+  CircleAlert,
+  Copy,
+  MapPin,
+  MessageCircle,
+  Navigation,
+} from "lucide-react-native";
 import { CancelTaskSheet } from "../../components/CancelTaskSheet";
 import { CompleteTaskSheet, type CompleteTaskPayload } from "../../components/CompleteTaskSheet";
 import { ReviewSheet, type ReviewSubmitPayload } from "../../components/ReviewSheet";
@@ -25,6 +35,7 @@ import {
   uploadCompletionPhoto,
 } from "../../lib/api";
 import { getCategoryMeta } from "../../lib/categories";
+import { openAddressInMaps, openRouteInMaps } from "../../lib/maps";
 import { cancelOvertimeReminders, scheduleOvertimeReminders } from "../../lib/overtime-reminders";
 import {
   deriveTaskStatus,
@@ -398,6 +409,10 @@ export default function TaskDetail() {
   const cancellable = isRequester && status === "open";
   const locations = locationParts(task.location_text);
   const TransportIcon = task.transport_required ? TRANSPORT_ICON[task.transport_required] : undefined;
+  // Supporter-only, and only once this task is actually theirs: the route action
+  // answers "where am I going next", which is meaningless to a requester and to
+  // anyone browsing an open task.
+  const canGetDirections = isAssignee && locations.length > 0;
   const canReview = isRequester && task.status === "completed" && !!task.assigned_to_id;
   const hasClosedWorklog = worklogs ? worklogs.worklogs.some((wl) => wl.end_at !== null) : false;
   const canComplete = isAssignee && task.status === "open" && !hasOpenWorklog && hasClosedWorklog;
@@ -456,19 +471,39 @@ export default function TaskDetail() {
             )}
           </View>
 
+          {/* Each address opens the platform maps app; the supporter additionally
+              gets the whole multi-stop route in one tap (see below). */}
           {locations.length > 0 ? (
             <View className="gap-1">
               {locations.map((loc, i) => (
-                <View key={i} className="flex-row items-start gap-2">
-                  <MapPin color={color.muted} size={16} strokeWidth={size.iconStroke} />
-                  <Text selectable className="flex-1 text-caption text-ink">
+                <PressableScale
+                  key={i}
+                  onPress={() => openAddressInMaps(loc)}
+                  accessibilityRole="link"
+                  accessibilityLabel={`Open ${loc} in maps`}
+                  className="min-h-11 flex-row items-center gap-2"
+                >
+                  <MapPin color={color.brand} size={16} strokeWidth={size.iconStroke} />
+                  <Text className="flex-1 text-caption text-brand">
                     {locations.length > 1 ? (
                       <Text className="text-muted">{i === 0 ? "Pick-up: " : `Stop ${i}: `}</Text>
                     ) : null}
                     {loc}
                   </Text>
-                </View>
+                </PressableScale>
               ))}
+              {canGetDirections ? (
+                <PressableScale
+                  onPress={() => openRouteInMaps(locations)}
+                  accessibilityRole="button"
+                  className="mt-1 min-h-11 flex-row items-center gap-2 border-t border-line pt-2"
+                >
+                  <Navigation color={color.brand} size={16} strokeWidth={size.iconStroke} />
+                  <Text className="text-caption text-brand">
+                    {locations.length > 1 ? "Get directions through all stops" : "Get directions"}
+                  </Text>
+                </PressableScale>
+              ) : null}
             </View>
           ) : null}
 
