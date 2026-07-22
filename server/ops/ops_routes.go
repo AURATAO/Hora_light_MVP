@@ -123,6 +123,81 @@ func RegisterOpsRoutes(r *gin.Engine, sqldb *sql.DB, authMW gin.HandlerFunc, isA
 		c.JSON(http.StatusOK, out)
 	})
 
+	// GET /ops/supporter-applications
+	//
+	// Every profile that has ever applied, newest application first — pending
+	// and already-decided alike, so the ops panel can render the queue and a
+	// decision log from one call. The client groups them; the API does not
+	// pre-filter, because "pending" is derived from three columns and that
+	// derivation belongs in one place (S-05: read supporter_status, not the
+	// raw timestamps, when you only need the state).
+	ops.GET("/supporter-applications", func(c *gin.Context) {
+		if !isAdmin(c.GetString("email")) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "not authorized"})
+			return
+		}
+
+		rows, err := sqldb.QueryContext(c.Request.Context(), `
+			SELECT id::text, coalesce(email,''), coalesce(name,''), coalesce(phone,''), coalesce(city,''),
+			       supporter_applied_at, supporter_rejected_at, coalesce(is_verified_supporter,false)
+			FROM public.profiles
+			WHERE supporter_applied_at IS NOT NULL
+			ORDER BY supporter_applied_at DESC
+			LIMIT 500
+		`)
+		if err != nil {
+			log.Printf("[ops.supporter-applications][query] %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+			return
+		}
+		defer rows.Close()
+
+		// Phone is PII (S-12): it travels to the admin panel because reviewing an
+		// application needs it, but it is never logged here or anywhere below.
+		type Applicant struct {
+			ID                  string     `json:"id"`
+			Email               string     `json:"email"`
+			Name                string     `json:"name"`
+			Phone               string     `json:"phone"`
+			City                string     `json:"city"`
+			SupporterAppliedAt  *time.Time `json:"supporter_applied_at"`
+			SupporterRejectedAt *time.Time `json:"supporter_rejected_at"`
+			IsVerifiedSupporter bool       `json:"is_verified_supporter"`
+			// Same derivation as GET /profile's supporter_status (server/main.go
+			// deriveSupporterStatus) — kept server-side so the panel never
+			// re-implements it (S-05).
+			SupporterStatus string `json:"supporter_status"`
+		}
+
+		out := []Applicant{}
+		for rows.Next() {
+			var a Applicant
+			if err := rows.Scan(
+				&a.ID, &a.Email, &a.Name, &a.Phone, &a.City,
+				&a.SupporterAppliedAt, &a.SupporterRejectedAt, &a.IsVerifiedSupporter,
+			); err != nil {
+				log.Printf("[ops.supporter-applications][scan] %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "scan error"})
+				return
+			}
+			switch {
+			case a.IsVerifiedSupporter:
+				a.SupporterStatus = "approved"
+			case a.SupporterRejectedAt != nil:
+				a.SupporterStatus = "rejected"
+			default:
+				a.SupporterStatus = "applied"
+			}
+			out = append(out, a)
+		}
+		if err := rows.Err(); err != nil {
+			log.Printf("[ops.supporter-applications][rows] %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+			return
+		}
+		c.JSON(http.StatusOK, out)
+	})
+
 	// POST /ops/force-complete  { "task_id": "uuid" }
 	ops.POST("/force-complete", func(c *gin.Context) {
 		email := c.GetString("email")

@@ -363,6 +363,7 @@ Access is restricted to a hardcoded email allowlist: `auratao.model@gmail.com`, 
 | POST | `/ops/force-complete` | Force-complete a task — body: `{ "task_id": "uuid" }` |
 | POST | `/ops/cancel` | Admin cancel — body: `{ "task_id": "uuid", "reason": "string" }` |
 | POST | `/ops/adjust-time` | Adjust logged time — body: `{ "task_id": "uuid", "delta": <int minutes> }` |
+| GET | `/ops/supporter-applications` | Every profile with `supporter_applied_at IS NOT NULL` (pending + decided), newest first, max 500 — each row: `id, email, name, phone, city, supporter_applied_at, supporter_rejected_at, is_verified_supporter, supporter_status` |
 | POST | `/ops/supporter-approve` | Approve a supporter application — body: `{ "profile_id": "uuid" }` or `{ "email": "..." }`; sets `is_verified_supporter = true`, clears `supporter_rejected_at` |
 | POST | `/ops/supporter-reject` | Reject a supporter application — body: `{ "profile_id": "uuid" }` or `{ "email": "..." }`; sets `supporter_rejected_at = now()`, `is_verified_supporter = false`. 404 if no row matched |
 

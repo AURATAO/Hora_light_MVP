@@ -22,6 +22,7 @@ skill-library/
 │   └── review-workflow.md   Builder / Adversarial Reviewer / Verifier / Arbiter protocol
 ├── decisions/           Append-only decision log (cheap future context)
 │   └── TEMPLATE.md
+├── supporter-review-runbook.md   Operational runbook: approving/rejecting supporters
 └── bootstrap/           How to instantiate this library for a NEW project
     └── BOOTSTRAP.md
 ```

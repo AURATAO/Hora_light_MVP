@@ -1,16 +1,12 @@
 // src/pages/OpsFeed.jsx
 import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from "../auth/AuthContext.jsx";
-import { supabase } from '../lib/supabaseClient'
 import { useToast } from '../providers/ToastProvider'
+import { opsFetch as fetchJSON } from '../api/ops'
+import OpsSupporters from './OpsSupporters.jsx'
 
-// ✅ 從環境變數讀 API Base（例如 https://core.horaapp.co）
-const API = (import.meta.env?.VITE_API_BASE || '').trim();
-if (!API) {
-  // 不阻擋執行，但提醒你記得在 .env 設定 VITE_API_BASE
-  console.warn('[OpsFeed] VITE_API_BASE is empty — requests will fail.');
-}
-
+// Display gate only — the server re-checks every /ops/* call against its own
+// hardcoded allowlist (S-14/S-60.5), which stays the authorization system.
 const ADMIN_EMAILS = new Set([
   'auratao.model@gmail.com',
   'liang.you@horaapp.co',
@@ -21,34 +17,10 @@ const ADMIN_EMAILS = new Set([
 
 const STATUS_FILTERS = ['all','accepted','completed','cancelled'];
 
-// ---- 共用：抓 JSON，順便幫忙把不是 JSON 的 404/HTML 報錯印出前 200 字 ----
-
-async function fetchJSON(path, init={}) {
-  // 取目前 session 的 access token
-  const { data: { session } } = await supabase.auth.getSession();
-  const headers = new Headers(init.headers || {});
-  if (session?.access_token) {
-    headers.set('Authorization', `Bearer ${session.access_token}`);
-  }
-  headers.set('Content-Type', 'application/json');
-
-  const resp = await fetch(`${API}${path}`, {
-    ...init,
-    headers,
-    credentials: 'include', // 留著也無妨，但依賴 Bearer
-  });
-
-  const ct = resp.headers.get('content-type') || '';
-  if (!resp.ok) {
-    const t = await resp.text().catch(()=> '')
-    throw new Error(`HTTP ${resp.status} ${path}\n${t.slice(0,200)}`)
-  }
-  if (!ct.includes('application/json')) {
-    const t = await resp.text().catch(()=> '')
-    throw new Error(`Expected JSON, got ${ct}\n${t.slice(0,200)}`)
-  }
-  return resp.json();
-}
+const TABS = [
+  { key: 'tasks', label: 'Task feed' },
+  { key: 'supporters', label: 'Supporter applications' },
+];
 
 export default function OpsFeed() {
   const { user } = useAuth()
@@ -57,14 +29,9 @@ export default function OpsFeed() {
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
   const [q, setQ] = useState('')
+  const [tab, setTab] = useState('tasks')
 
-  const allowed = !!user && new Set([
-    'auratao.model@gmail.com',
-    'liang.you@horaapp.co',
-    'liang.you@arcodiax.com',
-    'rollod4@gmail.com',
-    'daniele@arcodiax.com'
-  ]).has(user.email)
+  const allowed = !!user && ADMIN_EMAILS.has(user.email)
 
   async function load() {
     if (!allowed) return
@@ -86,14 +53,11 @@ export default function OpsFeed() {
   // 除錯：看後端辨識的身份
   useEffect(() => {
     (async () => {
-      if (!API) return;
       try {
-        const url = `${API}/auth/me`;
-        console.log('[auth] GET', url);
-        const me = await fetchJSON(url);
-        console.log('auth/me ->', me, '(API=', API, ')');
+        const me = await fetchJSON('/auth/me');
+        console.log('auth/me ->', me);
       } catch (e) {
-        console.log('auth/me fail', e, '(API=', API, ')');
+        console.log('auth/me fail', e);
       }
     })();
   }, []);
@@ -113,8 +77,7 @@ export default function OpsFeed() {
   async function forceComplete(id) {
     if (!confirm('Force complete this task?')) return;
     try {
-      const url = `${API}/ops/force-complete`;
-      await fetchJSON(url, {
+      await fetchJSON('/ops/force-complete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ task_id: id }),
@@ -129,8 +92,7 @@ export default function OpsFeed() {
   async function cancelTask(id) {
     const reason = prompt('Cancel reason (optional):') || '';
     try {
-      const url = `${API}/ops/cancel`;
-      await fetchJSON(url, {
+      await fetchJSON('/ops/cancel', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ task_id: id, reason }),
@@ -148,8 +110,7 @@ export default function OpsFeed() {
     const delta = parseInt(raw, 10);
     if (!Number.isFinite(delta) || delta === 0) return;
     try {
-      const url = `${API}/ops/adjust-time`;
-      await fetchJSON(url, {
+      await fetchJSON('/ops/adjust-time', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ task_id: id, delta }),
@@ -166,8 +127,26 @@ export default function OpsFeed() {
   return (
     <div className="min-h-screen w-full flex justify-center bg-linear-to-br from-primary to-primary/30 text-accent">
       <div className="p-4 max-w-7xl w-full">
-        <h1 className="text-xl font-semibold">Ops Feed</h1>
+        <h1 className="text-xl font-semibold">Ops</h1>
 
+        <div className="flex gap-2 pt-4">
+          {TABS.map(t => (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className={`rounded-md border px-3 py-1 text-sm ${
+                tab === t.key ? 'border-white/40 bg-white/10' : 'border-white/20 opacity-70 hover:opacity-100'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {tab === 'supporters' ? (
+          <div className="py-4"><OpsSupporters /></div>
+        ) : (
+        <>
         <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 py-4">
         <select
             className="border rounded px-2 py-1 sm:col-span-3"
@@ -248,6 +227,8 @@ export default function OpsFeed() {
             </tbody>
           </table>
         </div>
+        </>
+        )}
       </div>
     </div>
   );
