@@ -16,9 +16,15 @@ export default function TabsLayout() {
         tabBarActiveTintColor: color.ink,
         tabBarInactiveTintColor: color.inactive,
         // Floating pill: absolutely positioned, inset from the screen edges and
-        // lifted above the safe area. Depth is a hairline all around (DESIGN.md
-        // §1 favors a hairline over shadows) plus a whisper of shadow — the one
-        // shadow §1 allows the tab bar — so the pill reads as lifted, not painted on.
+        // lifted above the safe area. Depth is a hairline all around for edge
+        // definition plus a soft elevation shadow — the one shadow DESIGN.md §1
+        // allows the tab bar — so the pill reads as a floating island against
+        // `page`, not painted on. Kept low-opacity: elevation, not a drop shadow.
+        //
+        // The shadow renders because nothing clips it: the bar is a sibling of
+        // the screen container inside the navigator, and no ancestor sets
+        // `overflow: hidden`. `backgroundColor` is required for the iOS shadow
+        // (transparent views cast none) and `elevation` is Android's equivalent.
         //
         // The inset MUST be set via the logical `start`/`end` props: the tab
         // bar's built-in style (react-navigation BottomTabBar `styles.bottom`)
@@ -43,7 +49,7 @@ export default function TabsLayout() {
           borderColor: color.line,
           shadowColor: color.ink,
           shadowOffset: { width: 0, height: 4 },
-          shadowOpacity: 0.06,
+          shadowOpacity: 0.1,
           shadowRadius: 12,
           elevation: 8,
         },

@@ -14,7 +14,8 @@ import {
   type LucideIcon,
 } from "lucide-react-native";
 import { EditProfileSheet } from "../../components/EditProfileSheet";
-import { Avatar, Badge, Card, EmptyState, PressableScale, Screen, Skeleton } from "../../components/ui";
+import { SupporterStatusRow } from "../../components/SupporterStatusBanner";
+import { Avatar, Card, EmptyState, PressableScale, Screen, Skeleton } from "../../components/ui";
 import { ApiError, getProfile, logout, uploadAvatar } from "../../lib/api";
 import { cancelAllOvertimeReminders } from "../../lib/overtime-reminders";
 import { HORA_WHATSAPP_NUMBER, LEGAL_URLS } from "../../lib/constants";
@@ -226,15 +227,9 @@ export default function Profile() {
       </View>
 
       <View className="mb-6">
-        {profile.supporter_status === "approved" ? (
-          <View className="items-center">
-            <Badge label="Verified supporter" variant="success" />
-          </View>
-        ) : profile.supporter_status === "applied" ? (
-          <Text className="text-center text-caption text-muted">Application under review</Text>
-        ) : profile.supporter_status === "rejected" ? (
-          // Details (and the contact-support action) live on the Work tab banner.
-          <Text className="text-center text-caption text-muted">Application not approved</Text>
+        {profile.supporter_status !== "none" ? (
+          // approved/applied/rejected: same states as the Work tab banner, at row scale.
+          <SupporterStatusRow status={profile.supporter_status} />
         ) : (
           <PressableScale
             onPress={() => router.push("/(tabs)/work")}
