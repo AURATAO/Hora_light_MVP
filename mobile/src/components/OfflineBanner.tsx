@@ -1,14 +1,17 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Text } from "react-native";
 import Animated, { FadeInDown } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import NetInfo, { useNetInfo } from "@react-native-community/netinfo";
+import { useNetInfo } from "@react-native-community/netinfo";
 import { WifiOff } from "lucide-react-native";
+import { API_BASE_URL } from "../lib/api";
 import { color, size } from "../theme/tokens";
 
-// While we believe we're offline, force a fresh probe this often so the bar
-// clears on its own. Short enough to feel immediate, long enough not to churn.
+// How often to re-probe the backend while netinfo claims we're offline.
 const RECHECK_MS = 2000;
+// A probe that hasn't answered in this long counts as unreachable. Kept below
+// RECHECK_MS * 2 so probes can't pile up.
+const PROBE_TIMEOUT_MS = 3000;
 
 // App-wide connectivity indicator, mounted once at the root (see _layout.tsx).
 // It is a toast-style overlay pinned to the top safe area: it reserves no
@@ -16,37 +19,75 @@ const RECHECK_MS = 2000;
 // swallow a tap. Recovery from a failed fetch stays each screen's own
 // ErrorState + retry — this bar only tells the user *why* things stalled.
 //
-// netinfo is treated conservatively: the bar shows only when connectivity is
-// *known* to be gone (isConnected === false, or the reachability probe has
-// explicitly failed). A null/unknown state — normal for the first tick after
-// launch, and while a probe is in flight — counts as online, so there's no
-// false "offline" flash on boot or during a re-probe.
+// Two signals, with different jobs:
+//
+//   netinfo is the trigger to SHOW. It reacts instantly to a real disconnect.
+//   It is treated conservatively — only a *known*-gone state (isConnected
+//   === false, or its reachability probe explicitly failed) counts; a
+//   null/unknown state means online, so there's no false flash on boot.
+//
+//   A HEAD probe of our own backend is the authority to CLEAR, because netinfo
+//   alone cannot be trusted to recover. On iOS it derives reachability from
+//   the native path status, and when that says disconnected it sets
+//   isInternetReachable=false *and cancels its own retry timer*
+//   (internetReachability.js `_setExpectsConnection`) — so it has no
+//   self-recovery path and simply waits for a native "connected" event. On the
+//   iOS simulator that event frequently never arrives after the host Mac's
+//   WiFi returns: the native path status stays stuck while the data path works
+//   perfectly. NetInfo.refresh() cannot help — it re-reads the same stuck
+//   native value and re-asserts offline.
+//
+// So while netinfo claims offline we verify it ourselves every RECHECK_MS.
+// Any HTTP response — 4xx and 5xx included — proves the round trip succeeded
+// and therefore that we are online; only a network-level throw or a timeout
+// counts as offline. (This is why an auth-gated endpoint is fine: a 401 is
+// still proof of reachability.) The probe runs *only* while netinfo claims
+// offline, so there is no steady-state cost.
 export function OfflineBanner() {
   const insets = useSafeAreaInsets();
   const { isConnected, isInternetReachable } = useNetInfo();
-  const offline = isConnected === false || isInternetReachable === false;
+  const netInfoOffline = isConnected === false || isInternetReachable === false;
 
-  // `isInternetReachable` is netinfo's own HTTP probe, and it is only re-run
-  // when the native layer reports a connectivity change. That event is not
-  // reliable — on the iOS simulator (Mac WiFi toggled off/on) `isConnected`
-  // flips back to true but the change event is routinely missed, leaving the
-  // probe's stale `false` behind and pinning this bar on forever.
-  //
-  // So while we believe we're offline, drive recovery ourselves: NetInfo
-  // .refresh() force-refreshes the singleton `useNetInfo` reads from (the
-  // isolated useNetInfoInstance hook is explicitly NOT affected by it), which
-  // re-reads native state and re-runs the probe. The bar therefore clears
-  // within RECHECK_MS of connectivity returning even if no event ever fires.
-  // Runs only while offline, so there's no polling in the steady state.
+  // null = not probed yet. Shown immediately on entering the offline state so
+  // a genuine disconnect surfaces at once, then corrected by the first probe.
+  const [reachable, setReachable] = useState<boolean | null>(null);
+
   useEffect(() => {
-    if (!offline) return;
-    const id = setInterval(() => {
-      NetInfo.refresh().catch(() => {});
-    }, RECHECK_MS);
-    return () => clearInterval(id);
-  }, [offline]);
+    if (!netInfoOffline) {
+      setReachable(null);
+      return;
+    }
 
-  if (!offline) return null;
+    let cancelled = false;
+
+    const probe = async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+      try {
+        // `no-store` matters: a cached response would resolve without a round
+        // trip and falsely prove reachability.
+        await fetch(API_BASE_URL, {
+          method: "HEAD",
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (!cancelled) setReachable(true);
+      } catch {
+        if (!cancelled) setReachable(false);
+      } finally {
+        clearTimeout(timeout);
+      }
+    };
+
+    probe();
+    const id = setInterval(probe, RECHECK_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [netInfoOffline]);
+
+  if (!netInfoOffline || reachable === true) return null;
 
   return (
     <Animated.View
