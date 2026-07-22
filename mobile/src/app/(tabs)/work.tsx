@@ -1,9 +1,9 @@
 import { useCallback, useState } from "react";
 import { RefreshControl, Text, View } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
-import { Briefcase, Hourglass, MapPin } from "lucide-react-native";
-import { ApplySupporterSheet } from "../../components/ApplySupporterSheet";
-import { Button, Card, EmptyState, Screen, Skeleton } from "../../components/ui";
+import { Briefcase, MapPin } from "lucide-react-native";
+import { SupporterStatusBanner } from "../../components/SupporterStatusBanner";
+import { Card, EmptyState, Screen, Skeleton } from "../../components/ui";
 import { ApiError, getAvailableTasks, getProfile } from "../../lib/api";
 import { getCategoryMeta } from "../../lib/categories";
 import { formatCost, formatMinutes } from "../../lib/task-utils";
@@ -65,7 +65,6 @@ export default function Work() {
   const [tasksError, setTasksError] = useState<string | null>(null);
 
   const [refreshing, setRefreshing] = useState(false);
-  const [applyOpen, setApplyOpen] = useState(false);
 
   function handleAuthError(e: unknown): boolean {
     if (e instanceof ApiError && e.isAuthError) {
@@ -121,11 +120,6 @@ export default function Work() {
     setRefreshing(false);
   }
 
-  async function handleApplied() {
-    setApplyOpen(false);
-    await loadAll();
-  }
-
   if (profileLoading) {
     return (
       <Screen insetForTabBar headline="Work">
@@ -153,23 +147,16 @@ export default function Work() {
 
   const status = profile?.supporter_status ?? "none";
 
-  if (status === "none") {
+  // Every non-approved state is one banner (web parity — see
+  // SupporterStatusBanner); the tasks feed below is approved-only.
+  if (status !== "approved") {
     return (
-      <Screen insetForTabBar headline="Work">
-        <View className="gap-4 rounded-card border border-line bg-surface p-4">
-          <Text className="text-title font-semibold text-ink">Become a supporter</Text>
-          <Text className="text-body text-muted">Help people nearby and earn on your own schedule.</Text>
-          <Button label="Apply" onPress={() => setApplyOpen(true)} />
-        </View>
-        <ApplySupporterSheet visible={applyOpen} onClose={() => setApplyOpen(false)} onApplied={handleApplied} />
-      </Screen>
-    );
-  }
-
-  if (status === "applied") {
-    return (
-      <Screen insetForTabBar headline="Work">
-        <EmptyState icon={Hourglass} title="Application received" caption="We'll review it soon." />
+      <Screen
+        insetForTabBar
+        headline="Work"
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={color.muted} />}
+      >
+        <SupporterStatusBanner status={status} onApply={() => router.push("/supporter-apply")} />
       </Screen>
     );
   }

@@ -51,12 +51,13 @@ User-facing profile data. `id` is kept in sync with `users.id` (same UUID).
 | `avatar_url` | text | YES | — | Public URL in `avatars` storage bucket |
 | `bio` | text | YES | — | |
 | `beta_accepted` | boolean | YES | false | |
-| `is_verified_supporter` | boolean | NO | false | Set manually by admins |
+| `is_verified_supporter` | boolean | NO | false | Set by `POST /ops/supporter-approve` (was: manual admin edit) |
 | `supporter_applied_at` | timestamptz | YES | — | Set by `POST /supporter/apply` |
+| `supporter_rejected_at` | timestamptz | YES | — | Set by `POST /ops/supporter-reject`; cleared by `POST /supporter/apply` and `/ops/supporter-approve` (D-08) |
 | `created_at` | timestamptz | NO | now() | |
 | `updated_at` | timestamptz | NO | now() | |
 
-- `supporter_status` is a derived field computed in Go (`approved` / `applied` / `none`), not a DB column.
+- `supporter_status` is a derived field computed in Go (`approved` / `rejected` / `applied` / `none`), not a DB column.
 
 #### `public.tasks`
 Core task marketplace table.
@@ -259,7 +260,8 @@ All authenticated endpoints require either `hora_session` cookie or `Authorizati
 {
   "email", "name", "phone", "city", "avatar_url", "bio",
   "beta_accepted", "is_verified_supporter", "supporter_applied_at",
-  "supporter_status": "none|applied|approved",
+  "supporter_rejected_at",
+  "supporter_status": "none|applied|approved|rejected",
   "created_at", "updated_at"
 }
 ```
@@ -278,7 +280,7 @@ All authenticated endpoints require either `hora_session` cookie or `Authorizati
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| POST | `/supporter/apply` | Required | Submit supporter application; sets `supporter_applied_at`; emails admins |
+| POST | `/supporter/apply` | Required | Submit supporter application; sets `supporter_applied_at`, clears `supporter_rejected_at` (re-apply after rejection); emails admins |
 
 **Body:** `{ "first_name"?, "last_name"? }`
 
@@ -361,6 +363,8 @@ Access is restricted to a hardcoded email allowlist: `auratao.model@gmail.com`, 
 | POST | `/ops/force-complete` | Force-complete a task — body: `{ "task_id": "uuid" }` |
 | POST | `/ops/cancel` | Admin cancel — body: `{ "task_id": "uuid", "reason": "string" }` |
 | POST | `/ops/adjust-time` | Adjust logged time — body: `{ "task_id": "uuid", "delta": <int minutes> }` |
+| POST | `/ops/supporter-approve` | Approve a supporter application — body: `{ "profile_id": "uuid" }` or `{ "email": "..." }`; sets `is_verified_supporter = true`, clears `supporter_rejected_at` |
+| POST | `/ops/supporter-reject` | Reject a supporter application — body: `{ "profile_id": "uuid" }` or `{ "email": "..." }`; sets `supporter_rejected_at = now()`, `is_verified_supporter = false`. 404 if no row matched |
 
 #### Webhooks
 
@@ -482,7 +486,7 @@ WhatsApp notifications are stubbed (TODO comments throughout).
 
 7. **Pricing is computed in Go.** There is no `price` or `cost` column in `tasks`. Cost is always derived at query time by the Go backend from worklog duration. If you need to display cost in a new app, call the Go API or reproduce the formula: `base + total_minutes * 50`.
 
-8. **`supporter_status` is derived.** There's no `supporter_status` column in the DB. It's computed: if `is_verified_supporter = true` → `"approved"`; else if `supporter_applied_at IS NOT NULL` → `"applied"`; else `"none"`.
+8. **`supporter_status` is derived.** There's no `supporter_status` column in the DB. It's computed: if `is_verified_supporter = true` → `"approved"`; else if `supporter_rejected_at IS NOT NULL` → `"rejected"`; else if `supporter_applied_at IS NOT NULL` → `"applied"`; else `"none"`. Rejection outranks the application timestamp because `supporter_applied_at` is never cleared (D-08).
 
 9. **Admin allowlist is hardcoded in Go.** The ops admin emails are a static map in `main.go`. Adding a new admin requires a code change and redeployment.
 

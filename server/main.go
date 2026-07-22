@@ -135,6 +135,7 @@ type Profile struct {
 	BetaAccepted        bool       `json:"beta_accepted"`
 	IsVerifiedSupporter bool       `json:"is_verified_supporter"`
 	SupporterAppliedAt  *time.Time `json:"supporter_applied_at,omitempty"`
+	SupporterRejectedAt *time.Time `json:"supporter_rejected_at,omitempty"`
 	SupporterStatus     string     `json:"supporter_status"`
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
@@ -144,6 +145,10 @@ func (p *Profile) deriveSupporterStatus() {
 	switch {
 	case p.IsVerifiedSupporter:
 		p.SupporterStatus = "approved"
+	// Rejection outranks the (never-cleared) application timestamp; re-applying
+	// clears supporter_rejected_at, so a second-chance applicant reads "applied".
+	case p.SupporterRejectedAt != nil:
+		p.SupporterStatus = "rejected"
 	case p.SupporterAppliedAt != nil:
 		p.SupporterStatus = "applied"
 	default:
@@ -851,11 +856,11 @@ func getMyProfile(c *gin.Context) {
 	// 以 email 先找一筆（你本來就這樣）
 	err := db.QueryRow(ctx, `
     select id::text, email, name, phone, city, avatar_url, bio, beta_accepted,
-           coalesce(is_verified_supporter, false), supporter_applied_at,
+           coalesce(is_verified_supporter, false), supporter_applied_at, supporter_rejected_at,
            created_at, updated_at
     from public.profiles
     where email = $1
-  `, email).Scan(&existingID, &p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.BetaAccepted, &p.IsVerifiedSupporter, &p.SupporterAppliedAt, &p.CreatedAt, &p.UpdatedAt)
+  `, email).Scan(&existingID, &p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.BetaAccepted, &p.IsVerifiedSupporter, &p.SupporterAppliedAt, &p.SupporterRejectedAt, &p.CreatedAt, &p.UpdatedAt)
 
 	now := time.Now()
 
@@ -898,10 +903,10 @@ func getMyProfile(c *gin.Context) {
 	// 回傳最新資料
 	_ = db.QueryRow(ctx, `
     select email, name, phone, city, avatar_url, bio, beta_accepted,
-           coalesce(is_verified_supporter, false), supporter_applied_at,
+           coalesce(is_verified_supporter, false), supporter_applied_at, supporter_rejected_at,
            created_at, updated_at
     from public.profiles where email = $1
-  `, email).Scan(&p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.BetaAccepted, &p.IsVerifiedSupporter, &p.SupporterAppliedAt, &p.CreatedAt, &p.UpdatedAt)
+  `, email).Scan(&p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.BetaAccepted, &p.IsVerifiedSupporter, &p.SupporterAppliedAt, &p.SupporterRejectedAt, &p.CreatedAt, &p.UpdatedAt)
 
 	p.deriveSupporterStatus()
 	c.JSON(http.StatusOK, p)
@@ -932,10 +937,10 @@ func patchMyProfile(c *gin.Context) {
 	var p Profile
 	_ = db.QueryRow(ctx, `
     select email, name, phone, city, avatar_url, bio, beta_accepted,
-           coalesce(is_verified_supporter, false), supporter_applied_at,
+           coalesce(is_verified_supporter, false), supporter_applied_at, supporter_rejected_at,
            created_at, updated_at
     from public.profiles where email = $1
-  `, email).Scan(&p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.BetaAccepted, &p.IsVerifiedSupporter, &p.SupporterAppliedAt, &p.CreatedAt, &p.UpdatedAt)
+  `, email).Scan(&p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.BetaAccepted, &p.IsVerifiedSupporter, &p.SupporterAppliedAt, &p.SupporterRejectedAt, &p.CreatedAt, &p.UpdatedAt)
 
 	if in.Name != nil {
 		p.Name = strings.TrimSpace(*in.Name)
@@ -972,6 +977,11 @@ func patchMyProfile(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
 	}
+	// Opportunistic fix while this handler is already open: PATCH returned a
+	// Profile with an empty supporter_status, so a client that stored the
+	// response (mobile's edit-profile sheet does) lost the status until the
+	// next GET. Same derivation as GET /profile — still Go-only (S-05).
+	p.deriveSupporterStatus()
 	c.JSON(http.StatusOK, p)
 }
 
@@ -1008,9 +1018,11 @@ func applySupporterHandler(c *gin.Context) {
 	_ = c.ShouldBindJSON(&body)
 
 	now := time.Now()
+	// Clearing supporter_rejected_at is what makes a re-application possible:
+	// a previously rejected applicant goes back to "applied" (deriveSupporterStatus).
 	_, err := db.Exec(ctx, `
 		UPDATE public.profiles
-		SET supporter_applied_at = $1, updated_at = $1
+		SET supporter_applied_at = $1, supporter_rejected_at = NULL, updated_at = $1
 		WHERE email = $2
 	`, now, email)
 	if err != nil {

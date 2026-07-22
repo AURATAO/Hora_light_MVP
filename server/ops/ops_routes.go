@@ -193,4 +193,72 @@ func RegisterOpsRoutes(r *gin.Engine, sqldb *sql.DB, authMW gin.HandlerFunc, isA
 		}
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
+
+	// Supporter application decisions. Both were previously manual dashboard
+	// edits to public.profiles; these give the ops surface the same two writes
+	// behind the admin allowlist, so supporter_status stays a pure derivation
+	// of columns the API owns (S-05).
+	//
+	// Identify the profile by either key; profile_id wins when both are sent.
+
+	// POST /ops/supporter-approve  { "profile_id": "uuid" } | { "email": "..." }
+	ops.POST("/supporter-approve", func(c *gin.Context) {
+		supporterDecision(c, sqldb, isAdmin,
+			`UPDATE public.profiles
+			    SET is_verified_supporter = true,
+			        supporter_rejected_at = NULL,
+			        updated_at = now()`)
+	})
+
+	// POST /ops/supporter-reject  { "profile_id": "uuid" } | { "email": "..." }
+	ops.POST("/supporter-reject", func(c *gin.Context) {
+		supporterDecision(c, sqldb, isAdmin,
+			`UPDATE public.profiles
+			    SET supporter_rejected_at = now(),
+			        is_verified_supporter = false,
+			        updated_at = now()`)
+	})
+}
+
+// supporterDecision runs an admin-only UPDATE on one profile row, selected by
+// profile_id or email. `setClause` is a trusted constant from this file — the
+// only interpolation — and the identifier is always a bound parameter.
+func supporterDecision(c *gin.Context, sqldb *sql.DB, isAdmin func(email string) bool, setClause string) {
+	if !isAdmin(c.GetString("email")) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not authorized"})
+		return
+	}
+	var in struct {
+		ProfileID string `json:"profile_id"`
+		Email     string `json:"email"`
+	}
+	if err := c.BindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+		return
+	}
+	profileID := strings.TrimSpace(in.ProfileID)
+	target := strings.TrimSpace(in.Email)
+	if profileID == "" && target == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "profile_id or email required"})
+		return
+	}
+
+	where := ` WHERE email = $1`
+	arg := any(target)
+	if profileID != "" {
+		where = ` WHERE id = $1::uuid`
+		arg = any(profileID)
+	}
+
+	res, err := sqldb.ExecContext(c.Request.Context(), setClause+where, arg)
+	if err != nil {
+		log.Printf("[ops/supporter-decision] db error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+	if n, errRows := res.RowsAffected(); errRows == nil && n == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "profile not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

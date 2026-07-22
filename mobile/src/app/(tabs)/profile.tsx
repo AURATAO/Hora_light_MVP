@@ -232,6 +232,9 @@ export default function Profile() {
           </View>
         ) : profile.supporter_status === "applied" ? (
           <Text className="text-center text-caption text-muted">Application under review</Text>
+        ) : profile.supporter_status === "rejected" ? (
+          // Details (and the contact-support action) live on the Work tab banner.
+          <Text className="text-center text-caption text-muted">Application not approved</Text>
         ) : (
           <PressableScale
             onPress={() => router.push("/(tabs)/work")}

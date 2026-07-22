@@ -17,7 +17,7 @@ export type TaskCategory =
 
 export type TaskStatus = "open" | "completed" | "cancelled";
 
-export type SupporterStatus = "none" | "applied" | "approved";
+export type SupporterStatus = "none" | "applied" | "approved" | "rejected";
 
 export type ValueRating = "not_worth" | "fair" | "great";
 
@@ -51,7 +51,11 @@ export interface Profile {
   bio: string | null;
   beta_accepted: boolean;
   is_verified_supporter: boolean;
-  supporter_applied_at: string | null;
+  // Both timestamps are `omitempty` on the Go side, so they arrive as
+  // undefined (not null) when unset. Read supporter_status, never these —
+  // the status derivation lives in Go only (S-05).
+  supporter_applied_at?: string | null;
+  supporter_rejected_at?: string | null;
   supporter_status: SupporterStatus;
   created_at: string;
   updated_at: string;
