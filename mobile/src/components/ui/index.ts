@@ -6,6 +6,7 @@ export * from "./Pill";
 export * from "./Card";
 export * from "./Badge";
 export * from "./Input";
+export * from "./Checkbox";
 export * from "./Screen";
 export * from "./Skeleton";
 export * from "./EmptyState";

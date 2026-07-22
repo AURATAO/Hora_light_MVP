@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { View, Text, ActivityIndicator } from "react-native";
+import { View, Text, ActivityIndicator, Alert } from "react-native";
 import { useRouter } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
 import * as Linking from "expo-linking";
@@ -7,7 +7,8 @@ import * as SecureStore from "expo-secure-store";
 import { makeRedirectUri } from "expo-auth-session";
 import { supabase } from "../../lib/supabase";
 import { apiFetch } from "../../lib/api";
-import { Screen, Input, PressableScale } from "../../components/ui";
+import { Screen, Input, PressableScale, Logo, Checkbox } from "../../components/ui";
+import { LEGAL_URLS } from "../../lib/constants";
 import { color } from "../../theme/tokens";
 import { useAuthState } from "../_layout";
 
@@ -35,6 +36,9 @@ export default function Login() {
   const [loadingSendCode, setLoadingSendCode] = useState(false);
   const [loadingVerifyCode, setLoadingVerifyCode] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Consent is deliberately screen-local, not persisted: the user re-confirms
+  // on every login, which is the standard pattern for this gate.
+  const [consented, setConsented] = useState(false);
 
   async function finishLogin(accessToken: string) {
     const me = await apiFetch<{ id?: string; email?: string }>("/auth/exchange", {
@@ -48,6 +52,15 @@ export default function Login() {
     // cached profile first, so the gate reads it without a bounce back here.
     await refresh();
     router.replace("/");
+  }
+
+  // Same in-app browser pattern as Profile's legal rows.
+  async function openLegalPage(url: string) {
+    try {
+      await WebBrowser.openBrowserAsync(url);
+    } catch {
+      Alert.alert("Page temporarily unavailable", "Try again later.");
+    }
   }
 
   async function handleGoogleLogin() {
@@ -112,14 +125,36 @@ export default function Login() {
 
   return (
     <Screen scroll={false} className="justify-center">
-      <Text className="mb-8 text-center text-display text-ink">HO:RA</Text>
+      <View className="mb-8 items-center">
+        <Logo height={40} />
+      </View>
 
       {error && <Text className="mb-4 text-center text-caption text-danger">{error}</Text>}
 
+      <View className="mb-4 flex-row items-center">
+        <Checkbox
+          checked={consented}
+          onChange={setConsented}
+          accessibilityLabel="I agree to the Terms of Use and Privacy Policy"
+        />
+        <Text className="ml-1 flex-1 text-caption text-muted">
+          I agree to the{" "}
+          <Text className="text-brand underline" onPress={() => openLegalPage(LEGAL_URLS.terms)}>
+            Terms of Use
+          </Text>{" "}
+          and{" "}
+          <Text className="text-brand underline" onPress={() => openLegalPage(LEGAL_URLS.privacy)}>
+            Privacy Policy
+          </Text>
+        </Text>
+      </View>
+
       <PressableScale
         onPress={handleGoogleLogin}
-        disabled={loadingGoogle}
-        className="mb-4 h-[52px] flex-row items-center justify-center rounded-pill bg-ink"
+        disabled={loadingGoogle || !consented}
+        className={`mb-4 h-[52px] flex-row items-center justify-center rounded-pill bg-ink ${
+          consented ? "" : "opacity-40"
+        }`}
       >
         {loadingGoogle ? (
           <ActivityIndicator color={color.white} />
@@ -167,8 +202,10 @@ export default function Login() {
           />
           <PressableScale
             onPress={handleSendCode}
-            disabled={loadingSendCode || !email}
-            className="h-[52px] flex-row items-center justify-center rounded-pill border border-line"
+            disabled={loadingSendCode || !email || !consented}
+            className={`h-[52px] flex-row items-center justify-center rounded-pill border border-line ${
+              consented ? "" : "opacity-40"
+            }`}
           >
             {loadingSendCode ? (
               <ActivityIndicator />
