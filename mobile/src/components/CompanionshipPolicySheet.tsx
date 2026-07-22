@@ -1,7 +1,9 @@
 import { useMemo } from "react";
 import { Modal, Pressable, ScrollView, Text, View, useWindowDimensions } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Button } from "./ui";
 import { parseCompanionshipPolicy } from "../lib/companionship-policy";
+import { space } from "../theme/tokens";
 
 export interface CompanionshipPolicySheetProps {
   visible: boolean;
@@ -10,6 +12,11 @@ export interface CompanionshipPolicySheetProps {
   /** "I understand" — the only path that unlocks posting. */
   onAcknowledge: () => void;
 }
+
+// Sheet may take at most this share of the screen; the scrollable policy body
+// gets the rest after the header and the pinned footer have taken theirs.
+const SHEET_MAX_HEIGHT_RATIO = 0.85;
+const BODY_MAX_HEIGHT_RATIO = 0.7;
 
 // Policy gate for companionship tasks. Acknowledgement is deliberately the
 // single explicit button: every dismissal path (backdrop tap, Android back,
@@ -21,21 +28,37 @@ export function CompanionshipPolicySheet({
   onAcknowledge,
 }: CompanionshipPolicySheetProps) {
   const { height } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const lines = useMemo(() => parseCompanionshipPolicy(), []);
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onDismiss}>
-      <Pressable className="flex-1 justify-end bg-ink/40" onPress={onDismiss}>
-        <Pressable className="rounded-t-card bg-surface p-6 pb-8" onPress={(e) => e.stopPropagation()}>
-          <Text className="mb-1 text-title font-semibold text-ink">Companionship Policy</Text>
-          <Text className="mb-4 text-caption text-muted">
-            Read this before posting — it defines what a companionship task can and cannot be.
-          </Text>
+      <View className="flex-1 justify-end">
+        {/* Backdrop is its own layer rather than a Pressable wrapping the
+            sheet: a ScrollView nested inside a pressable parent loses the
+            responder negotiation on drag, which is what made the policy body
+            unscrollable (and its last section unreachable). */}
+        <Pressable className="absolute inset-0 bg-ink/40" onPress={onDismiss} />
+
+        <View
+          className="rounded-t-card bg-surface"
+          style={{ maxHeight: height * SHEET_MAX_HEIGHT_RATIO }}
+        >
+          <View className="px-6 pb-4 pt-6">
+            <Text className="mb-1 text-title font-semibold text-ink">Companionship Policy</Text>
+            <Text className="text-caption text-muted">
+              Read this before posting — it defines what a companionship task can and cannot be.
+            </Text>
+          </View>
 
           <ScrollView
-            style={{ maxHeight: height * 0.5 }}
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={{ paddingBottom: 4 }}
+            // flexShrink matters as much as maxHeight here: header + body +
+            // footer can exceed the sheet's own cap, and RN children don't
+            // shrink by default — without it the footer gets pushed off the
+            // bottom of the clamped sheet on shorter screens.
+            style={{ maxHeight: height * BODY_MAX_HEIGHT_RATIO, flexShrink: 1 }}
+            showsVerticalScrollIndicator
+            contentContainerStyle={{ paddingHorizontal: space[6], paddingBottom: space[6] }}
           >
             {lines.map((line, i) =>
               line.kind === "heading" ? (
@@ -54,9 +77,16 @@ export function CompanionshipPolicySheet({
             )}
           </ScrollView>
 
-          <Button label="I understand" onPress={onAcknowledge} className="mt-6" />
-        </Pressable>
-      </Pressable>
+          {/* Pinned footer — always visible, never scrolls away. Its top
+              hairline doubles as the "content continues above" edge cue. */}
+          <View
+            className="border-t border-line px-6 pt-4"
+            style={{ paddingBottom: Math.max(insets.bottom, space[8]) }}
+          >
+            <Button label="I understand" onPress={onAcknowledge} />
+          </View>
+        </View>
+      </View>
     </Modal>
   );
 }
