@@ -3,9 +3,11 @@ import { Platform, ScrollView, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import DateTimePicker, { DateTimePickerAndroid } from "@react-native-community/datetimepicker";
 import { Check, ChevronLeft, X } from "lucide-react-native";
+import { CompanionshipPolicySheet } from "../components/CompanionshipPolicySheet";
 import { Button, Input, Pill, PressableScale, Screen } from "../components/ui";
 import { ApiError, createTask, estimateTaskCost, parseTask } from "../lib/api";
 import { CATEGORIES, getCategoryMeta } from "../lib/categories";
+import { isCompanionCategory } from "../lib/companionship-policy";
 import { formatCost, formatMinutes } from "../lib/task-utils";
 import type { ParsedTask, TaskCategory } from "../lib/types";
 import { color, size } from "../theme/tokens";
@@ -180,6 +182,13 @@ export default function PostTask() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
+  // Companionship policy gate. `policyAcknowledged` is per post-task session
+  // (this screen's lifetime), so switching the category away from companion
+  // and back never re-asks; only a fresh Post Task flow does.
+  const [policyOpen, setPolicyOpen] = useState(false);
+  const [policyAcknowledged, setPolicyAcknowledged] = useState(false);
+  const needsPolicy = isCompanionCategory(form.category) && !policyAcknowledged;
+
   const [estimate, setEstimate] = useState<{
     baseFeeCents: number;
     timeCostCents: number;
@@ -248,6 +257,19 @@ export default function PostTask() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, form.category, form.estimatedMinutes, form.shoppingBudget]);
 
+  // Show the policy the moment companionship becomes real for this task: on
+  // landing at the review step with it already selected (Home chip, AI parse,
+  // or a resumed form) and on switching the category TO companion while there.
+  // Deps are step+category only — dismissing without acknowledging must not
+  // immediately re-open the sheet, and posting is blocked in handleSubmit
+  // instead.
+  useEffect(() => {
+    if (step === "review" && isCompanionCategory(form.category) && !policyAcknowledged) {
+      setPolicyOpen(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, form.category]);
+
   async function handleContinue() {
     setParseError(null);
     setParsing(true);
@@ -292,6 +314,13 @@ export default function PostTask() {
     const errors = validate(form);
     setFieldErrors(errors);
     if (Object.keys(errors).length > 0) return;
+
+    // Hard gate: a companionship task cannot be posted until the policy has
+    // been acknowledged in this flow, whatever the user dismissed earlier.
+    if (needsPolicy) {
+      setPolicyOpen(true);
+      return;
+    }
 
     setSubmitError(null);
     setSubmitting(true);
@@ -599,6 +628,15 @@ export default function PostTask() {
           </View>
         )}
       </ScrollView>
+
+      <CompanionshipPolicySheet
+        visible={policyOpen}
+        onDismiss={() => setPolicyOpen(false)}
+        onAcknowledge={() => {
+          setPolicyAcknowledged(true);
+          setPolicyOpen(false);
+        }}
+      />
     </Screen>
   );
 }

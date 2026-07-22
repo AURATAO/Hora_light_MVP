@@ -1,6 +1,6 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { RefreshControl, Text, View } from "react-native";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import Swipeable from "react-native-gesture-handler/ReanimatedSwipeable";
 import { ClipboardList, Hourglass } from "lucide-react-native";
 import { CancelTaskSheet } from "../../components/CancelTaskSheet";
@@ -49,9 +49,19 @@ function sortByCreatedDesc(tasks: Task[]): Task[] {
   return [...tasks].sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
 }
 
+function parseSegment(raw: string | string[] | undefined): Segment | undefined {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return value === "posted" || value === "working" ? value : undefined;
+}
+
 export default function MyTasks() {
   const router = useRouter();
-  const [segment, setSegment] = useState<Segment>("posted");
+  // Callers can land on a specific segment (Home's "See more" → Posted). This
+  // is a tab screen that keeps its state between visits, so the param has to
+  // drive the segment, not just seed it.
+  const params = useLocalSearchParams();
+  const requestedSegment = parseSegment(params.segment);
+  const [segment, setSegment] = useState<Segment>(requestedSegment ?? "posted");
   const [posted, setPosted] = useState<Bucket>(EMPTY_BUCKET);
   const [working, setWorking] = useState<Bucket>(EMPTY_BUCKET);
   const [refreshing, setRefreshing] = useState(false);
@@ -64,6 +74,10 @@ export default function MyTasks() {
     }
     return false;
   }
+
+  useEffect(() => {
+    if (requestedSegment) setSegment(requestedSegment);
+  }, [requestedSegment]);
 
   const loadPosted = useCallback(async () => {
     try {

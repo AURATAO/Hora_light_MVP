@@ -12,6 +12,7 @@ import {
   ArrowRight,
   Bell,
   CircleAlert,
+  ChevronRight,
   ClipboardList,
   ImageIcon,
   UserRound,
@@ -41,6 +42,11 @@ const STATUS_LABEL: Record<ReturnType<typeof deriveTaskStatus>, string> = {
   completed: "Completed",
   cancelled: "Cancelled",
 };
+
+// Home shows a preview of the task list, not the list itself — beyond this many
+// tasks it hands off to the Tasks tab. Display-only: the server-side task query
+// is untouched, so the slice never changes what "your tasks" means.
+const HOME_TASK_LIMIT = 5;
 
 // Each card peeks the next one; the horizontal list snaps card-by-card.
 const CARD_WIDTH_RATIO = 0.75;
@@ -383,9 +389,20 @@ export default function Home() {
         />
       ) : (
         <View>
-          {tasks.map((task) => (
+          {tasks.slice(0, HOME_TASK_LIMIT).map((task) => (
             <TaskRow key={task.id} task={task} onPress={() => router.push(`/task/${task.id}`)} />
           ))}
+          {tasks.length > HOME_TASK_LIMIT ? (
+            <PressableScale
+              onPress={() =>
+                router.push({ pathname: "/(tabs)/my-tasks", params: { segment: "posted" } })
+              }
+              className="h-11 flex-row items-center gap-1"
+            >
+              <Text className="text-body font-semibold text-brand">See more</Text>
+              <ChevronRight color={color.brand} size={18} strokeWidth={size.iconStroke} />
+            </PressableScale>
+          ) : null}
         </View>
       )}
     </Screen>

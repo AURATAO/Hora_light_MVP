@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Image, RefreshControl, ScrollView, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import * as Clipboard from "expo-clipboard";
 import * as Location from "expo-location";
-import { Bike, Bus, Car, ChevronLeft, CircleAlert, MapPin, MessageCircle } from "lucide-react-native";
+import { Bike, Bus, Car, ChevronLeft, CircleAlert, Copy, MapPin, MessageCircle } from "lucide-react-native";
 import { CancelTaskSheet } from "../../components/CancelTaskSheet";
 import { CompleteTaskSheet, type CompleteTaskPayload } from "../../components/CompleteTaskSheet";
 import { ReviewSheet, type ReviewSubmitPayload } from "../../components/ReviewSheet";
@@ -37,6 +38,9 @@ import type { PublicProfile, Review, Task, WorklogsSummary } from "../../lib/typ
 import { color, size } from "../../theme/tokens";
 
 const GPS_PING_INTERVAL_MS = 30_000;
+
+// How long the "Copied" confirmation replaces the section label.
+const COPIED_FEEDBACK_MS = 1500;
 
 const TRANSPORT_LABELS: Record<string, string> = {
   none: "No transport needed",
@@ -97,7 +101,27 @@ export default function TaskDetail() {
   const [clockError, setClockError] = useState<string | null>(null);
   const [gpsNotice, setGpsNotice] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [descriptionCopied, setDescriptionCopied] = useState(false);
   const gpsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
+    };
+  }, []);
+
+  async function handleCopyDescription() {
+    if (!task?.description) return;
+    try {
+      await Clipboard.setStringAsync(task.description);
+    } catch {
+      return; // Nothing copied — say nothing rather than claim success.
+    }
+    setDescriptionCopied(true);
+    if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
+    copiedTimeoutRef.current = setTimeout(() => setDescriptionCopied(false), COPIED_FEEDBACK_MS);
+  }
 
   function handleAuthError(e: unknown): boolean {
     if (e instanceof ApiError && e.isAuthError) {
@@ -401,18 +425,43 @@ export default function TaskDetail() {
 
         {/* Info */}
         <View className="mb-4 gap-3 rounded-card border border-line bg-surface p-4">
-          {task.description ? (
-            <Text className="text-body text-ink">{task.description}</Text>
-          ) : (
-            <Text className="text-body text-muted">No description provided.</Text>
-          )}
+          {/* Description is selectable (long-press) AND has an explicit copy
+              button — addresses and shopping lists get pasted into other apps
+              constantly, and long-press alone isn't discoverable. */}
+          <View className="gap-1">
+            <View className="flex-row items-center justify-between">
+              <Text className="text-caption font-semibold text-muted">
+                {descriptionCopied ? "Copied" : "Description"}
+              </Text>
+              {task.description ? (
+                <PressableScale
+                  onPress={handleCopyDescription}
+                  accessibilityLabel="Copy description"
+                  accessibilityRole="button"
+                  hitSlop={8}
+                  // 44×44 tap target (DESIGN.md §3) without inflating the
+                  // header row — the negative margins absorb the overflow.
+                  className="-my-3 -mr-3 h-11 w-11 items-center justify-center"
+                >
+                  <Copy color={color.muted} size={16} strokeWidth={size.iconStroke} />
+                </PressableScale>
+              ) : null}
+            </View>
+            {task.description ? (
+              <Text selectable className="text-body text-ink">
+                {task.description}
+              </Text>
+            ) : (
+              <Text className="text-body text-muted">No description provided.</Text>
+            )}
+          </View>
 
           {locations.length > 0 ? (
             <View className="gap-1">
               {locations.map((loc, i) => (
                 <View key={i} className="flex-row items-start gap-2">
                   <MapPin color={color.muted} size={16} strokeWidth={size.iconStroke} />
-                  <Text className="flex-1 text-caption text-ink">
+                  <Text selectable className="flex-1 text-caption text-ink">
                     {locations.length > 1 ? (
                       <Text className="text-muted">{i === 0 ? "Pick-up: " : `Stop ${i}: `}</Text>
                     ) : null}
