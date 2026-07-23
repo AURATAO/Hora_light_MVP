@@ -2,10 +2,10 @@ import { useState } from "react";
 import { View, Text, ActivityIndicator, Alert } from "react-native";
 import { useRouter } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
-import * as Linking from "expo-linking";
 import * as SecureStore from "expo-secure-store";
-import { makeRedirectUri } from "expo-auth-session";
 import { supabase } from "../../lib/supabase";
+import { hasWebCryptoSupport } from "../../lib/crypto-polyfill";
+import { getAuthRedirectUrl } from "../../lib/auth-redirect";
 import { apiFetch } from "../../lib/api";
 import { Screen, Input, PressableScale, Logo, Checkbox } from "../../components/ui";
 import { LEGAL_URLS } from "../../lib/constants";
@@ -14,15 +14,40 @@ import { useAuthState } from "../_layout";
 
 WebBrowser.maybeCompleteAuthSession();
 
-// Google's callback comes back as a `?code=` param (PKCE) via WebBrowser's
-// result URL, which we exchange for a Supabase session directly.
+// The callback lands on AUTH_REDIRECT_URL carrying either `?code=` (PKCE
+// success) or `?error=&error_description=` (provider or Supabase refusal).
+// Some Supabase errors arrive in the fragment rather than the query string,
+// so read both.
+function parseCallbackUrl(url: string) {
+  const parsed = new URL(url);
+  const params = new URLSearchParams(parsed.search);
+  const fragment = new URLSearchParams(parsed.hash.replace(/^#/, ""));
+  const read = (key: string) => params.get(key) ?? fragment.get(key) ?? undefined;
+  return {
+    code: read("code"),
+    error: read("error") ?? read("error_code"),
+    errorDescription: read("error_description"),
+  };
+}
+
+// Exchanges the PKCE auth code for a session. This must run in the SAME JS
+// session that called signInWithOAuth: that call wrote the code verifier to
+// SecureStore, and Supabase matches it against the challenge it recorded when
+// the flow started. A reload in between (or a deep-link listener picking the
+// callback up after a relaunch) loses the pairing.
 async function completeSessionFromUrl(url: string) {
-  const { queryParams } = Linking.parse(url);
-  const code = typeof queryParams?.code === "string" ? queryParams.code : undefined;
+  const { code, error, errorDescription } = parseCallbackUrl(url);
+
+  if (__DEV__) {
+    console.log("[auth] callback url:", url);
+    console.log("[auth] callback code:", code ? `${code.slice(0, 8)}…` : "(none)");
+  }
+
+  if (error) throw new Error(errorDescription ?? error);
   if (!code) return null;
 
-  const { data, error } = await supabase.auth.exchangeCodeForSession(code);
-  if (error) throw error;
+  const { data, error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+  if (exchangeError) throw exchangeError;
   return data.session;
 }
 
@@ -67,7 +92,23 @@ export default function Login() {
     setError(null);
     setLoadingGoogle(true);
     try {
-      const redirectTo = makeRedirectUri({ scheme: "hora" });
+      const redirectTo = getAuthRedirectUrl();
+
+      if (__DEV__) {
+        // Must match a Redirect URL in Supabase → Authentication → URL
+        // Configuration exactly (or via a `hora://**` wildcard). A mismatch
+        // makes Supabase fall back to the Site URL, so the code never reaches
+        // the app — or reaches it detached from this flow.
+        console.log("[auth] redirectTo:", redirectTo);
+        console.log("[auth] pkce challenge method:", hasWebCryptoSupport() ? "s256" : "plain");
+      }
+
+      // skipBrowserRedirect keeps supabase-js from navigating anything itself:
+      // it writes the code verifier, hands back the provider URL, and we drive
+      // the browser. openAuthSessionAsync then captures the redirect back to
+      // `redirectTo` and returns it to this same function — no deep-link
+      // listener, no relaunch, so the verifier written above is still the one
+      // in SecureStore when we exchange below.
       const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: { redirectTo, skipBrowserRedirect: true },
@@ -76,11 +117,16 @@ export default function Login() {
         throw oauthError ?? new Error("Could not start Google sign-in");
       }
 
+      if (__DEV__) console.log("[auth] authorize url:", data.url);
+
       const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
+      if (__DEV__) console.log("[auth] browser result:", result.type);
+      // cancel / dismiss are user-initiated: back out quietly.
       if (result.type !== "success" || !result.url) return;
 
       const session = await completeSessionFromUrl(result.url);
-      if (session?.access_token) await finishLogin(session.access_token);
+      if (!session?.access_token) throw new Error("Google sign-in returned no session");
+      await finishLogin(session.access_token);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Google sign-in failed");
     } finally {
@@ -124,7 +170,9 @@ export default function Login() {
   }
 
   return (
-    <Screen scroll={false} className="justify-center">
+    // Scrolls (rather than a fixed View) so the code step still reaches its
+    // Verify button on short devices once the keyboard has taken half the screen.
+    <Screen avoidKeyboard center>
       <View className="mb-8 items-center">
         <Logo height={40} />
       </View>
