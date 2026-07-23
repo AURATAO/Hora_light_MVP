@@ -96,7 +96,7 @@ export default function CompleteProfile() {
   }
 
   return (
-    <Screen>
+    <Screen avoidKeyboard>
       <Text className="mb-2 mt-4 text-display text-ink">Complete your profile</Text>
       <Text className="mb-8 text-body text-muted">
         Add a few details so people know who they're working with.

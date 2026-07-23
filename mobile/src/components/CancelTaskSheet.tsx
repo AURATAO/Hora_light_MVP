@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Modal, Pressable, Text, View } from "react-native";
+import { KeyboardAvoidingView, Modal, Platform, Pressable, Text, View } from "react-native";
 import { Button, Input, Pill } from "./ui";
 
 // Web's cancel flow (app/src/components/CancelTaskButton.jsx) is free-text
@@ -56,49 +56,53 @@ export function CancelTaskSheet({ visible, onClose, onConfirm }: CancelTaskSheet
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={handleClose}>
-      <Pressable className="flex-1 justify-end bg-ink/40" onPress={handleClose}>
-        <Pressable
-          className="rounded-t-card bg-surface p-6 pb-8"
-          onPress={(e) => e.stopPropagation()}
-        >
-          <Text className="mb-1 text-title font-semibold text-ink">Cancel this task?</Text>
-          <Text className="mb-4 text-caption text-muted">
-            Let the supporter know why — this helps us improve matching.
-          </Text>
-          <View className="flex-row flex-wrap gap-2">
-            {PRESET_REASONS.map((reason) => (
-              <Pill
-                key={reason}
-                label={reason}
-                selected={selected === reason}
-                onPress={() => setSelected(reason)}
+      {/* Lifts the sheet above the keyboard so the note field — and the primary
+          button sitting below it — stay visible while typing. */}
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <Pressable className="flex-1 justify-end bg-ink/40" onPress={handleClose}>
+          <Pressable
+            className="rounded-t-card bg-surface p-6 pb-8"
+            onPress={(e) => e.stopPropagation()}
+          >
+            <Text className="mb-1 text-title font-semibold text-ink">Cancel this task?</Text>
+            <Text className="mb-4 text-caption text-muted">
+              Let the supporter know why — this helps us improve matching.
+            </Text>
+            <View className="flex-row flex-wrap gap-2">
+              {PRESET_REASONS.map((reason) => (
+                <Pill
+                  key={reason}
+                  label={reason}
+                  selected={selected === reason}
+                  onPress={() => setSelected(reason)}
+                />
+              ))}
+            </View>
+            {selected === "Other" ? (
+              <Input
+                className="mt-3"
+                value={note}
+                onChangeText={setNote}
+                placeholder="Add a note (optional)"
+                multiline
+                numberOfLines={3}
+                textAlignVertical="top"
               />
-            ))}
-          </View>
-          {selected === "Other" ? (
-            <Input
-              className="mt-3"
-              value={note}
-              onChangeText={setNote}
-              placeholder="Add a note (optional)"
-              multiline
-              numberOfLines={3}
-              textAlignVertical="top"
-            />
-          ) : null}
-          {error ? <Text className="mt-3 text-caption text-danger">{error}</Text> : null}
-          <View className="mt-5 gap-2">
-            <Button
-              label="Cancel task"
-              onPress={handleConfirm}
-              loading={submitting}
-              disabled={!selected}
-              className="bg-danger"
-            />
-            <Button label="Never mind" variant="text" onPress={handleClose} disabled={submitting} />
-          </View>
+            ) : null}
+            {error ? <Text className="mt-3 text-caption text-danger">{error}</Text> : null}
+            <View className="mt-5 gap-2">
+              <Button
+                label="Cancel task"
+                onPress={handleConfirm}
+                loading={submitting}
+                disabled={!selected}
+                className="bg-danger"
+              />
+              <Button label="Never mind" variant="text" onPress={handleClose} disabled={submitting} />
+            </View>
+          </Pressable>
         </Pressable>
-      </Pressable>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

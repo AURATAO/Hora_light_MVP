@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Image, Modal, Pressable, Text, View } from "react-native";
+import { Image, KeyboardAvoidingView, Modal, Platform, Pressable, Text, View } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { Button, Input, PressableScale } from "./ui";
 
@@ -96,50 +96,54 @@ export function CompleteTaskSheet({ visible, onClose, onSubmit }: CompleteTaskSh
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={handleClose}>
-      <Pressable className="flex-1 justify-end bg-ink/40" onPress={handleClose}>
-        <Pressable className="rounded-t-card bg-surface p-6 pb-8" onPress={(e) => e.stopPropagation()}>
-          <Text className="mb-1 text-title font-semibold text-ink">Complete this task</Text>
-          <Text className="mb-4 text-caption text-muted">
-            Add a photo so the requester can see it's done.
-          </Text>
+      {/* Lifts the sheet above the keyboard so the note field — and the primary
+          button sitting below it — stay visible while typing. */}
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <Pressable className="flex-1 justify-end bg-ink/40" onPress={handleClose}>
+          <Pressable className="rounded-t-card bg-surface p-6 pb-8" onPress={(e) => e.stopPropagation()}>
+            <Text className="mb-1 text-title font-semibold text-ink">Complete this task</Text>
+            <Text className="mb-4 text-caption text-muted">
+              Add a photo so the requester can see it's done.
+            </Text>
 
-          {photo ? (
-            <View className="mb-4 gap-2">
-              <Image source={{ uri: photo.uri }} className="h-[180px] w-full rounded-sm" resizeMode="cover" />
-              <PressableScale onPress={() => setPhoto(null)} hitSlop={8} className="self-start">
-                <Text className="text-caption font-semibold text-brand">Change photo</Text>
-              </PressableScale>
-            </View>
-          ) : (
-            <View className="mb-4 gap-2">
-              <View className="flex-row gap-2">
-                <Button label="Take photo" variant="secondary" onPress={pickFromCamera} className="flex-1" />
-                <Button label="Choose photo" variant="secondary" onPress={pickFromLibrary} className="flex-1" />
+            {photo ? (
+              <View className="mb-4 gap-2">
+                <Image source={{ uri: photo.uri }} className="h-[180px] w-full rounded-sm" resizeMode="cover" />
+                <PressableScale onPress={() => setPhoto(null)} hitSlop={8} className="self-start">
+                  <Text className="text-caption font-semibold text-brand">Change photo</Text>
+                </PressableScale>
               </View>
-              <Text className="text-caption text-muted">A photo is required to complete this task.</Text>
+            ) : (
+              <View className="mb-4 gap-2">
+                <View className="flex-row gap-2">
+                  <Button label="Take photo" variant="secondary" onPress={pickFromCamera} className="flex-1" />
+                  <Button label="Choose photo" variant="secondary" onPress={pickFromLibrary} className="flex-1" />
+                </View>
+                <Text className="text-caption text-muted">A photo is required to complete this task.</Text>
+              </View>
+            )}
+
+            <Input
+              value={note}
+              onChangeText={setNote}
+              placeholder="Add a note (optional)"
+              multiline
+              numberOfLines={3}
+              textAlignVertical="top"
+            />
+
+            {error ? <Text className="mt-3 text-caption text-danger">{error}</Text> : null}
+
+            <View className="mt-6 gap-2">
+              {submitting ? (
+                <Text className="text-center text-caption text-muted">Uploading photo…</Text>
+              ) : null}
+              <Button label="Complete task" onPress={handleSubmit} loading={submitting} disabled={!photo} />
+              <Button label="Cancel" variant="text" onPress={handleClose} disabled={submitting} />
             </View>
-          )}
-
-          <Input
-            value={note}
-            onChangeText={setNote}
-            placeholder="Add a note (optional)"
-            multiline
-            numberOfLines={3}
-            textAlignVertical="top"
-          />
-
-          {error ? <Text className="mt-3 text-caption text-danger">{error}</Text> : null}
-
-          <View className="mt-6 gap-2">
-            {submitting ? (
-              <Text className="text-center text-caption text-muted">Uploading photo…</Text>
-            ) : null}
-            <Button label="Complete task" onPress={handleSubmit} loading={submitting} disabled={!photo} />
-            <Button label="Cancel" variant="text" onPress={handleClose} disabled={submitting} />
-          </View>
+          </Pressable>
         </Pressable>
-      </Pressable>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

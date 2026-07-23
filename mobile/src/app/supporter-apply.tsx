@@ -120,7 +120,7 @@ export default function SupporterApply() {
   }
 
   return (
-    <Screen>
+    <Screen avoidKeyboard>
       <View className="mb-6 mt-4 flex-row items-center">
         <PressableScale
           onPress={() => router.back()}

@@ -368,7 +368,7 @@ export default function PostTask() {
       : CATEGORY_PICKS;
 
   return (
-    <Screen scroll={false}>
+    <Screen scroll={false} avoidKeyboard>
       <View className="mb-6 mt-4 flex-row items-center justify-between">
         <View className="flex-row items-center">
           {step === "review" ? (

@@ -1,4 +1,9 @@
+// Import order matters: both polyfills install globals that the Supabase
+// client reads at construction / first-use time. `crypto-polyfill` gives
+// supabase-js the WebCrypto surface it needs to use an s256 PKCE code
+// challenge instead of silently downgrading to `plain`.
 import "react-native-url-polyfill/auto";
+import "./crypto-polyfill";
 import { createClient } from "@supabase/supabase-js";
 import * as SecureStore from "expo-secure-store";
 
