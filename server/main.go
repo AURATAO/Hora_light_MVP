@@ -511,6 +511,11 @@ func main() {
 
 	r.POST("/supporter/apply", dualAuth(sqldb), applySupporterHandler)
 
+	// Device push-token registry for Expo remote push. Auth-gated; identity is
+	// the internal uid from dualAuth, never client-supplied (S-11).
+	r.POST("/push/register", dualAuth(sqldb), registerPushTokenHandler)
+	r.POST("/push/unregister", dualAuth(sqldb), unregisterPushTokenHandler)
+
 	r.POST("/ai/parse-task", dualAuth(sqldb), parseTaskWithAI)
 
 	tasksAPI := r.Group("/tasks")
@@ -1046,6 +1051,71 @@ func applySupporterHandler(c *gin.Context) {
 		AppliedAt: now,
 	})
 
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// registerPushTokenHandler upserts the caller's Expo push token so task-event
+// notifications can reach this device. The token is globally unique: a token
+// re-registering under a different user (device hand-off / account switch)
+// reassigns to the acting user. Identity is the middleware-provided internal
+// uid, never client-supplied (S-11).
+func registerPushTokenHandler(c *gin.Context) {
+	uid := c.GetString("uid")
+	if uid == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	ctx := c.Request.Context()
+
+	var body struct {
+		Token    string `json:"token"`
+		Platform string `json:"platform"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.Token) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "token required"})
+		return
+	}
+
+	_, err := db.Exec(ctx, `
+		INSERT INTO public.device_push_tokens (user_id, expo_push_token, platform, last_seen_at)
+		VALUES ($1, $2, $3, now())
+		ON CONFLICT (expo_push_token)
+		DO UPDATE SET user_id = $1, platform = $3, last_seen_at = now()
+	`, uid, strings.TrimSpace(body.Token), body.Platform)
+	if err != nil {
+		log.Printf("[push/register] db error uid=%s err=%v", uid, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// unregisterPushTokenHandler drops a device's push token on logout. Scoped to
+// the acting user (S-11): a caller can only remove its own token.
+func unregisterPushTokenHandler(c *gin.Context) {
+	uid := c.GetString("uid")
+	if uid == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	ctx := c.Request.Context()
+
+	var body struct {
+		Token string `json:"token"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.Token) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "token required"})
+		return
+	}
+
+	_, err := db.Exec(ctx, `
+		DELETE FROM public.device_push_tokens WHERE expo_push_token = $1 AND user_id = $2
+	`, strings.TrimSpace(body.Token), uid)
+	if err != nil {
+		log.Printf("[push/unregister] db error uid=%s err=%v", uid, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
