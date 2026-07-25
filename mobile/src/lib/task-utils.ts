@@ -23,6 +23,30 @@ export function formatCost(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
+const SCHEDULED_AT_FORMAT: Intl.DateTimeFormatOptions = {
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+};
+
+// Scheduled times render as date + HH:mm everywhere (available cards, review
+// step, task detail) — never seconds. The stored RFC3339 value keeps :00
+// seconds; this is display precision only.
+export function formatScheduledAt(value: Date | string): string {
+  const date = typeof value === "string" ? new Date(value) : value;
+  return date.toLocaleString([], SCHEDULED_AT_FORMAT);
+}
+
+// Scheduling is minute-precision: zero seconds/ms so the committed Date (and the
+// RFC3339 string it serializes to) never carries sub-minute noise from an
+// AI-parsed time or a `Date.now()`-derived default.
+export function zeroSeconds(date: Date): Date {
+  const next = new Date(date);
+  next.setSeconds(0, 0);
+  return next;
+}
+
 export function formatMinutes(minutes: number): string {
   if (minutes < 60) return `${minutes} min`;
   const hours = Math.floor(minutes / 60);

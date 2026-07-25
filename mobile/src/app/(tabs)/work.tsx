@@ -6,19 +6,14 @@ import { SupporterStatusBanner } from "../../components/SupporterStatusBanner";
 import { Card, EmptyState, Screen, Skeleton } from "../../components/ui";
 import { ApiError, getAvailableTasks, getProfile } from "../../lib/api";
 import { getCategoryMeta } from "../../lib/categories";
-import { formatCost, formatMinutes } from "../../lib/task-utils";
+import { formatCost, formatMinutes, formatScheduledAt } from "../../lib/task-utils";
 import type { Profile, Task } from "../../lib/types";
 import { color, size } from "../../theme/tokens";
 
 function formatWhen(task: Task): string {
   if (task.is_immediate) return "ASAP";
   if (!task.scheduled_at) return "—";
-  return new Date(task.scheduled_at).toLocaleString([], {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return formatScheduledAt(task.scheduled_at);
 }
 
 function AvailableTaskRow({ task, onPress }: { task: Task; onPress: () => void }) {

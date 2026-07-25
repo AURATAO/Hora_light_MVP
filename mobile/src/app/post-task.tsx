@@ -1,15 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { Platform, ScrollView, Text, View } from "react-native";
+import { ScrollView, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import DateTimePicker, { DateTimePickerAndroid } from "@react-native-community/datetimepicker";
 import { Check, ChevronLeft, X } from "lucide-react-native";
 import { AddressField } from "../components/AddressField";
 import { CompanionshipPolicySheet } from "../components/CompanionshipPolicySheet";
+import { ScheduledTimeField } from "../components/ScheduledTimeField";
 import { Button, Input, Pill, PressableScale, Screen } from "../components/ui";
 import { ApiError, createTask, estimateTaskCost, parseTask } from "../lib/api";
 import { CATEGORIES, getCategoryMeta } from "../lib/categories";
 import { isCompanionCategory } from "../lib/companionship-policy";
-import { formatCost, formatMinutes } from "../lib/task-utils";
+import { formatCost, formatMinutes, formatScheduledAt, zeroSeconds } from "../lib/task-utils";
 import type { ParsedTask, TaskCategory } from "../lib/types";
 import { color, size } from "../theme/tokens";
 
@@ -75,7 +75,7 @@ function parseCategory(raw: string | string[] | undefined): TaskCategory | undef
 }
 
 function defaultScheduledDate(): Date {
-  return new Date(Date.now() + 60 * 60 * 1000);
+  return zeroSeconds(new Date(Date.now() + 60 * 60 * 1000));
 }
 
 function emptyLocations(): LocationRow[] {
@@ -138,33 +138,6 @@ function encodeLocationText(locations: LocationRow[]): string {
     .map((l) => l.text.trim())
     .filter(Boolean)
     .join(" | ");
-}
-
-function openAndroidDatePicker(current: Date, onPicked: (next: Date) => void) {
-  DateTimePickerAndroid.open({
-    value: current,
-    mode: "date",
-    minimumDate: new Date(),
-    onChange: (_event, selected) => {
-      if (!selected) return;
-      const next = new Date(current);
-      next.setFullYear(selected.getFullYear(), selected.getMonth(), selected.getDate());
-      onPicked(next);
-    },
-  });
-}
-
-function openAndroidTimePicker(current: Date, onPicked: (next: Date) => void) {
-  DateTimePickerAndroid.open({
-    value: current,
-    mode: "time",
-    onChange: (_event, selected) => {
-      if (!selected) return;
-      const next = new Date(current);
-      next.setHours(selected.getHours(), selected.getMinutes());
-      onPicked(next);
-    },
-  });
 }
 
 export default function PostTask() {
@@ -337,7 +310,7 @@ export default function PostTask() {
         estimated_minutes: form.estimatedMinutes ? Number(form.estimatedMinutes) : undefined,
         prepay_amount_cents: prepayCents,
         is_immediate: form.isImmediate,
-        scheduled_at: form.isImmediate ? "" : form.scheduledDate.toISOString(),
+        scheduled_at: form.isImmediate ? "" : zeroSeconds(form.scheduledDate).toISOString(),
         transport_required: form.transport,
       });
       setStep("success");
@@ -548,44 +521,11 @@ export default function PostTask() {
                 />
               </View>
               {!form.isImmediate ? (
-                <View className="mt-3">
-                  {Platform.OS === "ios" ? (
-                    <DateTimePicker
-                      value={form.scheduledDate}
-                      mode="datetime"
-                      display="spinner"
-                      minimumDate={new Date()}
-                      onValueChange={(_event, date) => setForm((f) => ({ ...f, scheduledDate: date }))}
-                    />
-                  ) : (
-                    <View className="flex-row gap-2">
-                      <Button
-                        variant="secondary"
-                        label={form.scheduledDate.toLocaleDateString()}
-                        onPress={() =>
-                          openAndroidDatePicker(form.scheduledDate, (next) =>
-                            setForm((f) => ({ ...f, scheduledDate: next }))
-                          )
-                        }
-                      />
-                      <Button
-                        variant="secondary"
-                        label={form.scheduledDate.toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                        onPress={() =>
-                          openAndroidTimePicker(form.scheduledDate, (next) =>
-                            setForm((f) => ({ ...f, scheduledDate: next }))
-                          )
-                        }
-                      />
-                    </View>
-                  )}
-                  {fieldErrors.scheduledAt ? (
-                    <Text className="mt-1 text-caption text-danger">{fieldErrors.scheduledAt}</Text>
-                  ) : null}
-                </View>
+                <ScheduledTimeField
+                  value={form.scheduledDate}
+                  onChange={(scheduledDate) => setForm((f) => ({ ...f, scheduledDate }))}
+                  error={fieldErrors.scheduledAt}
+                />
               ) : null}
             </View>
 
@@ -594,7 +534,7 @@ export default function PostTask() {
                 <View className="flex-row justify-between">
                   <Text className="text-caption text-muted">Start</Text>
                   <Text className="text-caption text-ink">
-                    {form.isImmediate ? "ASAP" : form.scheduledDate.toLocaleString()}
+                    {form.isImmediate ? "ASAP" : formatScheduledAt(form.scheduledDate)}
                   </Text>
                 </View>
                 <View className="flex-row justify-between">

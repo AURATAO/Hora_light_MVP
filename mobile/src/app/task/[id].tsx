@@ -43,6 +43,7 @@ import {
   formatElapsed,
   formatMinutes,
   formatRelativeTime,
+  formatScheduledAt,
   statusLabel,
 } from "../../lib/task-utils";
 import type { PublicProfile, Review, Task, WorklogsSummary } from "../../lib/types";
@@ -510,7 +511,7 @@ export default function TaskDetail() {
           <View className="flex-row justify-between">
             <Text className="text-caption text-muted">When</Text>
             <Text className="text-caption text-ink">
-              {task.is_immediate ? "ASAP" : task.scheduled_at ? new Date(task.scheduled_at).toLocaleString() : "—"}
+              {task.is_immediate ? "ASAP" : task.scheduled_at ? formatScheduledAt(task.scheduled_at) : "—"}
             </Text>
           </View>
 
