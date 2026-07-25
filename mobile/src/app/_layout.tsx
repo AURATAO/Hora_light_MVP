@@ -1,12 +1,15 @@
 import "../global.css";
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { StyleSheet, View } from "react-native";
-import { Stack } from "expo-router";
+import { Stack, router } from "expo-router";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import * as SplashScreen from "expo-splash-screen";
+import * as Notifications from "expo-notifications";
 import { supabase } from "../lib/supabase";
 import { getMe, getProfile } from "../lib/api";
+// Importing ./push registers the app's single notification handler at boot.
+import { registerForPushNotifications, taskIdFromNotificationResponse } from "../lib/push";
 import type { Profile } from "../lib/types";
 import SplashCollision from "../components/SplashCollision";
 import { ErrorBoundary } from "../components/ErrorBoundary";
@@ -72,6 +75,12 @@ export default function RootLayout() {
         setState({ loading: false, authenticated: false, profile: null });
         return;
       }
+      // Register this device for push once we know the user is signed in. This
+      // runs on app-start-when-authenticated AND after login (finishLogin's
+      // refresh() and supabase onAuthStateChange both route through here). The
+      // server upsert makes repeat calls harmless. Fire-and-forget — it never
+      // throws and must not gate auth resolution.
+      registerForPushNotifications();
       try {
         const profile = await getProfile();
         setState({ loading: false, authenticated: true, profile });
@@ -94,6 +103,26 @@ export default function RootLayout() {
       authListener.subscription.unsubscribe();
     };
   }, [checkSession]);
+
+  // Deep-link a tapped task push to /task/[id]. Covers all three states:
+  // - warm/backgrounded: the response listener fires on tap;
+  // - cold start (app launched by the tap): getLastNotificationResponseAsync
+  //   returns the launching response. This root layout mounts once and never
+  //   unmounts, so the cold-start check runs exactly once per process.
+  // If the target isn't the signed-in user's task, the task screen's own auth
+  // guard handles the redirect — navigation here stays dumb on purpose.
+  useEffect(() => {
+    Notifications.getLastNotificationResponseAsync().then((response) => {
+      const taskId = taskIdFromNotificationResponse(response);
+      if (taskId) router.push(`/task/${taskId}`);
+    });
+
+    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+      const taskId = taskIdFromNotificationResponse(response);
+      if (taskId) router.push(`/task/${taskId}`);
+    });
+    return () => sub.remove();
+  }, []);
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>

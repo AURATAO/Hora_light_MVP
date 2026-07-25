@@ -483,6 +483,22 @@ export function deleteReadNotifications(): Promise<void> {
   return apiFetch<void>("/notifications?read=true", { method: "DELETE" });
 }
 
+// ---- Push tokens ------------------------------------------------------
+
+// Register this device's Expo push token so the Go backend can deliver
+// task-event push (accept / clock-in / clock-out / complete / cancel). The
+// server upserts on the globally-unique token, so this is idempotent and safe
+// to call on every login / app-start.
+export function registerPushToken(token: string, platform: string): Promise<{ ok: true }> {
+  return apiFetch<{ ok: true }>("/push/register", { method: "POST", body: { token, platform } });
+}
+
+// Drop this device's token on logout so a signed-out phone stops receiving the
+// previous user's task push.
+export function unregisterPushToken(token: string): Promise<{ ok: true }> {
+  return apiFetch<{ ok: true }>("/push/unregister", { method: "POST", body: { token } });
+}
+
 // ---- TalkJS -------------------------------------------------------------
 
 // Hex HMAC-SHA256 of the caller's TalkJS user id (their email — matching the

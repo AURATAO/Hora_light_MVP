@@ -18,6 +18,7 @@ import { SupporterStatusRow } from "../../components/SupporterStatusBanner";
 import { Avatar, Card, EmptyState, PressableScale, Screen, Skeleton } from "../../components/ui";
 import { ApiError, getProfile, logout, uploadAvatar } from "../../lib/api";
 import { cancelAllOvertimeReminders } from "../../lib/overtime-reminders";
+import { unregisterCurrentPushToken } from "../../lib/push";
 import { HORA_WHATSAPP_NUMBER, LEGAL_URLS } from "../../lib/constants";
 import { supabase } from "../../lib/supabase";
 import type { Profile } from "../../lib/types";
@@ -165,6 +166,10 @@ export default function Profile() {
         text: "Log out",
         style: "destructive",
         onPress: async () => {
+          // Drop this device's push token while the session cookie is still
+          // valid — /push/unregister is auth-gated, so it must run before
+          // logout() clears the session. Best-effort; never blocks logout.
+          await unregisterCurrentPushToken();
           await Promise.all([
             supabase.auth.signOut().catch(() => {}),
             logout().catch(() => {}),
