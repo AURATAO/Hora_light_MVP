@@ -110,6 +110,16 @@ func Create(ctx context.Context, in CreateNotificationInput) error {
 		VALUES ($1,$2,$3,$4,$5,true,$6,$7)
 	`, in.UserID, in.TaskID, in.Type, in.Title, in.Body, in.SendEmail, emailSentAt)
 
+	// Third channel: OS push, alongside the in-app row and email — never a
+	// replacement. Best-effort and non-blocking (S-32): fired in a goroutine
+	// with a background context because the request ctx is canceled once the
+	// handler returns. Independent of the insert result above. Every event
+	// routed through Create pushes; NEW_MESSAGE has no live caller, so chat is
+	// not pushed here.
+	if in.UserID != "" {
+		go SendPush(context.Background(), in.DB, in.UserID, in.TaskID, in.Type, in.Title, in.Body)
+	}
+
 	return err
 }
 

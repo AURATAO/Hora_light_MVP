@@ -6,14 +6,10 @@ import { OVERTIME_REMINDER, computeFirstReminderDelayMinutes } from "./task-util
 // skills/decisions for the deferred server-side watchdog). Notification IDs
 // are persisted per task so a clock-out can cancel them even if the app was
 // closed and reopened since the reminders were scheduled.
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowBanner: true,
-    shouldShowList: true,
-    shouldPlaySound: false,
-    shouldSetBadge: false,
-  }),
-});
+//
+// The notification handler (foreground presentation) lives in ./push — the
+// app's single setNotificationHandler, registered at app start by the root
+// layout. These local reminders present through that same handler.
 
 function storageKey(taskId: string): string {
   return `hora_overtime_reminders_${taskId}`;
