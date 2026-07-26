@@ -71,7 +71,6 @@ export function AuthProvider({ children }) {
   }
 
   const value = useMemo(() => ({ user, token, loading, logout, setUser }), [user, token, loading])
-  console.log('[CTX] user=', user, 'loading=', loading)
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>
 }
 

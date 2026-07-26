@@ -18,8 +18,6 @@ export default function ProtectedLayout() {
     return () => clearTimeout(t);
   }, [loading]);
 
-  console.log("[Guard]", { loading, user, timeoutHit });
-
   if (loading && !timeoutHit) {
     return <div style={{ padding: 24 }}>Loading…</div>;
   }
