@@ -35,6 +35,18 @@ const { width: W, height: H } = Dimensions.get('window');
 const DIAG = Math.hypot(W, H);
 const BURST_BASE = DOT + 2;
 
+// Reveal geometry. The reveal is a gold disc hollowed out from the centre.
+// Rather than GROW the disc (which forces a per-frame re-layout + huge
+// overdraw), we keep it a CONSTANT size that already covers the screen and
+// animate only the border THICKNESS. The inner hole = cornerRadius −
+// borderWidth, so shrinking the border from REVEAL_OUTER/2 down to
+// REVEAL_MIN_BORDER opens the hole from 0 to REVEAL_FINAL. Pixel-identical
+// to a growing ring (the outer edge is off-screen either way), but the view
+// never changes size — no layout, and fill shrinks as the hole grows.
+const REVEAL_FINAL = DIAG * 1.05; // inner hole Ø when fully open
+const REVEAL_MIN_BORDER = 2; // thinnest the ring ever gets (edge is off-screen)
+const REVEAL_OUTER = REVEAL_FINAL + REVEAL_MIN_BORDER * 2; // constant outer Ø
+
 type Props = {
   /** Called when the reveal is finished — unmount the splash here. */
   onFinish: () => void;
@@ -67,7 +79,7 @@ export default function SplashCollision({ onFinish }: Props) {
   const startReveal = useCallback(() => {
     setPhase('reveal');
     hole.value = withTiming(
-      DIAG * 1.05,
+      REVEAL_FINAL,
       { duration: REVEAL, easing: Easing.bezier(0.3, 0, 0.2, 1) },
       (done) => {
         if (done) runOnJS(onFinish)();
@@ -146,18 +158,14 @@ export default function SplashCollision({ onFinish }: Props) {
     transform: [{ scale: burstScale.value }],
   }));
 
-  // Circular reveal: a gold "ring" whose border is thicker than the
-  // screen diagonal. Growing the ring's inner hole punches an opening
-  // through to the app content underneath — no mask library needed.
-  const ring = useAnimatedStyle(() => {
-    const d = hole.value;
-    return {
-      width: d + DIAG * 2,
-      height: d + DIAG * 2,
-      borderRadius: (d + DIAG * 2) / 2,
-      borderWidth: DIAG,
-    };
-  });
+  // Circular reveal: a constant-size gold disc (see styles.ring) whose inner
+  // hole is punched open by shrinking the border thickness. inner hole Ø =
+  // REVEAL_OUTER − 2·borderWidth, so borderWidth: (REVEAL_OUTER − hole)/2
+  // opens the hole from 0 to REVEAL_FINAL as `hole` animates. Only a paint
+  // property changes on the UI thread — no width/height/radius, no re-layout.
+  const ring = useAnimatedStyle(() => ({
+    borderWidth: (REVEAL_OUTER - hole.value) / 2,
+  }));
 
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="none">
@@ -207,6 +215,11 @@ const styles = StyleSheet.create({
     backgroundColor: GOLD,
   },
   ring: {
+    // Constant size: covers the screen at frame 0 (hole = 0) and never
+    // changes, so the animation only ever repaints the border thickness.
+    width: REVEAL_OUTER,
+    height: REVEAL_OUTER,
+    borderRadius: REVEAL_OUTER / 2,
     borderColor: GOLD,
     backgroundColor: 'transparent',
   },
