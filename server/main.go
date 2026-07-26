@@ -57,18 +57,12 @@ var db *pgxpool.Pool
 var sqldb *sql.DB
 
 // supabaseKeyfunc validates a Supabase-issued access token, whether it's a
-// Bearer header or the body of /auth/exchange. HS256 uses the legacy shared
-// secret; every other alg (RS256, ES256, ...) resolves via JWKS. Keeping both
-// branches lets already-issued HS256 tokens and post-rotation JWKS-signed
-// tokens verify side by side during a signing-key rotation.
-// TODO: remove the HS256 branch once the legacy JWT secret is revoked.
+// Bearer header or the body of /auth/exchange, by resolving its signing key
+// via JWKS (ES256). The legacy HS256 shared-secret branch was removed once the
+// legacy JWT secret was revoked (D-05); an HS256 token now fails verification
+// here because JWKS has no matching key, which is the intended behavior.
 func supabaseKeyfunc(t *jwt.Token) (interface{}, error) {
-	switch t.Method.Alg() {
-	case "HS256":
-		return []byte(os.Getenv("SUPABASE_JWT_SECRET")), nil
-	default:
-		return jwks.Keyfunc(t)
-	}
+	return jwks.Keyfunc(t)
 }
 
 var DB *sql.DB
