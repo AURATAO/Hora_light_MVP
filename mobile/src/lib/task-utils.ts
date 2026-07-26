@@ -74,6 +74,25 @@ export function formatRelativeTime(isoDate: string): string {
   return `${days}d ago`;
 }
 
+// "Last seen" freshness for the supporter's live-location row. Spelled out
+// ("2 min ago", not "2m ago") because it's a standalone sentence the requester
+// reads while tracking someone, where the terse list-metadata form reads as too
+// clipped. `nowMs` is injected so the caller's per-second ticker re-derives it
+// on each render without this reaching for Date.now() itself.
+export function formatLastSeen(isoDate: string, nowMs: number): string {
+  const minutes = Math.round((nowMs - new Date(isoDate).getTime()) / (60 * 1000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  const days = Math.round(hours / 24);
+  return `${days} d ago`;
+}
+
+// Beyond this age we still show the last-known position but style it muted and
+// stop implying it's live (spec: stale honesty at 5 minutes).
+export const LOCATION_STALE_MS = 5 * 60 * 1000;
+
 // Forgot-to-clock-out reminders (client-side only, no backend watchdog yet —
 // see skills/decisions for the deferred server-side version). Tuning the
 // whole cadence — how soon the first nudge fires and how often it repeats —

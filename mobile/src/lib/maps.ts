@@ -26,6 +26,27 @@ export async function openAddressInMaps(address: string): Promise<void> {
 }
 
 /**
+ * Drop a pin at a raw latitude/longitude in the platform's maps app — used for
+ * the supporter's last-known GPS position, where we have coordinates rather
+ * than an address. Mirrors web's `?q=lat,lng` handoff (app/src/pages/
+ * TaskDetail.jsx): iOS → Apple Maps, Android → the `geo:` intent, both of which
+ * treat a "lat,lng" query as a pin drop.
+ */
+export async function openCoordsInMaps(lat: number, lng: number): Promise<void> {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+  const coords = `${lat},${lng}`;
+  const url =
+    Platform.OS === "ios"
+      ? `http://maps.apple.com/?q=${coords}`
+      : `geo:${coords}?q=${coords}`;
+  try {
+    await Linking.openURL(url);
+  } catch {
+    // No maps app / user cancelled the handoff — nothing useful to say.
+  }
+}
+
+/**
  * Open a full route through every stop, starting from the device's current
  * position. Uses the Google Maps universal directions URL on both platforms:
  * it opens the Google Maps app when installed and falls back to the web map

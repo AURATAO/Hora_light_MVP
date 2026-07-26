@@ -182,6 +182,17 @@ export interface GpsPing {
   created_at: string;
 }
 
+// GET /tasks/:id/gps-latest response — the supporter's most recent ping, or
+// null when none has been recorded yet. Note the endpoint returns `200 null`
+// (not 404) for the no-ping case, so the mobile read side treats null as the
+// waiting state rather than an error.
+export interface LatestLocation {
+  lat: number;
+  lng: number;
+  accuracy: number | null;
+  created_at: string;
+}
+
 // POST /tasks/:id/estimate-travel response
 export interface TravelEstimate {
   travel_minutes: number;

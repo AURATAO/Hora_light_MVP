@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Image, RefreshControl, ScrollView, Text, View } from "react-native";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import * as Clipboard from "expo-clipboard";
 import * as Location from "expo-location";
 import {
@@ -25,6 +25,7 @@ import {
   clockIn,
   clockOut,
   completeTask,
+  getLatestLocation,
   getMe,
   getPublicProfile,
   getProfileReviews,
@@ -35,21 +36,29 @@ import {
   uploadCompletionPhoto,
 } from "../../lib/api";
 import { getCategoryMeta } from "../../lib/categories";
-import { openAddressInMaps, openRouteInMaps } from "../../lib/maps";
+import { openAddressInMaps, openCoordsInMaps, openRouteInMaps } from "../../lib/maps";
 import { cancelOvertimeReminders, scheduleOvertimeReminders } from "../../lib/overtime-reminders";
 import {
+  LOCATION_STALE_MS,
   deriveTaskStatus,
   formatCost,
   formatElapsed,
+  formatLastSeen,
   formatMinutes,
   formatRelativeTime,
   formatScheduledAt,
   statusLabel,
 } from "../../lib/task-utils";
-import type { PublicProfile, Review, Task, WorklogsSummary } from "../../lib/types";
+import type { LatestLocation, PublicProfile, Review, Task, WorklogsSummary } from "../../lib/types";
 import { color, size } from "../../theme/tokens";
 
 const GPS_PING_INTERVAL_MS = 30_000;
+
+// The requester polls the supporter's last-known position at half the ping
+// cadence (30s) — often enough to feel current, gentle enough to skip while the
+// screen is backgrounded. Foreground-only, gated on the supporter being clocked
+// in; see the useFocusEffect below.
+const LOCATION_POLL_INTERVAL_MS = 60_000;
 
 // How long the "Copied" confirmation replaces the section label.
 const COPIED_FEEDBACK_MS = 1500;
@@ -112,6 +121,7 @@ export default function TaskDetail() {
   const [clockLoading, setClockLoading] = useState(false);
   const [clockError, setClockError] = useState<string | null>(null);
   const [gpsNotice, setGpsNotice] = useState<string | null>(null);
+  const [latestLocation, setLatestLocation] = useState<LatestLocation | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [descriptionCopied, setDescriptionCopied] = useState(false);
   const gpsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -319,6 +329,15 @@ export default function TaskDetail() {
   const hasOpenWorklog = worklogs ? worklogs.worklogs.some((wl) => wl.end_at === null) : false;
   const openWorklog = worklogs?.worklogs.find((wl) => wl.end_at === null) ?? null;
 
+  // The requester's live-location view mirrors web (app/src/pages/TaskDetail.jsx)
+  // but narrows the gate to "supporter is actually clocked in" (an open worklog)
+  // rather than merely "task is open" — no open worklog means no pings are being
+  // written, so there is nothing live to poll for. Computed before the loading
+  // early-returns so the focus-effect hook below can depend on it. `task` may be
+  // null here (still loading); optional-chaining keeps this false until it loads.
+  const isRequesterView = meId !== null && task?.requester_id === meId;
+  const canSeeLiveLocation = isRequesterView && hasOpenWorklog;
+
   // Live elapsed timer while clocked in — ticks every second, no server round-trip.
   useEffect(() => {
     if (!hasOpenWorklog) return;
@@ -376,6 +395,37 @@ export default function TaskDetail() {
       }
     };
   }, [hasOpenWorklog, id]);
+
+  // Requester side: poll the supporter's last-known position every 60s, but only
+  // while this screen is focused AND the supporter is clocked in. useFocusEffect
+  // tears the interval down when the screen blurs, so no timer runs in the
+  // background. A denied permission on the supporter's phone simply means no new
+  // pings arrive — the row stays in its waiting/last-known state, never an error.
+  useFocusEffect(
+    useCallback(() => {
+      if (!canSeeLiveLocation) {
+        // Clear any position carried over from a previous clock-in session so a
+        // stale coordinate can't masquerade as current once they clock out.
+        setLatestLocation(null);
+        return;
+      }
+      let active = true;
+      async function poll() {
+        try {
+          const loc = await getLatestLocation(id);
+          if (active) setLatestLocation(loc);
+        } catch {
+          // Silent — a dropped poll leaves the last-known row untouched.
+        }
+      }
+      poll();
+      const interval = setInterval(poll, LOCATION_POLL_INTERVAL_MS);
+      return () => {
+        active = false;
+        clearInterval(interval);
+      };
+    }, [canSeeLiveLocation, id])
+  );
 
   if (loading) {
     return (
@@ -609,6 +659,10 @@ export default function TaskDetail() {
         {task.assigned_to_id && worklogs ? (
           <View className="mb-4 gap-3 rounded-card border border-line bg-surface p-4">
             <Text className="text-caption font-semibold text-muted">Progress</Text>
+            {/* Supporter's last-known position — requester-only, and only while
+                they're clocked in (an open worklog). Interim until the v1.1 live
+                map (see skills/decisions/D-09). */}
+            {canSeeLiveLocation ? <LiveLocationRow location={latestLocation} nowMs={now} /> : null}
             {worklogs.worklogs.length === 0 ? (
               <Text className="text-caption text-muted">No time logged yet.</Text>
             ) : (
@@ -720,6 +774,36 @@ export default function TaskDetail() {
         onSubmit={handleCompleteSubmit}
       />
     </Screen>
+  );
+}
+
+// The supporter's last-known GPS position as a single Progress-card row. Three
+// honest states, no error state: no ping yet (also the case when the supporter
+// denied location — nothing arrives) shows a muted "waiting"; a fresh ping is a
+// tappable brand link into the maps app; a ping older than LOCATION_STALE_MS is
+// still shown and still tappable, but muted so it never pretends to be live.
+function LiveLocationRow({ location, nowMs }: { location: LatestLocation | null; nowMs: number }) {
+  if (!location) {
+    return (
+      <View className="min-h-11 flex-row items-center gap-2">
+        <MapPin color={color.muted} size={16} strokeWidth={size.iconStroke} />
+        <Text className="text-caption text-muted">Waiting for location…</Text>
+      </View>
+    );
+  }
+  const stale = nowMs - new Date(location.created_at).getTime() > LOCATION_STALE_MS;
+  return (
+    <PressableScale
+      onPress={() => openCoordsInMaps(location.lat, location.lng)}
+      accessibilityRole="link"
+      accessibilityLabel="Open supporter's last known location in maps"
+      className="min-h-11 flex-row items-center gap-2"
+    >
+      <MapPin color={stale ? color.muted : color.brand} size={16} strokeWidth={size.iconStroke} />
+      <Text className={`text-caption ${stale ? "text-muted" : "text-brand"}`}>
+        Last seen {formatLastSeen(location.created_at, nowMs)}
+      </Text>
+    </PressableScale>
   );
 }
 
