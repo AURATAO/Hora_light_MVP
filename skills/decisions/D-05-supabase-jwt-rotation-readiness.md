@@ -15,6 +15,14 @@
    - `mobile/src/lib/supabase.ts` reads `EXPO_PUBLIC_SUPABASE_ANON_KEY` — same, value-only swap, confirmed but not touched (mobile foundation build, D-03).
    - `supabase/functions/notify-new-task/index.ts` — no Supabase key usage at all (only `SMTP_PASS` for Postmark). Nothing to change.
 
+## Execution (2026-07-26)
+The checklist in Decision #4 was executed on branch `feature/legacy-key-migration` → merged to `main`.
+1. **Avatar path fixed (the one real code change):** `newStorageClientV1()` now passes `map[string]string{"apikey": key}` as the third `storage_go.NewClient` arg, so the client sends both `Authorization: Bearer <key>` and `apikey: <key>`. Works with a legacy service_role JWT and a new-style secret key (`sb_secret_…`). Commit `3ba3eb0`.
+2. **Completion-photo path:** no code change — already sent both headers from `SUPABASE_SERVICE_ROLE_KEY`; the env-value swap covered it. Verified against prod (upload → 200) after the Render swap.
+3. **Zero-downtime key swap, verified in prod in order:** Render `SUPABASE_SERVICE_ROLE_KEY` → new `sb_secret_…` (+ deployed the avatar-client code) → Vercel `VITE_SUPABASE_ANON_KEY` → publishable → mobile `EXPO_PUBLIC_SUPABASE_ANON_KEY` → publishable. Old keys stayed live throughout.
+4. **Legacy secret revoked:** owner revoked the legacy HS256 JWT signing key and disabled the legacy anon/service_role API keys in the Supabase dashboard. The leaked secret from `bc3fd78` is now permanently dead.
+5. **Post-revocation cleanup (commit in `chore/d05-legacy-key-cleanup`, merged `main` `1cff350`):** removed the now-dead HS256 branch from `supabaseKeyfunc()` (all tokens resolve via JWKS/ES256); `SUPABASE_JWT_SECRET` is no longer read by any Go code and can be deleted from Render. Added `.gitleaksignore` allowlisting the `bc3fd78:server/.env:generic-api-key:4` fingerprint (revoked dead secret) — `verify.sh` is now GREEN, closing the standing gitleaks finding.
+
 ## Constitution impact
 - Standards added: none
 - Standards modified/retired: none
