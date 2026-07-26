@@ -2,6 +2,7 @@ package helpers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -9,6 +10,12 @@ import (
 	"net/url"
 	"os"
 )
+
+// ErrTravelNotResolvable means the request was well-formed but Google could not
+// resolve a driving route for the given origin/destination — an unmappable or
+// bad address, or no route between the two points. This is a client-data
+// condition (caller should surface a 4xx), not a server or upstream fault.
+var ErrTravelNotResolvable = errors.New("could not resolve a travel route")
 
 type distanceMatrixResponse struct {
 	Status string `json:"status"`
@@ -56,17 +63,28 @@ func GetTravelTime(originLat, originLng float64, destination string) (int, error
 
 	if result.Status != "OK" {
 		log.Printf("[maps] bad status=%s body=%s", result.Status, string(body))
+		// INVALID_REQUEST / NOT_FOUND mean the origin/destination we sent was
+		// unusable — a caller-data problem (4xx). Other statuses (REQUEST_DENIED,
+		// OVER_QUERY_LIMIT, UNKNOWN_ERROR) are server/upstream faults (5xx).
+		if result.Status == "INVALID_REQUEST" || result.Status == "NOT_FOUND" {
+			return 0, fmt.Errorf("distance matrix status %s: %w", result.Status, ErrTravelNotResolvable)
+		}
 		return 0, fmt.Errorf("distance matrix status: %s", result.Status)
 	}
 
 	if len(result.Rows) == 0 || len(result.Rows[0].Elements) == 0 {
 		log.Printf("[maps] empty rows body=%s", string(body))
-		return 0, fmt.Errorf("no route found")
+		return 0, fmt.Errorf("no route found: %w", ErrTravelNotResolvable)
 	}
 
 	el := result.Rows[0].Elements[0]
 	if el.Status != "OK" {
 		log.Printf("[maps] element status=%s body=%s", el.Status, string(body))
+		// ZERO_RESULTS / NOT_FOUND: the address couldn't be geocoded or no route
+		// exists — caller-data condition (4xx), not a server error.
+		if el.Status == "ZERO_RESULTS" || el.Status == "NOT_FOUND" {
+			return 0, fmt.Errorf("element status %s: %w", el.Status, ErrTravelNotResolvable)
+		}
 		return 0, fmt.Errorf("element status: %s", el.Status)
 	}
 

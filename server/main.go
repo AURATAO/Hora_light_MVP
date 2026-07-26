@@ -2962,7 +2962,13 @@ func estimateTravel(c *gin.Context) {
 	travelMinutes, err := helpers.GetTravelTime(body.SupporterLat, body.SupporterLng, locationText)
 	if err != nil {
 		log.Printf("[estimate-travel] GetTravelTime error: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not calculate travel time"})
+		// An unresolvable/unmappable address or no-route is a data condition,
+		// not a server fault — surface it as 4xx with a message rather than 500.
+		if errors.Is(err, helpers.ErrTravelNotResolvable) {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "could not determine travel time to the task location"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not calculate travel time"})
+		}
 		return
 	}
 

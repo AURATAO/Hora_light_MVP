@@ -55,13 +55,6 @@ export default function TaskDetail() {
   const [date, setDate] = useState('')
   const [timeStr, setTimeStr] = useState('')
 
-  useEffect(() => {
-    if (task) {
-      window.__TASK__ = task
-      console.debug('[TASK]', task)
-    }
-  }, [task])
-
   // Auto-fetch travel estimate for the assignee (supporter) once task is accepted
   useEffect(() => {
     if (!task?.assigned_to_id) return
@@ -165,11 +158,17 @@ export default function TaskDetail() {
           const t = await api(`/tasks/${id}`)
           if (!alive) return
           setTask(t)
-          // 作者或接單者可看工時；403 就忽略
-          try {
-            const w = await api(`/tasks/${id}/worklogs`)
-            if (alive) setWork(w)
-          } catch {/* ignore */ }
+          // Worklogs are visible only to the requester or the assignee. Only
+          // fetch them when the viewer is a party — otherwise the backend 403s
+          // (e.g. a supporter browsing an unaccepted task), which is just
+          // console noise since a non-party has no worklogs to show anyway.
+          const isParty = !!user?.id && (t.requester_id === user.id || t.assigned_to_id === user.id)
+          if (isParty) {
+            try {
+              const w = await api(`/tasks/${id}/worklogs`)
+              if (alive) setWork(w)
+            } catch {/* ignore */ }
+          }
         }).catch((e) => {
           if (alive) setError(e.message || 'Failed to load')
         })
