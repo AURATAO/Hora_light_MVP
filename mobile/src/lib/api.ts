@@ -2,6 +2,7 @@ import { ApiError } from "./api-error";
 import type {
   AppNotification,
   GpsPing,
+  LatestLocation,
   ParsedTask,
   Profile,
   PublicProfile,
@@ -403,6 +404,15 @@ export interface GpsPingPayload {
 
 export function sendGpsPing(id: string, payload: GpsPingPayload): Promise<GpsPing> {
   return apiFetch<GpsPing>(`/tasks/${id}/gps-ping`, { method: "POST", body: payload });
+}
+
+// The requester (or assignee) reads the supporter's most recent ping. The
+// backend replies `200 null` when no ping exists yet — apiFetch resolves that
+// empty body to null, which the caller renders as the "waiting" state rather
+// than an error. Mirrors web's /tasks/:id/gps-latest poll (app/src/pages/
+// TaskDetail.jsx).
+export function getLatestLocation(id: string): Promise<LatestLocation | null> {
+  return apiFetch<LatestLocation | null>(`/tasks/${id}/gps-latest`);
 }
 
 export interface EstimateTravelPayload {
