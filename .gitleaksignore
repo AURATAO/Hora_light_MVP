@@ -1,0 +1,9 @@
+# gitleaks allowlist — fingerprints of findings that are known and neutralized.
+#
+# Legacy Supabase HS256 JWT secret committed to server/.env in bc3fd78 (2025-09-27).
+# The secret was permanently REVOKED in the Supabase dashboard on 2026-07-26 as the
+# final step of the D-05 legacy API key migration
+# (skills/decisions/D-05-supabase-jwt-rotation-readiness.md), so the leaked value can
+# no longer mint or verify a token. The string remains in git history at this commit;
+# this entry acknowledges the dead secret rather than rewriting history.
+bc3fd78f8c822740d6b29bb3eb70167fd335e19f:server/.env:generic-api-key:4
