@@ -55,13 +55,6 @@ export default function TaskDetail() {
   const [date, setDate] = useState('')
   const [timeStr, setTimeStr] = useState('')
 
-  useEffect(() => {
-    if (task) {
-      window.__TASK__ = task
-      console.debug('[TASK]', task)
-    }
-  }, [task])
-
   // Auto-fetch travel estimate for the assignee (supporter) once task is accepted
   useEffect(() => {
     if (!task?.assigned_to_id) return
