@@ -686,9 +686,16 @@ func mustEnv(name string) string {
 
 func newStorageClientV1() *storage_go.Client {
 	base := strings.TrimSuffix(mustEnv("SUPABASE_PROJECT_URL"), "/")
-	key := mustEnv("SUPABASE_SERVICE_ROLE_KEY") // 務必是 service_role 的 key
+	key := mustEnv("SUPABASE_SERVICE_ROLE_KEY") // service_role JWT 或新式 secret key（sb_secret_...）
 	log.Printf("[storage] endpoint=%s/storage/v1", base)
-	return storage_go.NewClient(base+"/storage/v1", key, nil)
+	// Supabase Storage sits behind Kong, which authenticates the request via the `apikey` header.
+	// storage-go's NewClient only sets `Authorization: Bearer <key>` (client.go:56) and no `apikey`.
+	// A legacy service_role key is a JWT that Kong also accepts in the Authorization header, so the
+	// old path worked; a new-style secret key is NOT a JWT and is only resolved via `apikey`. Passing
+	// it as a custom header makes this client work with BOTH key formats (the third NewClient arg is
+	// applied with header.Set, so it's added alongside Authorization), matching the completion-photo
+	// upload path below which already sends both headers.
+	return storage_go.NewClient(base+"/storage/v1", key, map[string]string{"apikey": key})
 }
 
 func addAvatarUploadRouteV1(r *gin.Engine) {
