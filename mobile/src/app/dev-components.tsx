@@ -13,9 +13,8 @@ import {
 } from "../components/ui";
 import { color } from "../theme/tokens";
 
-// Dev-only design-system showcase. Not linked from the tab bar — reachable via
-// /dev-components (long-press the Profile headline, or type the URL directly).
-// TODO: remove before TestFlight.
+// Dev-only design-system showcase. Not linked from the tab bar and reachable by
+// no in-app gesture — navigate to /dev-components directly in dev.
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
