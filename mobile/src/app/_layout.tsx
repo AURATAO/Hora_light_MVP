@@ -6,13 +6,14 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import * as SplashScreen from "expo-splash-screen";
 import * as Notifications from "expo-notifications";
-import { supabase } from "../lib/supabase";
+import { missingEnvVars, supabase } from "../lib/supabase";
 import { getMe, getProfile } from "../lib/api";
 // Importing ./push registers the app's single notification handler at boot.
 import { registerForPushNotifications, taskIdFromNotificationResponse } from "../lib/push";
 import type { Profile } from "../lib/types";
 import SplashCollision from "../components/SplashCollision";
 import { ErrorBoundary } from "../components/ErrorBoundary";
+import { ConfigError } from "../components/ConfigError";
 import { OfflineBanner } from "../components/OfflineBanner";
 
 // Hold the native splash (solid brand green with the two static gold dots)
@@ -49,6 +50,20 @@ export function useAuthState() {
 }
 
 export default function RootLayout() {
+  // Bails before the first hook, so hook order stays stable across renders:
+  // missingEnvVars is computed once at module scope from values inlined at
+  // build time, so this branch is constant for the life of the process.
+  // Deliberately ahead of the auth check — with no Supabase config there is
+  // nothing to check against, and the native crash this replaces happened
+  // before any of it ran.
+  if (missingEnvVars.length > 0) {
+    return (
+      <SafeAreaProvider>
+        <ConfigError missing={missingEnvVars} />
+      </SafeAreaProvider>
+    );
+  }
+
   const [state, setState] = useState<AuthState>({
     loading: true,
     authenticated: false,
