@@ -216,9 +216,7 @@ export default function Profile() {
 
   return (
     <Screen insetForTabBar refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={color.muted} />}>
-      <PressableScale onLongPress={() => router.push("/dev-components")}>
-        <Text className="mb-6 mt-4 text-display text-ink">Profile</Text>
-      </PressableScale>
+      <Text className="mb-6 mt-4 text-display text-ink">Profile</Text>
 
       <View className="mb-6 items-center gap-3">
         <PressableScale onPress={handleAvatarPress} disabled={uploadingAvatar}>
