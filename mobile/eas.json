@@ -24,5 +24,15 @@
       "environment": "preview",
       "autoIncrement": true
     }
+  },
+  // Submit profiles are matched to the build profile by name. Without a
+  // "preview" entry here, submitting a preview build silently falls back to
+  // "production", which does not exist, and fails asking for ascAppId.
+  "submit": {
+    "preview": {
+      "ios": {
+        "ascAppId": "6795529693"
+      }
+    }
   }
 }
