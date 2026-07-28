@@ -17,10 +17,17 @@ import {
   ImageIcon,
   UserRound,
 } from "lucide-react-native";
+import { HomeCardSheet } from "../../components/HomeCardSheet";
 import { Badge, Card, EmptyState, Logo, PressableScale, Screen, Skeleton } from "../../components/ui";
 import { ApiError, getMe, getNotifications, getPostedTasks } from "../../lib/api";
 import { getCategoryMeta } from "../../lib/categories";
-import { HOME_CARDS, HOME_CARD_IMAGES, buildHeroLines } from "../../lib/home-content";
+import {
+  HOME_CARDS,
+  HOME_CARD_DETAILS,
+  HOME_CARD_IMAGES,
+  buildHeroLines,
+} from "../../lib/home-content";
+import type { HomeCard } from "../../lib/home-content";
 import { deriveTaskStatus, formatRelativeTime } from "../../lib/task-utils";
 import type { Task, TaskCategory } from "../../lib/types";
 import { color, size, space } from "../../theme/tokens";
@@ -145,7 +152,7 @@ function NewsCard({
   width,
   onPress,
 }: {
-  card: (typeof HOME_CARDS)[number];
+  card: HomeCard;
   width: number;
   onPress?: () => void;
 }) {
@@ -214,6 +221,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [hasUnreadNotifications, setHasUnreadNotifications] = useState(false);
+  const [openCardSlug, setOpenCardSlug] = useState<string | null>(null);
 
   const cardWidth = Math.round(windowWidth * CARD_WIDTH_RATIO);
   const heroLines = useMemo(() => buildHeroLines(firstName), [firstName]);
@@ -288,6 +296,22 @@ export default function Home() {
     setRefreshing(false);
   }
 
+  // A card either routes somewhere (`action`) or opens its explainer sheet;
+  // one with neither stays non-tappable — see HOME_CARDS.
+  function cardPressHandler(card: HomeCard): (() => void) | undefined {
+    if (card.action) return () => router.push(card.action!);
+    if (HOME_CARD_DETAILS[card.slug]) return () => setOpenCardSlug(card.slug);
+    return undefined;
+  }
+
+  // The sheet closes before routing so the destination isn't revealed behind a
+  // modal that's still sliding away.
+  function handleCardSheetPrimary() {
+    const action = openCardSlug ? HOME_CARD_DETAILS[openCardSlug]?.primaryAction : undefined;
+    setOpenCardSlug(null);
+    if (action) router.push(action);
+  }
+
   function goToPostTask(category?: TaskCategory) {
     if (category) {
       router.push({ pathname: "/post-task", params: { category } });
@@ -354,12 +378,7 @@ export default function Home() {
         contentContainerStyle={{ paddingHorizontal: space[6], gap: space[3] }}
       >
         {HOME_CARDS.map((card) => (
-          <NewsCard
-            key={card.slug}
-            card={card}
-            width={cardWidth}
-            onPress={card.action ? () => router.push(card.action!) : undefined}
-          />
+          <NewsCard key={card.slug} card={card} width={cardWidth} onPress={cardPressHandler(card)} />
         ))}
       </ScrollView>
 
@@ -405,6 +424,12 @@ export default function Home() {
           ) : null}
         </View>
       )}
+
+      <HomeCardSheet
+        slug={openCardSlug}
+        onDismiss={() => setOpenCardSlug(null)}
+        onPrimary={handleCardSheetPrimary}
+      />
     </Screen>
   );
 }

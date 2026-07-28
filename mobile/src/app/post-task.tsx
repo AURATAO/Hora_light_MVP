@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { Check, ChevronLeft, X } from "lucide-react-native";
+import { Check, ChevronLeft, Sparkles, X } from "lucide-react-native";
 import { AddressField } from "../components/AddressField";
 import { CompanionshipPolicySheet } from "../components/CompanionshipPolicySheet";
 import { ScheduledTimeField } from "../components/ScheduledTimeField";
@@ -9,6 +9,7 @@ import { Button, Input, Pill, PressableScale, Screen } from "../components/ui";
 import { ApiError, createTask, estimateTaskCost, parseTask } from "../lib/api";
 import { CATEGORIES, getCategoryMeta } from "../lib/categories";
 import { isCompanionCategory } from "../lib/companionship-policy";
+import { POST_TASK_AI_HINT, POST_TASK_AI_HINT_COPY } from "../lib/home-content";
 import { formatCost, formatMinutes, formatScheduledAt, zeroSeconds } from "../lib/task-utils";
 import type { ParsedTask, TaskCategory } from "../lib/types";
 import { color, size } from "../theme/tokens";
@@ -144,6 +145,12 @@ export default function PostTask() {
   const router = useRouter();
   const params = useLocalSearchParams();
   const initialCategory = parseCategory(params.category);
+
+  // Only the "Post in seconds" education card passes ?hint=ai, so the tip
+  // banner is scoped to that entry point (the hero card and Home's category
+  // circles push without it). Dismissal lasts for this Post Task session.
+  const hintParam = Array.isArray(params.hint) ? params.hint[0] : params.hint;
+  const [aiHintVisible, setAiHintVisible] = useState(hintParam === POST_TASK_AI_HINT);
 
   const [step, setStep] = useState<Step>("describe");
   const [selectedCategory, setSelectedCategory] = useState<TaskCategory | undefined>(initialCategory);
@@ -374,6 +381,15 @@ export default function PostTask() {
                 onPress={() => setSelectedCategory(undefined)}
                 className="self-start"
               />
+            ) : null}
+            {aiHintVisible ? (
+              <View className="flex-row items-start gap-3 rounded-card bg-brand-tint p-4">
+                <Sparkles color={color.brand} size={18} strokeWidth={size.iconStroke} />
+                <Text className="flex-1 text-body text-brand">{POST_TASK_AI_HINT_COPY}</Text>
+                <PressableScale onPress={() => setAiHintVisible(false)} hitSlop={12}>
+                  <X color={color.brand} size={16} strokeWidth={size.iconStroke} />
+                </PressableScale>
+              </View>
             ) : null}
             <Input
               multiline
