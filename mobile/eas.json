@@ -21,7 +21,8 @@
     },
     "preview": {
       "distribution": "store",
-      "environment": "preview"
+      "environment": "preview",
+      "autoIncrement": true
     }
   }
 }
