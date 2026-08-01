@@ -154,7 +154,14 @@ export default function My() {
       await fetchPage('assigned',  null)
     })
   } catch (e) {
-    toast(e.message || 'Failed to accept')
+    if (e?.body?.error === 'not available') {
+      // Lost the race — someone else accepted first. Refresh so the task drops
+      // out of the Available list.
+      toast('This task was just accepted by someone else.')
+      await wrap(() => fetchPage('available', null))
+    } else {
+      toast(e?.body?.error || e.message || 'Failed to accept')
+    }
   }
 }
 

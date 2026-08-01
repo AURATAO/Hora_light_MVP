@@ -305,7 +305,14 @@ export default function TaskDetail() {
         await api(`/tasks/${id}/accept`, { method: 'POST' })
         await reloadWorkAndTask()
       } catch (e) {
-        toast(e.message || 'Failed to accept')
+        if (e?.body?.error === 'not available') {
+          // Lost the race — someone else accepted first. Pull the fresh state
+          // so the Accept button disappears.
+          toast('This task was just accepted by someone else.')
+          await reloadWorkAndTask()
+        } else {
+          toast(e?.body?.error || e.message || 'Failed to accept')
+        }
       }
     })
   }
