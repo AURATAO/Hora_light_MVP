@@ -149,6 +149,27 @@ export function getMe(): Promise<User> {
   return apiFetch<User>("/auth/me");
 }
 
+// What both login paths return once the hora_session cookie is set —
+// /auth/exchange and /auth/review-login share one response shape because they
+// share one session issuer (server/main.go issueHoraSession).
+export interface SessionIdentity {
+  id?: string;
+  email?: string;
+  name?: string;
+}
+
+// App Review bypass: the backend accepts a fixed code for exactly one
+// env-configured review account and answers 401 for everything else, so the
+// client never has to know which address that is — it just retries a code
+// Supabase rejected. Off entirely unless the server has REVIEW_ACCOUNT_EMAIL
+// and REVIEW_ACCOUNT_CODE set, in which case the route 404s.
+export function reviewLogin(email: string, code: string): Promise<SessionIdentity> {
+  return apiFetch<SessionIdentity>("/auth/review-login", {
+    method: "POST",
+    body: { email, code },
+  });
+}
+
 export function logout(): Promise<void> {
   return apiFetch<void>("/auth/logout", { method: "POST" });
 }
