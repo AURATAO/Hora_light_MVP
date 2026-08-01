@@ -1,6 +1,8 @@
 package main
 
 import (
+	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -275,6 +277,52 @@ func TestReviewLoginOtherAccountsNeverSpendTheBudget(t *testing.T) {
 	// The reviewer's own budget is untouched: a wrong code is still 401, not 429.
 	if got := post(`{"email":"review@my-hora.com","code":"123456"}`); got != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d — other accounts drained the review budget", got, http.StatusUnauthorized)
+	}
+}
+
+// A correct credential that then fails in the database must report *why*. The
+// bare "user upsert failed" this replaced cost a redeploy to diagnose, because
+// the real error only ever reached the host's logs.
+func TestReviewLoginSurfacesTheUnderlyingDBError(t *testing.T) {
+	t.Setenv("REVIEW_ACCOUNT_EMAIL", "review@my-hora.com")
+	t.Setenv("REVIEW_ACCOUNT_CODE", "000000")
+	gin.SetMode(gin.TestMode)
+
+	// Opens lazily, so the failure lands on the query — the same shape as a
+	// database that is up but refusing the statement.
+	dead, err := sql.Open("pgx", "postgres://127.0.0.1:1/nope?connect_timeout=1")
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer dead.Close()
+
+	r := gin.New()
+	registerReviewAccountRoute(r, dead)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/auth/review-login",
+		strings.NewReader(`{"email":"review@my-hora.com","code":"000000"}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+
+	var body struct {
+		Error  string `json:"error"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response is not JSON: %v (%s)", err, w.Body.String())
+	}
+	if body.Detail == "" {
+		t.Fatal("the 500 carried no detail — the DB error is invisible again")
+	}
+	// The wrapper must name the step, so the next failure says where it broke
+	// rather than just that it broke.
+	if !strings.Contains(body.Detail, "users row") && !strings.Contains(body.Detail, "seed profile") {
+		t.Errorf("detail %q names no step", body.Detail)
 	}
 }
 

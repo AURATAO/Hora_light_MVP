@@ -24,6 +24,7 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -194,13 +195,26 @@ func registerReviewAccountRoute(r *gin.Engine, sdb *sql.DB) {
 		internalID, err := ensureReviewAccount(c.Request.Context(), sdb, ra)
 		if err != nil {
 			log.Printf("[review-login] seed failed email=%s err=%v", ra.Email, err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "user upsert failed"})
+			// The underlying error goes in the body, not just the log. Reaching
+			// this line requires the review credential, so the only person who
+			// can see it is someone who already holds it — and they are usually
+			// debugging a submission with no practical access to the host's
+			// logs, where a bare "user upsert failed" costs a redeploy to learn
+			// anything. The wrapper says which step failed.
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":  "user upsert failed",
+				"detail": err.Error(),
+			})
 			return
 		}
 
 		resp, err := issueHoraSession(c, internalID, ra.Email)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "session error"})
+			log.Printf("[review-login] session signing failed err=%v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":  "session error",
+				"detail": err.Error(),
+			})
 			return
 		}
 
@@ -226,14 +240,19 @@ func ensureReviewAccount(ctx context.Context, sdb *sql.DB, ra reviewAccount) (st
 			values ($1, $2)
 			returning id
 		`, ra.Email, ra.Name).Scan(&internalID)
-	}
-	if err != nil {
-		return "", err
+		if err != nil {
+			return "", fmt.Errorf("insert users row: %w", err)
+		}
+	} else if err != nil {
+		return "", fmt.Errorf("select users row: %w", err)
 	}
 	if internalID == "" {
 		return "", errors.New("empty internal id for review account")
 	}
-	return internalID, seedReviewProfile(ctx, sdb, internalID, ra)
+	if err := seedReviewProfile(ctx, sdb, internalID, ra); err != nil {
+		return "", fmt.Errorf("seed profile: %w", err)
+	}
+	return internalID, nil
 }
 
 // seedReviewProfile puts the account in the state a reviewer needs on arrival:
