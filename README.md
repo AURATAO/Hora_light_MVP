@@ -79,8 +79,8 @@ build without an inbox. Leave either unset — the normal state — and the
 is untouched either way. **Unset these once App Review approves the build.**
 
 ```env
-REVIEW_ACCOUNT_EMAIL=review@my-hora.com
-REVIEW_ACCOUNT_CODE=000000
+REVIEW_ACCOUNT_EMAIL=info@my-hora.com
+REVIEW_ACCOUNT_CODE=              # six digits; the live value lives in Render only
 
 # optional — the profile the account is seeded with on first login
 REVIEW_ACCOUNT_NAME=Hora Review
