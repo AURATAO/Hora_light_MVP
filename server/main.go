@@ -2121,14 +2121,24 @@ func acceptTask(c *gin.Context) {
 		return
 	}
 
-	_, err = db.Exec(ctx, `
+	// The check above is advisory only — it exists to produce friendly errors.
+	// The real guard is here: the WHERE clause re-tests availability inside the
+	// UPDATE, so two concurrent accepts serialize on the row lock and only the
+	// first one matches. The loser updates 0 rows and gets "not available".
+	tag, err := db.Exec(ctx, `
     update public.tasks
     set assigned_to_id = $1::uuid,
         assigned_to    = $2
     where id = $3
+      and status = 'open'
+      and assigned_to_id is null
   `, meUID, meEmail, id)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "db error"})
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		c.JSON(400, gin.H{"error": "not available"})
 		return
 	}
 
