@@ -6,7 +6,7 @@ import * as SecureStore from "expo-secure-store";
 import { supabase } from "../../lib/supabase";
 import { hasWebCryptoSupport } from "../../lib/crypto-polyfill";
 import { getAuthRedirectUrl } from "../../lib/auth-redirect";
-import { apiFetch } from "../../lib/api";
+import { apiFetch, reviewLogin, type SessionIdentity } from "../../lib/api";
 import { Screen, Input, PressableScale, Logo, Checkbox } from "../../components/ui";
 import { LEGAL_URLS } from "../../lib/constants";
 import { color } from "../../theme/tokens";
@@ -65,18 +65,23 @@ export default function Login() {
   // on every login, which is the standard pattern for this gate.
   const [consented, setConsented] = useState(false);
 
+  // Every login path converges here once the backend has set the hora_session
+  // cookie. Routes through the root gate (index) rather than straight to the
+  // tabs, so a new / incomplete user lands in onboarding. refresh() populates
+  // the cached profile first, so the gate reads it without a bounce back here.
+  async function enterApp(me: SessionIdentity) {
+    if (me?.id) await SecureStore.setItemAsync("hora_user_id", String(me.id));
+    if (me?.email) await SecureStore.setItemAsync("hora_user_email", String(me.email));
+    await refresh();
+    router.replace("/");
+  }
+
   async function finishLogin(accessToken: string) {
-    const me = await apiFetch<{ id?: string; email?: string }>("/auth/exchange", {
+    const me = await apiFetch<SessionIdentity>("/auth/exchange", {
       method: "POST",
       body: { access_token: accessToken },
     });
-    if (me?.id) await SecureStore.setItemAsync("hora_user_id", String(me.id));
-    if (me?.email) await SecureStore.setItemAsync("hora_user_email", String(me.email));
-    // Route through the root gate (index) rather than straight to the tabs, so
-    // a new / incomplete user lands in onboarding. refresh() populates the
-    // cached profile first, so the gate reads it without a bounce back here.
-    await refresh();
-    router.replace("/");
+    await enterApp(me);
   }
 
   // Same in-app browser pattern as Profile's legal rows.
@@ -160,8 +165,25 @@ export default function Login() {
         token: code,
         type: "email",
       });
-      if (verifyError) throw verifyError;
-      if (data.session?.access_token) await finishLogin(data.session.access_token);
+      if (!verifyError && data.session?.access_token) {
+        await finishLogin(data.session.access_token);
+        return;
+      }
+
+      // Supabase turned the code down. Usually that's a typo — but it is also
+      // what the App Review account always gets, because its code is a fixed
+      // one the backend checks itself (server/review_account.go) rather than
+      // an OTP Supabase ever issued. Asking the backend here is what keeps the
+      // review email out of the app bundle: it answers 401 for every address
+      // but the one it is configured with, so for real users this is a wasted
+      // round trip and nothing more.
+      try {
+        await enterApp(await reviewLogin(email, code));
+        return;
+      } catch {
+        // Not the review account — fall through to the real OTP error.
+      }
+      throw verifyError ?? new Error("Invalid or expired code");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Invalid or expired code");
     } finally {

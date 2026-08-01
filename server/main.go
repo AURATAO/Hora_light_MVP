@@ -459,39 +459,16 @@ func main() {
 		}
 
 		// Issue internal hora_session cookie (same as Google OAuth path)
-		isProd := strings.EqualFold(os.Getenv("APP_ENV"), "prod") || strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true")
-		ttl := 24 * time.Hour
-		now := time.Now()
-		j := jwt.NewWithClaims(jwt.SigningMethodHS256, auth.Claims{
-			Email: email,
-			Name:  deriveName(email),
-			RegisteredClaims: jwt.RegisteredClaims{
-				Subject:   internalID,
-				IssuedAt:  jwt.NewNumericDate(now),
-				ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
-			},
-		})
-		signed, err := j.SignedString([]byte(os.Getenv("SESSION_JWT_SECRET")))
+		resp, err := issueHoraSession(c, internalID, email)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "session error"})
 			return
 		}
-		cookie := &http.Cookie{
-			Name:     "hora_session",
-			Value:    signed,
-			Path:     "/",
-			HttpOnly: true,
-			Secure:   isProd,
-			MaxAge:   int(ttl.Seconds()),
-		}
-		if isProd {
-			cookie.SameSite = http.SameSiteNoneMode
-		} else {
-			cookie.SameSite = http.SameSiteLaxMode
-		}
-		http.SetCookie(c.Writer, cookie)
-		c.JSON(http.StatusOK, gin.H{"auth": true, "id": internalID, "email": email, "name": deriveName(email)})
+		c.JSON(http.StatusOK, resp)
 	})
+
+	// App Review bypass. No-op unless REVIEW_ACCOUNT_EMAIL/_CODE are both set.
+	registerReviewAccountRoute(r, sqldb)
 
 	// 需要登入的 API
 	meAPI := r.Group("/profile")
@@ -664,6 +641,45 @@ func deriveName(email string) string {
 		return cases.Title(language.Und).String(strings.ReplaceAll(email[:i], ".", " "))
 	}
 	return email
+}
+
+// issueHoraSession signs the internal session JWT for an already-authenticated
+// user and sets the hora_session cookie, returning the JSON body the caller
+// should echo back. Every login path funnels through here (/auth/exchange and
+// the review-account login), so a session is a session however it was reached —
+// same claims, same TTL, same cookie flags, no path-specific powers.
+func issueHoraSession(c *gin.Context, internalID, email string) (gin.H, error) {
+	isProd := strings.EqualFold(os.Getenv("APP_ENV"), "prod") || strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true")
+	ttl := 24 * time.Hour
+	now := time.Now()
+	j := jwt.NewWithClaims(jwt.SigningMethodHS256, auth.Claims{
+		Email: email,
+		Name:  deriveName(email),
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   internalID,
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+		},
+	})
+	signed, err := j.SignedString([]byte(os.Getenv("SESSION_JWT_SECRET")))
+	if err != nil {
+		return nil, err
+	}
+	cookie := &http.Cookie{
+		Name:     "hora_session",
+		Value:    signed,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   isProd,
+		MaxAge:   int(ttl.Seconds()),
+	}
+	if isProd {
+		cookie.SameSite = http.SameSiteNoneMode
+	} else {
+		cookie.SameSite = http.SameSiteLaxMode
+	}
+	http.SetCookie(c.Writer, cookie)
+	return gin.H{"auth": true, "id": internalID, "email": email, "name": deriveName(email)}, nil
 }
 
 // -------- Profile handlers --------

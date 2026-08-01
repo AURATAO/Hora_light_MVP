@@ -70,6 +70,25 @@ COOKIE_SECURE=false
 TZ=America/New_York
 ```
 
+**Optional: App Review bypass** (`server/review_account.go`)
+
+Set both of these and one single account can sign in with a fixed code instead
+of a Supabase OTP, so Apple's reviewers can get into a TestFlight / App Store
+build without an inbox. Leave either unset — the normal state — and the
+`/auth/review-login` route is not registered at all. Every other account's OTP
+is untouched either way. **Unset these once App Review approves the build.**
+
+```env
+REVIEW_ACCOUNT_EMAIL=review@my-hora.com
+REVIEW_ACCOUNT_CODE=000000
+
+# optional — the profile the account is seeded with on first login
+REVIEW_ACCOUNT_NAME=Hora Review
+REVIEW_ACCOUNT_PHONE=+1 212 555 0100
+REVIEW_ACCOUNT_CITY=New York
+REVIEW_ACCOUNT_AVATAR_URL=          # empty → the reviewer picks a photo once
+```
+
 ---
 
 ### 2. Frontend (React)
