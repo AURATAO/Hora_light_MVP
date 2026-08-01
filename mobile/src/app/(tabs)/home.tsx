@@ -35,12 +35,12 @@ import { color, size, space } from "../../theme/tokens";
 // "For you" quick-access categories — a fast lane into post-task with the
 // category pre-selected. The full set lives behind "What do you need?".
 const HOME_CATEGORIES: TaskCategory[] = [
-  "grocery",
+  "quick_errand",
   "delivery",
   "laundry",
+  "grocery",
   "queue",
   "companionship",
-  "quick_errand",
 ];
 
 const STATUS_LABEL: Record<ReturnType<typeof deriveTaskStatus>, string> = {
@@ -133,14 +133,17 @@ function CategoryCircle({
   const Icon = meta.icon;
 
   return (
-    <PressableScale onPress={onPress} className="w-[64px] items-center gap-2">
+    <PressableScale onPress={onPress} className="w-[80px] items-center gap-2">
       <View
         className="h-[64px] w-[64px] items-center justify-center rounded-pill bg-brand"
         style={{ aspectRatio: 1 }}
       >
         <Icon color={color.gold} size={24} strokeWidth={size.iconStroke} />
       </View>
-      <Text className="text-center text-caption text-muted" numberOfLines={2}>
+      {/* The label box is wider than the circle so no label ever wraps the row
+          into two lines; numberOfLines={1} is the hard stop if one ever gets
+          long enough to overflow even that. */}
+      <Text className="w-full text-center text-caption text-muted" numberOfLines={1}>
         {meta.label}
       </Text>
     </PressableScale>
@@ -352,13 +355,16 @@ export default function Home() {
       </PressableScale>
 
       <Text className="mb-3 text-title font-semibold text-ink">For you</Text>
+      {/* One row, always — the six circles run off the edge and scroll rather
+          than wrapping. Leading/trailing padding matches the screen's 24; the
+          gap is 8 because each item box is already 16 wider than its circle. */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
         className="-mx-6 mb-8"
         contentContainerStyle={{
           paddingHorizontal: space[6],
-          gap: space[4],
+          gap: space[2],
           alignItems: "flex-start",
         }}
       >

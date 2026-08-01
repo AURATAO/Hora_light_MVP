@@ -34,7 +34,10 @@ export const CATEGORIES: readonly CategoryMeta[] = [
   { value: "laundry", label: "Laundry", icon: Shirt },
   { value: "queue", label: "Queue", icon: Hourglass },
   { value: "anything_else", label: "Anything Else", icon: Sparkles },
-  { value: "companionship", label: "Companionship", icon: HeartHandshake },
+  // Label only — the submitted category value stays "companionship" (Post Task
+  // normalizes it to "companion"). "Companion" keeps the shortcut label to one
+  // line and matches what the picker already calls the same thing.
+  { value: "companionship", label: "Companion", icon: HeartHandshake },
 ];
 
 const CATEGORY_BY_VALUE: Record<TaskCategory, CategoryMeta> = Object.fromEntries(
