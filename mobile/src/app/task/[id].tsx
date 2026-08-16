@@ -13,6 +13,7 @@ import {
   MapPin,
   MessageCircle,
   Navigation,
+  Pencil,
 } from "lucide-react-native";
 import { CancelTaskSheet } from "../../components/CancelTaskSheet";
 import { CompleteTaskSheet, type CompleteTaskPayload } from "../../components/CompleteTaskSheet";
@@ -203,9 +204,17 @@ export default function TaskDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  // On focus rather than only on mount, so coming back from a screen that can
+  // change this task — the edit modal above all, but also chat, where it may
+  // have been accepted meanwhile — never leaves a stale copy on screen. This
+  // fires on the initial focus too, so it replaces the mount effect. `loading`
+  // is only ever set true at init, so a refocus refetch updates in place
+  // instead of flashing the skeleton.
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load])
+  );
 
   async function onRefresh() {
     setRefreshing(true);
@@ -457,7 +466,12 @@ export default function TaskDetail() {
   const isRequester = meId !== null && task.requester_id === meId;
   const isAssignee = meId !== null && task.assigned_to_id === meId;
   const isAvailableToAccept = meId !== null && !isRequester && !isAssignee && task.status === "open" && !task.assigned_to_id;
-  const cancellable = isRequester && status === "open";
+  // Editing and cancelling answer to one rule: my task, still open, nobody on
+  // it yet — deriveTaskStatus only returns "open" while assigned_to_id is null.
+  // Once accepted, both are off the table and coordination moves to chat; the
+  // server enforces the same rule (main.go updateTask, cancelTask).
+  const editable = isRequester && status === "open";
+  const cancellable = editable;
   const locations = locationParts(task.location_text);
   const TransportIcon = task.transport_required ? TRANSPORT_ICON[task.transport_required] : undefined;
   // Supporter-only, and only once this task is actually theirs: the route action
@@ -476,7 +490,10 @@ export default function TaskDetail() {
       scroll={false}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={color.muted} />}
     >
-      <HeaderRow onBack={() => router.back()} />
+      <HeaderRow
+        onBack={() => router.back()}
+        onEdit={editable ? () => router.push(`/task/${id}/edit`) : undefined}
+      />
 
       <ScrollView showsVerticalScrollIndicator={false}>
         <View className="mb-2 flex-row items-center gap-2">
@@ -807,17 +824,32 @@ function LiveLocationRow({ location, nowMs }: { location: LatestLocation | null;
   );
 }
 
-function HeaderRow({ onBack }: { onBack: () => void }) {
+// `onEdit` is passed only for a task the signed-in requester can still change,
+// so the pencil is absent — not disabled — the moment someone accepts it.
+function HeaderRow({ onBack, onEdit }: { onBack: () => void; onEdit?: () => void }) {
   return (
-    <View className="mb-6 mt-4 flex-row items-center">
-      <PressableScale
-        onPress={onBack}
-        className="h-11 w-11 items-center justify-center rounded-pill"
-        hitSlop={8}
-      >
-        <ChevronLeft color={color.ink} size={22} strokeWidth={size.iconStroke} />
-      </PressableScale>
-      <Text className="ml-1 text-title font-semibold text-ink">Task</Text>
+    <View className="mb-6 mt-4 flex-row items-center justify-between">
+      <View className="flex-row items-center">
+        <PressableScale
+          onPress={onBack}
+          className="h-11 w-11 items-center justify-center rounded-pill"
+          hitSlop={8}
+        >
+          <ChevronLeft color={color.ink} size={22} strokeWidth={size.iconStroke} />
+        </PressableScale>
+        <Text className="ml-1 text-title font-semibold text-ink">Task</Text>
+      </View>
+      {onEdit ? (
+        <PressableScale
+          onPress={onEdit}
+          className="h-11 w-11 items-center justify-center rounded-pill"
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Edit task"
+        >
+          <Pencil color={color.ink} size={20} strokeWidth={size.iconStroke} />
+        </PressableScale>
+      ) : null}
     </View>
   );
 }

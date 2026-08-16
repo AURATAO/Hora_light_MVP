@@ -1679,10 +1679,11 @@ func updateTask(c *gin.Context) {
 
 	// 多抓 requester（email）一起比
 	var requesterID, requesterEmail, status string
+	var assignedToID *string
 	if err := db.QueryRow(ctx,
-		`select requester_id, requester, status from public.tasks where id=$1`,
+		`select requester_id, requester, status, assigned_to_id from public.tasks where id=$1`,
 		id,
-	).Scan(&requesterID, &requesterEmail, &status); err != nil {
+	).Scan(&requesterID, &requesterEmail, &status, &assignedToID); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
@@ -1710,6 +1711,16 @@ func updateTask(c *gin.Context) {
 
 	if status != "open" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "only open tasks can be edited"})
+		return
+	}
+
+	// Accepting a task does NOT move it out of "open" — acceptTask only fills
+	// assigned_to_id — so the status check above still lets through a task
+	// somebody is already working on. Editing the address, budget or duration
+	// out from under a supporter mid-task is exactly what cancelTask refuses
+	// for the same reason; once accepted, changes belong in chat.
+	if assignedToID != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot edit after it has been accepted"})
 		return
 	}
 
@@ -1761,7 +1772,20 @@ func updateTask(c *gin.Context) {
 		when = &tt
 	}
 
-	_, err := db.Exec(ctx, `
+	// The assigned_to_id check above is advisory only — it produces the friendly
+	// error. The real guard is this WHERE clause: an accept landing between that
+	// SELECT and this statement serializes on the row lock, matches 0 rows here,
+	// and the edit is refused instead of overwriting a task that now has a
+	// supporter on it. Same pattern, and same reason, as acceptTask's own
+	// re-test of availability inside its UPDATE.
+	//
+	// transport_required uses coalesce(nullif(...)) rather than a plain
+	// assignment because this endpoint is a full overwrite of a createTaskInput
+	// body, and web's edit payload (app/src/pages/TaskDetail.jsx) doesn't carry
+	// the field — assigning it directly would silently reset every web-edited
+	// task to "none". An empty value therefore means "leave it alone"; clients
+	// that own the field (mobile) always send an explicit one, "none" included.
+	tag, err := db.Exec(ctx, `
         update public.tasks
         set title=$1,
             description=$2,
@@ -1770,8 +1794,11 @@ func updateTask(c *gin.Context) {
             estimated_minutes=$5,
             prepay_amount_cents=$6,
             is_immediate=$7,
-            scheduled_at=$8
-        where id=$9
+            scheduled_at=$8,
+            transport_required=coalesce(nullif($9, ''), transport_required)
+        where id=$10
+          and status='open'
+          and assigned_to_id is null
     `,
 		in.Title,
 		in.Description,
@@ -1781,11 +1808,16 @@ func updateTask(c *gin.Context) {
 		in.PrepayAmountCents,
 		in.IsImmediate,
 		when,
+		strings.TrimSpace(in.TransportRequired),
 		id,
 	)
 	if err != nil {
 		log.Printf("[updateTask] db error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot edit after it has been accepted"})
 		return
 	}
 

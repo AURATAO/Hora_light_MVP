@@ -153,6 +153,9 @@ export default function RootLayout() {
                 every existing screen in the app. */}
             <Stack screenOptions={{ headerShown: false }}>
               <Stack.Screen name="post-task" options={{ presentation: "modal" }} />
+              {/* Same form as Post Task's review step, so the same presentation:
+                  a modal the requester dismisses back onto the task. */}
+              <Stack.Screen name="task/[id]/edit" options={{ presentation: "modal" }} />
             </Stack>
             {/* App-wide offline bar — non-blocking overlay above every screen,
                 below the splash. */}

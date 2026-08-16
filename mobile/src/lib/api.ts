@@ -307,23 +307,23 @@ export function getTask(id: string): Promise<Task> {
   return apiFetch<Task>(`/tasks/${id}`);
 }
 
-export type UpdateTaskPatch = Partial<
-  Pick<
-    Task,
-    | "title"
-    | "description"
-    | "category"
-    | "location_text"
-    | "estimated_minutes"
-    | "prepay_amount_cents"
-    | "is_immediate"
-    | "scheduled_at"
-    | "transport_required"
-  >
->;
+/**
+ * Despite the verb, PATCH /tasks/:id is a full replace: the handler binds the
+ * same createTaskInput as POST /tasks and writes every column it names, so a
+ * field left out is not preserved — it is blanked, or replaced by that field's
+ * create-time default (estimated_minutes → 30, category → quick_errand,
+ * prepay → 0). Always send the complete form; `taskFormToPayload` builds it.
+ * The single exception is transport_required, which the server keeps when the
+ * value is empty so web's edit payload (which omits it) can't wipe it.
+ *
+ * The server also enforces that only the requester's own open, unassigned task
+ * can be edited, and rejects a save that races an accept with
+ * "cannot edit after it has been accepted".
+ */
+export type UpdateTaskPayload = CreateTaskPayload;
 
-export function updateTask(id: string, patch: UpdateTaskPatch): Promise<Task> {
-  return apiFetch<Task>(`/tasks/${id}`, { method: "PATCH", body: patch });
+export function updateTask(id: string, payload: UpdateTaskPayload): Promise<Task> {
+  return apiFetch<Task>(`/tasks/${id}`, { method: "PATCH", body: payload });
 }
 
 // server/main.go's cancelTask does NOT return the updated Task — it returns
