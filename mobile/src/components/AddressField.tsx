@@ -143,8 +143,12 @@ export function AddressField({ value, onChangeText, label, placeholder, error }:
 
   return (
     <View className="gap-2">
+      {/* A resolved Places label ("350 5th Ave, Apt 12B, New York, NY 10118")
+          is longer than one line of this field far more often than not, so it
+          grows rather than hiding most of the address off the right edge. */}
       <Input
         label={label}
+        grow
         value={query}
         onChangeText={handleChangeText}
         onFocus={() => setOpen(suggestions.length > 0)}

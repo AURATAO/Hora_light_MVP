@@ -107,6 +107,11 @@ function InputShowcase() {
       <Input label="Filled" defaultValue="alex@example.com" />
       <Input label="Focus (tap to see)" placeholder="Border turns ink on focus" />
       <Input label="Error" defaultValue="not-an-email" error="Enter a valid email address." />
+      <Input
+        label="Grow (single-line value, wraps + grows to 3 lines)"
+        grow
+        defaultValue="Pick up a prescription from the Walgreens on Atlantic Ave and drop it at my place"
+      />
     </View>
   );
 }

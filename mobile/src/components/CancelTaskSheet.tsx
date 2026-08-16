@@ -80,7 +80,7 @@ export function CancelTaskSheet({ visible, onClose, onConfirm }: CancelTaskSheet
             </View>
             {selected === "Other" ? (
               <Input
-                className="mt-3"
+                className="mt-3 max-h-[90px]"
                 value={note}
                 onChangeText={setNote}
                 placeholder="Add a note (optional)"

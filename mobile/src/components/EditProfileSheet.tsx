@@ -83,6 +83,7 @@ export function EditProfileSheet({ visible, profile, onClose, onSaved }: EditPro
                 multiline
                 numberOfLines={3}
                 textAlignVertical="top"
+                className="max-h-[90px]"
               />
             </View>
             {error ? <Text className="mt-3 text-caption text-danger">{error}</Text> : null}

@@ -130,6 +130,7 @@ export function CompleteTaskSheet({ visible, onClose, onSubmit }: CompleteTaskSh
               multiline
               numberOfLines={3}
               textAlignVertical="top"
+              className="max-h-[90px]"
             />
 
             {error ? <Text className="mt-3 text-caption text-danger">{error}</Text> : null}

@@ -126,6 +126,7 @@ export function ReviewSheet({ visible, onClose, onSubmit }: ReviewSheetProps) {
               multiline
               numberOfLines={3}
               textAlignVertical="top"
+              className="max-h-[90px]"
             />
 
             {error ? <Text className="mt-2 text-caption text-danger">{error}</Text> : null}
