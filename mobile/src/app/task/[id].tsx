@@ -64,6 +64,20 @@ const LOCATION_POLL_INTERVAL_MS = 60_000;
 // How long the "Copied" confirmation replaces the section label.
 const COPIED_FEEDBACK_MS = 1500;
 
+// The exact body server/main.go's acceptTask returns to the loser of a
+// concurrent accept — from its guarded UPDATE (0 rows matched) and from the
+// advisory pre-check, which mean the same thing to the user. Status alone can't
+// carry this: 400 is also "cannot accept your own task". Web matches the same
+// string (app/src/pages/TaskDetail.jsx, My.jsx).
+const ACCEPT_LOST_ERROR = "not available";
+
+// Losing the race isn't the user's mistake, so this reads as information, not
+// an error — and it points somewhere useful rather than just reporting.
+const ACCEPT_LOST_COPY = "Someone just grabbed this one — check out the other tasks.";
+
+// Long enough to read one sentence before the screen goes away.
+const ACCEPT_LOST_LEAVE_MS = 1500;
+
 const TRANSPORT_LABELS: Record<string, string> = {
   none: "No transport needed",
   car: "Car",
@@ -119,6 +133,11 @@ export default function TaskDetail() {
 
   const [accepting, setAccepting] = useState(false);
   const [acceptError, setAcceptError] = useState<string | null>(null);
+  // Kept separate from acceptError: the lost-race notice has to outlive the
+  // refetch that follows it. Once the task comes back assigned, the whole
+  // Accept block (and any error inside it) unmounts, so a message rendered
+  // there would blink out of existence before it could be read.
+  const [acceptLost, setAcceptLost] = useState(false);
   const [clockLoading, setClockLoading] = useState(false);
   const [clockError, setClockError] = useState<string | null>(null);
   const [gpsNotice, setGpsNotice] = useState<string | null>(null);
@@ -127,10 +146,12 @@ export default function TaskDetail() {
   const [descriptionCopied, setDescriptionCopied] = useState(false);
   const gpsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const acceptLostTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     return () => {
       if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
+      if (acceptLostTimeoutRef.current) clearTimeout(acceptLostTimeoutRef.current);
     };
   }, []);
 
@@ -247,6 +268,16 @@ export default function TaskDetail() {
     setReviewOpen(false);
   }
 
+  // Back to browsing. The Work list reloads on focus ((tabs)/work.tsx's
+  // useFocusEffect), so leaving is also what refreshes the feed — the task
+  // someone else just took drops out of Available on the way in, with no
+  // second fetch from here. The fallback covers arriving by deep link or push,
+  // where there is no Work list underneath to pop back to.
+  function leaveToWorkList() {
+    if (router.canGoBack()) router.back();
+    else router.replace("/(tabs)/work");
+  }
+
   async function handleAccept() {
     setAccepting(true);
     setAcceptError(null);
@@ -255,9 +286,12 @@ export default function TaskDetail() {
       await load();
     } catch (e) {
       if (handleAuthError(e)) return;
-      if (e instanceof ApiError && e.message === "not available") {
-        setAcceptError("This task was just accepted by someone else.");
+      if (e instanceof ApiError && e.message === ACCEPT_LOST_ERROR) {
+        // Someone else won. Say so plainly, refetch so this screen stops
+        // offering a task that is gone, then hand them back to the feed.
+        setAcceptLost(true);
         await load();
+        acceptLostTimeoutRef.current = setTimeout(leaveToWorkList, ACCEPT_LOST_LEAVE_MS);
       } else {
         setAcceptError(e instanceof Error ? e.message : "Couldn't accept this task.");
       }
@@ -774,11 +808,21 @@ export default function TaskDetail() {
           </View>
         ) : null}
 
-        {/* Accept action */}
+        {/* Accept action. acceptError stays inside: those are failures that
+            leave the task acceptable, so the button is still here to retry. */}
         {isAvailableToAccept ? (
           <View className="mb-8 gap-2">
             <Button label="Accept task" onPress={handleAccept} loading={accepting} />
             {acceptError ? <Text className="text-caption text-danger">{acceptError}</Text> : null}
+          </View>
+        ) : null}
+
+        {/* Lost the accept race. Outside the block above because that one is
+            gone by now — the refetch turned this into an assigned task. Brand
+            tint, not danger: nothing went wrong, someone else was quicker. */}
+        {acceptLost ? (
+          <View className="mb-8 rounded-card bg-brand-tint p-4">
+            <Text className="text-body text-brand">{ACCEPT_LOST_COPY}</Text>
           </View>
         ) : null}
       </ScrollView>
