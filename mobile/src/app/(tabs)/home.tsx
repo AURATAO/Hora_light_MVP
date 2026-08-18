@@ -20,6 +20,7 @@ import {
 import { HomeCardSheet } from "../../components/HomeCardSheet";
 import { Badge, Card, EmptyState, Logo, PressableScale, Screen, Skeleton } from "../../components/ui";
 import { ApiError, getMe, getNotifications, getPostedTasks } from "../../lib/api";
+import { DISABLED_CATEGORY_BADGE, isCategoryDisabled } from "../../lib/beta-notice";
 import { getCategoryMeta } from "../../lib/categories";
 import {
   HOME_CARDS,
@@ -30,7 +31,7 @@ import {
 import type { HomeCard } from "../../lib/home-content";
 import { deriveTaskStatus, formatRelativeTime } from "../../lib/task-utils";
 import type { Task, TaskCategory } from "../../lib/types";
-import { color, size, space } from "../../theme/tokens";
+import { color, opacity, size, space } from "../../theme/tokens";
 
 // "For you" quick-access categories — a fast lane into post-task with the
 // category pre-selected. The full set lives behind "What do you need?".
@@ -131,21 +132,48 @@ function CategoryCircle({
 }) {
   const meta = getCategoryMeta(category);
   const Icon = meta.icon;
+  // Locked for this round (see DISABLED_CATEGORIES): still in the row, still
+  // in the same position, but dimmed and inert — `disabled` on the Pressable
+  // rather than a no-op onPress, so it doesn't even take the press animation.
+  const locked = isCategoryDisabled(category);
 
   return (
-    <PressableScale onPress={onPress} className="w-[80px] items-center gap-2">
-      <View
-        className="h-[64px] w-[64px] items-center justify-center rounded-pill bg-brand"
-        style={{ aspectRatio: 1 }}
-      >
-        <Icon color={color.gold} size={24} strokeWidth={size.iconStroke} />
+    <PressableScale
+      onPress={onPress}
+      disabled={locked}
+      style={locked ? { opacity: opacity.disabled } : undefined}
+      accessibilityState={{ disabled: locked }}
+    >
+      {/* The box sizing and centring live on this View, not on PressableScale.
+          PressableScale renders its children inside one bare Animated.View, so
+          a className on it applies to that wrapper — and the circle and label,
+          being the wrapper's children, get none of it. Left there, the wrapper
+          collapsed to the label's own width, which stranded the 64px circle at
+          its left edge while the label centred itself in that width: the two
+          drifted apart in opposite directions as the label grew, and the gap-2
+          between them never applied either. */}
+      <View className="w-[80px] items-center gap-2">
+        <View
+          className="h-[64px] w-[64px] items-center justify-center rounded-pill bg-brand"
+          style={{ aspectRatio: 1 }}
+        >
+          <Icon color={color.gold} size={24} strokeWidth={size.iconStroke} />
+        </View>
+        {/* The label box is wider than the circle so no label ever wraps the row
+            into two lines; numberOfLines={1} is the hard stop if one ever gets
+            long enough to overflow even that. */}
+        <Text className="w-full text-center text-caption text-muted" numberOfLines={1}>
+          {meta.label}
+        </Text>
+        {/* Badge-weight marker (DESIGN.md §2 micro), not a second label — it
+            sits below the row's baseline height, which is why the scroller
+            aligns its items to flex-start. */}
+        {locked ? (
+          <Text className="w-full text-center text-micro text-muted" numberOfLines={1}>
+            {DISABLED_CATEGORY_BADGE}
+          </Text>
+        ) : null}
       </View>
-      {/* The label box is wider than the circle so no label ever wraps the row
-          into two lines; numberOfLines={1} is the hard stop if one ever gets
-          long enough to overflow even that. */}
-      <Text className="w-full text-center text-caption text-muted" numberOfLines={1}>
-        {meta.label}
-      </Text>
     </PressableScale>
   );
 }

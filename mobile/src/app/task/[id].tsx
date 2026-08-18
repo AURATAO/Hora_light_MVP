@@ -17,7 +17,8 @@ import {
 } from "lucide-react-native";
 import { CancelTaskSheet } from "../../components/CancelTaskSheet";
 import { CompleteTaskSheet, type CompleteTaskPayload } from "../../components/CompleteTaskSheet";
-import { ReviewSheet, type ReviewSubmitPayload } from "../../components/ReviewSheet";
+import { ReviewSheet } from "../../components/ReviewSheet";
+import { TractionReviewSheet } from "../../components/TractionReviewSheet";
 import { Avatar, Badge, Button, EmptyState, PressableScale, Screen, Skeleton } from "../../components/ui";
 import {
   ApiError,
@@ -34,8 +35,10 @@ import {
   getWorklogs,
   sendGpsPing,
   submitReview,
+  type SubmitReviewPayload,
   uploadCompletionPhoto,
 } from "../../lib/api";
+import { TRACTION_3_CONFIG, isTractionWindowActive } from "../../lib/beta-notice";
 import { getCategoryMeta } from "../../lib/categories";
 import { openAddressInMaps, openCoordsInMaps, openRouteInMaps } from "../../lib/maps";
 import { cancelOvertimeReminders, scheduleOvertimeReminders } from "../../lib/overtime-reminders";
@@ -256,7 +259,9 @@ export default function TaskDetail() {
     setCancelOpen(false);
   }
 
-  async function handleReviewSubmit(payload: ReviewSubmitPayload) {
+  // One submit path for both sheets: the classic review and either
+  // questionnaire are the same POST, differing only in which fields they fill.
+  async function handleReviewSubmit(payload: SubmitReviewPayload) {
     let review: Review;
     try {
       review = await submitReview(id, payload);
@@ -513,6 +518,12 @@ export default function TaskDetail() {
   // anyone browsing an open task.
   const canGetDirections = isAssignee && locations.length > 0;
   const canReview = isRequester && task.status === "completed" && !!task.assigned_to_id;
+  // For the length of the Traction 3 round the questionnaire replaces the
+  // classic review sheet, and the supporter gets one of their own — the only
+  // time either side of a completed task is asked anything. When the window
+  // passes, both revert on their own: the flag is a date check, nothing else.
+  const questionnaireActive = isTractionWindowActive();
+  const canGiveFeedback = isAssignee && task.status === "completed" && questionnaireActive;
   const hasClosedWorklog = worklogs ? worklogs.worklogs.some((wl) => wl.end_at !== null) : false;
   const canComplete = isAssignee && task.status === "open" && !hasOpenWorklog && hasClosedWorklog;
   const elapsedMs = openWorklog ? now - new Date(openWorklog.start_at).getTime() : 0;
@@ -779,15 +790,28 @@ export default function TaskDetail() {
         ) : null}
 
         {/* Review */}
-        {canReview ? (
+        {canReview || canGiveFeedback ? (
           myReview ? (
             <View className="mb-4 gap-2 rounded-card border border-line bg-surface p-4">
-              <Text className="text-caption font-semibold text-muted">Your review</Text>
-              <Text className="text-body text-ink">{"★".repeat(myReview.stars)}{"☆".repeat(5 - myReview.stars)}</Text>
+              <Text className="text-caption font-semibold text-muted">
+                {myReview.stars === null ? "Your feedback" : "Your review"}
+              </Text>
+              {/* A supporter's questionnaire carries no stars, so there is
+                  nothing to draw — the heading above is the whole receipt. */}
+              {myReview.stars !== null ? (
+                <Text className="text-body text-ink">{"★".repeat(myReview.stars)}{"☆".repeat(5 - myReview.stars)}</Text>
+              ) : (
+                <Text className="text-caption text-muted">Thanks — this round closes {TRACTION_3_CONFIG.window}.</Text>
+              )}
               {myReview.comment ? <Text className="text-caption text-ink">{myReview.comment}</Text> : null}
             </View>
           ) : (
-            <Button label="Leave a review" variant="secondary" onPress={() => setReviewOpen(true)} className="mb-4" />
+            <Button
+              label={canReview ? "Leave a review" : "Share your feedback"}
+              variant="secondary"
+              onPress={() => setReviewOpen(true)}
+              className="mb-4"
+            />
           )
         ) : null}
 
@@ -828,7 +852,16 @@ export default function TaskDetail() {
       </ScrollView>
 
       <CancelTaskSheet visible={cancelOpen} onClose={() => setCancelOpen(false)} onConfirm={handleCancelConfirm} />
-      <ReviewSheet visible={reviewOpen} onClose={() => setReviewOpen(false)} onSubmit={handleReviewSubmit} />
+      {questionnaireActive ? (
+        <TractionReviewSheet
+          visible={reviewOpen}
+          role={isRequester ? "requester" : "supporter"}
+          onClose={() => setReviewOpen(false)}
+          onSubmit={handleReviewSubmit}
+        />
+      ) : (
+        <ReviewSheet visible={reviewOpen} onClose={() => setReviewOpen(false)} onSubmit={handleReviewSubmit} />
+      )}
       <CompleteTaskSheet
         visible={completeOpen}
         onClose={() => setCompleteOpen(false)}

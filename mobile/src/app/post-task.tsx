@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Check, ChevronLeft, Sparkles, X } from "lucide-react-native";
+import { BetaNoticeSheet } from "../components/BetaNoticeSheet";
 import { CompanionshipPolicySheet } from "../components/CompanionshipPolicySheet";
 import {
   TaskForm,
@@ -13,12 +14,15 @@ import {
   type TaskFormState,
 } from "../components/TaskForm";
 import { Button, Input, Pill, PressableScale, Screen } from "../components/ui";
-import { ApiError, createTask, parseTask } from "../lib/api";
+import { ApiError, createTask, parseTask, updateProfile } from "../lib/api";
+import { DISABLED_CATEGORY_NOTICE, isCategoryDisabled } from "../lib/beta-notice";
 import { CATEGORIES, getCategoryMeta } from "../lib/categories";
 import { POST_TASK_AI_HINT, POST_TASK_AI_HINT_COPY } from "../lib/home-content";
+import { useBetaNoticeGate } from "../lib/use-beta-notice-gate";
 import { useCompanionshipGate } from "../lib/use-companionship-gate";
 import type { TaskCategory } from "../lib/types";
 import { color, size } from "../theme/tokens";
+import { useAuthState } from "./_layout";
 
 type Step = "describe" | "review" | "success";
 
@@ -28,12 +32,17 @@ function parseCategory(raw: string | string[] | undefined): TaskCategory | undef
   // Home's shortcut row (and any future entry point) may still pass the legacy
   // "companionship" value — normalize it to "companion" so every path produces
   // the same category values web does (see TaskForm's CATEGORY_PICKS comment).
-  return value === "companionship" ? "companion" : (value as TaskCategory);
+  const category = value === "companionship" ? "companion" : (value as TaskCategory);
+  // Home greys its locked circles out, but the route takes a param from
+  // anywhere — an old deep link, a notification. Arrive with no category
+  // rather than one that can't be posted.
+  return isCategoryDisabled(category) ? undefined : category;
 }
 
 export default function PostTask() {
   const router = useRouter();
   const params = useLocalSearchParams();
+  const { refresh } = useAuthState();
   const initialCategory = parseCategory(params.category);
 
   // Only the "Post in seconds" education card passes ?hint=ai, so the tip
@@ -54,6 +63,7 @@ export default function PostTask() {
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const policy = useCompanionshipGate(form.category, { active: step === "review" });
+  const beta = useBetaNoticeGate();
 
   const closeTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
@@ -70,13 +80,33 @@ export default function PostTask() {
     return false;
   }
 
+  // Accepting persists onto the profile the same way the onboarding beta gate
+  // does. A failed write is swallowed on purpose (web's BetaModal does the
+  // same): during a five-day test window, a flaky PATCH must not lock a
+  // requester out of posting — the flag is simply written again next session.
+  async function handleAcceptBeta() {
+    try {
+      await updateProfile({ beta_accepted: true });
+      await refresh();
+    } catch (e) {
+      if (handleAuthError(e)) return;
+    }
+    beta.acknowledge();
+  }
+
   async function handleContinue() {
     setParseError(null);
     setParsing(true);
     try {
       const parsed = await parseTask(describeText.trim());
-      setForm(taskFormFromParsed(parsed, selectedCategory));
-      setFieldErrors({});
+      const parsedForm = taskFormFromParsed(parsed, selectedCategory);
+      setForm(parsedForm);
+      // The parser picks the category itself and has a companionship example in
+      // its prompt, so free text can land on a locked one. Flag it on arrival
+      // instead of letting the user fill the rest of the form and then bounce.
+      setFieldErrors(
+        isCategoryDisabled(parsedForm.category) ? { category: DISABLED_CATEGORY_NOTICE } : {}
+      );
       setStep("review");
     } catch (e) {
       if (handleAuthError(e)) return;
@@ -96,6 +126,11 @@ export default function PostTask() {
 
   async function handleSubmit() {
     const errors = validateTaskForm(form);
+    // Posting is the last line of defence for a locked category: the pickers
+    // can't select one, but the AI parser can still hand us one. Scoped to
+    // this screen rather than validateTaskForm, so editing a companionship
+    // task posted before the lock still saves.
+    if (isCategoryDisabled(form.category)) errors.category = DISABLED_CATEGORY_NOTICE;
     setFieldErrors(errors);
     if (Object.keys(errors).length > 0) return;
 
@@ -208,6 +243,17 @@ export default function PostTask() {
         visible={policy.open}
         onDismiss={policy.dismiss}
         onAcknowledge={policy.acknowledge}
+      />
+
+      {/* Backing out of the notice leaves Post Task entirely: the terms are a
+          gate, not a tip, so there is no path past them into the form. */}
+      <BetaNoticeSheet
+        visible={beta.open}
+        onDismiss={() => {
+          beta.dismiss();
+          router.back();
+        }}
+        onAccept={handleAcceptBeta}
       />
     </Screen>
   );

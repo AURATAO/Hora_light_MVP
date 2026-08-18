@@ -1,6 +1,7 @@
 import { ApiError } from "./api-error";
 import type {
   AppNotification,
+  EaseRating,
   GpsPing,
   LatestLocation,
   ParsedTask,
@@ -14,6 +15,7 @@ import type {
   ValueRating,
   Worklog,
   WorklogsSummary,
+  WouldUseAgain,
 } from "./types";
 
 export const API_BASE_URL = "https://core.horaapp.co";
@@ -348,14 +350,21 @@ export function completeTask(id: string, payload: CompleteTaskPayload): Promise<
   return apiFetch<Task>(`/tasks/${id}/complete`, { method: "POST", body: payload });
 }
 
-// server/main.go's createReview only requires stars (1-5); value_rating is
-// validated only when non-empty and would_rehire is a nullable pointer — both
-// genuinely optional, matching web's ReviewPage.jsx which lets either go unset.
+// server/main.go's createReview requires stars (1-5) from a REQUESTER;
+// value_rating is validated only when non-empty and would_rehire is a nullable
+// pointer — both genuinely optional, matching web's ReviewPage.jsx which lets
+// either go unset. stars is optional here because the supporter questionnaire
+// rates nobody and sends none; the server drops any it is sent on that path.
 export interface SubmitReviewPayload {
-  stars: number;
+  stars?: number;
   value_rating?: ValueRating;
   would_rehire?: boolean;
   comment?: string;
+  // Traction 3 questionnaire. The server derives rater_role and the ratee from
+  // the caller's relation to the task, so neither is (or can be) sent here.
+  ease_rating?: EaseRating;
+  would_use_again?: WouldUseAgain;
+  open_feedback?: string;
 }
 
 export function submitReview(id: string, payload: SubmitReviewPayload): Promise<Review> {

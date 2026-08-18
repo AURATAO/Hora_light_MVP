@@ -5,6 +5,7 @@ import { AddressField } from "./AddressField";
 import { ScheduledTimeField } from "./ScheduledTimeField";
 import { Button, Input, Pill, PressableScale } from "./ui";
 import { ApiError, estimateTaskCost, type CreateTaskPayload } from "../lib/api";
+import { DISABLED_CATEGORY_NOTICE, isCategoryDisabled } from "../lib/beta-notice";
 import { getCategoryMeta } from "../lib/categories";
 import { formatCost, formatMinutes, formatScheduledAt, zeroSeconds } from "../lib/task-utils";
 import type { ParsedTask, Task, TaskCategory } from "../lib/types";
@@ -307,11 +308,19 @@ export function TaskForm({ form, onChange, errors }: TaskFormProps) {
                 key={value}
                 label={getCategoryMeta(value).label}
                 selected={form.category === value}
+                // Locked for this round: shown in place, dimmed, un-selectable.
+                disabled={isCategoryDisabled(value)}
                 onPress={() => onChange((f) => ({ ...f, category: value }))}
               />
             ))}
           </View>
         </ScrollView>
+        {/* A locked category can't be picked here, but it can still arrive
+            pre-set — the AI parser returns "companionship" of its own accord.
+            Say so at the picker rather than only on a rejected submit. */}
+        {!errors.category && isCategoryDisabled(form.category) ? (
+          <Text className="mt-1 text-caption text-muted">{DISABLED_CATEGORY_NOTICE}</Text>
+        ) : null}
         {errors.category ? <Text className="mt-1 text-caption text-danger">{errors.category}</Text> : null}
       </View>
 

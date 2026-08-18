@@ -20,9 +20,12 @@ function ReviewCard({ review }: { review: Review }) {
   return (
     <Card>
       <View className="flex-row items-center justify-between">
+        {/* Every row this list receives has stars — the endpoint filters
+            `stars is not null` — but the type is shared with POST responses,
+            where a supporter questionnaire has none. */}
         <Text className="text-body text-ink">
-          {"★".repeat(review.stars)}
-          {"☆".repeat(5 - review.stars)}
+          {"★".repeat(review.stars ?? 0)}
+          {"☆".repeat(5 - (review.stars ?? 0))}
         </Text>
         <Text className="text-caption text-muted">{formatRelativeTime(review.created_at)}</Text>
       </View>

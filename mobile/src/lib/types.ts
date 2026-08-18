@@ -21,6 +21,12 @@ export type SupporterStatus = "none" | "applied" | "approved" | "rejected";
 
 export type ValueRating = "not_worth" | "fair" | "great";
 
+// Traction 3 questionnaire answers. Slugs only — the display labels live in
+// TractionReviewSheet and are never sent or stored.
+export type EaseRating = "very_easy" | "easy" | "neutral" | "difficult" | "very_difficult";
+export type WouldUseAgain = "yes" | "maybe_task" | "maybe_cost" | "no";
+export type RaterRole = "requester" | "supporter";
+
 export type NotificationType =
   | "ORDER_ACCEPTED"
   | "CLOCK_IN"
@@ -151,12 +157,26 @@ export interface Review {
   supporter_id?: string;
   /** Only on GET /profiles/:id/reviews responses. */
   task_title?: string;
-  stars: number;
+  /**
+   * Null on a supporter-submitted questionnaire, which rates nobody. Rows
+   * reaching a supporter's public profile always have it (the server filters
+   * `stars is not null`), but the type is shared with POST responses.
+   */
+  stars: number | null;
   /** "" when unset — coalesced/zero-valued server-side, never null. */
   value_rating: ValueRating | "";
   would_rehire: boolean | null;
   /** "" when unset — coalesced/zero-valued server-side, never null. */
   comment: string;
+  /** Traction 3 fields — on POST responses only, "" when unset. */
+  rater_role?: RaterRole;
+  ease_rating?: EaseRating | "";
+  would_use_again?: WouldUseAgain | "";
+  /**
+   * Product feedback for the HO:RA team, never public: it is not selected by
+   * GET /profiles/:id/reviews and must not be rendered on a supporter profile.
+   */
+  open_feedback?: string;
   created_at: string;
 }
 

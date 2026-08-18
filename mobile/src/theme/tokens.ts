@@ -65,6 +65,13 @@ export const layout = {
   tabBarBottomGap: 12,
 } as const;
 
+// Disabled affordances that stay visible rather than dropping out of the
+// layout — a locked category circle, for one. Buttons and inputs do NOT use
+// this: they swap to the `line`/`muted` pair instead (DESIGN.md §5).
+export const opacity = {
+  disabled: 0.4,
+} as const;
+
 export const motion = {
   pressScale: 0.97,
   duration: {

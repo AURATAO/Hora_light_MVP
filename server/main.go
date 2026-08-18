@@ -3050,16 +3050,32 @@ func estimateTravel(c *gin.Context) {
 // -------- Reviews --------
 
 type Review struct {
-	ID          string    `json:"id"`
-	TaskID      string    `json:"task_id"`
-	ReviewerID  string    `json:"reviewer_id"`
-	SupporterID string    `json:"supporter_id"`
-	Stars       int       `json:"stars"`
-	ValueRating string    `json:"value_rating"`
-	WouldRehire *bool     `json:"would_rehire"`
-	Comment     string    `json:"comment"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID         string `json:"id"`
+	TaskID     string `json:"task_id"`
+	ReviewerID string `json:"reviewer_id"`
+	// Null on a supporter-submitted row: that questionnaire rates nobody.
+	SupporterID *string `json:"supporter_id"`
+	RaterRole   string  `json:"rater_role"`
+	// Null on a supporter-submitted row, for the same reason. Only rows with
+	// stars feed the supporter aggregate.
+	Stars       *int   `json:"stars"`
+	ValueRating string `json:"value_rating"`
+	WouldRehire *bool  `json:"would_rehire"`
+	Comment     string `json:"comment"`
+	// Traction 3 questionnaire answers, stored as slugs. "" when unset.
+	EaseRating    string    `json:"ease_rating"`
+	WouldUseAgain string    `json:"would_use_again"`
+	OpenFeedback  string    `json:"open_feedback"`
+	CreatedAt     time.Time `json:"created_at"`
 }
+
+// Answer slugs the questionnaire accepts. Display labels live client-side —
+// only slugs are ever stored, so re-wording a question never rewrites data.
+var (
+	validValueRatings   = map[string]bool{"not_worth": true, "fair": true, "great": true}
+	validEaseRatings    = map[string]bool{"very_easy": true, "easy": true, "neutral": true, "difficult": true, "very_difficult": true}
+	validWouldUseAgains = map[string]bool{"yes": true, "maybe_task": true, "maybe_cost": true, "no": true}
+)
 
 func createReview(c *gin.Context) {
 	taskID := c.Param("id")
@@ -3070,28 +3086,43 @@ func createReview(c *gin.Context) {
 	}
 
 	var in struct {
+		// Classic review (web's ReviewPage, and mobile outside the Traction 3
+		// window). Requester-only.
 		Stars       int    `json:"stars"`
 		ValueRating string `json:"value_rating"`
 		WouldRehire *bool  `json:"would_rehire"`
 		Comment     string `json:"comment"`
+		// Traction 3 questionnaire, submitted by either side of the task.
+		EaseRating    string `json:"ease_rating"`
+		WouldUseAgain string `json:"would_use_again"`
+		OpenFeedback  string `json:"open_feedback"`
 	}
 	if err := c.ShouldBindJSON(&in); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
 		return
 	}
-	if in.Stars < 1 || in.Stars > 5 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "stars must be between 1 and 5"})
-		return
-	}
-	validValueRatings := map[string]bool{"not_worth": true, "fair": true, "great": true}
+
+	in.ValueRating = strings.TrimSpace(in.ValueRating)
+	in.EaseRating = strings.TrimSpace(in.EaseRating)
+	in.WouldUseAgain = strings.TrimSpace(in.WouldUseAgain)
+
 	if in.ValueRating != "" && !validValueRatings[in.ValueRating] {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid value_rating"})
+		return
+	}
+	if in.EaseRating != "" && !validEaseRatings[in.EaseRating] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid ease_rating"})
+		return
+	}
+	if in.WouldUseAgain != "" && !validWouldUseAgains[in.WouldUseAgain] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid would_use_again"})
 		return
 	}
 
 	ctx := c.Request.Context()
 
-	// Load task — verify requester and status
+	// Load task — the caller's relation to it decides everything below. Role
+	// and ratee are derived here and never read from the request body.
 	var requesterID, supporterID, status string
 	if err := db.QueryRow(ctx, `
 		SELECT COALESCE(requester_id::text,''), COALESCE(assigned_to_id::text,''), status
@@ -3104,35 +3135,88 @@ func createReview(c *gin.Context) {
 		}
 		return
 	}
-	if requesterID != meUID {
-		c.JSON(http.StatusForbidden, gin.H{"error": "only the requester can review"})
+
+	var raterRole string
+	switch meUID {
+	case requesterID:
+		raterRole = "requester"
+	case supporterID:
+		raterRole = "supporter"
+	default:
+		c.JSON(http.StatusForbidden, gin.H{"error": "only a participant can review this task"})
 		return
 	}
+
 	if status != "completed" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "task must be completed before reviewing"})
 		return
 	}
-	if supporterID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "no supporter to review"})
-		return
+
+	// The ratee is the task's assigned supporter, full stop. A supporter's own
+	// questionnaire rates nobody, so both the ratee and the stars stay null —
+	// stars sent on such a payload are dropped rather than rejected, since the
+	// supporter form has no star question to have filled them.
+	var rateeID *string
+	var stars *int
+	if raterRole == "requester" {
+		if supporterID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "no supporter to review"})
+			return
+		}
+		if in.Stars < 1 || in.Stars > 5 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "stars must be between 1 and 5"})
+			return
+		}
+		rateeID = &supporterID
+		s := in.Stars
+		stars = &s
 	}
 
-	// One review per task
+	// One review per person per task — not one per task. The requester's review
+	// and the supporter's questionnaire are separate rows on the same task.
 	var existing bool
-	_ = db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM public.reviews WHERE task_id=$1::uuid)`, taskID).Scan(&existing)
+	_ = db.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM public.reviews WHERE task_id=$1::uuid AND reviewer_id=$2::uuid)
+	`, taskID, meUID).Scan(&existing)
 	if existing {
 		c.JSON(http.StatusConflict, gin.H{"error": "already reviewed"})
 		return
 	}
 
+	// NULLIF on every optional text column: the value_rating CHECK constraint
+	// rejects '' as hard as it rejects garbage, so an omitted answer has to
+	// reach the column as NULL, not as the Go zero string.
 	var r Review
 	if err := db.QueryRow(ctx, `
-		INSERT INTO public.reviews (task_id, reviewer_id, supporter_id, stars, value_rating, would_rehire, comment)
-		VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7)
-		RETURNING id, task_id, reviewer_id::text, supporter_id::text, stars, value_rating, would_rehire, comment, created_at
-	`, taskID, meUID, supporterID, in.Stars, in.ValueRating, in.WouldRehire, strings.TrimSpace(in.Comment),
-	).Scan(&r.ID, &r.TaskID, &r.ReviewerID, &r.SupporterID, &r.Stars, &r.ValueRating, &r.WouldRehire, &r.Comment, &r.CreatedAt); err != nil {
-		log.Printf("[createReview] db error: %v", err)
+		INSERT INTO public.reviews
+			(task_id, reviewer_id, supporter_id, rater_role, stars,
+			 value_rating, would_rehire, comment,
+			 ease_rating, would_use_again, open_feedback)
+		VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5,
+		        NULLIF($6,''), $7, NULLIF($8,''),
+		        NULLIF($9,''), NULLIF($10,''), NULLIF($11,''))
+		RETURNING id, task_id, reviewer_id::text, supporter_id::text, rater_role, stars,
+		          COALESCE(value_rating,''), would_rehire, COALESCE(comment,''),
+		          COALESCE(ease_rating,''), COALESCE(would_use_again,''),
+		          COALESCE(open_feedback,''), created_at
+	`, taskID, meUID, rateeID, raterRole, stars,
+		in.ValueRating, in.WouldRehire, strings.TrimSpace(in.Comment),
+		in.EaseRating, in.WouldUseAgain, strings.TrimSpace(in.OpenFeedback),
+	).Scan(&r.ID, &r.TaskID, &r.ReviewerID, &r.SupporterID, &r.RaterRole, &r.Stars,
+		&r.ValueRating, &r.WouldRehire, &r.Comment,
+		&r.EaseRating, &r.WouldUseAgain, &r.OpenFeedback, &r.CreatedAt); err != nil {
+		// Two submits racing past the EXISTS check land here; the unique
+		// constraint is what actually holds the line, so report it as the
+		// conflict it is rather than a 500.
+		if pgErr, ok := err.(*pgconn.PgError); ok {
+			if pgErr.Code == "23505" {
+				c.JSON(http.StatusConflict, gin.H{"error": "already reviewed"})
+				return
+			}
+			log.Printf("[createReview] code=%s constraint=%s detail=%s", pgErr.Code, pgErr.ConstraintName, pgErr.Detail)
+		} else {
+			log.Printf("[createReview] db error: %v", err)
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
 	}
@@ -3155,13 +3239,19 @@ func listProfileReviews(c *gin.Context) {
 		CreatedAt   time.Time `json:"created_at"`
 	}
 
+	// `stars is not null` is what keeps this list and the aggregate honest: a
+	// supporter's own questionnaire carries no stars and no supporter_id, and
+	// nothing without a rating belongs in a rating average. The questionnaire's
+	// other answers (ease_rating, would_use_again, open_feedback) are about
+	// HO:RA rather than about this supporter, so they are deliberately not
+	// selected here — only the star rating is public.
 	rows, err := db.Query(ctx, `
 		SELECT r.id, r.task_id, COALESCE(t.title,''), r.stars,
 		       COALESCE(r.value_rating,''), r.would_rehire,
 		       COALESCE(r.comment,''), r.created_at
 		FROM public.reviews r
 		LEFT JOIN public.tasks t ON t.id = r.task_id
-		WHERE r.supporter_id = $1::uuid
+		WHERE r.supporter_id = $1::uuid AND r.stars IS NOT NULL
 		ORDER BY r.created_at DESC
 	`, supporterID)
 	if err != nil {
