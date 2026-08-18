@@ -14,6 +14,7 @@ import {
   MessageCircle,
   Navigation,
   Pencil,
+  ShieldAlert,
 } from "lucide-react-native";
 import { CancelTaskSheet } from "../../components/CancelTaskSheet";
 import { CompleteTaskSheet, type CompleteTaskPayload } from "../../components/CompleteTaskSheet";
@@ -51,6 +52,7 @@ import {
   formatMinutes,
   formatRelativeTime,
   formatScheduledAt,
+  removalNotice,
   statusLabel,
 } from "../../lib/task-utils";
 import type { LatestLocation, PublicProfile, Review, Task, WorklogsSummary } from "../../lib/types";
@@ -147,6 +149,10 @@ export default function TaskDetail() {
   const [latestLocation, setLatestLocation] = useState<LatestLocation | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [descriptionCopied, setDescriptionCopied] = useState(false);
+  // Set when the backend answers "task_removed" instead of a task: the HO:RA
+  // team took this one down while the screen was open, and removal detaches the
+  // supporter, so the person looking at it may no longer be allowed to read it.
+  const [removedGone, setRemovedGone] = useState(false);
   const gpsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const acceptLostTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -221,6 +227,12 @@ export default function TaskDetail() {
       setError(null);
     } catch (e) {
       if (handleAuthError(e)) return;
+      if (e instanceof ApiError && e.status === 403 && e.message === "task_removed") {
+        setTask(null);
+        setRemovedGone(true);
+        setError(null);
+        return;
+      }
       setError(e instanceof Error ? e.message : "Couldn't load this task");
     } finally {
       setLoading(false);
@@ -484,6 +496,23 @@ export default function TaskDetail() {
           <Skeleton className="h-[120px]" />
           <Skeleton className="h-[80px]" />
         </View>
+      </Screen>
+    );
+  }
+
+  // Taken down mid-session and no longer readable by this user: a plain
+  // statement, not a retry loop — refetching will keep saying the same thing.
+  if (removedGone) {
+    return (
+      <Screen scroll={false}>
+        <HeaderRow onBack={() => router.back()} />
+        <EmptyState
+          icon={ShieldAlert}
+          title="This task has been removed"
+          caption="The HO:RA team took this task down. More tasks are coming — have a look at what's available."
+          actionLabel="Back to tasks"
+          onAction={() => router.back()}
+        />
       </Screen>
     );
   }
@@ -823,6 +852,16 @@ export default function TaskDetail() {
             onPress={() => setCancelOpen(true)}
             className="mb-8 border-danger"
           />
+        ) : null}
+
+        {task.status === "removed" ? (
+          <View className="mb-8 rounded-card border border-line bg-surface p-4">
+            <View className="flex-row items-center gap-2">
+              <ShieldAlert color={color.danger} size={18} strokeWidth={size.iconStroke} />
+              <Text className="text-caption font-semibold text-muted">Task removed</Text>
+            </View>
+            <Text className="mt-1 text-body text-ink">{removalNotice(task.removal_reason)}</Text>
+          </View>
         ) : null}
 
         {task.status === "cancelled" && task.cancel_reason ? (

@@ -54,3 +54,22 @@ export function rejectSupporter(email) {
     body: JSON.stringify({ email }),
   })
 }
+
+// POST /admin/tasks/:id/remove — platform takedown of a task that breaks beta
+// scope. Distinct from /ops/cancel, which records a requester cancellation.
+// The backend re-checks the admin allowlist; this wrapper only shapes the call.
+export function removeTask(taskId, reason, note) {
+  return opsFetch(`/admin/tasks/${taskId}/remove`, {
+    method: 'POST',
+    body: JSON.stringify({ reason, note }),
+  })
+}
+
+// Reason slugs the endpoint accepts, with the labels the ops panel shows.
+// Mirrors removalReasons in server/admin_tasks.go.
+export const REMOVAL_REASONS = [
+  { value: 'out_of_scope_private_residence', label: 'Out of scope — private residence' },
+  { value: 'out_of_scope_other', label: 'Out of scope — other' },
+  { value: 'inappropriate', label: 'Inappropriate content' },
+  { value: 'other', label: 'Other' },
+]

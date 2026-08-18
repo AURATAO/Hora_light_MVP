@@ -1,10 +1,11 @@
-import type { Task } from "./types";
+import type { Task, TaskRemovalReason } from "./types";
 
-export type DerivedTaskStatus = "open" | "assigned" | "completed" | "cancelled";
+export type DerivedTaskStatus = "open" | "assigned" | "completed" | "cancelled" | "removed";
 
 export function deriveTaskStatus(task: Task): DerivedTaskStatus {
   if (task.status === "completed") return "completed";
   if (task.status === "cancelled") return "cancelled";
+  if (task.status === "removed") return "removed";
   return task.assigned_to_id ? "assigned" : "open";
 }
 
@@ -13,10 +14,29 @@ const STATUS_LABEL: Record<DerivedTaskStatus, string> = {
   assigned: "Assigned",
   completed: "Completed",
   cancelled: "Cancelled",
+  removed: "Removed",
 };
 
 export function statusLabel(status: DerivedTaskStatus): string {
   return STATUS_LABEL[status];
+}
+
+// Why a task was taken down, in the requester's words rather than the slug.
+// The backend sends the same explanation by push and email; this is what the
+// task detail shows when they open it afterwards.
+const REMOVAL_NOTICE: Record<TaskRemovalReason, string> = {
+  out_of_scope_private_residence:
+    "This task was removed because it falls outside this beta's scope (public locations only — no private residences). Feel free to post it again at a public location!",
+  out_of_scope_other:
+    "This task was removed because it falls outside this beta's scope (short, in-person tasks at public locations). Feel free to post it again within scope!",
+  inappropriate:
+    "This task was removed because it doesn't meet our community guidelines. Get in touch if you think this was a mistake.",
+  other:
+    "This task was removed by the HO:RA team. Get in touch if you think this was a mistake — you're welcome to post again.",
+};
+
+export function removalNotice(reason: TaskRemovalReason | null | undefined): string {
+  return reason ? REMOVAL_NOTICE[reason] ?? REMOVAL_NOTICE.other : REMOVAL_NOTICE.other;
 }
 
 export function formatCost(cents: number): string {

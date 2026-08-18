@@ -49,6 +49,7 @@ const STATUS_LABEL: Record<ReturnType<typeof deriveTaskStatus>, string> = {
   assigned: "Assigned",
   completed: "Completed",
   cancelled: "Cancelled",
+  removed: "Removed",
 };
 
 // Home shows a preview of the task list, not the list itself — beyond this many

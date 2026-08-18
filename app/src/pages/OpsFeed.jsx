@@ -2,20 +2,22 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useToast } from '../providers/ToastProvider'
-import { opsFetch as fetchJSON } from '../api/ops'
+import { opsFetch as fetchJSON, removeTask, REMOVAL_REASONS } from '../api/ops'
 import OpsSupporters from './OpsSupporters.jsx'
+import Modal from '../components/Modal.jsx'
 
 // Display gate only — the server re-checks every /ops/* call against its own
 // hardcoded allowlist (S-14/S-60.5), which stays the authorization system.
 const ADMIN_EMAILS = new Set([
   'auratao.model@gmail.com',
+  'taoaura.lavoro@gmail.com',
   'liang.you@horaapp.co',
   'liang.you@arcodiax.com',
   'rollod4@gmail.com',
   'daniele@arcodiax.com'
 ]);
 
-const STATUS_FILTERS = ['all','accepted','completed','cancelled'];
+const STATUS_FILTERS = ['all','accepted','completed','cancelled','removed'];
 
 const TABS = [
   { key: 'tasks', label: 'Task feed' },
@@ -30,6 +32,11 @@ export default function OpsFeed() {
   const [filter, setFilter] = useState('all')
   const [q, setQ] = useState('')
   const [tab, setTab] = useState('tasks')
+  // Takedown dialog: null when closed, otherwise the row being removed.
+  const [removing, setRemoving] = useState(null)
+  const [removeReason, setRemoveReason] = useState(REMOVAL_REASONS[0].value)
+  const [removeNote, setRemoveNote] = useState('')
+  const [removeBusy, setRemoveBusy] = useState(false)
 
   const allowed = !!user && ADMIN_EMAILS.has(user.email)
 
@@ -118,6 +125,28 @@ export default function OpsFeed() {
       load();
     } catch (e) {
       toast(e.message || 'Action failed');
+    }
+  }
+
+  // --- 動作：平台下架（違反 beta 範圍）
+  function openRemove(row) {
+    setRemoving(row)
+    setRemoveReason(REMOVAL_REASONS[0].value)
+    setRemoveNote('')
+  }
+
+  async function confirmRemove() {
+    if (!removing) return
+    setRemoveBusy(true)
+    try {
+      const res = await removeTask(removing.task_id, removeReason, removeNote)
+      toast(res?.already_removed ? 'Task was already removed' : 'Task removed — both parties notified')
+      setRemoving(null)
+      load()
+    } catch (e) {
+      toast(e.message || 'Remove failed')
+    } finally {
+      setRemoveBusy(false)
     }
   }
 
@@ -211,12 +240,21 @@ export default function OpsFeed() {
                   <td className="p-2 text-xs">
                     {r.running_minutes > 0 && <span className="inline-block border rounded px-1 mr-1">running</span>}
                     {r.status === 'cancelled' && <span className="inline-block border rounded px-1">cancelled</span>}
+                    {r.status === 'removed' && <span className="inline-block border border-red-400/60 text-red-300 rounded px-1">removed</span>}
                   </td>
                   <td className="p-2">
                     <div className="flex gap-1">
                       <button className="rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40" onClick={()=>adjustTime(r.task_id)}>Adjust</button>
                       <button className="rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40" onClick={()=>forceComplete(r.task_id)}>Force</button>
                       <button className="rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40" onClick={()=>cancelTask(r.task_id)}>Cancel</button>
+                      {r.status === 'open' && (
+                        <button
+                          className="rounded-md border border-red-400/50 px-2 py-1 text-xs text-red-300 hover:border-red-400"
+                          onClick={()=>openRemove(r)}
+                        >
+                          Remove
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -230,6 +268,57 @@ export default function OpsFeed() {
         </>
         )}
       </div>
+
+      <Modal
+        open={!!removing}
+        onClose={() => (removeBusy ? null : setRemoving(null))}
+        title="Remove task"
+        actions={
+          <>
+            <button
+              className="rounded-md border border-white/20 px-3 py-1 text-sm hover:border-white/40"
+              onClick={() => setRemoving(null)}
+              disabled={removeBusy}
+            >
+              Cancel
+            </button>
+            <button
+              className="rounded-md border border-red-400/60 px-3 py-1 text-sm text-red-300 hover:border-red-400"
+              onClick={confirmRemove}
+              disabled={removeBusy}
+            >
+              {removeBusy ? 'Removing…' : 'Remove task'}
+            </button>
+          </>
+        }
+      >
+        <p className="mb-3">
+          Take down <span className="font-medium text-white">{removing?.title}</span>? The requester is
+          notified with the reason below{removing?.supporter_email ? ', and the supporter is detached and told the task is no longer available' : ''}.
+        </p>
+
+        <label className="block text-xs uppercase tracking-wide opacity-70 mb-1">Reason</label>
+        <select
+          className="w-full border rounded px-2 py-1 mb-3 bg-transparent"
+          value={removeReason}
+          onChange={(e) => setRemoveReason(e.target.value)}
+        >
+          {REMOVAL_REASONS.map((r) => (
+            <option key={r.value} value={r.value} className="text-black">{r.label}</option>
+          ))}
+        </select>
+
+        <label className="block text-xs uppercase tracking-wide opacity-70 mb-1">
+          Internal note (optional)
+        </label>
+        <textarea
+          className="w-full border rounded px-2 py-1 bg-transparent"
+          rows={2}
+          placeholder="Only recorded in the audit log — never shown to the user"
+          value={removeNote}
+          onChange={(e) => setRemoveNote(e.target.value)}
+        />
+      </Modal>
     </div>
   );
 }

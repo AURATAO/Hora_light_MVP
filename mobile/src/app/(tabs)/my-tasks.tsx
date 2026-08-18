@@ -39,7 +39,9 @@ function bucketByStatus(tasks: Task[]): { active: Task[]; history: Task[] } {
   const history: Task[] = [];
   for (const t of tasks) {
     const status = deriveTaskStatus(t);
-    if (status === "completed" || status === "cancelled") history.push(t);
+    // "removed" is terminal like the other two — a taken-down task belongs in
+    // history, never in the list of things still to do.
+    if (status === "completed" || status === "cancelled" || status === "removed") history.push(t);
     else active.push(t);
   }
   return { active, history };

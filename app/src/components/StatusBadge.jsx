@@ -4,6 +4,8 @@ const STYLES = {
   completed:   'bg-white/10 text-white/50 border-white/20',
   cancelled:   'bg-red-400/10 text-red-400/60 border-red-400/20',
   in_progress: 'bg-amber-400/15 text-amber-300 border-amber-400/30',
+  // Platform takedown, not a requester cancellation — same red family, its own label.
+  removed:     'bg-red-400/10 text-red-400/60 border-red-400/20',
 }
 
 const LABELS = {
@@ -12,6 +14,7 @@ const LABELS = {
   completed:   'Completed',
   cancelled:   'Cancelled',
   in_progress: 'In Progress',
+  removed:     'Removed',
 }
 
 export default function StatusBadge({ status }) {

@@ -69,12 +69,41 @@ var DB *sql.DB
 
 func SetDB(db *sql.DB) { DB = db }
 
-var opsAdmins = map[string]struct{}{
-	"auratao.model@gmail.com": {},
-	"liang.you@horaapp.co":    {},
-	"liang.you@arcodiax.com":  {},
-	"rollod4@gmail.com":       {},
-	"daniele@arcodiax.com":    {},
+// defaultOpsAdmins is the allowlist the backend falls back to when ADMIN_EMAILS
+// is unset. It is the authorization system for every /ops/* and /admin/* route
+// — the webapp's matching list is a display gate only, and there is no is_admin
+// column in the DB by design (D-02: the Go backend is the only authorization
+// layer, and a two-person beta team does not need a table for five addresses).
+var defaultOpsAdmins = []string{
+	"auratao.model@gmail.com",
+	"taoaura.lavoro@gmail.com",
+	"liang.you@horaapp.co",
+	"liang.you@arcodiax.com",
+	"rollod4@gmail.com",
+	"daniele@arcodiax.com",
+}
+
+// opsAdmins is resolved once at startup from ADMIN_EMAILS (comma-separated),
+// falling back to defaultOpsAdmins when the env var is absent or blank — so a
+// takedown-permission change on Render is a config edit, not a deploy.
+var opsAdmins = parseAdminEmails(os.Getenv("ADMIN_EMAILS"), defaultOpsAdmins)
+
+// parseAdminEmails normalizes a comma-separated allowlist. Blank entries are
+// dropped; an env value that yields no usable address falls back to the
+// defaults rather than locking the whole team out of the admin panel.
+func parseAdminEmails(env string, fallback []string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, e := range strings.Split(env, ",") {
+		if e = strings.TrimSpace(strings.ToLower(e)); e != "" {
+			out[e] = struct{}{}
+		}
+	}
+	if len(out) == 0 {
+		for _, e := range fallback {
+			out[strings.TrimSpace(strings.ToLower(e))] = struct{}{}
+		}
+	}
+	return out
 }
 
 func isOpsAdminEmail(s string) bool {
@@ -105,6 +134,11 @@ type Task struct {
 	// Travel time estimate (populated after supporter accepts)
 	TravelTimeMinutes    *int `json:"travel_time_minutes,omitempty"`
 	TotalEstimateMinutes *int `json:"total_estimate_minutes,omitempty"`
+
+	// Platform takedown, set only on status='removed' and only by getTask.
+	// removal_note is the admin's internal wording and is never serialized.
+	RemovedAt     *time.Time `json:"removed_at,omitempty"`
+	RemovalReason *string    `json:"removal_reason,omitempty"`
 }
 
 type createTaskInput struct {
@@ -319,6 +353,11 @@ func main() {
 	opsroutes.RegisterOpsRoutes(r, sqldb, dualAuth(sqldb), func(email string) bool {
 		return isOpsAdminEmail(email)
 	})
+
+	// Platform takedown of a task. It lives under /admin rather than /ops
+	// because it is destructive, but it is gated by the same allowlist — the
+	// webapp's copy of that list only decides whether to draw the button.
+	r.POST("/admin/tasks/:id/remove", dualAuth(sqldb), requireOpsAdmin(), adminRemoveTask)
 
 	// 列出所有路由（除錯用）
 
@@ -1228,6 +1267,10 @@ func listProfileTasks(c *gin.Context) {
 	args := []any{}
 	arg := 1
 
+	// Removed tasks are platform takedowns — they never appear on a public
+	// profile, for either role.
+	where = append(where, "status <> 'removed'")
+
 	if role == "assignee" {
 		where = append(where, fmt.Sprintf("assigned_to_id = $%d::uuid", arg))
 	} else {
@@ -1656,9 +1699,32 @@ func getTask(c *gin.Context) {
 		return uid == *t.AssignedToID
 	}()
 
-	if t.Status != "open" && uid != t.RequesterID && !isAssignee {
+	// Admins read any task: the ops panel's takedown button needs the detail
+	// behind it, and a removed task is invisible to everyone else.
+	isAdmin := isOpsAdminEmail(c.GetString("email"))
+
+	if t.Status != "open" && uid != t.RequesterID && !isAssignee && !isAdmin {
+		if t.Status == "removed" {
+			// Distinct from a plain "forbidden" so a client holding a stale
+			// screen can say what happened. Removal clears assigned_to_id, so
+			// the detached supporter arrives here too.
+			c.JSON(http.StatusForbidden, gin.H{"error": "task_removed", "message": "This task has been removed."})
+			return
+		}
 		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 		return
+	}
+
+	if t.Status == "removed" {
+		// Read separately instead of widening every task SELECT: only the
+		// detail screen needs the reason, and removal_note stays server-side.
+		var removedAt *time.Time
+		var reason *string
+		if err := db.QueryRow(ctx,
+			`select removed_at, removal_reason from public.tasks where id=$1::uuid`, id,
+		).Scan(&removedAt, &reason); err == nil {
+			t.RemovedAt, t.RemovalReason = removedAt, reason
+		}
 	}
 
 	c.JSON(http.StatusOK, t)
@@ -1709,6 +1775,10 @@ func updateTask(c *gin.Context) {
 		return
 	}
 
+	if status == "removed" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "task_removed", "message": "This task has been removed."})
+		return
+	}
 	if status != "open" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "only open tasks can be edited"})
 		return
@@ -2084,7 +2154,7 @@ func listMyPostedClosed(c *gin.Context) {
 	// 我發的 + 已關閉（完成或取消）
 	where := []string{
 		"requester_id = $1::uuid",
-		"status in ('completed','cancelled')",
+		"status in ('completed','cancelled','removed')",
 	}
 	args := []any{meUID}
 	arg := 2
@@ -2164,6 +2234,10 @@ func acceptTask(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "cannot accept your own task"})
 		return
 	}
+	if status == "removed" {
+		c.JSON(400, gin.H{"error": "task_removed", "message": "This task has been removed."})
+		return
+	}
 	if status != "open" || assignedToID != nil {
 		c.JSON(400, gin.H{"error": "not available"})
 		return
@@ -2230,6 +2304,10 @@ func clockIn(c *gin.Context) {
 	}
 	if !assignedToID.Valid || assignedToID.String != meUID {
 		c.JSON(http.StatusForbidden, gin.H{"error": "only assignee can clock in"})
+		return
+	}
+	if status == "removed" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "task_removed", "message": "This task has been removed."})
 		return
 	}
 	if status != "open" {
@@ -2676,6 +2754,10 @@ func completeTask(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "not allowed"})
 		return
 	}
+	if status == "removed" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "task_removed", "message": "This task has been removed."})
+		return
+	}
 	if status != "open" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "already closed"})
 		return
@@ -2892,6 +2974,10 @@ func cancelTask(c *gin.Context) {
 	}
 
 	// 狀態檢查
+	if status == "removed" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "task_removed", "message": "This task has been removed."})
+		return
+	}
 	if status != "open" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "task already closed"})
 		return

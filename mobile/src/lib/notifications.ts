@@ -21,6 +21,7 @@ const NOTIFICATION_META: Record<NotificationType, NotificationMeta> = {
   COMPLETED: { icon: CheckCircle2, tint: "brand" },
   COMPLETED_SUPPORTER: { icon: CheckCircle2, tint: "brand" },
   CANCELLED: { icon: XCircle, tint: "danger" },
+  TASK_REMOVED: { icon: XCircle, tint: "danger" },
   NEW_MESSAGE: { icon: MessageCircle, tint: "neutral" },
 };
 

@@ -48,6 +48,8 @@ func RegisterOpsRoutes(r *gin.Engine, sqldb *sql.DB, authMW gin.HandlerFunc, isA
 			w = append(w, "status = 'completed'")
 		case "cancelled":
 			w = append(w, "status = 'cancelled'")
+		case "removed":
+			w = append(w, "status = 'removed'")
 		default:
 			// 不認得的值 → 當 all
 		}

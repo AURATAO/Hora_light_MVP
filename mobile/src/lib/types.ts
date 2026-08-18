@@ -15,7 +15,9 @@ export type TaskCategory =
   | "anything_else"
   | "companionship";
 
-export type TaskStatus = "open" | "completed" | "cancelled";
+// "removed" is a platform takedown by the HO:RA team (admin_tasks.go), as
+// opposed to "cancelled", which is the requester withdrawing their own task.
+export type TaskStatus = "open" | "completed" | "cancelled" | "removed";
 
 export type SupporterStatus = "none" | "applied" | "approved" | "rejected";
 
@@ -27,6 +29,12 @@ export type EaseRating = "very_easy" | "easy" | "neutral" | "difficult" | "very_
 export type WouldUseAgain = "yes" | "maybe_task" | "maybe_cost" | "no";
 export type RaterRole = "requester" | "supporter";
 
+export type TaskRemovalReason =
+  | "out_of_scope_private_residence"
+  | "out_of_scope_other"
+  | "inappropriate"
+  | "other";
+
 export type NotificationType =
   | "ORDER_ACCEPTED"
   | "CLOCK_IN"
@@ -34,6 +42,7 @@ export type NotificationType =
   | "COMPLETED"
   | "COMPLETED_SUPPORTER"
   | "CANCELLED"
+  | "TASK_REMOVED"
   | "NEW_MESSAGE";
 
 // GET /auth/me — discriminated on `auth` so callers narrow before reading fields.
@@ -103,6 +112,10 @@ export interface Task {
   completed_at: string | null;
   cancel_reason: string | null;
   cancelled_at: string | null;
+  /** Takedown state. Only ever present on a removed task, and only on the
+   * task-detail response — the admin's internal note is never sent. */
+  removed_at?: string | null;
+  removal_reason?: TaskRemovalReason | null;
   created_at: string;
   /** Legacy email columns (S-60.1) — present on every /tasks response. Only
    * for TalkJS participant identity (matches web's existing id-by-email
