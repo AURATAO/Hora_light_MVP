@@ -26,3 +26,15 @@ mobile/.expo
 # history is not reachable from a .easignore. The builder only needs a working
 # tree, so excluding it takes the archive from 100 MB to ~2 MB.
 .git
+
+# This file REPLACES .gitignore for the build archive rather than adding to it
+# (docs.expo.dev/build-reference/easignore), so anything .gitignore protects has
+# to be repeated here or it ships to the builder. .env is the one that bites:
+# EAS Build inlines EXPO_PUBLIC_* from an uploaded .env into the bundle, so a
+# local-only flag — EXPO_PUBLIC_QA_FORCE_TRACTION, say — would ride into a
+# release build and stay true forever. Nothing is lost by excluding it: the
+# preview profile takes its environment from EAS ("environment": "preview" in
+# eas.json), which already carries all four EXPO_PUBLIC_* values the app needs.
+.env
+.env.*
+!.env.example

@@ -12,13 +12,19 @@ export const TRACTION_3_CONFIG = {
   /** Dates the round runs, as shown to users. En-dash, matching web. */
   window: "Aug 24–28",
   /**
-   * The same window, machine-readable — the only thing that decides whether a
+   * The machine-readable window — the only thing that decides whether a
    * round-specific surface is live (see isTractionWindowActive). `endsAt` is
    * the first instant AFTER the last day, so Aug 28 counts in full. Offsets
    * are NYC's, which is UTC-4 in August; the round is a Manhattan pilot, so
    * the day boundaries are local ones, not the device's.
+   *
+   * `startsAt` deliberately runs ahead of the `window` copy above: the round
+   * is announced to users as Aug 24–28, but the questionnaire opens on Aug 18
+   * so it is live and testable the moment this build reaches TestFlight,
+   * rather than sitting dark for six days. Only the opening edge moves —
+   * the round still closes when it says it does.
    */
-  startsAt: "2026-08-24T00:00:00-04:00",
+  startsAt: "2026-08-18T00:00:00-04:00",
   endsAt: "2026-08-29T00:00:00-04:00",
   /** Daily hours supporters are dispatched. En-dash, matching web. */
   coverageHours: "11am–3pm",
