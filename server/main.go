@@ -346,6 +346,9 @@ func main() {
 
 	// --- 路由 ---
 	RegisterWhatsAppWebhooks(r)
+	// TalkJS message.sent → Expo push. Unauthenticated but HMAC-signed; see
+	// talkjs_webhook.go.
+	RegisterTalkJSWebhooks(r, sqldb)
 	RegisterNotificationRoutes(r, sqldb)
 
 	addAvatarUploadRouteV1(r)

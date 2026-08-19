@@ -77,11 +77,23 @@ export const DISABLED_CATEGORY_BADGE = "Coming soon";
 export const DISABLED_CATEGORY_NOTICE = "Companionship tasks aren't available this round";
 
 /**
+ * QA escape hatch: forces the round open regardless of today's date, so the
+ * round-scoped surfaces can be exercised before the window starts. Read from
+ * the environment rather than by editing the dates above, because that leaves
+ * nothing to remember to revert — EXPO_PUBLIC_* values are inlined at bundle
+ * time, so a build made without this variable set (TestFlight, EAS production)
+ * ships with it permanently false. Set it only in a local `mobile/.env`, which
+ * is gitignored and never part of a release build.
+ */
+const QA_FORCE_TRACTION_WINDOW = process.env.EXPO_PUBLIC_QA_FORCE_TRACTION === "1";
+
+/**
  * Is the Traction 3 round running right now? The single date check behind every
  * round-scoped surface: when it goes false the app returns to its normal
  * behaviour on its own, with no flag to remember to flip.
  */
 export function isTractionWindowActive(now: Date = new Date()): boolean {
+  if (QA_FORCE_TRACTION_WINDOW) return true;
   const t = now.getTime();
   return t >= Date.parse(TRACTION_3_CONFIG.startsAt) && t < Date.parse(TRACTION_3_CONFIG.endsAt);
 }
