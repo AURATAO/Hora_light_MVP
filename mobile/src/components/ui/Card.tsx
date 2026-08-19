@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { View, Text, type ViewProps } from "react-native";
 import { PressableScale } from "./PressableScale";
+import { cn } from "../../theme/cn";
 
 export interface CardProps extends ViewProps {
   children?: ReactNode;
@@ -9,7 +10,7 @@ export interface CardProps extends ViewProps {
 
 // Surface bg, hairline border, radius card, padding 16, no shadow (DESIGN.md §5).
 export function Card({ children, className, onPress, ...props }: CardProps) {
-  const cardClassName = `rounded-card border border-line bg-surface p-4 ${className ?? ""}`;
+  const cardClassName = cn("rounded-card border border-line bg-surface p-4", className);
 
   if (onPress) {
     return (

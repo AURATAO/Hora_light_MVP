@@ -1,5 +1,6 @@
 import { ActivityIndicator, Text } from "react-native";
 import { PressableScale } from "./PressableScale";
+import { cn } from "../../theme/cn";
 import { color } from "../../theme/tokens";
 
 export type ButtonVariant = "primary" | "secondary" | "text";
@@ -44,15 +45,17 @@ export function Button({
     <PressableScale
       onPress={onPress}
       disabled={disabled || loading}
-      className={`h-[52px] flex-row items-center justify-center rounded-pill px-6 ${
+      className={cn(
+        "h-[52px] flex-row items-center justify-center rounded-pill px-6",
         disabled
           ? "bg-line"
           : variant === "primary"
             ? "bg-ink"
             : variant === "secondary"
               ? "border border-line bg-transparent"
-              : "bg-transparent"
-      } ${className ?? ""}`}
+              : "bg-transparent",
+        className
+      )}
     >
       {loading ? (
         <ActivityIndicator color={indicatorColor} />

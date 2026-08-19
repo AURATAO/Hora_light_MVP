@@ -9,6 +9,7 @@ import {
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { layout, space } from "../../theme/tokens";
+import { cn } from "../../theme/cn";
 
 export interface ScreenProps {
   children?: ReactNode;
@@ -58,7 +59,7 @@ export function Screen({
 
   const body = scroll ? (
     <ScrollView
-      className={`flex-1 px-6 ${className ?? ""}`}
+      className={cn("flex-1 px-6", className)}
       contentContainerStyle={{
         flexGrow: 1,
         paddingBottom: tabBarPad,
@@ -72,7 +73,7 @@ export function Screen({
       {content}
     </ScrollView>
   ) : (
-    <View className={`flex-1 px-6 ${className ?? ""}`} style={{ paddingBottom: tabBarPad }}>
+    <View className={cn("flex-1 px-6", className)} style={{ paddingBottom: tabBarPad }}>
       {content}
     </View>
   );

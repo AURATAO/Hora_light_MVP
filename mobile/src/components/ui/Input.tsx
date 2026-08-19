@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { View, Text, TextInput, type TextInputProps } from "react-native";
 import { color } from "../../theme/tokens";
+import { cn } from "../../theme/cn";
 
 export interface InputProps extends TextInputProps {
   label?: string;
@@ -39,9 +40,13 @@ export function Input({
         // rest outside the border; as a min-height a one-line field still lands
         // on exactly 52 and a wrapping one grows. Callers bound that growth with
         // `max-h-*`, or pin a fixed box with `h-*` (which wins over the floor).
-        className={`min-h-[52px] rounded-sm border bg-surface px-4 text-body text-ink ${
-          wraps ? "py-3" : ""
-        } ${grow ? "max-h-[90px]" : ""} ${focused ? "border-ink" : "border-line"} ${className ?? ""}`}
+        className={cn(
+          "min-h-[52px] rounded-sm border bg-surface px-4 text-body text-ink",
+          wraps && "py-3",
+          grow && "max-h-[90px]",
+          focused ? "border-ink" : "border-line",
+          className
+        )}
         placeholderTextColor={color.muted}
         // Android-only; wrapped text should start at the top of the box rather
         // than stay vertically centered as the box grows.

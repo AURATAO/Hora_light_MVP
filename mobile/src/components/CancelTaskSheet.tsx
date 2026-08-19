@@ -90,7 +90,14 @@ export function CancelTaskSheet({ visible, onClose, onConfirm }: CancelTaskSheet
               />
             ) : null}
             {error ? <Text className="mt-3 text-caption text-danger">{error}</Text> : null}
-            <View className="mt-5 gap-2">
+            {/* The gap belongs to the action area, not to whatever sits above it,
+                so the pills-only state gets the same breathing room as the state
+                with the Other note field. mt-5 was doing nothing at all here:
+                tailwind.config.js replaces the spacing scale with the token set
+                (0/1/2/3/4/6/8/12), so `5` generates no class and the buttons sat
+                flush against the content. 6 = space[6], matching
+                CompleteTaskSheet's footer, the sheet this one is shaped like. */}
+            <View className="mt-6 gap-2">
               <Button
                 label="Cancel task"
                 onPress={handleConfirm}

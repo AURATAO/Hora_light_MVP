@@ -87,7 +87,10 @@ export function EditProfileSheet({ visible, profile, onClose, onSaved }: EditPro
               />
             </View>
             {error ? <Text className="mt-3 text-caption text-danger">{error}</Text> : null}
-            <View className="mt-5 gap-2">
+            {/* 6, not 5: tailwind.config.js has no `5` in its spacing scale, so
+                mt-5 generated nothing and the buttons sat flush against the form.
+                Same fix as CancelTaskSheet. */}
+            <View className="mt-6 gap-2">
               <Button label="Save changes" onPress={handleSubmit} loading={submitting} disabled={!phone.trim()} />
               <Button label="Cancel" variant="text" onPress={handleClose} disabled={submitting} />
             </View>

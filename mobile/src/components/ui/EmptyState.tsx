@@ -2,6 +2,7 @@ import type { LucideIcon } from "lucide-react-native";
 import { View, Text } from "react-native";
 import { Button } from "./Button";
 import { color, size } from "../../theme/tokens";
+import { cn } from "../../theme/cn";
 
 export interface EmptyStateProps {
   icon: LucideIcon;
@@ -24,7 +25,7 @@ export function EmptyState({
   className,
 }: EmptyStateProps) {
   return (
-    <View className={`items-center gap-3 py-12 ${className ?? ""}`}>
+    <View className={cn("items-center gap-3 py-12", className)}>
       <Icon color={color.muted} size={24} strokeWidth={size.iconStroke} />
       <Text className="text-title font-semibold text-ink">{title}</Text>
       <Text className="text-center text-caption text-muted">{caption}</Text>

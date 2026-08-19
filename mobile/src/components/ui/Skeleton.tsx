@@ -7,6 +7,7 @@ import Animated, {
   withRepeat,
   withTiming,
 } from "react-native-reanimated";
+import { cn } from "../../theme/cn";
 
 export interface SkeletonProps extends ViewProps {
   className?: string;
@@ -24,7 +25,7 @@ export function Skeleton({ className, style, ...props }: SkeletonProps) {
 
   return (
     <Animated.View
-      className={`rounded-sm bg-line ${className ?? ""}`}
+      className={cn("rounded-sm bg-line", className)}
       style={[style as object, animatedStyle]}
       {...props}
     />
