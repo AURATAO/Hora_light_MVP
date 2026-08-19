@@ -87,3 +87,19 @@ export function taskIdFromNotificationResponse(
   const id = data?.task_id;
   return typeof id === "string" && id.length > 0 ? id : null;
 }
+
+// Where a tapped notification should land. Every push carries the same
+// data: { task_id, type }, so the type alone decides the destination — chat
+// pushes (sent by the TalkJS webhook, server/talkjs_webhook.go) open the
+// conversation, and every task event opens the task itself. Returns null when
+// there is no task id to navigate to.
+export function routeFromNotificationResponse(
+  response: Notifications.NotificationResponse | null | undefined
+): string | null {
+  const taskId = taskIdFromNotificationResponse(response);
+  if (!taskId) return null;
+
+  const data = response?.notification?.request?.content?.data as { type?: unknown } | undefined;
+  if (data?.type === "NEW_MESSAGE") return `/task/${taskId}/chat`;
+  return `/task/${taskId}`;
+}

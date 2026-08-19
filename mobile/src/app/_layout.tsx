@@ -9,7 +9,7 @@ import * as Notifications from "expo-notifications";
 import { missingEnvVars, supabase } from "../lib/supabase";
 import { getMe, getProfile } from "../lib/api";
 // Importing ./push registers the app's single notification handler at boot.
-import { registerForPushNotifications, taskIdFromNotificationResponse } from "../lib/push";
+import { registerForPushNotifications, routeFromNotificationResponse } from "../lib/push";
 import type { Profile } from "../lib/types";
 import SplashCollision from "../components/SplashCollision";
 import { ErrorBoundary } from "../components/ErrorBoundary";
@@ -119,22 +119,23 @@ export default function RootLayout() {
     };
   }, [checkSession]);
 
-  // Deep-link a tapped task push to /task/[id]. Covers all three states:
+  // Deep-link a tapped push to its screen — /task/[id] for task events,
+  // /task/[id]/chat for a new chat message. Covers all three states:
   // - warm/backgrounded: the response listener fires on tap;
   // - cold start (app launched by the tap): getLastNotificationResponseAsync
   //   returns the launching response. This root layout mounts once and never
   //   unmounts, so the cold-start check runs exactly once per process.
-  // If the target isn't the signed-in user's task, the task screen's own auth
-  // guard handles the redirect — navigation here stays dumb on purpose.
+  // If the target isn't the signed-in user's task, the destination screen's own
+  // auth guard handles the redirect — navigation here stays dumb on purpose.
   useEffect(() => {
     Notifications.getLastNotificationResponseAsync().then((response) => {
-      const taskId = taskIdFromNotificationResponse(response);
-      if (taskId) router.push(`/task/${taskId}`);
+      const route = routeFromNotificationResponse(response);
+      if (route) router.push(route);
     });
 
     const sub = Notifications.addNotificationResponseReceivedListener((response) => {
-      const taskId = taskIdFromNotificationResponse(response);
-      if (taskId) router.push(`/task/${taskId}`);
+      const route = routeFromNotificationResponse(response);
+      if (route) router.push(route);
     });
     return () => sub.remove();
   }, []);

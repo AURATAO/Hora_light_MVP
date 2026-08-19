@@ -10,19 +10,30 @@ import {
   FileText,
   MessageCircle,
   ShieldCheck,
+  Star,
   User,
   type LucideIcon,
 } from "lucide-react-native";
 import { EditProfileSheet } from "../../components/EditProfileSheet";
 import { SupporterStatusRow } from "../../components/SupporterStatusBanner";
 import { Avatar, Card, EmptyState, PressableScale, Screen, Skeleton } from "../../components/ui";
-import { ApiError, getProfile, logout, uploadAvatar } from "../../lib/api";
+import {
+  ApiError,
+  getMe,
+  getProfile,
+  getSupporterReviews,
+  logout,
+  uploadAvatar,
+  type SupporterReviewsSummary,
+} from "../../lib/api";
 import { cancelAllOvertimeReminders } from "../../lib/overtime-reminders";
 import { unregisterCurrentPushToken } from "../../lib/push";
 import { HORA_WHATSAPP_NUMBER, LEGAL_URLS } from "../../lib/constants";
 import { supabase } from "../../lib/supabase";
 import type { Profile } from "../../lib/types";
 import { color, size } from "../../theme/tokens";
+
+const EMPTY_REVIEWS: SupporterReviewsSummary = { reviews: [], count: 0, avgStars: null };
 
 function formatMemberSince(createdAt: string): string {
   return new Date(createdAt).toLocaleDateString([], { month: "long", year: "numeric" });
@@ -58,6 +69,11 @@ export default function Profile() {
   const [refreshing, setRefreshing] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  // Own rating, for approved supporters only — null until loaded / when the
+  // user isn't a supporter, which is what keeps the section off everyone
+  // else's tab.
+  const [reviews, setReviews] = useState<SupporterReviewsSummary | null>(null);
+  const [myId, setMyId] = useState<string | null>(null);
 
   function handleAuthError(e: unknown): boolean {
     if (e instanceof ApiError && e.isAuthError) {
@@ -72,6 +88,26 @@ export default function Profile() {
       const p = await getProfile();
       setProfile(p);
       setError(null);
+
+      // The supporter's own star average and review list. Deliberately the
+      // very same GET /profiles/:id/reviews the public profile uses, called
+      // with our own id — one endpoint, one aggregate, so the number here can
+      // never drift from the one requesters see. That endpoint filters
+      // `stars is not null`, so the Traction 3 questionnaire rows a supporter
+      // submits about themselves are excluded here exactly as they are there.
+      // Only an approved supporter can have reviews, and the whole block is
+      // best-effort: a failure leaves the section hidden rather than taking
+      // the tab down with it.
+      if (p.supporter_status === "approved") {
+        const me = await getMe().catch(() => null);
+        if (me?.auth) {
+          setMyId(me.id);
+          setReviews(await getSupporterReviews(me.id).catch(() => EMPTY_REVIEWS));
+        }
+      } else {
+        setMyId(null);
+        setReviews(null);
+      }
     } catch (e) {
       if (handleAuthError(e)) return;
       setError(e instanceof Error ? e.message : "Couldn't load your profile");
@@ -246,6 +282,50 @@ export default function Profile() {
           </PressableScale>
         )}
       </View>
+
+      {/* Approved supporters only: their own star average and a way into the
+          reviews requesters left them — the same list their public profile
+          shows, reached by routing to that screen with their own id rather
+          than rebuilding it here. Shown even at zero reviews so a supporter
+          learns the feature exists before the first one lands. */}
+      {profile.supporter_status === "approved" && reviews ? (
+        <View className="mb-6">
+          <Text className="mb-2 text-title font-semibold text-ink">Your rating</Text>
+          {reviews.count > 0 && myId ? (
+            <Card onPress={() => router.push(`/profile/${myId}`)}>
+              <View className="flex-row items-center justify-between">
+                <View className="flex-1 flex-row items-center gap-3 pr-2">
+                  <Star color={color.ink} fill={color.ink} size={18} strokeWidth={size.iconStroke} />
+                  <View className="flex-1">
+                    <Text className="text-body font-semibold text-ink">
+                      {(reviews.avgStars ?? 0).toFixed(1)} · {reviews.count} review
+                      {reviews.count === 1 ? "" : "s"}
+                    </Text>
+                    <Text className="mt-0.5 text-caption text-muted">
+                      From requesters you've helped
+                    </Text>
+                  </View>
+                </View>
+                <ChevronRight color={color.muted} size={18} strokeWidth={size.iconStroke} />
+              </View>
+            </Card>
+          ) : (
+            // Nothing to open yet, so this one doesn't navigate — it only
+            // tells the supporter where reviews will appear.
+            <Card>
+              <View className="flex-row items-center gap-3">
+                <Star color={color.muted} size={18} strokeWidth={size.iconStroke} />
+                <View className="flex-1">
+                  <Text className="text-body text-ink">No reviews yet</Text>
+                  <Text className="mt-0.5 text-caption text-muted">
+                    Requesters can review you after a completed task.
+                  </Text>
+                </View>
+              </View>
+            </Card>
+          )}
+        </View>
+      ) : null}
 
       <View className="mb-6">
         <View className="mb-2 flex-row items-center justify-between">
