@@ -8,6 +8,7 @@ import { gmapsPlaceUrl, gmapsDirectionsUrl } from '../utils/gmaps'
 import { useLoader } from '../providers/LoaderProvider.jsx'
 import PlaceInput from '../components/PlaceInput'
 import { useToast } from '../providers/ToastProvider'
+import { isTractionWindowActive } from '../lib/traction'
 
 
 export default function TaskDetail() {
@@ -274,6 +275,14 @@ export default function TaskDetail() {
   const canComplete = Boolean((isOwner || isAssignee) && task?.status === 'open' && !!task?.assigned_to_id && !work.has_open && hasLogged)
   const canAccept = Boolean(!isOwner && !isAssignee && task?.status === 'open' && !task?.assigned_to_id)
 
+  // For the length of the Traction 3 round the questionnaire replaces the
+  // classic review form, and the supporter gets one of their own — the only
+  // time this side of a completed task is asked anything. When the window
+  // passes both revert on their own: the flag is a date check, nothing else.
+  const questionnaireActive = isTractionWindowActive()
+  const canReview = Boolean(isOwner && task?.status === 'completed' && task?.assigned_to_id)
+  const canGiveFeedback = Boolean(isAssignee && task?.status === 'completed' && questionnaireActive)
+
   // async function reloadWorkAndTask() {
   //   const [t, w] = await Promise.all([
   //     api(`/tasks/${id}`),
@@ -399,7 +408,9 @@ export default function TaskDetail() {
           body: completeBody,
         })
         setShowCompleteModal(false)
-        navigate('/my?tab=done', { replace: true })
+        // During the round, completing is the moment the supporter answers:
+        // nothing else on web prompts them. Outside it, unchanged.
+        navigate(questionnaireActive ? `/tasks/${id}/review` : '/my?tab=done', { replace: true })
       } catch (e) {
         toast(e.message || 'Complete failed')
       }
@@ -820,6 +831,20 @@ export default function TaskDetail() {
                 title={canComplete ? undefined : 'Clock in & out at least once before completing'}
               >
                 Mark as Complete
+              </button>
+            )}
+
+            {/* Post-task feedback. The requester's review reached this page by
+                email link only; the supporter had no entry point at all before
+                the round, which is what canGiveFeedback adds. */}
+            {(canReview || canGiveFeedback) && (
+              <button
+                type="button"
+                onClick={() => navigate(`/tasks/${id}/review`)}
+                style={{ background: '#9aab3a' }}
+                className="w-full rounded-xl py-[14px] text-sm font-medium text-white transition-opacity hover:opacity-90"
+              >
+                {canReview ? 'Leave a review' : 'Share your feedback'}
               </button>
             )}
 
