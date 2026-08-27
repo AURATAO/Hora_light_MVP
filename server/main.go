@@ -2427,6 +2427,20 @@ func clockOut(c *gin.Context) {
 	})
 }
 
+// Capture paths a ping can come from. Kept in step with the
+// task_gps_pings_source_check constraint (supabase/migrations/
+// 20260827120000_task_gps_pings_source.sql) — an unlisted value would fail the
+// insert with a 500, so it is rejected as a 400 here instead.
+const (
+	gpsSourceForeground = "foreground"
+	gpsSourceBackground = "background"
+)
+
+var validGpsSources = map[string]bool{
+	gpsSourceForeground: true,
+	gpsSourceBackground: true,
+}
+
 // POST /tasks/:id/gps-ping — assignee saves current location while clocked in
 func saveGpsPing(c *gin.Context) {
 	taskID := c.Param("id")
@@ -2455,16 +2469,30 @@ func saveGpsPing(c *gin.Context) {
 		Lat      float64 `json:"lat" binding:"required"`
 		Lng      float64 `json:"lng" binding:"required"`
 		Accuracy *int    `json:"accuracy"`
+		// Which client capture path produced this fix. Optional: the TestFlight
+		// build that predates background tracking omits it entirely, and older
+		// rows are foreground by definition, so an absent value means
+		// "foreground" rather than an error.
+		Source *string `json:"source"`
 	}
 	if err := c.ShouldBindJSON(&in); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
+	source := gpsSourceForeground
+	if in.Source != nil {
+		if !validGpsSources[*in.Source] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid source"})
+			return
+		}
+		source = *in.Source
+	}
+
 	_, err := db.Exec(ctx, `
-		insert into public.task_gps_pings(task_id, user_id, lat, lng, accuracy)
-		values ($1::uuid, $2::uuid, $3, $4, $5)
-	`, taskID, uid, in.Lat, in.Lng, in.Accuracy)
+		insert into public.task_gps_pings(task_id, user_id, lat, lng, accuracy, source)
+		values ($1::uuid, $2::uuid, $3, $4, $5, $6)
+	`, taskID, uid, in.Lat, in.Lng, in.Accuracy, source)
 	if err != nil {
 		log.Printf("[gps-ping] err=%v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})

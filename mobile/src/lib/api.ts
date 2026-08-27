@@ -430,6 +430,10 @@ export interface GpsPingPayload {
   lat: number;
   lng: number;
   accuracy?: number;
+  // Which capture path produced this fix. Optional on the wire — the backend
+  // defaults it to "foreground" so the TestFlight build that predates
+  // background tracking keeps working unchanged.
+  source?: "foreground" | "background";
 }
 
 export function sendGpsPing(id: string, payload: GpsPingPayload): Promise<GpsPing> {

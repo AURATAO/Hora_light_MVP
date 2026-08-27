@@ -8,6 +8,9 @@ import * as SplashScreen from "expo-splash-screen";
 import * as Notifications from "expo-notifications";
 import { missingEnvVars, supabase } from "../lib/supabase";
 import { getMe, getProfile } from "../lib/api";
+// Importing ./gps-tracking defines the background location task at module
+// scope, before iOS can hand the app a headless location launch.
+import { reconcileBackgroundGps } from "../lib/gps-tracking";
 // Importing ./push registers the app's single notification handler at boot.
 import { registerForPushNotifications, routeFromNotificationResponse } from "../lib/push";
 import type { Profile } from "../lib/types";
@@ -96,6 +99,10 @@ export default function RootLayout() {
       // server upsert makes repeat calls harmless. Fire-and-forget — it never
       // throws and must not gate auth resolution.
       registerForPushNotifications();
+      // Stop background location that outlived its worklog — a force-quit
+      // mid-task, or a clock-out that happened elsewhere. Needs the session,
+      // so it runs here rather than at module scope. Fire-and-forget.
+      reconcileBackgroundGps();
       try {
         const profile = await getProfile();
         setState({ loading: false, authenticated: true, profile });
