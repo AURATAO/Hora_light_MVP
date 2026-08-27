@@ -8,7 +8,7 @@ import { ApiError, estimateTaskCost, type CreateTaskPayload } from "../lib/api";
 import { DISABLED_CATEGORY_NOTICE, isCategoryDisabled } from "../lib/beta-notice";
 import { getCategoryMeta } from "../lib/categories";
 import { formatCost, formatMinutes, formatScheduledAt, zeroSeconds } from "../lib/task-utils";
-import type { ParsedTask, Task, TaskCategory } from "../lib/types";
+import type { ParsedTask, Task, TaskCategory, TaskCreatedVia } from "../lib/types";
 
 /**
  * The task form — Post Task's review step (screen 2) and the requester's edit
@@ -146,6 +146,39 @@ export function taskFormFromTask(task: Task): TaskFormState {
   };
 }
 
+/**
+ * Prefill for "Post again" — `taskFormFromTask` plus the two things that only
+ * differ because the result is a NEW task rather than the old one reopened.
+ * Deliberately a thin wrapper and not a second mapping: every field the form
+ * carries is still mapped in exactly one place, so a new field added to
+ * `taskFormFromTask` reaches this path for free.
+ *
+ * Nothing runtime comes across — status, assignee, worklogs, reviews and
+ * timestamps are not part of TaskFormState in the first place, so a duplicate
+ * can only ever post as a fresh open task.
+ */
+export function taskFormForDuplicate(task: Task): TaskFormState {
+  const form = taskFormFromTask(task);
+
+  // A locked category can't be posted this round, and the source task is by
+  // definition an old one that could be. Arrive with the picker empty and its
+  // standard disabled state visible rather than refusing the duplicate outright
+  // — the user re-picks and keeps the rest of their prefill.
+  const category = isCategoryDisabled(form.category) ? undefined : form.category;
+
+  // Every scheduled task worth re-posting has a scheduled_at in the past, so
+  // carrying the old timestamp over would fail validation on essentially all of
+  // them. Keep the scheduled-vs-ASAP choice, reset the clock: "same task
+  // tomorrow" is the case this feature exists for.
+  const staleSchedule = !form.isImmediate && form.scheduledDate.getTime() <= Date.now();
+
+  return {
+    ...form,
+    category,
+    scheduledDate: staleSchedule ? defaultScheduledDate() : form.scheduledDate,
+  };
+}
+
 export function validateTaskForm(form: TaskFormState): TaskFormErrors {
   const errors: TaskFormErrors = {};
   if (!form.title.trim()) errors.title = "Title is required.";
@@ -176,8 +209,15 @@ function encodeLocationText(locations: LocationRow[]): string {
  * body there does not patch — it blanks whatever it leaves out.
  *
  * Call `validateTaskForm` first; `category` is asserted here.
+ *
+ * `createdVia` is write-only attribution for POST /tasks (see TaskCreatedVia).
+ * The edit screen passes nothing: PATCH ignores the field, and how a task was
+ * created doesn't change when it is edited.
  */
-export function taskFormToPayload(form: TaskFormState): CreateTaskPayload {
+export function taskFormToPayload(
+  form: TaskFormState,
+  createdVia?: TaskCreatedVia
+): CreateTaskPayload {
   const budget = form.shoppingBudget ? Number(form.shoppingBudget) : 0;
   const prepayCents = Number.isFinite(budget) && budget > 0 ? Math.round(budget * 100) : 0;
 
@@ -191,6 +231,7 @@ export function taskFormToPayload(form: TaskFormState): CreateTaskPayload {
     is_immediate: form.isImmediate,
     scheduled_at: form.isImmediate ? "" : zeroSeconds(form.scheduledDate).toISOString(),
     transport_required: form.transport,
+    created_via: createdVia,
   };
 }
 

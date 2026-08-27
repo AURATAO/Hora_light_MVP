@@ -10,6 +10,7 @@ import type {
   Review,
   Task,
   TaskCategory,
+  TaskCreatedVia,
   TravelEstimate,
   User,
   ValueRating,
@@ -272,6 +273,10 @@ export interface CreateTaskPayload {
   is_immediate: boolean;
   scheduled_at?: string;
   transport_required?: string;
+  /** Attribution for the October repeat-usage count. Omitted on PATCH — see
+   *  UpdateTaskPayload, which drops it: an edit doesn't change how a task was
+   *  created, and the server would ignore it there anyway. */
+  created_via?: TaskCreatedVia;
 }
 
 export function createTask(payload: CreateTaskPayload): Promise<Task> {
@@ -322,7 +327,10 @@ export function getTask(id: string): Promise<Task> {
  * can be edited, and rejects a save that races an accept with
  * "cannot edit after it has been accepted".
  */
-export type UpdateTaskPayload = CreateTaskPayload;
+// Same body as POST /tasks minus the create-only attribution field: PATCH
+// /tasks/:id binds the same Go struct but never writes created_via, so sending
+// it would be noise on the wire and a lie in the type.
+export type UpdateTaskPayload = Omit<CreateTaskPayload, "created_via">;
 
 export function updateTask(id: string, payload: UpdateTaskPayload): Promise<Task> {
   return apiFetch<Task>(`/tasks/${id}`, { method: "PATCH", body: payload });

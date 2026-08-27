@@ -614,6 +614,10 @@ export default function TaskDetail() {
   // anyone browsing an open task.
   const canGetDirections = isAssignee && locations.length > 0;
   const canReview = isRequester && task.status === "completed" && !!task.assigned_to_id;
+  // "Post again" — my own finished task, completed or cancelled. Same rule as
+  // My Tasks' swipe action (isRepostable there): never on a `removed` task, and
+  // never for a supporter, who sees this screen for tasks they only worked on.
+  const canRepost = isRequester && (task.status === "completed" || task.status === "cancelled");
   // For the length of the Traction 3 round the questionnaire replaces the
   // classic review sheet, and the supporter gets one of their own — the only
   // time either side of a completed task is asked anything. When the window
@@ -909,6 +913,19 @@ export default function TaskDetail() {
               className="mb-4"
             />
           )
+        ) : null}
+
+        {/* Post again. Placed with the other requester actions, and it is the
+            only one a finished task offers: `cancellable` is open-only, so this
+            and the cancel button below never appear together. Secondary, like
+            every action in this stack — the screen's solid CTA is Accept. */}
+        {canRepost ? (
+          <Button
+            label="Post again"
+            variant="secondary"
+            onPress={() => router.push(`/post-task?duplicate=${task.id}`)}
+            className="mb-4"
+          />
         ) : null}
 
         {/* Cancel action */}

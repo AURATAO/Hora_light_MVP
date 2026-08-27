@@ -151,7 +151,19 @@ type createTaskInput struct {
 	IsImmediate       bool   `json:"is_immediate"`
 	ScheduledAt       string `json:"scheduled_at"` // ISO8601 (RFC3339) 或空字串
 	TransportRequired string `json:"transport_required"`
+	// Which client path produced this task — attribution for the October
+	// round's repeat-usage count. CREATE ONLY: updateTask binds this same
+	// struct but names its columns explicitly and never writes this one, so an
+	// edit cannot rewrite how a task was created. Empty (any client that omits
+	// it, web included) stores NULL, meaning "unknown".
+	CreatedVia string `json:"created_via"`
 }
+
+// The closed set behind tasks_created_via_check. Kept in the handler as well as
+// the database for the same reason gpsPingSources is: a bad value should fail
+// as a 400 with a readable message, not as a constraint violation surfaced as
+// "db error".
+var validCreatedVia = map[string]bool{"form": true, "ai_parse": true, "duplicate": true}
 
 type Profile struct {
 	Email               string     `json:"email"`
@@ -1359,6 +1371,16 @@ func createTask(c *gin.Context) {
 	if in.PrepayAmountCents < 0 {
 		in.PrepayAmountCents = 0
 	}
+	// Attribution is optional — web and the shipped TestFlight build send
+	// nothing, and those tasks are stored unattributed rather than guessed at.
+	// A value that IS sent has to be one we can count, so a typo is rejected
+	// here instead of quietly polluting the October numbers.
+	in.CreatedVia = strings.TrimSpace(in.CreatedVia)
+	if in.CreatedVia != "" && !validCreatedVia[in.CreatedVia] {
+		log.Printf("[createTask] invalid created_via: %q", in.CreatedVia)
+		c.JSON(400, gin.H{"error": "invalid created_via"})
+		return
+	}
 
 	// schedule
 	var when *time.Time
@@ -1458,21 +1480,27 @@ func createTask(c *gin.Context) {
 	if transport == "" {
 		transport = "none"
 	}
+	// nil, not "", for an absent attribution: the column is nullable precisely so
+	// that "not recorded" stays distinguishable from any of the three paths.
+	var createdVia any
+	if in.CreatedVia != "" {
+		createdVia = in.CreatedVia
+	}
 	if err := tx.QueryRowContext(ctx, `
     INSERT INTO public.tasks
       (title,description,category,location_text,
        estimated_minutes,prepay_amount_cents,is_immediate,scheduled_at,
        requester, requester_id, status, assigned_to, assigned_to_id,
-       transport_required)
+       transport_required, created_via)
     VALUES
       ($1,$2,$3,$4,
        $5,$6,$7,$8,
        $9, $10::uuid, 'open', '', NULL,
-       $11)
+       $11, $12)
     RETURNING id, created_at
   `, in.Title, in.Description, in.Category, in.LocationText,
 		in.EstimatedMinutes, in.PrepayAmountCents, in.IsImmediate, when,
-		email, uid, transport,
+		email, uid, transport, createdVia,
 	).Scan(&taskID, &createdAt); err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok {
 			log.Printf("[tasks.insert] code=%s tbl=%s col=%s detail=%s where=%s msg=%s",
@@ -1858,6 +1886,11 @@ func updateTask(c *gin.Context) {
 	// the field — assigning it directly would silently reset every web-edited
 	// task to "none". An empty value therefore means "leave it alone"; clients
 	// that own the field (mobile) always send an explicit one, "none" included.
+	//
+	// created_via is deliberately absent: it records how the task was created,
+	// which an edit does not change. The shared createTaskInput carries the
+	// field, so leaving it out of this statement is the thing keeping it
+	// write-once.
 	tag, err := db.Exec(ctx, `
         update public.tasks
         set title=$1,

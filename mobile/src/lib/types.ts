@@ -21,6 +21,15 @@ export type TaskStatus = "open" | "completed" | "cancelled" | "removed";
 
 export type SupporterStatus = "none" | "applied" | "approved" | "rejected";
 
+/**
+ * Which Post Task path produced a task — attribution only, never behaviour.
+ * Matches tasks_created_via_check (supabase/migrations/20260827160000). Sent on
+ * POST /tasks and stored write-once; the column is nullable, so tasks posted by
+ * web or by a build older than this one are simply unattributed. Not read back:
+ * no /tasks response carries it, and nothing in the app branches on it.
+ */
+export type TaskCreatedVia = "form" | "ai_parse" | "duplicate";
+
 export type ValueRating = "not_worth" | "fair" | "great";
 
 // Traction 3 questionnaire answers. Slugs only — the display labels live in
