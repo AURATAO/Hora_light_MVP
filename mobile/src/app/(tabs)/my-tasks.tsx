@@ -51,6 +51,15 @@ function sortByCreatedDesc(tasks: Task[]): Task[] {
   return [...tasks].sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
 }
 
+// "Post again" is offered on a requester's own finished tasks: completed, and
+// cancelled too — a task you called off is exactly the one you may want back.
+// Never on `removed`: a task the HO:RA team took down for policy reasons must
+// not be one swipe away from going straight back up.
+function isRepostable(task: Task): boolean {
+  const status = deriveTaskStatus(task);
+  return status === "completed" || status === "cancelled";
+}
+
 function parseSegment(raw: string | string[] | undefined): Segment | undefined {
   const value = Array.isArray(raw) ? raw[0] : raw;
   return value === "posted" || value === "working" ? value : undefined;
@@ -162,6 +171,12 @@ export default function MyTasks() {
     router.push(`/task/${id}`);
   }
 
+  // Only the source task's id travels — Post Task fetches and maps it. What
+  // comes back is a brand-new task on submit, with no link to this one.
+  function goToRepost(id: string) {
+    router.push(`/post-task?duplicate=${id}`);
+  }
+
   function renderPostedRow(task: Task) {
     const cancellable = deriveTaskStatus(task) === "open";
     return (
@@ -185,6 +200,34 @@ export default function MyTasks() {
           <TaskListItem task={task} onPress={() => goToDetail(task.id)} />
         </Swipeable>
       </View>
+    );
+  }
+
+  // Same swipe affordance as an active posted row, one segment down the
+  // screen: right-swipe reveals the single action that row supports. Posted
+  // history only — a task in "Working" was supported, not posted, and its
+  // requester is somebody else.
+  function renderPostedHistoryRow(task: Task) {
+    if (!isRepostable(task)) {
+      return <TaskListItem key={task.id} task={task} onPress={() => goToDetail(task.id)} />;
+    }
+    return (
+      <Swipeable
+        key={task.id}
+        overshootRight={false}
+        renderRightActions={() => (
+          <PressableScale
+            onPress={() => goToRepost(task.id)}
+            accessibilityRole="button"
+            accessibilityLabel={`Post ${task.title} again`}
+            className="ml-2 w-28 items-center justify-center rounded-card bg-ink"
+          >
+            <Text className="text-body font-semibold text-white">Post again</Text>
+          </PressableScale>
+        )}
+      >
+        <TaskListItem task={task} onPress={() => goToDetail(task.id)} />
+      </Swipeable>
     );
   }
 
@@ -252,9 +295,11 @@ export default function MyTasks() {
             <>
               <Text className="mb-3 mt-6 text-title font-semibold text-ink">History</Text>
               <View className="gap-3">
-                {bucket.history.map((task) => (
-                  <TaskListItem key={task.id} task={task} onPress={() => goToDetail(task.id)} />
-                ))}
+                {isPosted
+                  ? posted.history.map(renderPostedHistoryRow)
+                  : working.history.map((task) => (
+                      <TaskListItem key={task.id} task={task} onPress={() => goToDetail(task.id)} />
+                    ))}
               </View>
             </>
           ) : null}

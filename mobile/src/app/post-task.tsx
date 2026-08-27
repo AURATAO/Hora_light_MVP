@@ -7,20 +7,21 @@ import { CompanionshipPolicySheet } from "../components/CompanionshipPolicySheet
 import {
   TaskForm,
   emptyTaskForm,
+  taskFormForDuplicate,
   taskFormFromParsed,
   taskFormToPayload,
   validateTaskForm,
   type TaskFormErrors,
   type TaskFormState,
 } from "../components/TaskForm";
-import { Button, Input, Pill, PressableScale, Screen } from "../components/ui";
-import { ApiError, createTask, parseTask, updateProfile } from "../lib/api";
+import { Button, Input, Pill, PressableScale, Screen, Skeleton } from "../components/ui";
+import { ApiError, createTask, getMe, getTask, parseTask, updateProfile } from "../lib/api";
 import { DISABLED_CATEGORY_NOTICE, isCategoryDisabled } from "../lib/beta-notice";
 import { CATEGORIES, getCategoryMeta } from "../lib/categories";
 import { POST_TASK_AI_HINT, POST_TASK_AI_HINT_COPY } from "../lib/home-content";
 import { useBetaNoticeGate } from "../lib/use-beta-notice-gate";
 import { useCompanionshipGate } from "../lib/use-companionship-gate";
-import type { TaskCategory } from "../lib/types";
+import type { TaskCategory, TaskCreatedVia } from "../lib/types";
 import { color, size } from "../theme/tokens";
 import { useAuthState } from "./_layout";
 
@@ -38,6 +39,17 @@ function parseCategory(raw: string | string[] | undefined): TaskCategory | undef
   // rather than one that can't be posted.
   return isCategoryDisabled(category) ? undefined : category;
 }
+
+function firstParam(raw: string | string[] | undefined): string | undefined {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return value?.trim() ? value : undefined;
+}
+
+// Shown when ?duplicate= names a task this account didn't post, or one that
+// can't be read. The route is deep-linkable and the entry points that use it
+// are requester-only, so this is the reachable-but-not-expected case: fall back
+// to an ordinary Post Task rather than to an error screen.
+const DUPLICATE_UNAVAILABLE = "Couldn't reuse that task — start a new one below.";
 
 export default function PostTask() {
   const router = useRouter();
@@ -62,6 +74,16 @@ export default function PostTask() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
+  // "Post again": the source task's id, not its fields — the form fetches and
+  // maps it here rather than having a whole Task serialized through navigation.
+  // The result is a plain new task; nothing links it back to `duplicateId`.
+  const duplicateId = firstParam(params.duplicate);
+  const [prefilling, setPrefilling] = useState(duplicateId !== undefined);
+  const [prefillError, setPrefillError] = useState<string | null>(null);
+  // Which path filled the form, for the October repeat-usage count. Set at each
+  // entry into the review step, read once at submit.
+  const [origin, setOrigin] = useState<TaskCreatedVia>("form");
+
   const policy = useCompanionshipGate(form.category, { active: step === "review" });
   const beta = useBetaNoticeGate();
 
@@ -71,6 +93,50 @@ export default function PostTask() {
       if (closeTimeout.current) clearTimeout(closeTimeout.current);
     };
   }, []);
+
+  // Prefill from a past task and land straight on the structured form — no AI
+  // parse step. The user asked for last time's task, not a re-reading of it.
+  //
+  // The ownership re-check is not redundant with the entry points: both of them
+  // are requester-only already, but this route takes its param from anywhere,
+  // and GET /tasks/:id is readable by the assignee too. A supporter must never
+  // be able to re-post a task they merely worked on, deep link or not.
+  useEffect(() => {
+    if (!duplicateId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [me, task] = await Promise.all([getMe(), getTask(duplicateId)]);
+        if (cancelled) return;
+        if (!me.auth) {
+          router.replace("/(auth)/login");
+          return;
+        }
+        if (task.requester_id !== me.id) {
+          setPrefillError(DUPLICATE_UNAVAILABLE);
+          return;
+        }
+        setForm(taskFormForDuplicate(task));
+        setOrigin("duplicate");
+        // No arrival error even when the source category was locked:
+        // taskFormForDuplicate leaves it unselected, so nothing is wrong yet —
+        // the picker shows its normal disabled state and validateTaskForm asks
+        // for a category on submit like it would on any other empty form.
+        setFieldErrors({});
+        setStep("review");
+      } catch (e) {
+        if (cancelled) return;
+        if (handleAuthError(e)) return;
+        setPrefillError(DUPLICATE_UNAVAILABLE);
+      } finally {
+        if (!cancelled) setPrefilling(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [duplicateId]);
 
   function handleAuthError(e: unknown): boolean {
     if (e instanceof ApiError && e.isAuthError) {
@@ -107,6 +173,7 @@ export default function PostTask() {
       setFieldErrors(
         isCategoryDisabled(parsedForm.category) ? { category: DISABLED_CATEGORY_NOTICE } : {}
       );
+      setOrigin("ai_parse");
       setStep("review");
     } catch (e) {
       if (handleAuthError(e)) return;
@@ -121,6 +188,7 @@ export default function PostTask() {
   function handleFillManually() {
     setForm(emptyTaskForm(selectedCategory));
     setFieldErrors({});
+    setOrigin("form");
     setStep("review");
   }
 
@@ -144,7 +212,7 @@ export default function PostTask() {
     setSubmitError(null);
     setSubmitting(true);
     try {
-      await createTask(taskFormToPayload(form));
+      await createTask(taskFormToPayload(form, origin));
       setStep("success");
       closeTimeout.current = setTimeout(() => router.back(), 900);
     } catch (e) {
@@ -171,7 +239,12 @@ export default function PostTask() {
     <Screen scroll={false} avoidKeyboard>
       <View className="mb-6 mt-4 flex-row items-center justify-between">
         <View className="flex-row items-center">
-          {step === "review" ? (
+          {/* No back arrow on a duplicate: the form IS the entry point there,
+              so there is no describe step behind it to return to — and the
+              chevron would only offer to throw the prefill away. Keyed on
+              `origin` rather than on the param, so a ?duplicate= that failed to
+              prefill drops the user on a normal, fully navigable Post Task. */}
+          {step === "review" && origin !== "duplicate" ? (
             <PressableScale
               onPress={() => setStep("describe")}
               className="mr-1 h-11 w-11 items-center justify-center rounded-pill"
@@ -192,8 +265,19 @@ export default function PostTask() {
       </View>
 
       <ScrollView className="flex-1" keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-        {step === "describe" ? (
+        {prefilling ? (
+          /* Blocks in the shape of the form that is about to replace them —
+             skeletons, never a spinner (DESIGN.md §4). */
           <View className="gap-3">
+            <Skeleton className="h-8 w-2/3" />
+            <Skeleton className="h-[120px]" />
+            <Skeleton className="h-[80px]" />
+          </View>
+        ) : step === "describe" ? (
+          <View className="gap-3">
+            {prefillError ? (
+              <Text className="text-caption text-danger">{prefillError}</Text>
+            ) : null}
             {selectedCategory ? (
               <Pill
                 label={getCategoryMeta(selectedCategory).label}

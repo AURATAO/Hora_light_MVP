@@ -11,7 +11,8 @@
       "supportsTablet": true,
       "bundleIdentifier": "co.horaapp.app",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "UIBackgroundModes": ["location"]
       }
     },
     "android": {
@@ -45,7 +46,10 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "HO:RA uses your location while you're clocked in on a task so the requester can see you're on the way."
+          "isIosBackgroundLocationEnabled": true,
+          "locationWhenInUsePermission": "HO:RA records your location while you are clocked in on a task so requesters can track progress and work time can be verified.",
+          "locationAlwaysAndWhenInUsePermission": "HO:RA records your location while you are clocked in on a task so requesters can track progress and work time can be verified.",
+          "locationAlwaysPermission": "HO:RA records your location while you are clocked in on a task so requesters can track progress and work time can be verified."
         }
       ],
       [

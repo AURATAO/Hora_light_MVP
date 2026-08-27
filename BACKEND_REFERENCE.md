@@ -86,6 +86,7 @@ Core task marketplace table.
 | `completed_at` | timestamptz | YES | — | |
 | `cancel_reason` | text | YES | — | |
 | `cancelled_at` | timestamptz | YES | — | |
+| `created_via` | text | YES | — | Attribution: `form`, `ai_parse`, `duplicate`. Write-once by `POST /tasks`; `PATCH` never touches it. NULL = unattributed (rows predating the column, and web, which doesn't send it) |
 | `created_at` | timestamptz | NO | now() | |
 
 - Both email and UUID columns are stored for requester/assignee. **Always use UUID columns for permission checks**; email columns are used by worklogs (legacy) and some notification lookups.
@@ -324,9 +325,14 @@ All task endpoints require auth. Pagination uses keyset cursors: `?before_create
   "prepay_amount_cents": 0,
   "is_immediate": true,
   "scheduled_at": "RFC3339 or empty",
-  "transport_required": "none|..."
+  "transport_required": "none|...",
+  "created_via": "form|ai_parse|duplicate (optional)"
 }
 ```
+`created_via` is optional attribution, stored once and never rewritten. Omit it
+and the task is stored unattributed (NULL); send anything outside the three
+values and the request is rejected with `400 invalid created_via`. Only mobile
+sends it today. `PATCH /tasks/:id` takes the same body but ignores this field.
 
 **`POST /tasks/:id/complete` body:** `{ "completion_photo_url": "string (required)", "completion_note": "string" }`
 

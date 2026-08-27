@@ -41,6 +41,7 @@ import {
 } from "../../lib/api";
 import { TRACTION_3_CONFIG, isTractionWindowActive } from "../../lib/beta-notice";
 import { getCategoryMeta } from "../../lib/categories";
+import { startBackgroundGps, stopBackgroundGpsFor } from "../../lib/gps-tracking";
 import { openAddressInMaps, openCoordsInMaps, openRouteInMaps } from "../../lib/maps";
 import { cancelOvertimeReminders, scheduleOvertimeReminders } from "../../lib/overtime-reminders";
 import {
@@ -145,7 +146,12 @@ export default function TaskDetail() {
   const [acceptLost, setAcceptLost] = useState(false);
   const [clockLoading, setClockLoading] = useState(false);
   const [clockError, setClockError] = useState<string | null>(null);
-  const [gpsNotice, setGpsNotice] = useState<string | null>(null);
+  // Which capture path is live for this clock-in, and the single source the
+  // notice copy and the foreground interval both key off:
+  //   "background" — "Always" granted, the TaskManager task owns the pings;
+  //   "foreground" — only "When In Use", so the interval below does the work;
+  //   "off"        — no location permission at all, or not clocked in.
+  const [gpsMode, setGpsMode] = useState<"off" | "foreground" | "background">("off");
   const [latestLocation, setLatestLocation] = useState<LatestLocation | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [descriptionCopied, setDescriptionCopied] = useState(false);
@@ -398,6 +404,31 @@ export default function TaskDetail() {
   const isRequesterView = meId !== null && task?.requester_id === meId;
   const canSeeLiveLocation = isRequesterView && hasOpenWorklog;
 
+  // Is this task ours to track at all? Goes false the moment the task says
+  // otherwise — cancelled, removed, completed, or reassigned to someone else.
+  // Deliberately independent of `worklogs`, which stops loading at all once a
+  // task is unassigned, so a reassignment still reads as a definite "no".
+  const gpsTaskIsOurs =
+    task !== null && meId !== null && task.assigned_to_id === meId && task.status === "open";
+
+  // Whether *this device* should be sending pings for *this* task. Three
+  // states, not two: while the data is still loading we don't know, and
+  // treating "unknown" as "no" would tear down background tracking every time
+  // this screen mounts.
+  const gpsTrackingWanted: boolean | null =
+    task === null ? null : !gpsTaskIsOurs ? false : worklogs === null ? null : hasOpenWorklog;
+
+  // One notice, derived from gpsMode, so the copy can't drift out of step with
+  // which capture path is actually running.
+  const gpsNotice =
+    gpsTrackingWanted !== true
+      ? null
+      : gpsMode === "off"
+        ? "Location is off, so the requester can't see where you are — turn it on for HO:RA in Settings."
+        : gpsMode === "foreground"
+          ? 'Location sharing stops when your phone locks — choose "Always" for HO:RA in Settings to keep it on while you work.'
+          : null;
+
   // Live elapsed timer while clocked in — ticks every second, no server round-trip.
   useEffect(() => {
     if (!hasOpenWorklog) return;
@@ -405,11 +436,45 @@ export default function TaskDetail() {
     return () => clearInterval(timer);
   }, [hasOpenWorklog]);
 
-  // GPS pings while clocked in — matches web's cadence (every 30s), sends one
-  // immediately on clock-in too. Stops on clock-out or unmount. Permission
-  // denial degrades to a notice only — clock-in itself never depends on it.
+  // Background GPS is the primary path while clocked in: iOS keeps delivering
+  // to the TaskManager task with the phone locked or another app in front,
+  // which is exactly the 15-60 min hole the foreground interval left behind.
+  // Deliberately NOT stopped on unmount — walking away from this screen must
+  // not end tracking; only losing the open worklog does.
   useEffect(() => {
-    if (!hasOpenWorklog) {
+    if (gpsTrackingWanted === null) return;
+    if (!gpsTrackingWanted) {
+      setGpsMode("off");
+      // Scoped to this task id: opening some other task must not stop the
+      // tracking that belongs to the one they're actually clocked in on.
+      stopBackgroundGpsFor(id).catch(() => {});
+      return;
+    }
+
+    let cancelled = false;
+    startBackgroundGps(id)
+      .then((started) => {
+        if (cancelled) return;
+        // Falling back is not an error the supporter has to act on — clock-in
+        // already succeeded and the interval below covers them while the app
+        // is open. The notice above just points at the better setting.
+        setGpsMode(started ? "background" : "foreground");
+      })
+      .catch(() => {
+        if (!cancelled) setGpsMode("foreground");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [gpsTrackingWanted, id]);
+
+  // Foreground fallback — the original path, unchanged in behaviour but now
+  // gated on gpsMode instead of hasOpenWorklog, so it only runs when
+  // background updates aren't. Every 30s, one immediately on start. Stops on
+  // clock-out or unmount; permission denial degrades to a notice only.
+  useEffect(() => {
+    if (gpsMode !== "foreground") {
       if (gpsIntervalRef.current) {
         clearInterval(gpsIntervalRef.current);
         gpsIntervalRef.current = null;
@@ -429,16 +494,18 @@ export default function TaskDetail() {
         }
         if (cancelled) return;
         if (!granted) {
-          setGpsNotice("Live location is off. Turn it on in Settings to share your position.");
+          // Drops to "off", which both clears this interval on the next run of
+          // this effect and swaps the notice to the stronger copy.
+          setGpsMode("off");
           return;
         }
-        setGpsNotice(null);
         const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
         if (cancelled) return;
         await sendGpsPing(id, {
           lat: pos.coords.latitude,
           lng: pos.coords.longitude,
           accuracy: pos.coords.accuracy != null ? Math.round(pos.coords.accuracy) : undefined,
+          source: "foreground",
         });
       } catch {
         // Silent — matches web's swallow-errors behavior for pings.
@@ -454,7 +521,7 @@ export default function TaskDetail() {
         gpsIntervalRef.current = null;
       }
     };
-  }, [hasOpenWorklog, id]);
+  }, [gpsMode, id]);
 
   // Requester side: poll the supporter's last-known position every 60s, but only
   // while this screen is focused AND the supporter is clocked in. useFocusEffect
@@ -547,6 +614,10 @@ export default function TaskDetail() {
   // anyone browsing an open task.
   const canGetDirections = isAssignee && locations.length > 0;
   const canReview = isRequester && task.status === "completed" && !!task.assigned_to_id;
+  // "Post again" — my own finished task, completed or cancelled. Same rule as
+  // My Tasks' swipe action (isRepostable there): never on a `removed` task, and
+  // never for a supporter, who sees this screen for tasks they only worked on.
+  const canRepost = isRequester && (task.status === "completed" || task.status === "cancelled");
   // For the length of the Traction 3 round the questionnaire replaces the
   // classic review sheet, and the supporter gets one of their own — the only
   // time either side of a completed task is asked anything. When the window
@@ -842,6 +913,19 @@ export default function TaskDetail() {
               className="mb-4"
             />
           )
+        ) : null}
+
+        {/* Post again. Placed with the other requester actions, and it is the
+            only one a finished task offers: `cancellable` is open-only, so this
+            and the cancel button below never appear together. Secondary, like
+            every action in this stack — the screen's solid CTA is Accept. */}
+        {canRepost ? (
+          <Button
+            label="Post again"
+            variant="secondary"
+            onPress={() => router.push(`/post-task?duplicate=${task.id}`)}
+            className="mb-4"
+          />
         ) : null}
 
         {/* Cancel action */}
