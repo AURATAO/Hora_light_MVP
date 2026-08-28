@@ -42,6 +42,7 @@ import {
 import { TRACTION_3_CONFIG, isTractionWindowActive } from "../../lib/beta-notice";
 import { getCategoryMeta } from "../../lib/categories";
 import {
+  GPS_DEBUG_ROW,
   isBackgroundGpsHealthy,
   readBreadcrumb,
   restartBackgroundGps,
@@ -121,7 +122,7 @@ function firstName(name?: string | null): string {
   return name.trim().split(/\s+/)[0] || "them";
 }
 
-// Dev-only, for the GPS debug row: "42s ago" / "3m ago" / "never".
+// For the GPS debug row: "42s ago" / "3m ago" / "never".
 function formatAge(at: number | null, now: number): string {
   if (at === null) return "never";
   const seconds = Math.max(0, Math.round((now - at) / 1000));
@@ -171,7 +172,7 @@ export default function TaskDetail() {
   //   "foreground" — only "When In Use", so the interval below does the work;
   //   "off"        — no location permission at all, or not clocked in.
   const [gpsMode, setGpsMode] = useState<"off" | "foreground" | "background">("off");
-  // Dev builds only: what the headless task last did, read back from
+  // Debug builds only: what the headless task last did, read back from
   // AsyncStorage. Lets a field test tell "the task never fired" from "the task
   // fired and the POST failed" with no Xcode attached.
   const [gpsBreadcrumb, setGpsBreadcrumb] = useState<GpsBreadcrumb | null>(null);
@@ -532,9 +533,9 @@ export default function TaskDetail() {
     };
   }, [gpsTrackingWanted, id]);
 
-  // Dev-only: poll the breadcrumb for the debug row below.
+  // Debug builds only: poll the breadcrumb for the row below.
   useEffect(() => {
-    if (!__DEV__ || gpsTrackingWanted !== true) return;
+    if (!GPS_DEBUG_ROW || gpsTrackingWanted !== true) return;
     let cancelled = false;
     async function read() {
       const crumb = await readBreadcrumb();
@@ -888,10 +889,10 @@ export default function TaskDetail() {
                 {isOvertime ? <Text className="text-caption text-danger">Over the estimated time</Text> : null}
                 <Button label="Clock out" onPress={handleClockOut} loading={clockLoading} />
                 {gpsNotice ? <Text className="text-caption text-muted">{gpsNotice}</Text> : null}
-                {/* Dev builds only — the headless task's own breadcrumb, so a
+                {/* Debug builds only — the headless task's own breadcrumb, so a
                     field test can separate "never fired" from "fired, POST
                     failed" without Xcode attached. */}
-                {__DEV__ && gpsBreadcrumb ? (
+                {GPS_DEBUG_ROW && gpsBreadcrumb ? (
                   <Text className="text-caption text-muted">
                     {`gps ${gpsMode} · ${gpsBreadcrumb.events} events (${formatAge(gpsBreadcrumb.lastEventAt, now)}) · ` +
                       `${gpsBreadcrumb.pings} pings (${formatAge(gpsBreadcrumb.lastPingAt, now)})` +

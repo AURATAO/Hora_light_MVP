@@ -49,6 +49,17 @@ const BREADCRUMB_KEY = "hora_gps_breadcrumb";
 // it) and the foreground interval should take over while we restart.
 export const GPS_STALE_MS = 90_000;
 
+/**
+ * Shows the breadcrumb row on the task screen. On in dev, and in any build
+ * made with EXPO_PUBLIC_GPS_DEBUG=1 — the field-test builds, where __DEV__ is
+ * false but we still need to tell "the task never fired" from "the task fired
+ * and the POST failed" with no Xcode attached. EXPO_PUBLIC_* values are
+ * inlined at bundle time, so a build made without it ships with this
+ * permanently false and the row compiled out. Same escape-hatch shape as
+ * EXPO_PUBLIC_QA_FORCE_TRACTION in ./beta-notice.
+ */
+export const GPS_DEBUG_ROW = __DEV__ || process.env.EXPO_PUBLIC_GPS_DEBUG === "1";
+
 // iOS ignores `timeInterval` (it is Android-only in expo-location); real
 // cadence comes from `distanceInterval` plus CoreLocation's own batching, so
 // a stationary supporter yields a sparse — but continuous — trail.
