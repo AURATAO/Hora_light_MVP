@@ -200,76 +200,12 @@ func RegisterOpsRoutes(r *gin.Engine, sqldb *sql.DB, authMW gin.HandlerFunc, isA
 		c.JSON(http.StatusOK, out)
 	})
 
-	// POST /ops/force-complete  { "task_id": "uuid" }
-	ops.POST("/force-complete", func(c *gin.Context) {
-		email := c.GetString("email")
-		if !isAdmin(email) {
-			c.JSON(http.StatusForbidden, gin.H{"error": "not authorized"})
-			return
-		}
-		var in struct {
-			TaskID string `json:"task_id"`
-		}
-		if err := c.BindJSON(&in); err != nil || strings.TrimSpace(in.TaskID) == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
-			return
-		}
-		if _, err := sqldb.ExecContext(c.Request.Context(),
-			`select public.force_complete($1::uuid)`, in.TaskID,
-		); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"ok": true})
-	})
-
-	// POST /ops/cancel  { "task_id": "uuid", "reason": "text" }
-	ops.POST("/cancel", func(c *gin.Context) {
-		email := c.GetString("email")
-		if !isAdmin(email) {
-			c.JSON(http.StatusForbidden, gin.H{"error": "not authorized"})
-			return
-		}
-		var in struct {
-			TaskID string `json:"task_id"`
-			Reason string `json:"reason"`
-		}
-		if err := c.BindJSON(&in); err != nil || strings.TrimSpace(in.TaskID) == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
-			return
-		}
-		if _, err := sqldb.ExecContext(c.Request.Context(),
-			`select public.cancel_task($1::uuid, $2)`, in.TaskID, in.Reason,
-		); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"ok": true})
-	})
-
-	// POST /ops/adjust-time  { "task_id": "uuid", "delta": 5 }
-	ops.POST("/adjust-time", func(c *gin.Context) {
-		email := c.GetString("email")
-		if !isAdmin(email) {
-			c.JSON(http.StatusForbidden, gin.H{"error": "not authorized"})
-			return
-		}
-		var in struct {
-			TaskID string `json:"task_id"`
-			Delta  int    `json:"delta"`
-		}
-		if err := c.BindJSON(&in); err != nil || strings.TrimSpace(in.TaskID) == "" || in.Delta == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
-			return
-		}
-		if _, err := sqldb.ExecContext(c.Request.Context(),
-			`select public.adjust_time($1::uuid, $2)`, in.TaskID, in.Delta,
-		); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"ok": true})
-	})
+	// Force-complete, admin cancel and adjust-time used to live here as thin
+	// wrappers around SECURITY DEFINER Postgres functions. They never worked —
+	// the functions guard on auth.jwt(), which is null on Go's postgres
+	// connection — so they are now real Go handlers registered in main.go at
+	// POST /admin/tasks/:id/{force-complete,cancel,adjust-time}, alongside
+	// /remove and /reassign. See server/admin_task_ops.go.
 
 	// Supporter application decisions. Both were previously manual dashboard
 	// edits to public.profiles; these give the ops surface the same two writes

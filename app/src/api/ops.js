@@ -76,6 +76,32 @@ export function removeTask(taskId, reason, note) {
   })
 }
 
+// POST /admin/tasks/:id/force-complete — close a task that is finished in
+// reality but stuck open (no clock-out, or no completion photo). Skips the
+// photo requirement completeTask enforces, which is the point of it.
+export function forceCompleteTask(taskId) {
+  return opsFetch(`/admin/tasks/${taskId}/force-complete`, { method: 'POST', body: '{}' })
+}
+
+// POST /admin/tasks/:id/cancel — cancel on the requester's behalf. Records
+// 'cancelled', the same status the requester's own cancellation produces;
+// removeTask is the platform takedown and is deliberately a different status.
+export function adminCancelTask(taskId, reason) {
+  return opsFetch(`/admin/tasks/${taskId}/cancel`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  })
+}
+
+// POST /admin/tasks/:id/adjust-time — correct the most recent work session by
+// +/- minutes.
+export function adjustTaskTime(taskId, delta) {
+  return opsFetch(`/admin/tasks/${taskId}/adjust-time`, {
+    method: 'POST',
+    body: JSON.stringify({ delta }),
+  })
+}
+
 // Reason slugs the endpoint accepts, with the labels the ops panel shows.
 // Mirrors removalReasons in server/admin_tasks.go.
 export const REMOVAL_REASONS = [

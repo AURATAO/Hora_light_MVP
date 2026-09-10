@@ -380,6 +380,14 @@ func main() {
 	r.POST("/admin/tasks/:id/reassign", dualAuth(sqldb), requireOpsAdmin(), adminReassignTask)
 	r.GET("/admin/supporters", dualAuth(sqldb), requireOpsAdmin(), adminListSupporters)
 
+	// The ops panel's Force / Cancel / Adjust buttons. Previously POST /ops/*
+	// handlers that called SECURITY DEFINER Postgres functions and failed every
+	// time — see admin_task_ops.go. Moved here so all four destructive admin
+	// task actions share one path shape and one authorization gate.
+	r.POST("/admin/tasks/:id/force-complete", dualAuth(sqldb), requireOpsAdmin(), adminForceCompleteTask)
+	r.POST("/admin/tasks/:id/cancel", dualAuth(sqldb), requireOpsAdmin(), adminCancelTaskHandler)
+	r.POST("/admin/tasks/:id/adjust-time", dualAuth(sqldb), requireOpsAdmin(), adminAdjustTime)
+
 	// 列出所有路由（除錯用）
 
 	r.GET("/__routes", func(c *gin.Context) {

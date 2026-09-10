@@ -2,7 +2,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useToast } from '../providers/ToastProvider'
-import { opsFetch as fetchJSON, removeTask, reassignTask, listApprovedSupporters, REMOVAL_REASONS } from '../api/ops'
+import { opsFetch as fetchJSON, removeTask, reassignTask, listApprovedSupporters,
+         forceCompleteTask, adminCancelTask, adjustTaskTime, REMOVAL_REASONS } from '../api/ops'
 import OpsSupporters from './OpsSupporters.jsx'
 import Modal from '../components/Modal.jsx'
 
@@ -99,29 +100,28 @@ export default function OpsFeed() {
   async function forceComplete(id) {
     if (!confirm('Force complete this task?')) return;
     try {
-      await fetchJSON('/ops/force-complete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task_id: id }),
-      });
+      const res = await forceCompleteTask(id);
+      toast(
+        res?.already_completed
+          ? 'Task was already completed'
+          : `Task completed — ${res.total_minutes}m logged, both parties notified`
+      );
       load();
     } catch (e) {
-      toast(e.message || 'Action failed');
+      toast(e.message || 'Force complete failed');
     }
   }
 
   // --- 動作：取消
   async function cancelTask(id) {
-    const reason = prompt('Cancel reason (optional):') || '';
+    const reason = prompt('Cancel reason (optional):');
+    if (reason == null) return;
     try {
-      await fetchJSON('/ops/cancel', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task_id: id, reason }),
-      });
+      const res = await adminCancelTask(id, reason);
+      toast(res?.already_cancelled ? 'Task was already cancelled' : 'Task cancelled — both parties notified');
       load();
     } catch (e) {
-      toast(e.message || 'Action failed');
+      toast(e.message || 'Cancel failed');
     }
   }
 
@@ -132,14 +132,11 @@ export default function OpsFeed() {
     const delta = parseInt(raw, 10);
     if (!Number.isFinite(delta) || delta === 0) return;
     try {
-      await fetchJSON('/ops/adjust-time', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task_id: id, delta }),
-      });
+      const res = await adjustTaskTime(id, delta);
+      toast(`Adjusted by ${delta > 0 ? '+' : ''}${delta}m — ${res.total_minutes}m logged in total`);
       load();
     } catch (e) {
-      toast(e.message || 'Action failed');
+      toast(e.message || 'Adjust failed');
     }
   }
 
