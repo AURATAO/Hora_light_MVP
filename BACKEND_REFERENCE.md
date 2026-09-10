@@ -161,9 +161,36 @@ Columns exposed: `task_id`, `title`, `category`, `location_text`, `status`, `est
 - `running_minutes` = minutes in currently-open sessions.
 - `total_minutes_done` = sum of completed sessions.
 
-### 1.3 RLS Policies
+### 1.3 RLS Policies and client grants
 
-**None exist on Hora MVP tables.** Authorization is enforced entirely at the Go application layer. The direct Postgres connection uses the `postgres` superuser role (via pooler), so Supabase RLS is bypassed.
+*Corrected 2026-09-10. This section previously read "None exist on Hora MVP tables", which was wrong — see the note at the end.*
+
+Current state, and the state to keep:
+
+| | |
+|---|---|
+| RLS | **Enabled on all 11 tables** in `public`. `relforcerowsecurity` is **false** everywhere, which is what lets the Go backend (owner role `postgres`) bypass RLS. |
+| Policies | **Exactly three**, all `deny all (client)` — on `users`, `notifications`, `audit_logs`, `TO anon, authenticated USING (false) WITH CHECK (false)`. |
+| Grants to `anon` / `authenticated` / `PUBLIC` | **None** on any Hora table. |
+| SECURITY DEFINER functions | **None** in `public`. |
+
+The eight tables without an explicit policy (`tasks`, `worklogs`, `profiles`, `messages`, `reviews`, `task_gps_pings`, `device_push_tokens`, `timesheets`) are deny-all by having RLS on with zero policies. The three that carry one have it as a second lock.
+
+Authorization is enforced entirely at the Go application layer. The direct Postgres connection uses the `postgres` role (via pooler), so Supabase RLS is bypassed for Go and only Go.
+
+**The `storage` schema is separate and intentionally not locked down this way:** `storage.objects` has six policies serving the public `avatars` bucket, which is one of the two client-direct calls CLAUDE.md Rule 2 permits.
+
+#### What this section used to say, and why it was wrong
+
+Until 2026-09-10 this read "**None exist on Hora MVP tables**", and CLAUDE.md Rule 3 said "zero policies, verified 2026-07-11" citing D-02.
+
+In fact `public` carried **twelve** policies, nine of them PERMISSIVE grants to `authenticated`, and all twelve were present in the 2026-07-11 baseline migration itself (`20260711094158_remote_schema.sql` lines 783–858) — the same migration D-02 cited. The nine allowed an authenticated user, with the publishable key from any browser, to update their own `profiles` row (including `is_verified_supporter`), update their own `tasks` row (including `status` and `prepay_amount_cents`), and insert/update their own `worklogs`.
+
+It went unnoticed because the exposure test used the **anon** key while the policies were scoped to **authenticated** — so `curl /rest/v1/tasks` returned `[]`, indistinguishable from deny-all — and because `pg_tables.rowsecurity` was checked while `pg_policies` was deferred as a "residual, non-blocking" follow-up that never happened. D-02 itself hedged with "(presumed) zero policies"; the hedge was dropped when the claim was copied here and into S-10.
+
+Closed by `20260910150000_close_client_direct_table_access.sql` (drop the nine, revoke grants on the four tables involved, drop `current_user_id()`) and `20260910160000_revoke_residual_client_grants.sql` (revoke the remaining inert grants so the invariant check returns zero rows).
+
+**Do not re-verify this section by inference or by an anon-key curl.** Run the four queries in CLAUDE.md Rule 3.
 
 ### 1.4 Postgres Functions
 
