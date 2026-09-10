@@ -374,6 +374,12 @@ func main() {
 	// webapp's copy of that list only decides whether to draw the button.
 	r.POST("/admin/tasks/:id/remove", dualAuth(sqldb), requireOpsAdmin(), adminRemoveTask)
 
+	// Rotating the supporter on a task the team is coordinating by hand. Same
+	// allowlist, same reasoning as remove above; see admin_reassign.go for why
+	// it refuses a task that has already been clocked into.
+	r.POST("/admin/tasks/:id/reassign", dualAuth(sqldb), requireOpsAdmin(), adminReassignTask)
+	r.GET("/admin/supporters", dualAuth(sqldb), requireOpsAdmin(), adminListSupporters)
+
 	// 列出所有路由（除錯用）
 
 	r.GET("/__routes", func(c *gin.Context) {

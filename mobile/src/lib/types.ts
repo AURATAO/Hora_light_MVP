@@ -52,6 +52,7 @@ export type NotificationType =
   | "COMPLETED_SUPPORTER"
   | "CANCELLED"
   | "TASK_REMOVED"
+  | "TASK_REASSIGNED"
   | "NEW_MESSAGE";
 
 // GET /auth/me — discriminated on `auth` so callers narrow before reading fields.
