@@ -26,7 +26,18 @@ export async function opsFetch(path, init = {}) {
   const ct = resp.headers.get('content-type') || ''
   if (!resp.ok) {
     const t = await resp.text().catch(() => '')
-    throw new Error(`HTTP ${resp.status} ${path}\n${t.slice(0, 200)}`)
+    // These endpoints answer a failure with { error, message } and the message
+    // is written for the admin reading it ("Work has already started on this
+    // task…"). Surface it as the Error's message so a toast shows the
+    // explanation rather than "HTTP 409 /admin/tasks/…" plus raw JSON. The
+    // code and status ride along for callers that branch on them.
+    let parsed = null
+    try { parsed = JSON.parse(t) } catch { /* not JSON — fall through */ }
+    const err = new Error(parsed?.message || parsed?.error || `HTTP ${resp.status} ${path}\n${t.slice(0, 200)}`)
+    err.status = resp.status
+    err.code = parsed?.error
+    err.body = parsed
+    throw err
   }
   if (!ct.includes('application/json')) {
     const t = await resp.text().catch(() => '')
@@ -73,3 +84,21 @@ export const REMOVAL_REASONS = [
   { value: 'inappropriate', label: 'Inappropriate content' },
   { value: 'other', label: 'Other' },
 ]
+
+// GET /admin/supporters — approved supporters only, the set the reassign
+// endpoint will accept. Deliberately not listSupporterApplications(): that one
+// lists everyone who ever *applied*, which includes rejected and pending
+// people and misses anyone approved without an application on file.
+export function listApprovedSupporters() {
+  return opsFetch('/admin/supporters')
+}
+
+// POST /admin/tasks/:id/reassign — rotate the supporter on an open task, or
+// assign one directly to a task nobody has accepted. The backend re-checks the
+// admin allowlist and every eligibility rule; this wrapper only shapes the call.
+export function reassignTask(taskId, supporterId) {
+  return opsFetch(`/admin/tasks/${taskId}/reassign`, {
+    method: 'POST',
+    body: JSON.stringify({ supporter_id: supporterId }),
+  })
+}

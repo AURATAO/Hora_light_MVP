@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react-native";
-import { CheckCircle2, ClipboardCheck, LogIn, LogOut, MessageCircle, XCircle } from "lucide-react-native";
+import { CheckCircle2, ClipboardCheck, LogIn, LogOut, MessageCircle, Repeat2, XCircle } from "lucide-react-native";
 import type { NotificationType } from "./types";
 import { color } from "../theme/tokens";
 
@@ -22,6 +22,11 @@ const NOTIFICATION_META: Record<NotificationType, NotificationMeta> = {
   COMPLETED_SUPPORTER: { icon: CheckCircle2, tint: "brand" },
   CANCELLED: { icon: XCircle, tint: "danger" },
   TASK_REMOVED: { icon: XCircle, tint: "danger" },
+  // One type, three recipients: the incoming supporter, the outgoing one, and
+  // the requester (server/admin_reassign.go). Neutral rather than brand or
+  // danger because the same row reads as good news or bad depending on who is
+  // looking at it — the server-composed title and body carry that.
+  TASK_REASSIGNED: { icon: Repeat2, tint: "neutral" },
   NEW_MESSAGE: { icon: MessageCircle, tint: "neutral" },
 };
 

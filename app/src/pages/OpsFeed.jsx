@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useToast } from '../providers/ToastProvider'
-import { opsFetch as fetchJSON, removeTask, REMOVAL_REASONS } from '../api/ops'
+import { opsFetch as fetchJSON, removeTask, reassignTask, listApprovedSupporters, REMOVAL_REASONS } from '../api/ops'
 import OpsSupporters from './OpsSupporters.jsx'
 import Modal from '../components/Modal.jsx'
 
@@ -37,8 +37,23 @@ export default function OpsFeed() {
   const [removeReason, setRemoveReason] = useState(REMOVAL_REASONS[0].value)
   const [removeNote, setRemoveNote] = useState('')
   const [removeBusy, setRemoveBusy] = useState(false)
+  // Reassign dialog: null when closed, otherwise the row whose supporter is
+  // being rotated. The approved-supporter list is fetched once on first open
+  // and kept — it changes far less often than the feed.
+  const [reassigning, setReassigning] = useState(null)
+  const [supporters, setSupporters] = useState(null)
+  const [supportersError, setSupportersError] = useState('')
+  const [pickedSupporter, setPickedSupporter] = useState('')
+  const [reassignBusy, setReassignBusy] = useState(false)
 
   const allowed = !!user && ADMIN_EMAILS.has(user.email)
+
+  // Any logged time means a worklog exists, which is exactly what the reassign
+  // endpoint refuses (task_in_progress). Checked here too so the dialog explains
+  // it instead of spending a round-trip on a guaranteed 409.
+  const reassignStarted =
+    !!reassigning &&
+    ((reassigning.running_minutes || 0) > 0 || (reassigning.total_minutes_done || 0) > 0)
 
   async function load() {
     if (!allowed) return
@@ -150,6 +165,43 @@ export default function OpsFeed() {
     }
   }
 
+  // --- 動作：換人（支援者輪替 / 直接指派）
+  async function openReassign(row) {
+    setReassigning(row)
+    setPickedSupporter('')
+    setSupportersError('')
+    if (supporters) return
+    try {
+      const list = await listApprovedSupporters()
+      setSupporters(Array.isArray(list) ? list : [])
+    } catch (e) {
+      setSupportersError(e.message || 'Could not load supporters')
+      setSupporters([])
+    }
+  }
+
+  async function confirmReassign() {
+    if (!reassigning || !pickedSupporter) return
+    setReassignBusy(true)
+    try {
+      const res = await reassignTask(reassigning.task_id, pickedSupporter)
+      toast(
+        res?.previous_supporter
+          ? `Reassigned to ${res.new_supporter_name || res.new_supporter} — all three parties notified`
+          : `Assigned to ${res.new_supporter_name || res.new_supporter} — requester notified`
+      )
+      setReassigning(null)
+      load()
+    } catch (e) {
+      toast(e.message || 'Reassign failed')
+      // A lost race or a clock-in that landed first means this feed row is
+      // stale, so refresh it rather than leaving the admin looking at it.
+      if (e.status === 409) load()
+    } finally {
+      setReassignBusy(false)
+    }
+  }
+
   if (!user) return <div className="p-6">Please sign in.</div>;
   if (!allowed) return <div className="p-6">You are not authorized to view Ops.</div>;
 
@@ -248,12 +300,20 @@ export default function OpsFeed() {
                       <button className="rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40" onClick={()=>forceComplete(r.task_id)}>Force</button>
                       <button className="rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40" onClick={()=>cancelTask(r.task_id)}>Cancel</button>
                       {r.status === 'open' && (
-                        <button
-                          className="rounded-md border border-red-400/50 px-2 py-1 text-xs text-red-300 hover:border-red-400"
-                          onClick={()=>openRemove(r)}
-                        >
-                          Remove
-                        </button>
+                        <>
+                          <button
+                            className="rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40"
+                            onClick={()=>openReassign(r)}
+                          >
+                            Reassign
+                          </button>
+                          <button
+                            className="rounded-md border border-red-400/50 px-2 py-1 text-xs text-red-300 hover:border-red-400"
+                            onClick={()=>openRemove(r)}
+                          >
+                            Remove
+                          </button>
+                        </>
                       )}
                     </div>
                   </td>
@@ -318,6 +378,84 @@ export default function OpsFeed() {
           value={removeNote}
           onChange={(e) => setRemoveNote(e.target.value)}
         />
+      </Modal>
+
+      <Modal
+        open={!!reassigning}
+        onClose={() => (reassignBusy ? null : setReassigning(null))}
+        title={reassigning?.supporter_email ? 'Reassign supporter' : 'Assign supporter'}
+        actions={
+          <>
+            <button
+              className="rounded-md border border-white/20 px-3 py-1 text-sm hover:border-white/40"
+              onClick={() => setReassigning(null)}
+              disabled={reassignBusy}
+            >
+              Cancel
+            </button>
+            <button
+              className="rounded-md border border-white/40 px-3 py-1 text-sm hover:border-white/70 disabled:opacity-40"
+              onClick={confirmReassign}
+              disabled={reassignBusy || !pickedSupporter || reassignStarted}
+            >
+              {reassignBusy ? 'Reassigning…' : 'Confirm'}
+            </button>
+          </>
+        }
+      >
+        <p className="mb-3">
+          <span className="font-medium text-white">{reassigning?.title}</span>
+        </p>
+
+        <div className="mb-3 rounded border border-white/10 bg-white/5 px-3 py-2 text-xs">
+          <div className="opacity-70">Current supporter</div>
+          <div className="text-white">
+            {reassigning?.supporter_email || 'Nobody — this task has not been accepted yet'}
+          </div>
+        </div>
+
+        {reassignStarted ? (
+          /* Mirrors the server's task_in_progress rule. The worklog is keyed to
+             the current supporter's email and the GPS pings to their user id, so
+             swapping now would file their tracked time under someone else. */
+          <p className="mb-3 rounded border border-amber-400/40 bg-amber-400/5 px-3 py-2 text-xs text-amber-200">
+            Work has already started on this task ({reassigning?.duration_minutes || 0}m logged), so its
+            time and location belong to the current supporter. Remove the task and ask the requester
+            to post it again instead.
+          </p>
+        ) : (
+          <>
+            <label className="block text-xs uppercase tracking-wide opacity-70 mb-1">
+              New supporter
+            </label>
+            {supporters === null ? (
+              <p className="text-xs opacity-60">Loading approved supporters…</p>
+            ) : supportersError ? (
+              <p className="text-xs text-red-300">{supportersError}</p>
+            ) : (
+              <select
+                className="w-full border rounded px-2 py-1 mb-3 bg-transparent"
+                value={pickedSupporter}
+                onChange={(e) => setPickedSupporter(e.target.value)}
+              >
+                <option value="" className="text-black">Choose a supporter…</option>
+                {supporters
+                  .filter((s) => s.email !== reassigning?.supporter_email)
+                  .filter((s) => s.email !== reassigning?.requester_email)
+                  .map((s) => (
+                    <option key={s.id} value={s.id} className="text-black">
+                      {s.name} — {s.email}{s.city ? ` (${s.city})` : ''}
+                    </option>
+                  ))}
+              </select>
+            )}
+            <p className="text-xs opacity-60">
+              {reassigning?.supporter_email
+                ? 'The new supporter is assigned and moved into the task chat, the previous one is unassigned and loses chat access, and all three parties are notified.'
+                : 'The supporter is assigned directly, skipping the accept flow. They and the requester are notified.'}
+            </p>
+          </>
+        )}
       </Modal>
     </div>
   );

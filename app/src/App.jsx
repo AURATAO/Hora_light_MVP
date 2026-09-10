@@ -14,6 +14,7 @@ import Privacy from "./pages/Privacy.jsx";
 import Profile from "./pages/Profile.jsx";
 import ReviewPage from "./pages/ReviewPage.jsx";
 import BecomeSupporter from "./pages/BecomeSupporter.jsx";
+import OpenInApp from "./pages/OpenInApp.jsx";
 
 export default function App() {
   console.log("[App] routes boot");
@@ -23,6 +24,12 @@ export default function App() {
       <Route path="/login" element={<Login />} />
       <Route path="/terms" element={<Terms />} />
       <Route path="/privacy" element={<Privacy />} />
+      {/* Where notification-email task links land: bounces into the mobile app
+          if it is installed, offers the web task page if it isn't. Public on
+          purpose — being signed out is what it exists to solve.
+          See app/src/pages/OpenInApp.jsx and server/internal/notify/links.go. */}
+      <Route path="/open/task/:id" element={<OpenInApp />} />
+      <Route path="/open/task/:id/review" element={<OpenInApp />} />
 
       {/* 受保護區：唯一守門 */}
       <Route element={<ProtectedLayout />}>

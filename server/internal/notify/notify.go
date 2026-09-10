@@ -94,8 +94,9 @@ func Create(ctx context.Context, in CreateNotificationInput) error {
 	var emailSentAt *time.Time
 
 	if in.SendEmail && in.EmailTo != "" {
-		baseURL := getenv("APP_BASE_URL", "https://horaapp.co")
-		taskURL := fmt.Sprintf("%s/tasks/%s", baseURL, in.TaskID)
+		// Not the webapp task page directly — see links.go. Recipients read
+		// these on the phone that has the app installed.
+		taskURL := TaskLink(in.TaskID)
 		html := buildEmail(in, taskURL)
 		if err := SendEmail(EmailPayload{To: in.EmailTo, Subject: in.Title, Html: html}); err != nil {
 			log.Printf("[email] SEND FAILED to=%s type=%s err=%v", in.EmailTo, in.Type, err)
@@ -139,6 +140,8 @@ func buildEmail(in CreateNotificationInput, taskURL string) string {
 		return taskCancelledEmail(in, taskURL)
 	case "NEW_MESSAGE":
 		return newMessageEmail(in, taskURL)
+	case "TASK_REASSIGNED":
+		return taskReassignedEmail(in, taskURL)
 	default:
 		return defaultEmail(in, taskURL)
 	}
@@ -381,7 +384,9 @@ func clockOutEmail(in CreateNotificationInput, taskURL string) string {
 func taskCompletedEmail(in CreateNotificationInput, taskURL string) string {
 	supporterName := fallback(in.SupporterName, "Your supporter")
 	taskTitle := fallback(in.TaskTitle, "your task")
-	reviewURL := taskURL + "/review"
+	// Built from the task id rather than by appending to taskURL, so this stays
+	// correct if TaskLink's shape ever changes.
+	reviewURL := TaskReviewLink(in.TaskID)
 
 	var photoSection string
 	if in.CompletionPhotoURL != "" {
@@ -466,6 +471,33 @@ func newMessageEmail(in CreateNotificationInput, taskURL string) string {
 	return wrapEmail("New message on HORA", card)
 }
 
+// taskReassignedEmail serves all three parties to a reassignment — the new
+// supporter, the one who was unassigned, and the requester. Their situations
+// differ, but the shape of the email does not: a headline, the reason in one
+// sentence, the task it concerns, and a way in. The per-recipient wording is
+// already composed by the caller (server/admin_reassign.go), so this template
+// renders Title/Body rather than deciding anything itself. That is also why
+// ORDER_ACCEPTED was not reused: its copy is hardcoded requester-facing
+// ("<name> has accepted your task"), which is wrong for two of the three.
+func taskReassignedEmail(in CreateNotificationInput, taskURL string) string {
+	taskTitle := fallback(in.TaskTitle, "your task")
+	card := fmt.Sprintf(`
+<p style="margin:0 0 12px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:11px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:#9a9a8a;">Task update</p>
+<h1 style="margin:0 0 16px;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:400;line-height:1.3;color:#1a1a16;">%s</h1>
+<p style="margin:0 0 24px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.65;color:#555550;">%s</p>
+<div style="margin-bottom:28px;">
+  <p style="margin:0 0 4px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:11px;color:#9a9a8a;text-transform:uppercase;letter-spacing:0.08em;">Task</p>
+  <p style="margin:0;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;color:#1a1a16;font-weight:500;">%s</p>
+</div>
+<table cellpadding="0" cellspacing="0"><tr>
+  <td style="border-radius:8px;background:#1a1a16;">
+    <a href="%s" style="display:inline-block;padding:14px 28px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;font-weight:500;color:#f4f4f0;text-decoration:none;border-radius:8px;">View task &rarr;</a>
+  </td>
+</tr></table>`,
+		in.Title, in.Body, taskTitle, taskURL)
+	return wrapEmail(in.Title, card)
+}
+
 func defaultEmail(in CreateNotificationInput, taskURL string) string {
 	card := fmt.Sprintf(`
 <p style="margin:0 0 12px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:11px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:#9a9a8a;">Notification</p>
@@ -492,8 +524,9 @@ type AdminNewTaskInput struct {
 }
 
 func NotifyAdminNewTask(in AdminNewTaskInput) {
-	baseURL := getenv("APP_BASE_URL", "https://horaapp.co")
-	taskURL := fmt.Sprintf("%s/tasks/%s", baseURL, in.TaskID)
+	// Deliberately the direct web link, not TaskLink: this one goes to the ops
+	// team, who open it beside the admin panel on a desktop.
+	taskURL := webTaskURL(in.TaskID)
 
 	when := "ASAP"
 	if !in.IsImmediate && in.ScheduledAt != nil {
