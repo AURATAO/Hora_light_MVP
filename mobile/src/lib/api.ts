@@ -292,8 +292,24 @@ export interface EstimateTaskCostPayload {
 export interface TaskCostEstimate {
   base_fee_cents: number;
   time_cost_cents: number;
-  shopping_cents: number;
   total_cents: number;
+
+  /** Minutes covered by the base fee (15). Added in the Stripe Phase 1 backend. */
+  included_minutes?: number;
+  /** max(estimated_minutes - included_minutes, 0) — what time_cost_cents prices. */
+  billable_minutes?: number;
+  /** The per-minute rate, so no client hardcodes "$0.50". */
+  per_minute_rate_cents?: number;
+  /** Replaces `shopping_cents`. Both are sent; prefer this one. */
+  shopping_budget_cents?: number;
+
+  /**
+   * @deprecated The pre-Phase-1 name for `shopping_budget_cents`. The backend
+   * still sends it so that builds shipped before this change keep rendering,
+   * and it is optional here so a future backend can drop it without a type
+   * error. Read `shopping_budget_cents ?? shopping_cents`.
+   */
+  shopping_cents?: number;
 }
 
 // Pricing is server-owned (S-01/S-05) — this is the only source for the

@@ -94,13 +94,19 @@ func setupCreatedViaDB(t *testing.T) {
 	if _, err := pool.Exec(ctx, createdViaFixture); err != nil {
 		t.Fatalf("fixture: %v", err)
 	}
-	// The real migration file, not a paraphrase of it.
-	migration, err := os.ReadFile(createdViaMigrationPath)
-	if err != nil {
-		t.Fatalf("read migration: %v", err)
-	}
-	if _, err := pool.Exec(ctx, string(migration)); err != nil {
-		t.Fatalf("migration: %v", err)
+	// The real migration files, not a paraphrase of them. The payments
+	// migration is here because createTask writes
+	// shopping_budget_approved_cents, which that migration adds — a fixture
+	// that stops at created_via no longer describes the table createTask
+	// inserts into.
+	for _, path := range []string{createdViaMigrationPath, paymentsMigrationPath} {
+		migration, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", path, err)
+		}
+		if _, err := pool.Exec(ctx, string(migration)); err != nil {
+			t.Fatalf("migration %s: %v", path, err)
+		}
 	}
 
 	// createTask writes through database/sql (sqldb), updateTask through pgx (db).

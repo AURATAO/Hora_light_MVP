@@ -1,17 +1,36 @@
 import { useState } from 'react'
 
-const PRESETS = [
-  { label: '15 min',  minutes: 15,  category: 'quick_errand' },
-  { label: '30 min',  minutes: 30,  category: 'standard' },
-  { label: '1 hour',  minutes: 60,  category: 'standard' },
-  { label: '2 hours', minutes: 120, category: 'standard' },
-]
+// One preset list, shared with mobile's QUICK_MINUTES (mobile/src/components/
+// TaskForm.tsx). The two used to disagree — web offered 15/30/60/120, mobile
+// 30/60/90/120 — so the same product suggested different durations depending
+// on the device.
+//
+// 15 is gone. The first 15 minutes are now inside the base fee, so a "15 min"
+// package is not a package at all: it is the floor, priced identically to a
+// 1-minute task, and offering it as a choice implies a cheaper tier that does
+// not exist.
+//
+// The category coupling is gone too. These presets used to set the task's
+// category as a side effect (15 → quick_errand, everything else → standard),
+// which silently overwrote the category the user had picked — and since
+// category is half of what decides the base fee, a duration click could change
+// the price of a companionship task. Duration is duration; the user chooses
+// the category.
+const PRESETS = [30, 60, 90, 120]
 
 /**
  * DurationPicker
+ *
+ * Deliberately shows no prices. It used to print `minutes × $0.50` on each
+ * tile, which was never the actual total (it omitted the base fee) and is now
+ * doubly wrong (it omits the included 15 minutes). Fetching four real quotes
+ * to decorate four buttons would be four round trips for a number the itemized
+ * estimate summary directly below already shows, correctly and for the actual
+ * task being posted. So: durations here, one authoritative price there.
+ *
  * Props:
  *   value    – current estimated_minutes value
- *   onChange – (minutes: number, category: string) => void
+ *   onChange – (minutes: number) => void
  */
 export default function DurationPicker({ value, onChange }) {
   const [showTooltip, setShowTooltip] = useState(false)
@@ -35,20 +54,24 @@ export default function DurationPicker({ value, onChange }) {
       {/* Tooltip */}
       {showTooltip && (
         <div className="mb-3 p-3 rounded-lg bg-white/5 border border-white/10 text-sm text-white/60 leading-relaxed">
-          We charge based on actual time logged. Finish early? Unused time is refunded.
-          Need more time? Extra time is charged at the same hourly rate.
+          We charge based on actual time logged. The base fee covers the first 15 minutes;
+          longer tasks add the per-minute rate from there. Finish early and you are not
+          charged for time nobody worked.
         </div>
       )}
 
       {/* 2×2 preset grid */}
       <div className="grid grid-cols-2 gap-2 mb-3">
         {PRESETS.map((preset) => {
-          const selected = value === preset.minutes
+          const selected = Number(value) === preset
+          const label = preset >= 60 && preset % 60 === 0
+            ? `${preset / 60} hour${preset === 60 ? '' : 's'}`
+            : `${preset} min`
           return (
             <button
-              key={preset.category}
+              key={preset}
               type="button"
-              onClick={() => onChange(preset.minutes, preset.category)}
+              onClick={() => onChange(preset)}
               className={`rounded-xl p-3 text-left border transition-all ${
                 selected
                   ? 'border-[#9aab3a] bg-[#9aab3a]/10'
@@ -56,10 +79,9 @@ export default function DurationPicker({ value, onChange }) {
               }`}
             >
               <div className={`text-sm font-semibold ${selected ? 'text-[#9aab3a]' : 'text-white'}`}>
-                {preset.label}
+                {label}
               </div>
-              <div className="text-xs text-white/50 mt-0.5">{preset.minutes} min</div>
-              <div className="text-xs text-[#9aab3a] mt-1">${(preset.minutes * 0.50).toFixed(2)}</div>
+              <div className="text-xs text-white/50 mt-0.5">{preset} min</div>
             </button>
           )
         })}
@@ -69,7 +91,7 @@ export default function DurationPicker({ value, onChange }) {
       <div className="flex flex-wrap gap-2">
         <span className="inline-flex items-center px-2.5 py-1 rounded-full
                          bg-green-500/10 border border-green-500/20 text-xs text-green-400">
-          Finish early → unused time refunded
+          Finish early → unused time not charged
         </span>
         <span className="inline-flex items-center px-2.5 py-1 rounded-full
                          bg-amber-500/10 border border-amber-500/20 text-xs text-amber-400">

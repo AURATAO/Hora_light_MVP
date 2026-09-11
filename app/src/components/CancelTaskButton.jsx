@@ -2,10 +2,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api/client'
 import Modal from './Modal'
-
-function euro(cents) {
-  return `$${(cents / 100).toFixed(2)}`
-}
+import { formatCents } from '../hooks/useTaskEstimate'
 
 export default function CancelTaskButton({ taskId, disabled = false, onDone }) {
   const [open, setOpen] = useState(false)
@@ -94,17 +91,13 @@ export default function CancelTaskButton({ taskId, disabled = false, onDone }) {
           <div className="space-y-1 text-sm">
             <div className="flex justify-between">
               <span>Billed</span>
-              <span>{euro(result.bill_cents)} <span className="opacity-70">({result.total_minutes} min)</span></span>
-            </div>
-            <div className="flex justify-between">
-              <span>Refund</span>
-              <span>{euro(result.refund_cents)}</span>
+              <span>{formatCents(result.bill_cents)} <span className="opacity-70">({result.total_minutes} min)</span></span>
             </div>
           </div>
         ) : (
           <>
             <p className="mb-3">
-              If a work session is open you cannot cancel. If work has already been recorded, we will bill those minutes and refund the rest.
+              If a work session is open you cannot cancel. If nobody has clocked in yet, cancelling costs nothing. If work has already been recorded, you are billed for that time only — your shopping budget is never charged.
             </p>
             <label className="grid gap-1">
               <span>Reason (required)</span>

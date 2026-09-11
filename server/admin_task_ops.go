@@ -165,7 +165,7 @@ func adminForceCompleteTask(c *gin.Context) {
 		SupporterName: displayName(t.AssigneeEmail),
 		TaskTitle:     t.Title,
 		TotalLogged:   formatMinutes(totalMin),
-		FinalCost:     fmt.Sprintf("$%.2f", float64(totalCents)/100.0),
+		FinalCost:     formatCentsUSD(totalCents),
 	})
 	if t.AssigneeID != nil && *t.AssigneeID != "" {
 		notifyUser(ctx, *t.AssigneeID, t.AssigneeEmail, notify.CreateNotificationInput{

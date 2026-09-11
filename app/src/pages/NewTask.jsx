@@ -7,6 +7,7 @@ import InfoModal from '../components/InfoModal'
 import DurationPicker from '../components/DurationPicker'
 import AddressInput from '../components/AddressInput'
 import { useToast } from '../providers/ToastProvider'
+import { useTaskEstimate, formatCents } from '../hooks/useTaskEstimate'
 
 
 const CATEGORY_LABELS = {
@@ -100,7 +101,14 @@ export default function NewTask() {
     const e = {}
     if (!title.trim()) e.title = 'Title is required'
     if (!minutes || Number(minutes) < 10) e.minutes = 'Minimum 10 minutes'
-    if (prepay !== '' && (Number.isNaN(Number(prepay)) || Number(prepay) < 0)) e.prepay = 'Invalid advance'
+    if (prepay !== '') {
+      const n = Number(prepay)
+      if (Number.isNaN(n) || n < 0) e.prepay = 'Invalid advance'
+      // The beta cap the notice has always advertised, now enforced by the
+      // backend too — caught here so the message arrives while typing rather
+      // than as a 400 after pressing Create.
+      else if (n > 30) e.prepay = 'Maximum shopping budget during beta is $30.00'
+    }
     if (mode === 'schedule' && (!date || !timeStr)) e.when = 'Pick date & time'
     // companion policy is enforced via its own modal
     return e
@@ -108,18 +116,23 @@ export default function NewTask() {
 
   const canSubmit = Object.keys(errors).length === 0
 
-  const baseFee = useMemo(() => {
-    if (taskType === 'companion' || urlCategory === 'companionship') return 25
-    if (Number(minutes) > 90) return 18
-    return 12
-  }, [taskType, urlCategory, minutes])
-  const timeCost = useMemo(() => Number(minutes || 0) * 0.50, [minutes])
   const advance = useMemo(() => {
     if (prepay === '') return 0
     const n = Number(prepay)
     return Number.isNaN(n) ? 0 : Math.max(0, n)
   }, [prepay])
-  const totalEstimate = useMemo(() => baseFee + timeCost + advance, [baseFee, timeCost, advance])
+
+  // The category exactly as onSubmit will send it, so the quote prices the
+  // task that will actually be posted rather than a near-miss of it.
+  const effectiveCategory = taskType === 'companion' ? 'companion' : (urlCategory || category)
+
+  // Server-computed (S-05). This used to be three useMemos reimplementing the
+  // fee schedule here; the backend is the only thing that knows it now.
+  const estimate = useTaskEstimate({
+    category: effectiveCategory,
+    estimatedMinutes: minutes,
+    shoppingBudgetCents: Math.round(advance * 100),
+  })
 
   const scheduledAtISO = useMemo(() => {
     if (mode !== 'schedule' || !date || !timeStr) return ''
@@ -302,10 +315,11 @@ function confirmCompanionPolicy() {
             )}
           </div>
 
-          {/* Duration + category (DurationPicker) */}
+          {/* Duration only — picking one no longer rewrites the category the
+              user chose, which used to silently change the base fee. */}
           <DurationPicker
             value={Number(minutes)}
-            onChange={(mins, cat) => { setMinutes(String(mins)); setCategory(cat) }}
+            onChange={(mins) => setMinutes(String(mins))}
           />
 
           {/* Location */}
@@ -407,11 +421,11 @@ function confirmCompanionPolicy() {
                   <ul className="space-y-1">
                     <li>Your supporter will only buy after getting your confirmation first</li>
                     <li>They upload the receipt after purchase — we verify it before any amount is deducted</li>
-                    <li>You are only charged for what was actually spent:</li>
+                    <li>You are only charged for what was actually spent, never more than you approved</li>
                   </ul>
                   <ul className="mt-1 ml-3 space-y-0.5">
-                    <li>spent less → refund of difference</li>
-                    <li>spent more → difference collected</li>
+                    <li>spent less → you pay only the receipt amount</li>
+                    <li>needs more → your supporter asks you first, and you approve or decline before they buy</li>
                   </ul>
                 </div>
 
@@ -465,31 +479,33 @@ function confirmCompanionPolicy() {
             </div>
           </div>
 
-          {/* Estimate summary */}
-          <div className="text-xs text-white/80 rounded-md px-3 py-2 border border-white/20 grid gap-1">
-            <div className="flex justify-between">
-              <span>Start</span>
-              <b>{mode === 'now' ? 'ASAP' : (date && timeStr ? new Date(`${date}T${timeStr}`).toLocaleString() : '—')}</b>
-            </div>
-            <div className="flex justify-between">
-              <span>Base fee</span>
-              <b>${baseFee.toFixed(2)}</b>
-            </div>
-            <div className="flex justify-between">
-              <span>Time ({Number(minutes || 0)} min × $0.50)</span>
-              <b>${timeCost.toFixed(2)}</b>
-            </div>
-            {advance > 0 && (
+          {/* Estimate summary — every figure comes from POST /tasks/estimate */}
+          {estimate && (
+            <div className="text-xs text-white/80 rounded-md px-3 py-2 border border-white/20 grid gap-1">
               <div className="flex justify-between">
-                <span>Shopping</span>
-                <b>${advance.toFixed(2)}</b>
+                <span>Start</span>
+                <b>{mode === 'now' ? 'ASAP' : (date && timeStr ? new Date(`${date}T${timeStr}`).toLocaleString() : '—')}</b>
               </div>
-            )}
-            <div className="flex justify-between border-t border-white/20 pt-1 mt-0.5">
-              <span>Total estimate</span>
-              <b>${totalEstimate.toFixed(2)}</b>
+              <div className="flex justify-between">
+                <span>Base fee (first {estimate.included_minutes} min included)</span>
+                <b>{formatCents(estimate.base_fee_cents)}</b>
+              </div>
+              <div className="flex justify-between">
+                <span>Time ({estimate.billable_minutes} billable min × {formatCents(estimate.per_minute_rate_cents)})</span>
+                <b>{formatCents(estimate.time_cost_cents)}</b>
+              </div>
+              {estimate.shopping_budget_cents > 0 && (
+                <div className="flex justify-between">
+                  <span>Shopping</span>
+                  <b>{formatCents(estimate.shopping_budget_cents)}</b>
+                </div>
+              )}
+              <div className="flex justify-between border-t border-white/20 pt-1 mt-0.5">
+                <span>Total estimate</span>
+                <b>{formatCents(estimate.total_cents)}</b>
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Actions */}
           <div className="flex gap-3 pt-2">
