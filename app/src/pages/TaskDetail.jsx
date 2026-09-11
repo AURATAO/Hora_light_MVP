@@ -9,7 +9,27 @@ import { useLoader } from '../providers/LoaderProvider.jsx'
 import PlaceInput from '../components/PlaceInput'
 import { useToast } from '../providers/ToastProvider'
 import { isTractionWindowActive } from '../lib/traction'
+import { useTaskEstimate, formatCents } from '../hooks/useTaskEstimate'
 
+
+/**
+ * One itemized cost line, rendered straight from a server quote — the same
+ * shape whether it came from POST /tasks/estimate (before any work is logged)
+ * or from GET /tasks/:id/worklogs (after). Every number on it was computed in
+ * Go; this component does no arithmetic, which is the point.
+ */
+function CostLine({ cost }) {
+  return (
+    <div className="text-sm">
+      Base fee <b>{formatCents(cost.base_fee_cents)}</b>
+      <span className="text-white/60">
+        {' '}(first {cost.included_minutes} min included) + time ({cost.billable_minutes} billable min
+        {' '}× {formatCents(cost.per_minute_rate_cents)}) <b>{formatCents(cost.time_cost_cents)}</b>
+      </span>
+      <span> = <b>{formatCents(cost.total_cents)}</b></span>
+    </div>
+  )
+}
 
 export default function TaskDetail() {
   const { id } = useParams()
@@ -482,7 +502,8 @@ export default function TaskDetail() {
     const n = Number(prepay)
     return Number.isNaN(n) ? 0 : Math.max(0, n)
   }, [prepay])
-  const totalEUR = useMemo(() => (work.total_cost_cents || 0) / 100, [work.total_cost_cents])
+  // (A `totalEUR` local used to live here. It held dollars — the product has
+  // never billed in euros — and is gone with the last of the local money math.)
   const totalDuration = useMemo(() => {
     const m = work.total_minutes || 0
     if (m === 0) return '0 min'
@@ -493,15 +514,21 @@ export default function TaskDetail() {
     return `${h}h ${rem}min`
   }, [work.total_minutes])
 
-  const costBreakdown = useMemo(() => {
-    const cat = task?.category || ''
-    const isCompanion = cat === 'companionship' || cat === 'companion'
-    const baseFee = isCompanion ? 25 : (task?.estimated_minutes > 90 ? 18 : 12)
-    const minutesToUse = (work.total_minutes || 0) > 0 ? work.total_minutes : (task?.estimated_minutes || 0)
-    const timeCost = minutesToUse * 0.50
-    const totalCost = baseFee + timeCost
-    return { baseFee, minutesToUse, timeCost, totalCost }
-  }, [task?.category, task?.estimated_minutes, work.total_minutes])
+  // Two different questions, two different server answers — neither computed
+  // here. Once time is logged, the authoritative figure is the settlement the
+  // worklogs endpoint returns (work.cost); before that, the only honest number
+  // is a quote against the requester's estimate.
+  //
+  // This replaced a local useMemo that carried its own copy of the fee
+  // schedule (25 / 18 / 12 and `minutes * 0.50`), which is exactly what S-05
+  // forbids: the backend could not change a fee without this page quoting the
+  // old one to the person being charged.
+  const estimatedCost = useTaskEstimate({
+    category: task?.category,
+    estimatedMinutes: task?.estimated_minutes,
+    enabled: Boolean(task?.category) && !hasLogged,
+  })
+  const costBreakdown = hasLogged ? work.cost : estimatedCost
 
   async function saveEdit() {
     await wrap(async () => {
@@ -553,7 +580,6 @@ export default function TaskDetail() {
   if (error) return <div className="p-6 text-red-500">{error}</div>
   if (!task) return <div className="p-6">Task not found.</div>
 
-  const advanceEUR = (task.prepay_amount_cents || 0) / 100
   const whenText = task.is_immediate ? 'ASAP' : (task.scheduled_at ? new Date(task.scheduled_at).toLocaleString() : '—')
 
 
@@ -606,7 +632,7 @@ export default function TaskDetail() {
             <div className="text-sm text-white/80 space-y-1">
               <div><b>When:</b> {whenText}</div>
               <div><b>Estimated:</b> {task.estimated_minutes} min</div>
-              <div><b>Advance:</b> ${advanceEUR.toFixed(2)}</div>
+              <div><b>Shopping budget:</b> {formatCents(task.prepay_amount_cents)}</div>
               <div>
                 <b className="block mb-2">Locations:</b>
                 {locs.length ? (
@@ -706,36 +732,30 @@ export default function TaskDetail() {
               <div className="border border-white/20 rounded-md p-3 space-y-2">
                 <div className="flex items-center justify-between">
                   <div>
-                    {work.total_minutes === 0 ? (
-                      <div className="space-y-1">
-                        <div className="text-sm text-white/60">
-                          Estimated cost (based on {task.estimated_minutes} min):
+                    {!hasLogged ? (
+                      costBreakdown && (
+                        <div className="space-y-1">
+                          <div className="text-sm text-white/60">
+                            Estimated cost (based on {task.estimated_minutes} min):
+                          </div>
+                          <CostLine cost={costBreakdown} />
                         </div>
-                        <div className="text-sm">
-                          Base fee <b>${costBreakdown.baseFee.toFixed(2)}</b>
-                          <span className="text-white/60"> + time ({costBreakdown.minutesToUse} min × $0.50) <b>${costBreakdown.timeCost.toFixed(2)}</b></span>
-                          <span> = <b>${costBreakdown.totalCost.toFixed(2)}</b></span>
-                        </div>
-                      </div>
+                      )
                     ) : task?.status === 'completed' ? (
                       <div className="text-sm">
-                        Final cost: <b>${totalEUR.toFixed(2)}</b>
+                        Final cost: <b>{formatCents(work.total_cost_cents)}</b>
                       </div>
                     ) : (
                       <div className="space-y-1">
                         <div className="text-sm">
                           Logged: <b>{totalDuration}</b>
                         </div>
-                        <div className="text-sm">
-                          Base fee <b>${costBreakdown.baseFee.toFixed(2)}</b>
-                          <span className="text-white/60"> + time ({costBreakdown.minutesToUse} min × $0.50) <b>${costBreakdown.timeCost.toFixed(2)}</b></span>
-                          <span> = <b>${costBreakdown.totalCost.toFixed(2)}</b></span>
-                        </div>
+                        {costBreakdown && <CostLine cost={costBreakdown} />}
                       </div>
                     )}
                     {task?.assigned_to_id && task?.status === 'open' && (
                       <div className="text-xs text-white/40 mt-1">
-                        Final cost based on actual time logged. More time = extra charge, less time = partial refund.
+                        Final cost is based on actual time logged. The base fee covers the first 15 minutes; time beyond that is charged per minute, and time nobody worked is never charged.
                       </div>
                     )}
                   </div>

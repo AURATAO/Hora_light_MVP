@@ -23,7 +23,7 @@ const USE_AGAIN_OPTIONS: { value: WouldUseAgain; label: string }[] = [
   { value: "no", label: "No" },
 ];
 
-const rate = TRACTION_3_CONFIG.perMinuteRate;
+const pricing = TRACTION_3_CONFIG.pricingSummary;
 
 // Both roles answer the same two multiple-choice questions with the same slugs;
 // only the wording differs, because "the flow" means something different from
@@ -31,12 +31,12 @@ const rate = TRACTION_3_CONFIG.perMinuteRate;
 const QUESTIONS: Record<RaterRole, { ease: string; useAgain: string; open: string }> = {
   requester: {
     ease: "How easy was it to create, follow and complete this mission through HO:RA?",
-    useAgain: `HO:RA — ${rate} per minute. Would you use it for a local errand?`,
+    useAgain: `HO:RA — ${pricing}. Would you use it for a local errand?`,
     open: "What is the one thing we should improve before the public launch?",
   },
   supporter: {
     ease: "How clear and easy was the complete mission flow, from acceptance to clock-out?",
-    useAgain: `At ${rate}/min, would you take on tasks like this again as a supporter?`,
+    useAgain: `With HO:RA pricing (${pricing}), would you take on tasks like this again as a supporter?`,
     open:
       "What is the one operational or app-related improvement that would help you " +
       "complete future missions more efficiently?",

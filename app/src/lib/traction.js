@@ -24,6 +24,16 @@ export const TRACTION_3_CONFIG = {
   endsAt: '2026-08-29T00:00:00-04:00',
   /** Billing rate quoted in the post-task questionnaire. */
   perMinuteRate: '$0.50',
+  /**
+   * The full pricing model, for anywhere that describes what a task costs.
+   *
+   * `perMinuteRate` alone used to carry that job, and it misrepresented the
+   * price: quoting "$0.50 per minute" omits the base fee, which is the
+   * DOMINANT cost on a short task — a 20-minute errand is $12.50, of which
+   * $0.25 is per-minute. Kept in exact lockstep with mobile's copy of this
+   * object by app/src/lib/traction.test.mjs.
+   */
+  pricingSummary: '$12 base (first 15 min included), then $0.50/min',
 }
 
 /**

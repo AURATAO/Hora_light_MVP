@@ -45,6 +45,11 @@ export interface TaskFormErrors {
 
 const QUICK_MINUTES = [30, 60, 90, 120];
 
+// Mirrors BillingConfig.ShoppingBudgetCapCents in the Go backend and
+// purchaseCapDollars in beta-notice.ts. Client-side validation only — the
+// backend rejects an over-cap budget regardless of what any client believes.
+const SHOPPING_BUDGET_CAP_DOLLARS = 30;
+
 const TRANSPORT_OPTIONS: { value: TransportOption; label: string }[] = [
   { value: "none", label: "None" },
   { value: "car", label: "Car" },
@@ -189,6 +194,13 @@ export function validateTaskForm(form: TaskFormState): TaskFormErrors {
   if (form.shoppingBudget !== "") {
     const n = Number(form.shoppingBudget);
     if (Number.isNaN(n) || n < 0) errors.shoppingBudget = "Invalid amount.";
+    // The beta cap the notice has always advertised (beta-notice.ts
+    // purchaseCapDollars) and that the backend now enforces on create and
+    // update. Caught here so the message arrives while typing rather than as a
+    // 400 after pressing Post.
+    else if (n > SHOPPING_BUDGET_CAP_DOLLARS) {
+      errors.shoppingBudget = `Maximum shopping budget during beta is $${SHOPPING_BUDGET_CAP_DOLLARS}.00`;
+    }
   }
   return errors;
 }
@@ -246,6 +258,9 @@ export function TaskForm({ form, onChange, errors }: TaskFormProps) {
 
   const [estimate, setEstimate] = useState<{
     baseFeeCents: number;
+    includedMinutes: number;
+    billableMinutes: number;
+    perMinuteRateCents: number;
     timeCostCents: number;
     shoppingCents: number;
     totalCents: number;
@@ -279,8 +294,15 @@ export function TaskForm({ form, onChange, errors }: TaskFormProps) {
         if (cancelled) return;
         setEstimate({
           baseFeeCents: result.base_fee_cents,
+          // Defaults cover the window where a shipped app is talking to a
+          // backend that predates these fields — the card renders the old way
+          // instead of showing "undefined min".
+          includedMinutes: result.included_minutes ?? 0,
+          billableMinutes: result.billable_minutes ?? minutes,
+          perMinuteRateCents: result.per_minute_rate_cents ?? 50,
           timeCostCents: result.time_cost_cents,
-          shoppingCents: result.shopping_cents,
+          // The key was renamed in Stripe Phase 1; the backend sends both.
+          shoppingCents: result.shopping_budget_cents ?? result.shopping_cents ?? 0,
           totalCents: result.total_cents,
         });
       } catch (e) {
@@ -480,11 +502,15 @@ export function TaskForm({ form, onChange, errors }: TaskFormProps) {
             </Text>
           </View>
           <View className="flex-row justify-between">
-            <Text className="text-caption text-muted">Base fee</Text>
+            <Text className="text-caption text-muted">
+              Base fee{estimate.includedMinutes > 0 ? ` (first ${estimate.includedMinutes} min included)` : ""}
+            </Text>
             <Text className="text-caption text-ink">{formatCost(estimate.baseFeeCents)}</Text>
           </View>
           <View className="flex-row justify-between">
-            <Text className="text-caption text-muted">Time ({form.estimatedMinutes || 0} min × $0.50)</Text>
+            <Text className="text-caption text-muted">
+              Time ({estimate.billableMinutes} billable min × {formatCost(estimate.perMinuteRateCents)})
+            </Text>
             <Text className="text-caption text-ink">{formatCost(estimate.timeCostCents)}</Text>
           </View>
           {estimate.shoppingCents > 0 ? (

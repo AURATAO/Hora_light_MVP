@@ -109,15 +109,21 @@ test('web copy still matches mobile, the source of truth', t => {
     )
   }
   assert.ok(betaNotice.includes(`perMinuteRate: "${TRACTION_3_CONFIG.perMinuteRate}"`))
+  // The string that actually describes what a task costs. Drift here means the
+  // two platforms quote different prices in the same questionnaire.
+  assert.ok(
+    betaNotice.includes(`pricingSummary: "${TRACTION_3_CONFIG.pricingSummary}"`),
+    'pricingSummary differs from mobile — the platforms would quote different prices'
+  )
 
   for (const opt of [...EASE_OPTIONS, ...USE_AGAIN_OPTIONS]) {
     assert.ok(sheet.includes(`"${opt.value}", label: "${opt.label}"`), `option drift: ${opt.value}`)
   }
 
   // Question wording, with the rate interpolated on both sides.
-  const rate = TRACTION_3_CONFIG.perMinuteRate
+  const pricing = TRACTION_3_CONFIG.pricingSummary
   const mobileText = sheet
-    .replace(/\$\{rate\}/g, rate)
+    .replace(/\$\{pricing\}/g, pricing)
     .replace(/\s*\n\s*/g, ' ')          // mobile wraps some strings across lines
     .replace(/" \+ "/g, '')             // ...and concatenates the pieces
   for (const role of ['requester', 'supporter']) {

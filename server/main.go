@@ -322,6 +322,14 @@ func main() {
 		log.Println("[email] WARNING: POSTMARK_API_TOKEN is empty — emails will not be sent")
 	}
 
+	// Payments diagnostics. Resolved at startup rather than on first use so
+	// that "is this box on test keys or live keys" is answerable from the
+	// deploy log, not from whatever the first charge did. The key itself is
+	// never logged (S-12).
+	initStripe()
+	log.Printf("[payments] enabled: %v (test mode: %v) | webhook secret set: %v",
+		paymentsEnabled(), stripeIsTestMode(), os.Getenv("STRIPE_WEBHOOK_SECRET") != "")
+
 	// --- Google OAuth 初始化 & 注入 DB（只做一次！）---
 	if err := auth.InitGoogleOAuth(); err != nil {
 		log.Fatalf("InitGoogleOAuth error: %v", err)
@@ -361,6 +369,11 @@ func main() {
 	// TalkJS message.sent → Expo push. Unauthenticated but HMAC-signed; see
 	// talkjs_webhook.go.
 	RegisterTalkJSWebhooks(r, sqldb)
+	// Stripe payment lifecycle → payments table + ops alerting. Unauthenticated
+	// but signature-verified against the raw body; see stripe_webhook.go. Live
+	// from Phase 1 even though nothing places a hold yet, so the endpoint is
+	// registered and proven before the first real payment depends on it.
+	RegisterStripeWebhooks(r)
 	RegisterNotificationRoutes(r, sqldb)
 
 	addAvatarUploadRouteV1(r)
@@ -1385,6 +1398,16 @@ func createTask(c *gin.Context) {
 	if in.PrepayAmountCents < 0 {
 		in.PrepayAmountCents = 0
 	}
+	// The beta shopping cap, enforced. Both clients have advertised "$30 max
+	// per task" in their beta notices since launch while nothing checked it —
+	// a requester could post a $500 budget and the row stored $500. Rejected
+	// rather than clamped: silently posting a task with a budget smaller than
+	// the one the requester typed is how a supporter ends up out of pocket.
+	// The DB CHECK added alongside this is the backstop, not the message.
+	if in.PrepayAmountCents > Billing.ShoppingBudgetCapCents {
+		c.JSON(http.StatusBadRequest, shoppingBudgetCapError())
+		return
+	}
 	// Attribution is optional — web and the shipped TestFlight build send
 	// nothing, and those tasks are stored unattributed rather than guessed at.
 	// A value that IS sent has to be one we can count, so a typo is rejected
@@ -1502,13 +1525,20 @@ func createTask(c *gin.Context) {
 	}
 	if err := tx.QueryRowContext(ctx, `
     INSERT INTO public.tasks
+      -- shopping_budget_approved_cents starts as the requester's own ask
+      -- ($6 twice, deliberately): at post there is nothing to approve beyond
+      -- what they set. The columns diverge only when a supporter's
+      -- budget-increase request is approved mid-task (Phase 2), which is what
+      -- makes "what was authorized, and when" answerable afterwards.
       (title,description,category,location_text,
-       estimated_minutes,prepay_amount_cents,is_immediate,scheduled_at,
+       estimated_minutes,prepay_amount_cents,shopping_budget_approved_cents,
+       is_immediate,scheduled_at,
        requester, requester_id, status, assigned_to, assigned_to_id,
        transport_required, created_via)
     VALUES
       ($1,$2,$3,$4,
-       $5,$6,$7,$8,
+       $5,$6,$6,
+       $7,$8,
        $9, $10::uuid, 'open', '', NULL,
        $11, $12)
     RETURNING id, created_at
@@ -1873,6 +1903,13 @@ func updateTask(c *gin.Context) {
 	if in.PrepayAmountCents < 0 {
 		in.PrepayAmountCents = 0
 	}
+	// Same cap as createTask — this is a full replace (see the PATCH note on
+	// UpdateTaskPayload), so an edit is every bit as capable of setting an
+	// over-cap budget as a create.
+	if in.PrepayAmountCents > Billing.ShoppingBudgetCapCents {
+		c.JSON(http.StatusBadRequest, shoppingBudgetCapError())
+		return
+	}
 
 	var when *time.Time
 	if in.IsImmediate {
@@ -1913,6 +1950,14 @@ func updateTask(c *gin.Context) {
             location_text=$4,
             estimated_minutes=$5,
             prepay_amount_cents=$6,
+            -- Kept in lockstep on an edit. The requester IS the approver of
+            -- their own shopping budget, so re-setting it here is them
+            -- approving the new number; the separate approved column exists to
+            -- record a SUPPORTER-initiated increase (Phase 2), which this
+            -- endpoint cannot produce. Note the guard below: this only ever
+            -- runs while the task is still open and unassigned, so it cannot
+            -- move a ceiling out from under a supporter mid-purchase.
+            shopping_budget_approved_cents=$6,
             is_immediate=$7,
             scheduled_at=$8,
             transport_required=coalesce(nullif($9, ''), transport_required)
@@ -2328,7 +2373,10 @@ func acceptTask(c *gin.Context) {
 }
 
 // -------- WorkLog handlers --------
-const overtimeRateCents = 50 // $0.50/min for every minute over the 15-min included block
+//
+// Worklogs are the billing clock: every rate, base fee and included-minute
+// rule these sessions feed into lives in billing.go (BillingConfig). Nothing
+// here does arithmetic on money.
 
 func clockIn(c *gin.Context) {
 	taskID := c.Param("id")
@@ -2644,15 +2692,9 @@ func getWorklogs(c *gin.Context) {
 		items = append(items, wl)
 	}
 
-	var totalMin int
-	_ = db.QueryRow(ctx, `
-        with x as (
-          select ceil(extract(epoch from (end_at - start_at))/60.0) as m
-          from public.worklogs
-          where task_id=$1 and end_at is not null and end_at > start_at
-        )
-        select coalesce(sum(greatest(m,1))::int, 0) from x
-    `, taskID).Scan(&totalMin)
+	// Second-guessing this with its own copy of the summing SQL is how the
+	// displayed total and the billed total drift apart; one function owns it.
+	totalMin, _ := totalClosedMinutes(ctx, taskID)
 
 	var hasOpen bool
 	_ = db.QueryRow(ctx, `
@@ -2662,10 +2704,18 @@ func getWorklogs(c *gin.Context) {
         )
     `, taskID).Scan(&hasOpen)
 
+	// The itemized version of total_cost_cents, so a task page can show "base
+	// fee / 15 min included / N billable min" without owning the formula
+	// (S-05). Shopping is zero here by construction: this endpoint prices
+	// logged time, and purchases settle against a verified receipt elsewhere,
+	// so cost.total_cents and total_cost_cents are the same number.
+	cost := quoteTask(taskCategory(ctx, taskID), totalMin, 0)
+
 	c.JSON(http.StatusOK, gin.H{
 		"items":            items,
 		"total_minutes":    totalMin,
-		"total_cost_cents": calcTaskCostCents(ctx, taskID, totalMin),
+		"total_cost_cents": cost.TotalCents,
+		"cost":             cost,
 		"has_open":         hasOpen,
 	})
 }
@@ -2877,7 +2927,7 @@ func completeTask(c *gin.Context) {
 	if completeHrs > 0 {
 		completeTotalStr = fmt.Sprintf("%dh %dmin", completeHrs, completeMins)
 	}
-	completeCostStr := fmt.Sprintf("$%.2f", float64(totalCents)/100.0)
+	completeCostStr := formatCentsUSD(totalCents)
 
 	// TODO: trigger Stripe capture here
 	// e.g. stripe.CapturePaymentIntent(task.PaymentIntentID, totalCents)
@@ -2924,90 +2974,21 @@ func completeTask(c *gin.Context) {
 }
 
 // POST /tasks/:id/cancel
-// 只有作者(requester)可取消；任務須為 open；若有未結束工時(end_at is null)不可取消。
-// 已有結束工時則：bill = total_minutes * rate；refund = max(prepay - bill, 0)。
-// 取已結束工時總分鐘（向上取整，每段至少 1 分鐘），只算 end_at 有值的
-func totalClosedMinutes(ctx context.Context, taskID string) (int, error) {
-	var total int
-	err := db.QueryRow(ctx, `
-		with x as (
-			select ceil(extract(epoch from (end_at - start_at))/60.0)::int as m
-			from public.worklogs
-			where task_id=$1 and end_at is not null and end_at > start_at
-		)
-		select coalesce(sum(greatest(m,1)),0) from x
-	`, taskID).Scan(&total)
-	return total, err
-}
-
-// calcTaskCostCents returns the service charge in cents for totalMinutes of work on taskID.
-// Base fee: $25 (companionship/companion), $18 (estimated_minutes > 90), $12 (everything else).
-// Overtime: $0.50/min for every minute worked beyond the first 15.
-// taskBaseFeeCents is the sole source of the base-fee schedule (S-05: pricing
-// is computed in Go only, never re-derived client-side). Shared by the actual
-// post-completion cost calc and the pre-submission /tasks/estimate quote so
-// the two can't drift.
-func taskBaseFeeCents(category string, estimatedMinutes int) int {
-	switch {
-	case category == "companionship" || category == "companion":
-		return 2500
-	case estimatedMinutes > 90:
-		return 1800
-	default:
-		return 1200
-	}
-}
-
-func calcTaskCostCents(ctx context.Context, taskID string, totalMinutes int) int {
-	var category string
-	var estimatedMinutes int
-	_ = db.QueryRow(ctx,
-		`SELECT COALESCE(category,''), COALESCE(estimated_minutes,0) FROM public.tasks WHERE id=$1::uuid`,
-		taskID,
-	).Scan(&category, &estimatedMinutes)
-
-	return taskBaseFeeCents(category, estimatedMinutes) + totalMinutes*overtimeRateCents
-}
-
-// estimateTaskCost is a pre-submission price quote for the Post Task form —
-// no task exists yet, so inputs come from the request body instead of a DB
-// row. Same formula as calcTaskCostCents, applied to the not-yet-posted
-// values instead of actual worklog minutes.
-func estimateTaskCost(c *gin.Context) {
-	meUID := c.GetString("uid")
-	if meUID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
-		return
-	}
-
-	var in struct {
-		Category          string `json:"category"`
-		EstimatedMinutes  int    `json:"estimated_minutes"`
-		PrepayAmountCents int    `json:"prepay_amount_cents"`
-	}
-	if err := c.BindJSON(&in); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
-		return
-	}
-	if in.EstimatedMinutes < 0 {
-		in.EstimatedMinutes = 0
-	}
-	if in.PrepayAmountCents < 0 {
-		in.PrepayAmountCents = 0
-	}
-
-	baseFeeCents := taskBaseFeeCents(in.Category, in.EstimatedMinutes)
-	timeCostCents := in.EstimatedMinutes * overtimeRateCents
-	totalCents := baseFeeCents + timeCostCents + in.PrepayAmountCents
-
-	c.JSON(http.StatusOK, gin.H{
-		"base_fee_cents":  baseFeeCents,
-		"time_cost_cents": timeCostCents,
-		"shopping_cents":  in.PrepayAmountCents,
-		"total_cents":     totalCents,
-	})
-}
-
+//
+// Requester-only, task must still be open, and a supporter currently on the
+// clock blocks it (they have to clock out first). Settlement is
+// cancelSettlementCents: nothing at all if nobody ever clocked in, otherwise
+// base fee plus time past the included block.
+//
+// The shopping budget is deliberately absent from that calculation. This
+// handler used to compute `refund = max(prepay_amount_cents - bill, 0)`,
+// paying the service bill out of the requester's shopping budget — two
+// unrelated pots, one of which nobody had been charged from. prepay_amount_cents
+// is an authorization ceiling for purchases the supporter would front, not
+// money held; netting a service fee against it produced a "refund" of money
+// that was never taken, and understated the bill by the size of the budget.
+// Nothing about a cancel touches the shopping budget, because nothing about a
+// cancel charged it.
 func cancelTask(c *gin.Context) {
 	taskID := c.Param("id")
 	meUID := c.GetString("uid")
@@ -3080,24 +3061,32 @@ func cancelTask(c *gin.Context) {
 		return
 	}
 
-	// 計算費用（已結束的總分鐘 * 單價）
+	// Settlement: time actually logged, and whether a supporter ever started.
 	totalMin, err := totalClosedMinutes(ctx, taskID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "calc error"})
 		return
 	}
-	var prepayCents int
+	// Any worklog row at all means someone clocked in — the open-session check
+	// above already guarantees every one of them is closed by now. A task with
+	// no rows was cancelled before anyone started and owes nothing.
+	//
+	// Today this is ALWAYS false: the `assignedToID != nil` guard above refuses
+	// to cancel an accepted task, and an unaccepted task cannot have worklogs.
+	// The settled bill is therefore always $0.00 — which is the actual fix
+	// here, because the old arithmetic returned the $12.00 base fee for a task
+	// nobody ever accepted, and then "refunded" it out of the shopping budget.
+	// The hadSession branch is correct and unreachable, deliberately: Phase 2
+	// relaxes that guard to allow cancelling after acceptance, and this is the
+	// settlement it will need on the day it does.
+	var hadSession bool
 	if err := db.QueryRow(ctx, `
-		select coalesce(prepay_amount_cents,0) from public.tasks where id=$1
-	`, taskID).Scan(&prepayCents); err != nil {
+		select exists (select 1 from public.worklogs where task_id=$1)
+	`, taskID).Scan(&hadSession); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
 	}
-	billCents := calcTaskCostCents(ctx, taskID, totalMin)
-	refundCents := prepayCents - billCents
-	if refundCents < 0 {
-		refundCents = 0
-	}
+	billCents := cancelSettlementCents(taskCategory(ctx, taskID), totalMin, hadSession)
 
 	// 寫入取消狀態 + 理由（建議你在 tasks 加欄位：cancel_reason text, cancelled_at timestamptz）
 	_, err = db.Exec(ctx, `
@@ -3112,13 +3101,11 @@ func cancelTask(c *gin.Context) {
 		return
 	}
 
-	// （可選）寫入 audit_logs（若你有這張表）
-	// _, _ = db.Exec(ctx, `
-	// 	insert into public.audit_logs(task_id, actor_id, action, reason, meta)
-	// 	values ($1,$2,'TASK_CANCELLED',$3,jsonb_build_object(
-	// 		'total_minutes', $4, 'bill_cents', $5, 'refund_cents', $6
-	// 	))
-	// `, taskID, meUID, in.Reason, totalMin, billCents, refundCents)
+	writeAudit(ctx, taskID, meUID, "CANCELLED", in.Reason, map[string]any{
+		"total_minutes": totalMin,
+		"had_session":   hadSession,
+		"bill_cents":    billCents,
+	})
 
 	// Email requester: cancellation confirmation with reason
 	notifyRequesterRich(c, notify.CreateNotificationInput{
@@ -3140,11 +3127,16 @@ func cancelTask(c *gin.Context) {
 	})
 	// TODO: WhatsApp notification here
 
-	// 前端期望的回傳格式
 	c.JSON(http.StatusOK, gin.H{
 		"total_minutes": totalMin,
 		"bill_cents":    billCents,
-		"refund_cents":  refundCents,
+		// Deprecated, always 0. A cancel has nothing to refund: no money has
+		// been captured at any point in the Phase 1 flow, and the shopping
+		// budget it used to be computed against was never a charge. Kept on
+		// the wire only because shipped mobile builds type it as required;
+		// drop it with those builds. Phase 2 replaces the idea entirely — the
+		// unused part of a pre-auth is *released*, not refunded.
+		"refund_cents": 0,
 	})
 }
 

@@ -32,6 +32,12 @@ export const TRACTION_3_CONFIG = {
   purchaseCapDollars: 30,
   /** Billing rate quoted in the post-task questionnaire. */
   perMinuteRate: "$0.50",
+  /**
+   * The full pricing model. `perMinuteRate` alone misrepresents it: quoting
+   * "$0.50 per minute" omits the base fee, which dominates a short task.
+   * Byte-identical to web's app/src/lib/traction.js by test.
+   */
+  pricingSummary: "$12 base (first 15 min included), then $0.50/min",
   /** Service area for this round. */
   area: "Midtown Manhattan, NYC",
 } as const;

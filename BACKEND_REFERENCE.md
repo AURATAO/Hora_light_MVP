@@ -370,10 +370,28 @@ Response: `{ "travel_minutes", "task_minutes", "total_minutes", "display" }`
 
 **`POST /tasks/:id/review` body:** `{ "stars": 1-5, "value_rating": "not_worth|fair|great", "would_rehire": bool, "comment": "string" }`
 
-**Pricing formula (computed in Go, not stored):**
-- Base fee: $25.00 (companionship/companion), $18.00 (estimated > 90 min), $12.00 (everything else)
-- Overtime: $0.50 per minute worked (applied to all minutes, not just beyond a threshold)
-- `total_cost_cents = base_cents + total_minutes * 50`
+**Pricing:** see [The Billing Model](#the-billing-model) below. Every constant
+lives in `BillingConfig` (`server/billing.go`); `POST /tasks/estimate` returns
+the itemized breakdown clients render verbatim.
+
+**`POST /tasks/estimate` body:** `{ "category": "standard", "estimated_minutes": 60, "prepay_amount_cents": 1000 }`
+Response:
+```json
+{
+  "base_fee_cents": 1200,
+  "included_minutes": 15,
+  "per_minute_rate_cents": 50,
+  "total_minutes": 60,
+  "billable_minutes": 45,
+  "time_cost_cents": 2250,
+  "shopping_budget_cents": 1000,
+  "total_cents": 4450,
+  "shopping_cents": 1000
+}
+```
+`shopping_cents` is deprecated — it duplicates `shopping_budget_cents` and is
+sent only so that mobile builds shipped before Stripe Phase 1 keep rendering.
+A budget above the $30.00 cap is rejected `400 shopping_budget_over_cap`.
 
 #### Notifications
 
@@ -518,7 +536,7 @@ WhatsApp notifications are stubbed (TODO comments throughout).
 
 6. **Worklogs use email, not UUID.** `worklogs.user` is the assignee's email, not their UUID. This is a known inconsistency. Cross-join with `users.email` to get the UUID.
 
-7. **Pricing is computed in Go.** There is no `price` or `cost` column in `tasks`. Cost is always derived at query time by the Go backend from worklog duration. If you need to display cost in a new app, call the Go API or reproduce the formula: `base + total_minutes * 50`.
+7. **Pricing is computed in Go.** There is no `price` or `cost` column in `tasks`. Cost is always derived at query time by the Go backend from worklog duration. Do NOT reproduce the formula in a client — call `POST /tasks/estimate` (pre-submission) or read the `cost` object from `GET /tasks/:id/worklogs` (after work is logged). The web app carried three hand-copied duplicates of the schedule for two months; `app/src/lib/pricing.test.mjs` now fails the build if one comes back. See [The Billing Model](#the-billing-model).
 
 8. **`supporter_status` is derived.** There's no `supporter_status` column in the DB. It's computed: if `is_verified_supporter = true` → `"approved"`; else if `supporter_rejected_at IS NOT NULL` → `"rejected"`; else if `supporter_applied_at IS NOT NULL` → `"applied"`; else `"none"`. Rejection outranks the application timestamp because `supporter_applied_at` is never cleared (D-08).
 
@@ -529,3 +547,173 @@ WhatsApp notifications are stubbed (TODO comments throughout).
 11. **Edge Function `notify-new-task` may be a zombie.** The Go backend's `NotifyAdminNewTask()` already handles admin emails for new tasks. The Edge Function does the same thing. Check whether a DB webhook trigger is still pointing at it in the Supabase dashboard; if so, admins will receive duplicate emails.
 
 12. **Session cookie vs. Bearer — CORS.** The `hora_session` cookie uses `SameSite=None; Secure` in prod (cross-domain). If your new app is on a different origin, you need `credentials: 'include'` on fetch calls and the origin must be in `CORS_ALLOW_ORIGINS` or `*.vercel.app`.
+
+---
+
+## The Billing Model
+
+The complete pricing, settlement and payment model. Phase 1 (this section's
+subject) ships the billing engine, the payments schema and the Stripe webhook;
+Phases 2 and 3 wire the money flows onto them. Everything described here as
+"Phase 2/3" has schema and config support today and no code path that reaches
+it yet.
+
+**Single source of truth:** `BillingConfig` in `server/billing.go`. Every
+constant below is a field of it. A billing number that is not a field of
+`BillingConfig` is a bug — that is the rule that replaced two scattered
+literals in `main.go` and three hand-copied duplicates in the web app.
+
+### 1. Time billing
+
+| | |
+|---|---|
+| Base fee | **$12.00** default, **$25.00** companionship/companion |
+| Included | the **first 15 minutes** are inside the base fee |
+| Billable minutes | `max(total_logged_minutes − 15, 0)` |
+| Rate | **$0.50/min** on billable minutes only |
+| Task time cost | `base_fee + billable_minutes × $0.50` |
+
+`total_logged_minutes` is the sum across **all closed worklog sessions** on the
+task. A laundry-style task clocked in and out three times bills the sum of the
+three, and **the 15-minute inclusion is applied once against that sum, not once
+per session.** Gaps between sessions are not billed and do not consume the
+inclusion.
+
+Session rounding is unchanged and happens *before* the sum: each session is
+rounded up to a whole minute with a one-minute floor (`ceil`, `greatest(m,1)`).
+Open sessions are excluded — a supporter still on the clock has logged nothing
+billable yet.
+
+The **$18.00 tier for `estimated_minutes > 90` was removed.** It was a duration
+surcharge wearing a category's clothes: it double-charged for length that the
+per-minute rate already bills, and it keyed off the requester's *estimate*
+rather than time actually worked, so a task that overran its estimate was
+cheaper than one estimated honestly.
+
+**Cancellation.** A task cancelled before anyone clocked in owes **nothing** —
+not even the base fee. Once there is at least one closed session the base fee
+is earned (the supporter travelled and showed up) and time past the inclusion
+bills normally. The shopping budget is never an input to a cancellation: it is
+an authorization ceiling, not money anyone has been charged.
+
+### 2. Shopping / purchases
+
+| | |
+|---|---|
+| Budget | requester sets it at post. No preset default. **Cap $30.00**, enforced in Go (create, update, estimate) and by a DB `CHECK`. |
+| Settlement | the **verified receipt amount**, capped at approved budget + **$5.00 tolerance** |
+| Overage ≤ $5 | auto-approved (the tolerance) |
+| Overage > $5 | requires an in-app budget-increase request **before** the purchase |
+
+The increase flow (Phase 2 UI): supporter requests, requester approves with one
+tap, **5-minute timeout**, supporter pre-selects a fallback ("buy alternative
+at $X" / "skip this item"). **Timeout = auto-DENY and the fallback executes.**
+
+Reimbursement never exceeds approved budget + $5. Anything above that is the
+supporter's own cost. **There is no after-the-fact charging, ever.**
+
+`tasks.prepay_amount_cents` stays the requester's original ask;
+`tasks.shopping_budget_approved_cents` is the currently-approved ceiling, which
+starts equal to it and is what an approved increase raises. Keeping them
+separate is what makes "was this overage approved, and when" answerable later.
+
+### 3. Authorization and capture (Phase 2)
+
+```
+pre-auth at post  = (base_fee + estimated time cost) × 1.5 + budget + $5.00
+capture at done   = time_cost + verified receipt amount
+```
+
+The multiplier applies to the **whole** time-based estimate, base fee included.
+Applying it to the per-minute portion alone does not survive an example: a
+30-minute task estimates $12.00 + $7.50 = $19.50, and 1.5 × $7.50 + $5.00 =
+$16.25 would be a hold too small to cover a task that ran exactly to estimate.
+`TestBillingPreAuthCoversTheHappyPath` asserts hold ≥ on-estimate capture
+across the preset durations.
+
+`CaptureMethod` is **manual**. The uncaptured remainder of the hold
+auto-releases — **that is how "unused time is refunded" works, and it involves
+no refund.** The happy path never issues one.
+
+Auto-extend consent (cap **+15 min**) is captured at post as
+`tasks.auto_extend_consent` (default `true`).
+
+### 4. Payouts (Phase 3)
+
+Destination charge. During beta the supporter receives **100%** of time cost
+and the full receipt amount; `application_fee_amount` is parameterized via
+`BillingConfig.ApplicationFeeBasisPoints`, **0 for now**.
+
+### 5. Where it lives
+
+| Concern | Location |
+|---|---|
+| Every constant | `BillingConfig` — `server/billing.go` |
+| Quote + settlement math | `quoteTask`, `calcTaskCostCents`, `cancelSettlementCents` — `server/billing.go` |
+| Quote endpoint | `POST /tasks/estimate` → `estimateTaskCost` |
+| Settlement breakdown | `GET /tasks/:id/worklogs` → `cost` object |
+| Stripe calls | `CreatePreAuth` / `Capture` / `Release` — `server/payments.go` |
+| Stripe events | `POST /webhooks/stripe` — `server/stripe_webhook.go` |
+| Ledger | `public.payments`, `public.stripe_webhook_events` |
+| Client rule | display only; `app/src/lib/pricing.test.mjs` fails the build on any local price math |
+
+**Currency** is USD (`BillingConfig.Currency = "usd"`), single-currency by
+assumption. All money is **integer cents** end to end; the only float is in
+`formatCentsUSD` / `formatCents`, at the last step before a string.
+
+### 6. Payments tables
+
+`public.payments` — one row per Stripe PaymentIntent, one per task in the
+Phase 2 happy path.
+
+| Column | Notes |
+|---|---|
+| `kind` | `task_payment` today; Phase 2 adds `budget_increase` |
+| `status` | `requires_auth` → `authorized` → `captured`, or `canceled` / `failed` |
+| `authorized_cents` | what the hold is for |
+| `captured_cents`, `time_cost_cents`, `shopping_receipt_cents` | fill in at settlement, so a captured row carries the full split of what was paid and why — which is what a dispute needs |
+
+A partial unique index on `(task_id, kind) WHERE status IN ('requires_auth','authorized')`
+makes a duplicate live hold impossible rather than merely unlikely.
+
+`public.stripe_webhook_events` — `event_id` primary key. Stripe delivers at
+least once and retries for days on any non-2xx, so the handler claims the event
+id with `INSERT … ON CONFLICT DO NOTHING` before doing any work; a duplicate is
+acknowledged and dropped.
+
+Both tables ship with **RLS enabled and zero policies** (deny-all, S-10). No
+client role holds any grant. `payments` is the one table where a client-direct
+read would expose charge history, so this is not boilerplate there.
+
+### 7. Stripe webhook
+
+`POST /webhooks/stripe`, unauthenticated by design — the signature *is* the
+authentication, verified over the **raw request body** (Gin's JSON binding
+would re-encode it and break verification) with `webhook.ConstructEvent`, which
+also enforces Stripe's 5-minute timestamp tolerance against replay.
+
+Fail-closed: no `STRIPE_WEBHOOK_SECRET` → **401**, same as the TalkJS webhook.
+Unconfigured payment routes → **503** via `requirePaymentsEnabled()`.
+
+| Event | Handling |
+|---|---|
+| `payment_intent.succeeded` | record capture; amount taken from Stripe, the authority on what moved |
+| `payment_intent.canceled` | mark the hold released |
+| `payment_intent.payment_failed` | mark the hold dead |
+| `charge.dispute.created` | `audit_logs` row (`PAYMENT_DISPUTED`) **and** email to the ops allowlist |
+| anything else | logged, `200`, ignored — a non-2xx would make Stripe retry for days and eventually disable the endpoint |
+
+A dispute has a response deadline in days and loses by default if missed, so it
+gets both a durable row and an email; neither alone is sufficient. A dispute
+that cannot be traced to a task is filed against the nil UUID rather than
+dropped — an untraceable dispute is *more* urgent, not less.
+
+### 8. Environment
+
+| Variable | Purpose |
+|---|---|
+| `STRIPE_SECRET_KEY` | test key (`sk_test_…`) for now. Absent → payment routes 503, `payments.go` returns `ErrPaymentsDisabled` |
+| `STRIPE_WEBHOOK_SECRET` | endpoint signing secret (`whsec_…`). Absent → webhook 401 |
+
+Startup logs whether payments are enabled and whether the key is test or live.
+The key itself is never logged (S-12).
