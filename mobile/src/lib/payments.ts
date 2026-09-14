@@ -91,9 +91,15 @@ export async function presentAddCardSheet(): Promise<PaymentOutcome> {
     customerId: session.customer_id,
     customerEphemeralKeySecret: session.ephemeral_key,
     setupIntentClientSecret: session.client_secret,
-    // The card has to work at post time with nobody looking at the phone.
-    // Without this the sheet collects a card the issuer expects a challenge
-    // for on every single use, which turns every post into a 3DS prompt.
+    // Cards only. This excludes methods that do not move money at checkout —
+    // bank debits (SEPA, ACH) and voucher methods (OXXO, Konbini, Boleto) —
+    // which report success and can still fail hours later. A pre-auth model
+    // has nothing to hold on one of those, so they must not be offered.
+    //
+    // It is NOT what makes the saved card usable off-session; that is the
+    // SetupIntent's usage=off_session, set server-side in payments_cards.go.
+    // Worth being exact about: someone debugging "why does every post ask for
+    // 3DS" will read this line first, and it is the wrong lever.
     allowsDelayedPaymentMethods: false,
     returnURL: "hora://stripe-redirect",
   });

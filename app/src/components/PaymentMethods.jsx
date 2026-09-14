@@ -114,7 +114,11 @@ function AddCardForm({ onSaved, onCancel }) {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-3">
-      <PaymentElement options={{ layout: 'tab' }} />
+      {/* 'tabs', not 'tab' — the union is 'tabs' | 'accordion' | 'auto' and
+          Stripe throws an IntegrationError at elements.create() on anything
+          else. Nothing type-checks this file (plain JSX, Vite), so the literal
+          has to be right by inspection. */}
+      <PaymentElement options={{ layout: 'tabs' }} />
       {error && (
         <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
           {error}
