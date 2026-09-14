@@ -39,8 +39,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
-	"github.com/stripe/stripe-go/v79"
-	"github.com/stripe/stripe-go/v79/paymentintent"
+	"github.com/stripe/stripe-go/v86"
+	"github.com/stripe/stripe-go/v86/paymentintent"
 )
 
 var errPaymentsDisabled = errors.New("payments disabled: STRIPE_SECRET_KEY not set")

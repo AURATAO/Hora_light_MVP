@@ -29,8 +29,8 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/stripe/stripe-go/v79"
-	"github.com/stripe/stripe-go/v79/webhook"
+	"github.com/stripe/stripe-go/v86"
+	"github.com/stripe/stripe-go/v86/webhook"
 
 	"hora-auth/internal/notify"
 )

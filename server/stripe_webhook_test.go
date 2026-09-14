@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stripe/stripe-go/v86"
 )
 
 const testStripeWebhookSecret = "whsec_test_secret_for_unit_tests"
@@ -52,6 +53,26 @@ func setupStripeWebhookDB(t *testing.T) {
 		DROP TABLE IF EXISTS public.stripe_webhook_events CASCADE;
 	`); err != nil {
 		t.Fatalf("drop payments tables: %v", err)
+	}
+
+	// Supabase always has these roles; a bare postgres:16 container does not,
+	// and the migration's REVOKE statements name them explicitly. Creating
+	// them here keeps the suite self-contained on a fresh container AND means
+	// the REVOKEs are actually exercised rather than skipped — they are the
+	// part of that migration guarding the payments ledger against the schema's
+	// ALTER DEFAULT PRIVILEGES, so a test run that silently skipped them would
+	// be testing the wrong migration.
+	if _, err := db.Exec(context.Background(), `
+		DO $$ BEGIN
+		  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='anon') THEN
+		    CREATE ROLE anon NOLOGIN;
+		  END IF;
+		  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='authenticated') THEN
+		    CREATE ROLE authenticated NOLOGIN;
+		  END IF;
+		END $$;
+	`); err != nil {
+		t.Fatalf("create supabase roles: %v", err)
 	}
 
 	migration, err := os.ReadFile(paymentsMigrationPath)
@@ -93,10 +114,63 @@ func postSignedStripeWebhook(t *testing.T, payload string) int {
 	return postStripeWebhook(t, payload, signStripePayload(payload, testStripeWebhookSecret, time.Now()))
 }
 
+// testEventAPIVersion is the API version stamped on synthetic events.
+//
+// It is deliberately NOT stripe.APIVersion, and this is the whole point. These
+// tests originally hardcoded "2024-06-20" — the exact version the SDK expected
+// — so ConstructEvent's compatibility check could never fail and the suite
+// stayed green while the deployed endpoint 401'd every real webhook Stripe
+// sent, because the live account stamps events with its own, newer version.
+// A test that feeds the code its own expectations back is not testing that
+// check at all.
+//
+// So: a real account-shaped version from the same release train as the SDK,
+// with a DIFFERENT date. That is exactly the case production produces, and it
+// exercises the train-based comparison rather than trivially satisfying it.
+var testEventAPIVersion = differentDateSameTrain(stripe.APIVersion)
+
+// differentDateSameTrain turns "2026-08-26.dahlia" into "2026-01-15.dahlia":
+// same release train, different date. Versions with no train (the pre-2025
+// "2024-06-20" style) are returned unchanged, since for those the SDK requires
+// an exact match and there is no train to preserve.
+func differentDateSameTrain(v string) string {
+	parts := strings.SplitN(v, ".", 2)
+	if len(parts) != 2 {
+		return v
+	}
+	return "2026-01-15." + parts[1]
+}
+
 func stripeEventJSON(id, eventType, dataObject string) string {
-	return fmt.Sprintf(`{"id":%q,"object":"event","type":%q,"api_version":"2024-06-20",
+	return fmt.Sprintf(`{"id":%q,"object":"event","type":%q,"api_version":%q,
 	                     "created":%d,"data":{"object":%s}}`,
-		id, eventType, time.Now().Unix(), dataObject)
+		id, eventType, testEventAPIVersion, time.Now().Unix(), dataObject)
+}
+
+// The regression test for the bug the live smoke test found: stripe-go v79
+// required the event's API version to equal the SDK's exactly, so an account
+// on any newer version had every webhook rejected as a signature failure —
+// a 401, which makes Stripe retry for days and then disable the endpoint.
+// v86 compares only the release train. This asserts we are on an SDK that
+// does, and that a same-train event is accepted.
+func TestStripeWebhookAcceptsSameTrainAPIVersion(t *testing.T) {
+	setupStripeWebhookDB(t)
+
+	if !strings.Contains(stripe.APIVersion, ".") {
+		t.Fatalf("stripe.APIVersion %q has no release train — this SDK demands an "+
+			"exact API-version match and will 401 every event from a live account",
+			stripe.APIVersion)
+	}
+	if testEventAPIVersion == stripe.APIVersion {
+		t.Fatal("synthetic events carry the SDK's own version — the compatibility check is untested")
+	}
+
+	payload := stripeEventJSON("evt_api_version", "payment_intent.canceled",
+		`{"id":"pi_api_version_probe"}`)
+	if code := postSignedStripeWebhook(t, payload); code != http.StatusOK {
+		t.Errorf("status = %d, want 200 for an event on the same release train (%s vs SDK %s)",
+			code, testEventAPIVersion, stripe.APIVersion)
+	}
 }
 
 // ── The signature boundary ─────────────────────────────────────────────────
