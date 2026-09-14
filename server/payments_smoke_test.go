@@ -59,8 +59,13 @@ func TestPaymentsSmokeCreateAndRelease(t *testing.T) {
 	ctx := context.Background()
 
 	// A 60-minute standard task with a $20.00 shopping budget:
-	//   ($12.00 base + $22.50 time) x 1.5 + $20.00 + $5.00 = $76.75
-	const wantAmount = 7675
+	//   ($12.00 base + $22.50 time) x 1.5 + $20.00 budget + $5.00 buffer
+	//   + $5.00 overage tolerance = $81.75
+	//
+	// The tolerance term is a Phase 2b correction: the buffer alone used to
+	// stand in for both it and the auto-extend headroom, which undercaptured a
+	// short shopping task by up to $1.50. See preAuthAmountCents.
+	const wantAmount = 8175
 	in := PreAuthInput{
 		TaskID:              w.taskID,
 		RequesterID:         w.requesterID,

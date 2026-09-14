@@ -2,14 +2,19 @@ import { ApiError } from "./api-error";
 import type {
   AppNotification,
   EaseRating,
+  ExtensionFallback,
+  ExtensionRequest,
+  ExtensionsResponse,
   GpsPing,
   LatestLocation,
   ParsedTask,
   Profile,
   PublicProfile,
   Review,
+  Settlement,
   Task,
   TaskCategory,
+  TaskCost,
   TaskCreatedVia,
   TravelEstimate,
   User,
@@ -447,6 +452,23 @@ export function cancelTask(id: string, reason: string): Promise<CancelTaskResult
 export interface CompleteTaskPayload {
   completion_photo_url: string;
   completion_note?: string;
+  /**
+   * What the receipt came to, in integer cents (Stripe Phase 2b).
+   *
+   * REQUIRED on a task with an approved shopping budget, and 0 is a perfectly
+   * good answer there — it means nothing was bought. Omitting it entirely on
+   * such a task is refused with `receipt_required`, deliberately: silence from
+   * a client that knows nothing about receipts must not be read as "$0" on a
+   * task somebody shopped for.
+   *
+   * The server refuses anything above the approved budget plus the $5
+   * auto-approved tolerance with `receipt_exceeds_budget` — the supporter's
+   * way through that is a budget increase, not a bigger number here.
+   */
+  receipt_amount_cents?: number;
+  /** Required whenever `receipt_amount_cents` is above zero. Upload it through
+   * `uploadCompletionPhoto`, the same storage path the completion photo uses. */
+  receipt_photo_url?: string;
 }
 
 export function completeTask(id: string, payload: CompleteTaskPayload): Promise<Task> {
@@ -571,14 +593,93 @@ interface WorklogsEnvelope {
   items: WorklogDTO[] | null;
   total_minutes: number;
   total_cost_cents: number;
+  cost?: TaskCost;
+  settlement?: Settlement;
 }
 
+// The one settlement surface, for both roles and at every stage of a task —
+// "what does this cost so far" and "what was I charged" are the same question
+// asked at two moments, so they are the same call (Stripe Phase 2b extended
+// this payload rather than adding a parallel endpoint). `cost` and
+// `settlement` are optional here so a build newer than the backend degrades to
+// the totals rather than crashing on a missing key.
 export function getWorklogs(id: string): Promise<WorklogsSummary> {
   return apiFetch<WorklogsEnvelope>(`/tasks/${id}/worklogs`).then((envelope) => ({
     worklogs: (Array.isArray(envelope?.items) ? envelope.items : []).map(mapWorklogDTO),
     total_minutes: envelope?.total_minutes ?? 0,
     total_cost_cents: envelope?.total_cost_cents ?? 0,
+    cost: envelope?.cost ?? null,
+    settlement: envelope?.settlement ?? null,
   }));
+}
+
+// ---- Mid-task asks (Stripe Phase 2b) ---------------------------------------
+//
+// A supporter needs more money or more time; the requester answers with one
+// tap. Silence for `timeout_minutes` is a denial, and the supporter's
+// pre-selected fallback is what happens then — which is why the fallback is
+// mandatory on a budget request and asked for BEFORE the wait.
+//
+// Expiry is applied by the server on every read of this list, so a screen that
+// polls it sees the timeout land within one poll of the deadline. There is no
+// separate "check if it expired" call, and none is needed.
+
+export function getExtensions(taskId: string): Promise<ExtensionsResponse> {
+  return apiFetch<ExtensionsResponse>(`/tasks/${taskId}/extensions`).then((res) => ({
+    ...res,
+    items: Array.isArray(res?.items) ? res.items : [],
+    time_choices: Array.isArray(res?.time_choices) ? res.time_choices : [15, 30],
+  }));
+}
+
+export interface BudgetIncreasePayload {
+  /** The ADDITIONAL cents needed, not a new total. */
+  requested_cents: number;
+  reason?: string;
+  /** What to do if the answer is no, or never comes. Required. */
+  fallback: ExtensionFallback;
+  /** Describes the alternative, when `fallback` is "buy_alternative". Without
+   * it the supporter is later told to "buy the alternative you chose" with no
+   * record of what that was. */
+  fallback_note?: string;
+}
+
+export function requestBudgetIncrease(
+  taskId: string,
+  payload: BudgetIncreasePayload
+): Promise<ExtensionRequest> {
+  return apiFetch<ExtensionRequest>(`/tasks/${taskId}/budget-increase`, {
+    method: "POST",
+    body: payload,
+  });
+}
+
+/** `minutes` must be one of the server's `time_choices` (15 or 30 today). */
+export function requestTimeExtension(taskId: string, minutes: number): Promise<ExtensionRequest> {
+  return apiFetch<ExtensionRequest>(`/tasks/${taskId}/time-extension`, {
+    method: "POST",
+    body: { requested_minutes: minutes },
+  });
+}
+
+export interface ExtensionResolution {
+  request: ExtensionRequest;
+  approved_budget_cents: number;
+  time_cap: ExtensionsResponse["time_cap"];
+}
+
+// Requester only. A request that has already been answered — or that timed out
+// a second before the tap landed — answers 409 with the current status rather
+// than silently charging for something the supporter has already worked around.
+export function resolveExtension(
+  taskId: string,
+  extensionId: string,
+  decision: "approve" | "deny"
+): Promise<ExtensionResolution> {
+  return apiFetch<ExtensionResolution>(
+    `/tasks/${taskId}/extensions/${extensionId}/${decision}`,
+    { method: "POST" }
+  );
 }
 
 export async function uploadCompletionPhoto(id: string, file: FilePart): Promise<UploadResponse> {

@@ -135,6 +135,12 @@ var reassignMigrationPaths = []string{
 	"../supabase/migrations/20260818140000_task_removed_status.sql",
 	"../supabase/migrations/20260818150000_notification_type_completed_supporter.sql",
 	"../supabase/migrations/20260909120000_notification_type_task_reassigned.sql",
+	// Phase 2b. The real files, applied rather than restated: the enum values
+	// and the extension_requests table are both things the Go build below
+	// writes to, and a fixture that hand-copied their DDL would keep passing
+	// after the migration that ships diverged from it.
+	"../supabase/migrations/20260914130000_notification_types_phase2b.sql",
+	"../supabase/migrations/20260914140000_extension_requests.sql",
 }
 
 func setupReassignDB(t *testing.T) {

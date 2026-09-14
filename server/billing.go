@@ -68,6 +68,13 @@ type BillingConfig struct {
 	// auto-DENIES and the supporter's pre-selected fallback executes (Phase 2).
 	ApprovalTimeoutMinutes int
 
+	// How far ahead of the billable-time ceiling both parties are warned that
+	// it is coming (Phase 2b, Layer 2). Small on purpose: a warning that fires
+	// at half the estimate is noise, and one that fires at the ceiling is not
+	// a warning. Five minutes is roughly one shop queue — long enough for a
+	// requester to answer and a supporter to act on silence.
+	CapWarningLeadMinutes int
+
 	// Pre-authorization held at post time:
 	//   time_estimate_cost x PreAuthMultiplier + budget + PreAuthBufferCents
 	// The hold is deliberately larger than the expected capture; the unused
@@ -105,6 +112,7 @@ var Billing = BillingConfig{
 	GracePeriodMinutes: 30,
 
 	ApprovalTimeoutMinutes: 5,
+	CapWarningLeadMinutes:  5,
 
 	PreAuthMultiplier:  1.5,
 	PreAuthBufferCents: 500, // $5.00
@@ -126,8 +134,17 @@ var Billing = BillingConfig{
 // hold that cannot cover the happy path is not a hold.
 //
 // The shopping budget is added at face value rather than multiplied: it is
-// already a ceiling the requester set, and the $5 buffer is precisely the
-// approved overage tolerance.
+// already a ceiling the requester set. The $5 auto-approved overage tolerance
+// is added ON TOP of it, and only when there is a budget at all.
+//
+// That addition is a Phase 2b correction to a real gap. The buffer was
+// originally described as covering the tolerance, which double-counted it: the
+// same $5 was standing in for the tolerance AND for the auto-extend headroom,
+// and on a short shopping task there was not enough of it to go round. A
+// 15-minute delivery with a $15 budget held $38.00 against a ceiling
+// settlement of $39.50 — an undercapture of $1.50 on every such task, silent
+// except for one log line. TestPhase2bPreAuthCoversCappedSettlement is what
+// found it and is what keeps it closed.
 //
 // AUTO-EXTEND IS ALREADY COVERED, and the amount deliberately does NOT depend
 // on tasks.auto_extend_consent. Phase 2a asked whether consenting to
@@ -156,6 +173,9 @@ var Billing = BillingConfig{
 func preAuthAmountCents(category string, estimatedMinutes, shoppingBudgetCents int) int {
 	timeEstimate := baseFeeCents(category) + timeCostCents(estimatedMinutes)
 	held := int(float64(timeEstimate)*Billing.PreAuthMultiplier) + shoppingBudgetCents + Billing.PreAuthBufferCents
+	if shoppingBudgetCents > 0 {
+		held += Billing.OverageToleranceCents
+	}
 	return held
 }
 
@@ -214,6 +234,20 @@ type TaskQuote struct {
 	TotalMinutes    int `json:"total_minutes"`
 	BillableMinutes int `json:"billable_minutes"`
 	TimeCostCents   int `json:"time_cost_cents"`
+
+	// Settlement only (Phase 2b), omitted from a pre-submission quote where
+	// there is no ceiling to have hit yet.
+	//
+	// BilledMinutes is TotalMinutes clamped to CapMinutes. When they differ,
+	// the supporter worked longer than the requester agreed to pay for, and a
+	// client can say so in those words rather than presenting a total that
+	// silently disagrees with the clock on the same screen.
+	BilledMinutes int `json:"billed_minutes,omitempty"`
+	CapMinutes    int `json:"cap_minutes,omitempty"`
+	// The verified receipt, reimbursed up to the approved budget + tolerance.
+	// Distinct from ShoppingBudgetCents below, which is the ceiling and not a
+	// charge — at settlement this is the number that is actually in the total.
+	ShoppingReceiptCents int `json:"shopping_receipt_cents,omitempty"`
 	// The approved shopping ceiling, not a charge. Nothing is owed here until
 	// a receipt is verified at completion (Phase 2).
 	ShoppingBudgetCents int `json:"shopping_budget_cents"`
@@ -285,10 +319,180 @@ func taskCategory(ctx context.Context, taskID string) string {
 }
 
 // calcTaskCostCents is the service charge in cents for totalMinutes of work on
-// taskID: base fee + every minute past the first 15. It does NOT include the
-// shopping budget — that settles separately against a verified receipt.
+// taskID: base fee + every minute past the first 15, up to the ceiling the
+// requester consented to. It does NOT include the shopping budget — that
+// settles separately against a verified receipt.
+//
+// The cap is applied here rather than at the call sites so that the completion
+// path, the force-complete path and the /worklogs breakdown cannot disagree
+// about what a task costs. See taskTimeCapMinutes for what the ceiling is.
 func calcTaskCostCents(ctx context.Context, taskID string, totalMinutes int) int {
-	return baseFeeCents(taskCategory(ctx, taskID)) + timeCostCents(totalMinutes)
+	capMinutes, _ := taskTimeCapMinutes(ctx, taskID)
+	return baseFeeCents(taskCategory(ctx, taskID)) + timeCostCentsCapped(totalMinutes, capMinutes)
+}
+
+// ── The billable-time ceiling ──────────────────────────────────────────────
+//
+// THE RULE, in one line: a requester is never charged for time they did not
+// agree to in advance.
+//
+// What they agreed to is their estimate, plus AutoExtendMinutes if they ticked
+// the consent box at post, plus every minute of every extension request they
+// approved afterwards. Time worked past that still happens — a supporter is
+// never told to abandon somebody mid-task — it simply stops costing anything,
+// and both parties are told before it does (server/timecap.go).
+//
+// THE CEILING BOUNDS TOTAL LOGGED MINUTES, NOT BILLABLE MINUTES, and the
+// order matters. Capping billable minutes instead would hand the requester
+// back the 15-minute inclusion a second time: on a 30-minute estimate with
+// consent, a 60-minute task would bill min(60-15, 45) = 45 billable minutes —
+// MORE than the 45-minute ceiling itself is worth. Clamping the logged total
+// first gives min(60,45) = 45 logged -> 30 billable, which is exactly "you
+// consented to 45 minutes of work, the first 15 of which were in the base
+// fee".
+
+// cappedMinutes clamps logged time to a ceiling. A ceiling of zero or less
+// means no ceiling at all — the value taskTimeCapMinutes returns when a task
+// has no estimate to reason from, where capping to zero would silently make
+// the task free.
+func cappedMinutes(totalMinutes, capMinutes int) int {
+	if totalMinutes < 0 {
+		totalMinutes = 0
+	}
+	if capMinutes <= 0 || totalMinutes <= capMinutes {
+		return totalMinutes
+	}
+	return capMinutes
+}
+
+// timeCostCentsCapped is timeCostCents against the consented ceiling.
+func timeCostCentsCapped(totalMinutes, capMinutes int) int {
+	return timeCostCents(cappedMinutes(totalMinutes, capMinutes))
+}
+
+// timeCapWarningMinutes is the logged total at which Layer 2 fires: far enough
+// before the ceiling that the requester can answer and the supporter can act.
+//
+// Clamped to at least one minute, because a task estimated at five minutes or
+// less would otherwise warn at or before its own start — a warning that has
+// already fired when the supporter clocks in tells them nothing.
+func timeCapWarningMinutes(capMinutes int) int {
+	if capMinutes <= 0 {
+		return 0
+	}
+	if w := capMinutes - Billing.CapWarningLeadMinutes; w >= 1 {
+		return w
+	}
+	return 1
+}
+
+// TimeCap is a task's billable-time ceiling, itemized — the same shape the
+// settlement payload and the supporter's screen both render, so neither has to
+// re-derive "where did 45 come from".
+type TimeCap struct {
+	// The requester's estimate at post. The base of the ceiling.
+	EstimateMinutes int `json:"estimate_minutes"`
+	// AutoExtendMinutes, or 0 when the requester declined at post.
+	AutoExtendMinutes int `json:"auto_extend_minutes"`
+	// Minutes added by extension requests the requester has approved.
+	ApprovedExtraMinutes int `json:"approved_extra_minutes"`
+	// The sum, and the number billing actually clamps against.
+	CapMinutes int `json:"cap_minutes"`
+	// Where Layer 2 fires.
+	WarnAtMinutes int `json:"warn_at_minutes"`
+	// Whether the requester consented at post. Rendered as a reason, not used
+	// as arithmetic — AutoExtendMinutes above already carries the effect.
+	AutoExtendConsent bool `json:"auto_extend_consent"`
+}
+
+// taskTimeCapMinutes reads a task's ceiling. Returns (capMinutes, detail).
+//
+// A task with no usable estimate returns 0, which cappedMinutes reads as "no
+// ceiling" — the honest answer for a row that never recorded what was agreed,
+// and far better than pricing it at zero.
+func taskTimeCapMinutes(ctx context.Context, taskID string) (int, TimeCap) {
+	var estimate int
+	var consent bool
+	if err := db.QueryRow(ctx, `
+		select coalesce(estimated_minutes, 0), coalesce(auto_extend_consent, true)
+		  from public.tasks where id = $1::uuid
+	`, taskID).Scan(&estimate, &consent); err != nil {
+		return 0, TimeCap{}
+	}
+
+	var approvedExtra int
+	// Errors are deliberately swallowed into zero rather than propagated: a
+	// failed read here must never invent headroom the requester did not
+	// approve. Zero extra is the conservative direction.
+	_ = db.QueryRow(ctx, `
+		select coalesce(sum(requested_minutes), 0)
+		  from public.extension_requests
+		 where task_id = $1::uuid and kind = 'time' and status = 'approved'
+	`, taskID).Scan(&approvedExtra)
+
+	detail := TimeCap{
+		EstimateMinutes:      estimate,
+		ApprovedExtraMinutes: approvedExtra,
+		AutoExtendConsent:    consent,
+	}
+	if estimate <= 0 {
+		return 0, detail
+	}
+	if consent {
+		detail.AutoExtendMinutes = Billing.AutoExtendMinutes
+	}
+	detail.CapMinutes = estimate + detail.AutoExtendMinutes + approvedExtra
+	detail.WarnAtMinutes = timeCapWarningMinutes(detail.CapMinutes)
+	return detail.CapMinutes, detail
+}
+
+// ── Settlement ─────────────────────────────────────────────────────────────
+
+// reimbursableReceiptCents is what the platform will pay back against a
+// receipt: the verified amount, capped at the approved budget plus the
+// tolerance. Anything above that needed an approved increase BEFORE the
+// purchase, so it is the supporter's own cost — there is no after-the-fact
+// charging, ever.
+//
+// The handler refuses an over-tolerance receipt with a 400 long before this is
+// reached (see completeTask); this is the arithmetic backstop for the paths
+// that do not go through it — force-complete above all, where an admin closes
+// a task carrying a receipt nobody validated.
+func reimbursableReceiptCents(receiptCents, approvedBudgetCents int) int {
+	if receiptCents <= 0 {
+		return 0
+	}
+	ceiling := approvedBudgetCents + Billing.OverageToleranceCents
+	if receiptCents > ceiling {
+		return ceiling
+	}
+	return receiptCents
+}
+
+// receiptWithinTolerance reports whether a receipt can be reimbursed in full.
+// The negation is the 400 the supporter gets, and the number they are told.
+func receiptWithinTolerance(receiptCents, approvedBudgetCents int) bool {
+	return receiptCents <= approvedBudgetCents+Billing.OverageToleranceCents
+}
+
+// quoteSettlement prices a finished task: the same itemization quoteTask
+// returns, clamped to the consented ceiling and carrying the verified receipt
+// instead of the approved budget in the total.
+//
+// The budget stays on the quote as context — "you approved $20, the receipt
+// was $17.40" is the sentence the requester needs — but it is the RECEIPT that
+// is added to the total, because the budget was never a charge.
+func quoteSettlement(category string, totalMinutes, capMinutes, approvedBudgetCents, receiptCents int) TaskQuote {
+	billed := cappedMinutes(totalMinutes, capMinutes)
+	q := quoteTask(category, billed, approvedBudgetCents)
+	// quoteTask reports the minutes it priced. Settlement needs both: what was
+	// worked, and what was billable after the ceiling.
+	q.TotalMinutes = totalMinutes
+	q.BilledMinutes = billed
+	q.CapMinutes = capMinutes
+	q.ShoppingReceiptCents = reimbursableReceiptCents(receiptCents, approvedBudgetCents)
+	q.TotalCents = q.BaseFeeCents + q.TimeCostCents + q.ShoppingReceiptCents
+	return q
 }
 
 // cancelSettlementCents is what a cancelled task owes.

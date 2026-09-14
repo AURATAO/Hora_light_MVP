@@ -145,12 +145,30 @@ func adminForceCompleteTask(c *gin.Context) {
 	}
 
 	totalMin, _ := totalClosedMinutes(ctx, taskID)
-	totalCents := calcTaskCostCents(ctx, taskID, totalMin)
+	timeCostCents := calcTaskCostCents(ctx, taskID, totalMin)
+
+	// The money, on the same path a normal completion takes (Phase 2b). A
+	// force-complete is a completion — the task was worked and somebody is
+	// owed for it — so skipping the capture here would mean an admin closing a
+	// stuck task quietly made it free.
+	//
+	// The receipt is whatever the task already carries. An admin closing a
+	// shopping task the supporter never finished submitting has no receipt to
+	// verify, and reimbursing an unverified amount is not something an ops
+	// action should do on its own; reimbursableReceiptCents clamps whatever is
+	// there to the approved ceiling either way.
+	inputs := readSettlementInputs(ctx, taskID)
+	reimbursedCents := reimbursableReceiptCents(inputs.ReceiptCents, inputs.ApprovedBudgetCents)
+	totalCents := timeCostCents + reimbursedCents
+	settleCompletedTask(ctx, taskID, actorUID, timeCostCents, reimbursedCents)
 
 	writeAudit(ctx, taskID, actorUID, "FORCE_COMPLETED", "", map[string]any{
 		"admin_email":             actorEmail,
 		"closed_worklog_sessions": closed,
 		"total_minutes":           totalMin,
+		"billed_minutes":          cappedMinutes(totalMin, inputs.CapMinutes),
+		"time_cost_cents":         timeCostCents,
+		"receipt_cents":           reimbursedCents,
 		"final_cost_cents":        totalCents,
 		"supporter_email":         t.AssigneeEmail,
 	})
@@ -338,6 +356,31 @@ func adminAdjustTime(c *gin.Context) {
 			"error":   "task_not_adjustable",
 			"status":  t.Status,
 			"message": fmt.Sprintf("Logged time on a %s task cannot be adjusted.", t.Status),
+		})
+		return
+	}
+
+	// Once the card has been charged, adjusting the clock would produce a
+	// settlement that disagrees with what was actually taken — and correcting a
+	// capture is a refund, which nothing in this codebase issues. Refunds are a
+	// manual Stripe-dashboard operation during beta; the ops runbook says so
+	// and this 409 says which task and how much.
+	//
+	// BEFORE capture, an adjustment simply re-prices: nothing is stored, and
+	// every settlement figure is derived from the worklogs at the moment it is
+	// asked for. That is why this gate is on the capture and not on the status.
+	if captured, capturedAt := alreadyCaptured(ctx, taskID); captured {
+		inputs := readSettlementInputs(ctx, taskID)
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "already_captured",
+			"message": fmt.Sprintf(
+				"This task was charged on %s. Logged time can't be adjusted after the money has moved — "+
+					"issue a refund or a partial capture adjustment in the Stripe dashboard instead.",
+				capturedAt.Format("2 Jan 2006 15:04")),
+			"captured_at":      capturedAt,
+			"settled_cents":    inputs.quote().TotalCents,
+			"stripe_dashboard": "https://dashboard.stripe.com/payments",
+			"total_minutes":    inputs.LoggedMinutes,
 		})
 		return
 	}

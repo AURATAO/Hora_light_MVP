@@ -555,11 +555,14 @@ WhatsApp notifications are stubbed (TODO comments throughout).
 The complete pricing, settlement and payment model.
 
 Phase 1 shipped the billing engine, the payments schema and the Stripe webhook
-with nothing calling them. **Phase 2a (§9 below) wires the first half in**: a
-card on file, a pre-auth at post, and a release on every cancel path — all
-behind `PAYMENTS_ENFORCED`, which is **off** in production. Capture at
-completion, receipts, budget-increase approvals and payouts are Phase 2b/3 and
-still have schema and config support with no code path that reaches them.
+with nothing calling them. **Phase 2a (§9)** wired the first half in: a card on
+file, a pre-auth at post, and a release on every cancel path. **Phase 2b (§10)**
+closes the loop: capture at completion, receipts, mid-task budget and time
+approvals, and the three-layer time cap. All of it is behind
+`PAYMENTS_ENFORCED`, which is **off** in production — with the flag off, no
+task has a hold, nothing is captured and none of the money paths below execute.
+Payouts to supporters are Phase 3 and still have config support with no code
+path that reaches them.
 
 **Single source of truth:** `BillingConfig` in `server/billing.go`. Every
 constant below is a field of it. A billing number that is not a field of
@@ -608,9 +611,9 @@ an authorization ceiling, not money anyone has been charged.
 | Overage ≤ $5 | auto-approved (the tolerance) |
 | Overage > $5 | requires an in-app budget-increase request **before** the purchase |
 
-The increase flow (Phase 2 UI): supporter requests, requester approves with one
-tap, **5-minute timeout**, supporter pre-selects a fallback ("buy alternative
-at $X" / "skip this item"). **Timeout = auto-DENY and the fallback executes.**
+The increase flow (§10.2): supporter requests, requester approves with one tap,
+**5-minute timeout**, supporter pre-selects a fallback ("buy alternative" with a
+note / "skip this item"). **Timeout = auto-DENY and the fallback executes.**
 
 Reimbursement never exceeds approved budget + $5. Anything above that is the
 supporter's own cost. **There is no after-the-fact charging, ever.**
@@ -624,8 +627,18 @@ separate is what makes "was this overage approved, and when" answerable later.
 
 ```
 pre-auth at post  = (base_fee + estimated time cost) × 1.5 + budget + $5.00
+                    + $5.00 overage tolerance, when budget > 0
 capture at done   = time_cost + verified receipt amount
 ```
+
+That last term is a **Phase 2b correction**. `PreAuthBufferCents` was standing in
+for both the $5 auto-approved overage tolerance *and* the auto-extend headroom —
+the same $5 counted twice — so a short shopping task held less than its ceiling
+settlement: a 15-minute delivery with a $15 budget held $38.00 against a
+settlement of $39.50. Undercapture of up to $1.50 per such task, silent except
+for one log line. `TestPhase2bPreAuthCoversCappedSettlement` sweeps every
+duration and both tiers against the ceiling settlement and is what found it; the
+no-budget hold is unchanged.
 
 The multiplier applies to the **whole** time-based estimate, base fee included.
 Applying it to the per-minute portion alone does not survive an example: a
@@ -652,14 +665,19 @@ and the full receipt amount; `application_fee_amount` is parameterized via
 | Concern | Location |
 |---|---|
 | Every constant | `BillingConfig` — `server/billing.go` |
-| Quote + settlement math | `quoteTask`, `calcTaskCostCents`, `cancelSettlementCents` — `server/billing.go` |
+| Quote + settlement math | `quoteTask`, `quoteSettlement`, `calcTaskCostCents`, `cancelSettlementCents` — `server/billing.go` |
+| The billable-time ceiling | `taskTimeCapMinutes`, `cappedMinutes`, `timeCostCentsCapped` — `server/billing.go` |
 | Quote endpoint | `POST /tasks/estimate` → `estimateTaskCost` |
-| Settlement breakdown | `GET /tasks/:id/worklogs` → `cost` object |
+| Settlement breakdown | `GET /tasks/:id/worklogs` → `cost` + `settlement` objects |
 | Stripe calls | `CreatePreAuth` / `Capture` / `Release` — `server/payments.go` |
 | Post-time wiring | `payments_preauth.go` (flag, decline mapping, release, 3DS confirm) |
+| Settlement + multi-hold capture | `payments_settlement.go` |
+| Mid-task asks | `extensions.go` (`/tasks/:id/budget-increase`, `/time-extension`, `/extensions/*`) |
+| The three-layer time cap | `timecap.go` |
 | Card on file | `payments_cards.go` (`/payments/*`) |
 | Stripe events | `POST /webhooks/stripe` — `server/stripe_webhook.go` |
-| Ledger | `public.payments`, `public.stripe_webhook_events` |
+| Ledger | `public.payments`, `public.stripe_webhook_events`, `public.extension_requests` |
+| Ops procedures | `skills/payments-runbook.md` |
 | Client rule | display only; `app/src/lib/pricing.test.mjs` fails the build on any local price math |
 
 **Currency** is USD (`BillingConfig.Currency = "usd"`), single-currency by
@@ -673,8 +691,8 @@ Phase 2 happy path.
 
 | Column | Notes |
 |---|---|
-| `kind` | `task_payment` today; Phase 2 adds `budget_increase` |
-| `status` | `requires_auth` → `authorized` → `captured`, or `canceled` / `failed` |
+| `kind` | `task_payment`, or `budget_increase` — a supplementary hold opened when an approved increase outgrew the original one |
+| `status` | `requires_auth` → `authorized` → `captured`, or `canceled` / `failed` (the hold never landed) / `capture_failed` (the hold landed, the task completed, the capture did not go through) |
 | `authorized_cents` | what the hold is for |
 | `captured_cents`, `time_cost_cents`, `shopping_receipt_cents` | fill in at settlement, so a captured row carries the full split of what was paid and why — which is what a dispute needs |
 
@@ -721,6 +739,7 @@ dropped — an untraceable dispute is *more* urgent, not less.
 | `STRIPE_WEBHOOK_SECRET` | endpoint signing secret (`whsec_…`). Absent → webhook 401 |
 | `STRIPE_PUBLISHABLE_KEY` | `pk_test_…`. Sent to both clients in every payments response, so rotating it needs no web deploy and no native rebuild. Public by design (S-12) |
 | `PAYMENTS_ENFORCED` | `1/true/yes/on` → posting requires a card and places a hold. **Anything else, including unset, is off** |
+| `STRIPE_INCREMENTAL_AUTH` | `1/true/yes/on` → the pre-auth requests incremental-authorization support and an approved budget increase grows the existing hold. **Off by default, and turning it on before Stripe enables flexible payments on the account breaks every post** — see §10.3 |
 
 Startup logs whether payments are enabled and whether the key is test or live.
 The key itself is never logged (S-12).
@@ -855,3 +874,209 @@ The pre-auth amount deliberately does **not** depend on it. With
 `held = 1.5(B+T) + $5` and `capture = B + T + 15 × $0.50`, the margin is
 `0.5(B+T) + $5 − $7.50 ≥ $3.50` at every duration and both base-fee tiers,
 since `B ≥ $12.00`. `TestPreAuthCoversAutoExtend` pins that floor.
+
+---
+
+### 10. Phase 2b — settlement, receipts, mid-task approvals, the time cap
+
+Everything from here is behind `PAYMENTS_ENFORCED` unless it says otherwise.
+The billable-time ceiling (§10.4) is the exception: it is part of the pricing
+model, not of payments, and it applies whether or not anybody is being charged.
+
+#### 10.1 Capture at completion
+
+```
+completeTask
+  validate the receipt          → 400 before the task is touched, if it fails
+  task → 'completed', receipt columns written
+  settleTaskPayment             → capture time cost + verified receipt
+    ok      → tasks.settled_* written, PAYMENT_CAPTURED audit row
+    error   → payments.status = 'capture_failed', audit row, ops emailed
+```
+
+**A capture failure never blocks a completion.** The task completes, the row
+lands in `capture_failed`, `audit_logs` gets `PAYMENT_CAPTURE_FAILED` carrying
+`owed_cents`, and the ops allowlist gets an email. A supporter standing in
+someone's kitchen must not be unable to close a finished task because a card
+network is having a bad afternoon; settling by hand afterwards is cheap.
+
+The same path runs on **admin force-complete** (a force-complete *is* a
+completion — somebody worked and is owed) and on **cancel-with-sessions**
+(§10.5).
+
+**Multi-hold settlement.** A task may carry a second `budget_increase` hold
+(§10.3). Capture takes the main hold first, then supplementary holds oldest
+first until the total is covered, then releases whatever is left — an unused
+authorization is real money frozen on a real card.
+
+**`adjust-time` after a capture is refused** with **409 `already_captured`**,
+naming the capture date and the settled amount. Before a capture it simply
+re-prices, because nothing is stored: every settlement figure derives from the
+worklogs at the moment it is asked for. Correcting a capture is a refund, and
+refunds are a manual Stripe-dashboard operation during beta —
+`skills/payments-runbook.md` is the procedure.
+
+#### 10.2 Receipts
+
+On a task with `shopping_budget_approved_cents > 0` the completion **requires**
+an answer about the receipt. `receipt_amount_cents` is a pointer server-side so
+that "no receipt field was sent" stays distinguishable from "the receipt was
+zero" — silence from a client that knows nothing about receipts must not be read
+as `$0` on a task somebody shopped for.
+
+| Condition | Answer |
+|---|---|
+| budget > 0, field absent | **400 `receipt_required`** |
+| amount > 0, no photo | **400 `receipt_photo_required`** |
+| amount > approved budget + $5 | **400 `receipt_exceeds_budget`**, carrying `max_receipt_cents` and a message pointing at a budget increase |
+| amount = 0 | fine — nothing was bought, shopping component is $0, no photo needed |
+
+Refused **before** the task is marked complete, deliberately: an over-budget
+receipt is the one completion failure the supporter can fix, and a completed
+task offers neither a correction nor an increase.
+
+The receipt photo uploads through the existing `POST /tasks/:id/completion-photo`
+endpoint and the same `task-completions` bucket — same kind of file, same phone,
+same moment. Both parties see it on the settlement; only the requester is
+offered "report a problem", which is a `mailto` to support with the task id, not
+a dispute system.
+
+#### 10.3 Mid-task asks — `public.extension_requests`
+
+One table, `kind IN ('budget','time')`. See **D-11** for why it is one table and
+not two. `requested_cents` / `requested_minutes` are the **additional** amount,
+never a new total.
+
+```
+POST /tasks/:id/budget-increase   supporter only, task open + assigned
+POST /tasks/:id/time-extension    ditto; minutes must be one of time_choices
+GET  /tasks/:id/extensions        both parties — and applies the expiry
+POST /tasks/:id/extensions/:eid/approve|deny   requester only
+```
+
+**Expiry is lazy, and the read is the whole scheduler.** A request older than
+`ApprovalTimeoutMinutes` (5) is expired by whoever looks at it next — the
+supporter's polling screen, the requester opening the notification, the resolve
+handler itself, or the 6-hourly sweep that already watches pre-auths. Both
+clients poll `/extensions` every 5s while a task is live, so the timeout lands
+within seconds for the one person actually waiting on it, and nothing runs at
+all for the tasks where nobody is.
+
+**Silence is a denial**, which is why a budget request must carry a fallback
+(`buy_alternative` with a note, or `skip_item`) chosen up front: the supporter
+is stood in a shop and needs to act on silence, not decide under time pressure.
+A time request needs no fallback — the fallback is the billing, since time past
+the ceiling is simply not charged.
+
+**One pending per task per kind** (partial unique index; 409 on a second of the
+same kind). Per kind rather than per task: a supporter waiting on "can I spend
+$8 more" must still be able to say "and I need 15 more minutes".
+
+**Approval moves the ceiling first, then the hold.** If growing the hold fails,
+the approval still stands — the requester said yes and the supporter may spend;
+the platform carries the gap and it surfaces at capture. Which mechanism grows
+the hold:
+
+| | |
+|---|---|
+| **Incremental authorization** | Preferred — one hold, one statement line. Requires `STRIPE_INCREMENTAL_AUTH=1` **and** a Stripe account enabled for flexible payments. |
+| **Supplementary payment** | A second PaymentIntent (`kind='budget_increase'`) for the shortfall. Every card supports it. **This is the live path.** |
+
+Requesting incremental authorization on an ineligible account is **not** a soft
+degradation: the off-session confirm fails with
+`payment_intent_invalid_parameter` — *"This account is not eligible for the
+requested card features"* — the intent holds nothing, and every post 402s.
+Verified against the real test API on 2026-09-14. Hence the flag, default off,
+and hence `ensureHoldCoversTask` not attempting an increment while it is off
+(an intent created without the capability can never be incremented, so the call
+would be guaranteed-to-fail latency inside a requester's Approve tap).
+
+#### 10.4 The billable-time ceiling, and the three layers
+
+```
+cap = estimated_minutes
+    + AutoExtendMinutes (15) if tasks.auto_extend_consent
+    + every minute of every approved time extension
+```
+
+**The cap bounds TOTAL LOGGED MINUTES, not billable minutes**, and the order
+matters: capping billable minutes would hand the requester the 15-minute
+inclusion a second time. On a 45-minute ceiling with 60 minutes logged, the
+right answer is `billable(min(60,45)) = 30`; capping billable would give 45 —
+more than the ceiling itself is worth.
+
+| Layer | When | What |
+|---|---|---|
+| **2 — warning** | logged ≥ cap − `CapWarningLeadMinutes` (5) | Both parties told, once. Supporter gets one-tap "+15 / +30"; requester gets the mirror. Fires whether or not consent was given — the point is that nobody is surprised. |
+| **1 — auto-extend** | logged ≥ cap | Billing stops accruing. With consent the ceiling is estimate+15, so those minutes bill with no interruption at all. Both told; `TIME_CAP_REACHED`. |
+| **3 — unresponsive** | `GracePeriodMinutes` (30) past the cap, no approval, nothing pending | Ops emailed; `TIME_CAP_UNRESPONSIVE` audit row. |
+
+**No automatic cancellation, ever**, at any layer. The task stays completable
+and settles at the capped amount. The supporter's screen says the meter has
+stopped, never that they must.
+
+Each layer fires **once per task**, enforced by the database
+(`UPDATE … WHERE <latch> IS NULL RETURNING`) rather than by a flag in memory, so
+two GPS pings in the same second produce one notification. An approved time
+extension clears all three latches, so the sequence repeats cleanly against the
+new ceiling.
+
+**Where it is evaluated — no new scheduler.** `POST /tasks/:id/gps-ping` is the
+real heartbeat: it arrives every 30s from the supporter's phone while they are
+clocked in, including with the screen locked, which is exactly the situation the
+warning exists for. Also on `GET /tasks/:id/worklogs`, on clock-out, and in the
+existing 6h watcher as a backstop for a supporter who went dark.
+
+#### 10.5 Cancel with closed sessions
+
+The branch Phase 1 built `cancelSettlementCents` for and left unreachable.
+
+| | |
+|---|---|
+| unaccepted, or accepted with **no** closed session | unchanged — still refused after acceptance, still $0 and a full release before it |
+| accepted with **≥1 closed session** | now allowed. Settlement = base fee + billable minutes of the closed sessions, **captured** against the hold; the remainder auto-releases |
+
+The supporter is **detached** (the task is over; leaving them assigned to a
+cancelled job keeps it showing up as theirs) and told what they earned, by the
+id read *before* the detach — `notifyAssignee` re-reads the task to find its
+recipient and would find nobody.
+
+Detaching used to mean losing access: `getTask` authorized on
+`assigned_to_id` alone, so the person who had just been paid could no longer
+open the task and see what for. Both `getTask` and `getWorklogs` now also admit
+**anyone who logged time on the task** (matched on the worklog's email column),
+which closes the same hole for admin-removed and reassigned tasks too.
+
+#### 10.6 The settlement payload
+
+`GET /tasks/:id/worklogs` gained a `settlement` object and `cost` gained
+`billed_minutes`, `cap_minutes` and `shopping_receipt_cents`. Extended rather
+than given a parallel endpoint: "what does this cost so far" and "what was I
+charged" are one question asked at two moments, and two endpoints would be two
+chances to answer them differently.
+
+`settlement.state` is the one field a client branches on:
+
+| | |
+|---|---|
+| `not_charged` | no hold was ever placed — the figures are what *would* be charged. Every task in the running beta. |
+| `estimated` | still running; the bill so far |
+| `captured` | the money moved; `captured_cents` and `settled_at` are present |
+| `capture_failed` | finished, charge did not go through. Ops have been emailed; **nothing for either party to do in-app**, and both clients say exactly that rather than raising an alarm |
+
+#### 10.7 Notification types added
+
+`BUDGET_INCREASE_REQUESTED`, `TIME_EXTENSION_REQUESTED`, `EXTENSION_RESOLVED`,
+`TIME_CAP_WARNING`, `TIME_CAP_REACHED`. All five deep-link to the task screen,
+which is where both the approve/deny card and the supporter's own request live —
+there is no separate approval screen.
+
+`EXTENSION_RESOLVED` covers approved / denied / expired in one value, the same
+way `TASK_REASSIGNED` covers three recipients: the outcome is composed in Go and
+the email template renders what it is handed, so three near-identical values
+would be three places to forget.
+
+`notifications.type` is an enum — **these had to land in the database before the
+Go build that emits them** (S-21). `TestAdminRemoveNotificationEnumCoversEveryEmittedType`
+is the regression net; it also gained `TASK_REASSIGNED`, which had been emitted
+since September and was missing from the list.

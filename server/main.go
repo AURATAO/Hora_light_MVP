@@ -315,6 +315,13 @@ func main() {
 	// unconditionally: it reads two tables and logs nothing when there is
 	// nothing to say, and a payments-disabled deploy simply never has rows.
 	go watchExpiringPreAuths(context.Background(), 6*time.Hour)
+	// Phase 2b rides the same ticker rather than adding a scheduler: stale
+	// extension requests are expired and time caps re-evaluated for tasks
+	// whose supporter stopped pinging. Neither is the primary path — a
+	// polling screen and the GPS heartbeat are — so a six-hour granularity
+	// costs nobody who is actually waiting on an answer anything. See
+	// server/extensions.go and server/timecap.go.
+	go watchPhase2bBacklog(context.Background(), 6*time.Hour)
 
 	pgxCfg, err := pgx.ParseConfig(dbURL)
 	if err != nil {
@@ -623,6 +630,15 @@ func main() {
 		tasksAPI.POST("/:id/clock-in", clockIn)
 		tasksAPI.POST("/:id/clock-out", clockOut)
 		tasksAPI.GET("/:id/worklogs", getWorklogs)
+
+		// Phase 2b — the mid-task ask. The supporter raises one, the requester
+		// answers it, and both sides read the list (server/extensions.go).
+		// Expiry is applied on every read, which is the entire scheduler.
+		tasksAPI.GET("/:id/extensions", listTaskExtensions)
+		tasksAPI.POST("/:id/budget-increase", requestBudgetIncrease)
+		tasksAPI.POST("/:id/time-extension", requestTimeExtension)
+		tasksAPI.POST("/:id/extensions/:eid/approve", approveExtension)
+		tasksAPI.POST("/:id/extensions/:eid/deny", denyExtension)
 
 		tasksAPI.POST("/:id/gps-ping", saveGpsPing)
 		tasksAPI.GET("/:id/gps-latest", getLatestGps)
@@ -1982,7 +1998,22 @@ func getTask(c *gin.Context) {
 	// behind it, and a removed task is invisible to everyone else.
 	isAdmin := isOpsAdminEmail(c.GetString("email"))
 
-	if t.Status != "open" && uid != t.RequesterID && !isAssignee && !isAdmin {
+	// Somebody who logged time on this task can always read it, even after the
+	// assignment is cleared. Three paths detach a supporter — a platform
+	// takedown, a reassignment, and (Phase 2b) a cancel that settled work they
+	// had already done — and the last of those pays them. Locking the person
+	// out of the task they were just paid for, so they cannot see what they
+	// were paid or why, is not a security boundary; it is an accident of
+	// checking assigned_to_id and nothing else. Keyed on the worklog's email
+	// column (S-60.2), which is the only record of who was on the clock.
+	workedOnIt := false
+	if meEmail := strings.TrimSpace(c.GetString("email")); meEmail != "" {
+		_ = db.QueryRow(ctx, `
+			select exists (select 1 from public.worklogs where task_id=$1::uuid and "user"=$2)
+		`, id, meEmail).Scan(&workedOnIt)
+	}
+
+	if t.Status != "open" && uid != t.RequesterID && !isAssignee && !isAdmin && !workedOnIt {
 		if t.Status == "removed" {
 			// Distinct from a plain "forbidden" so a client holding a stale
 			// screen can say what happened. Removal clears assigned_to_id, so
@@ -2744,6 +2775,13 @@ func clockOut(c *gin.Context) {
 	if h := totalMin / 60; h > 0 {
 		totalStr = fmt.Sprintf("%dh %dmin", h, totalMin%60)
 	}
+
+	// A session that closed past the ceiling has to be announced now: a
+	// supporter who clocks out and puts their phone away stops sending the GPS
+	// pings that would otherwise notice, and the requester would first learn
+	// about the overrun from the settlement.
+	evaluateTimeCap(ctx, taskID)
+
 	var clockOutTaskTitle string
 	_ = db.QueryRow(ctx, `SELECT COALESCE(title,'') FROM public.tasks WHERE id=$1::uuid`, taskID).Scan(&clockOutTaskTitle)
 
@@ -2836,6 +2874,15 @@ func saveGpsPing(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
 	}
+
+	// The time cap's heartbeat (Phase 2b, server/timecap.go). This endpoint is
+	// hit every 30 seconds from the supporter's phone while they are clocked
+	// in, including with the screen locked — it is the only signal that keeps
+	// arriving on its own during exactly the situation the warning exists for.
+	// Cheap: two reads, and it returns immediately unless something actually
+	// has to be said.
+	evaluateTimeCap(ctx, taskID)
+
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -2897,19 +2944,30 @@ func getWorklogs(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	// 用 uuid 欄位檢查權限
-	var requesterID string
+	var requesterID, taskStatus string
 	var assignedToID *string
 	if err := db.QueryRow(ctx, `
-        select requester_id, assigned_to_id
+        select requester_id, assigned_to_id, status
         from public.tasks
         WHERE id = $1::uuid
-    `, taskID).Scan(&requesterID, &assignedToID); err != nil {
+    `, taskID).Scan(&requesterID, &assignedToID, &taskStatus); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
-	if meUID != requesterID && (assignedToID == nil || meUID != *assignedToID) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "not allowed"})
-		return
+	isRequester := meUID == requesterID
+	if !isRequester && (assignedToID == nil || meUID != *assignedToID) {
+		// Same reasoning as getTask: whoever logged the time can read the
+		// settlement for it, including after a cancel detached them.
+		workedOnIt := false
+		if meEmail := strings.TrimSpace(c.GetString("email")); meEmail != "" {
+			_ = db.QueryRow(ctx, `
+				select exists (select 1 from public.worklogs where task_id=$1::uuid and "user"=$2)
+			`, taskID, meEmail).Scan(&workedOnIt)
+		}
+		if !workedOnIt {
+			c.JSON(http.StatusForbidden, gin.H{"error": "not allowed"})
+			return
+		}
 	}
 
 	// 下面原本的查詢不需改
@@ -2947,12 +3005,81 @@ func getWorklogs(c *gin.Context) {
         )
     `, taskID).Scan(&hasOpen)
 
-	// The itemized version of total_cost_cents, so a task page can show "base
-	// fee / 15 min included / N billable min" without owning the formula
-	// (S-05). Shopping is zero here by construction: this endpoint prices
-	// logged time, and purchases settle against a verified receipt elsewhere,
-	// so cost.total_cents and total_cost_cents are the same number.
-	cost := quoteTask(taskCategory(ctx, taskID), totalMin, 0)
+	// ── The itemized cost ──────────────────────────────────────────────────
+	//
+	// One payload, two shapes, and which one you get depends only on whether
+	// the task is finished. Phase 2b extends this endpoint rather than adding
+	// a parallel settlement endpoint, because "what does this task cost" and
+	// "what was this task charged" are the same question asked at two moments,
+	// and two endpoints would be two chances to answer them differently.
+	//
+	// IN PROGRESS: base fee + billable minutes, clamped to the consented
+	// ceiling. Shopping is absent because nothing has been bought yet as far
+	// as the platform knows — a purchase settles against a verified receipt.
+	//
+	// COMPLETED: the same itemization plus the verified receipt, and
+	// total_cents is what the requester actually pays.
+	inputs := readSettlementInputs(ctx, taskID)
+	capState := readTimeCapState(ctx, taskID)
+
+	var cost TaskQuote
+	switch {
+	case taskStatus == "cancelled" && len(items) == 0:
+		// A task cancelled before anyone clocked in owes NOTHING — not even
+		// the base fee, because nothing was begun (cancelSettlementCents).
+		// quoteSettlement would answer with the base fee here, which is the
+		// right answer for a task that was worked and the wrong one for a task
+		// that was not; the distinction is whether a session ever existed, so
+		// it is made here where that is known rather than pushed into the
+		// pricing primitive.
+		cost = quoteTask(inputs.Category, 0, 0)
+		cost.BaseFeeCents = 0
+		cost.TimeCostCents = 0
+		cost.TotalCents = 0
+	case taskStatus == "completed" || taskStatus == "cancelled":
+		cost = inputs.quote()
+	default:
+		cost = quoteTask(inputs.Category, cappedMinutes(totalMin, inputs.CapMinutes), 0)
+		cost.TotalMinutes = totalMin
+		cost.BilledMinutes = cappedMinutes(totalMin, inputs.CapMinutes)
+		cost.CapMinutes = inputs.CapMinutes
+	}
+
+	settlement := gin.H{
+		"state":                 settlementState(ctx, taskID, taskStatus),
+		"approved_budget_cents": inputs.ApprovedBudgetCents,
+		"receipt_amount_cents":  inputs.ReceiptCents,
+		"reimbursed_cents":      cost.ShoppingReceiptCents,
+		"logged_minutes":        totalMin,
+		"billed_minutes":        cost.BilledMinutes,
+		"time_cost_cents":       cost.BaseFeeCents + cost.TimeCostCents,
+		"total_cents":           cost.TotalCents,
+		"time_cap":              capState,
+	}
+	// The receipt photo is the requester's evidence of what their money bought,
+	// and the supporter's own upload — both parties see it. Nobody else reaches
+	// this handler.
+	if inputs.ReceiptPhotoURL != "" {
+		settlement["receipt_photo_url"] = inputs.ReceiptPhotoURL
+	}
+	// What actually moved, when anything did. Absent on every task posted with
+	// PAYMENTS_ENFORCED off, where the figures above are what WOULD be charged.
+	var settledTotal *int
+	var settledAt *time.Time
+	_ = db.QueryRow(ctx,
+		`select settled_total_cents, settled_at from public.tasks where id=$1::uuid`,
+		taskID).Scan(&settledTotal, &settledAt)
+	if settledTotal != nil {
+		settlement["captured_cents"] = *settledTotal
+		settlement["settled_at"] = settledAt
+	}
+
+	// Evaluating the cap here as well as on the GPS heartbeat costs one extra
+	// read on a screen refresh and covers the supporter whose phone has
+	// location switched off entirely — they still pull-to-refresh.
+	if taskStatus == "open" && assignedToID != nil {
+		evaluateTimeCap(ctx, taskID)
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"items":            items,
@@ -2960,7 +3087,40 @@ func getWorklogs(c *gin.Context) {
 		"total_cost_cents": cost.TotalCents,
 		"cost":             cost,
 		"has_open":         hasOpen,
+		"settlement":       settlement,
 	})
+}
+
+// settlementState is the one word a client branches on.
+//
+//	not_charged     no hold was ever placed (PAYMENTS_ENFORCED off, or a task
+//	                that predates it). The figures are what WOULD be charged.
+//	estimated       the task is still running; this is the bill so far.
+//	captured        the money moved.
+//	capture_failed  the task is finished and the charge did not go through.
+//	                Ops have been emailed; nobody needs to do anything in-app.
+func settlementState(ctx context.Context, taskID, taskStatus string) string {
+	var status string
+	err := db.QueryRow(ctx, `
+		select status from public.payments
+		 where task_id = $1::uuid and kind = $2
+		 order by created_at desc limit 1
+	`, taskID, paymentKindTaskPayment).Scan(&status)
+	if err != nil {
+		if taskStatus == "completed" || taskStatus == "cancelled" {
+			return "not_charged"
+		}
+		return "estimated"
+	}
+	switch status {
+	case paymentStatusCaptured:
+		return "captured"
+	case paymentStatusCaptureFailed:
+		return "capture_failed"
+	case paymentStatusCanceled:
+		return "not_charged"
+	}
+	return "estimated"
 }
 
 // POST /tasks/:id/completion-photo — upload a completion photo to Supabase Storage.
@@ -3099,6 +3259,13 @@ func completeTask(c *gin.Context) {
 	var body struct {
 		CompletionPhotoURL string `json:"completion_photo_url"`
 		CompletionNote     string `json:"completion_note"`
+		// Shopping settlement (Phase 2b). A POINTER so that "no receipt field
+		// was sent at all" stays distinguishable from "the receipt was zero":
+		// a shopping task needs the supporter to say which, and an old client
+		// that sends neither must not be read as declaring a $0 receipt on a
+		// task somebody actually bought things for.
+		ReceiptAmountCents *int   `json:"receipt_amount_cents"`
+		ReceiptPhotoURL    string `json:"receipt_photo_url"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -3111,10 +3278,13 @@ func completeTask(c *gin.Context) {
 
 	var status, assigneeEmail, completeTaskTitle string
 	var requesterID, assignedToID sql.NullString
+	var approvedBudgetCents int
 	if err := db.QueryRow(ctx, `
-      select requester_id, assigned_to_id, assigned_to, status, COALESCE(title,'')
+      select requester_id, assigned_to_id, assigned_to, status, COALESCE(title,''),
+             COALESCE(shopping_budget_approved_cents, 0)
       from public.tasks where id=$1
-    `, taskID).Scan(&requesterID, &assignedToID, &assigneeEmail, &status, &completeTaskTitle); err != nil {
+    `, taskID).Scan(&requesterID, &assignedToID, &assigneeEmail, &status, &completeTaskTitle,
+		&approvedBudgetCents); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
@@ -3160,29 +3330,89 @@ func completeTask(c *gin.Context) {
 		return
 	}
 
-	// calculate final total across all sessions
-	totalMin, _ := totalClosedMinutes(ctx, taskID)
-	totalCents := calcTaskCostCents(ctx, taskID, totalMin)
-
-	completeHrs := totalMin / 60
-	completeMins := totalMin % 60
-	completeTotalStr := fmt.Sprintf("%d min", totalMin)
-	if completeHrs > 0 {
-		completeTotalStr = fmt.Sprintf("%dh %dmin", completeHrs, completeMins)
+	// ── The receipt ────────────────────────────────────────────────────────
+	//
+	// Validated BEFORE the task is marked complete, because this is the one
+	// completion failure the supporter can fix: an over-budget receipt means
+	// "ask for an increase, or correct the amount", and a task already marked
+	// complete offers neither.
+	receiptCents := 0
+	if body.ReceiptAmountCents != nil {
+		receiptCents = *body.ReceiptAmountCents
 	}
-	completeCostStr := formatCentsUSD(totalCents)
+	receiptPhotoURL := strings.TrimSpace(body.ReceiptPhotoURL)
+	if receiptCents < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "invalid_receipt_amount",
+			"message": "The receipt total can't be negative.",
+		})
+		return
+	}
+	if approvedBudgetCents > 0 && body.ReceiptAmountCents == nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":                 "receipt_required",
+			"message":               "Enter what the receipt came to — or 0 if you didn't buy anything.",
+			"approved_budget_cents": approvedBudgetCents,
+		})
+		return
+	}
+	if receiptCents > 0 && receiptPhotoURL == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "receipt_photo_required",
+			"message": "Add a photo of the receipt so the requester can see what was bought.",
+		})
+		return
+	}
+	// Over the approved budget plus the auto-approved tolerance. There is no
+	// after-the-fact charging, ever — so this is refused here rather than
+	// quietly reimbursed at the ceiling and leaving the supporter out of pocket
+	// without ever being told why.
+	if !receiptWithinTolerance(receiptCents, approvedBudgetCents) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "receipt_exceeds_budget",
+			"message": fmt.Sprintf(
+				"That receipt is %s, and the approved budget is %s (%s over is allowed automatically). "+
+					"Request a budget increase before completing, or correct the amount.",
+				formatCentsUSD(receiptCents), formatCentsUSD(approvedBudgetCents),
+				formatCentsUSD(Billing.OverageToleranceCents)),
+			"receipt_cents":         receiptCents,
+			"approved_budget_cents": approvedBudgetCents,
+			"tolerance_cents":       Billing.OverageToleranceCents,
+			"max_receipt_cents":     approvedBudgetCents + Billing.OverageToleranceCents,
+		})
+		return
+	}
+	reimbursedCents := reimbursableReceiptCents(receiptCents, approvedBudgetCents)
 
-	// TODO: trigger Stripe capture here
-	// e.g. stripe.CapturePaymentIntent(task.PaymentIntentID, totalCents)
+	// calculate final total across all sessions. calcTaskCostCents clamps to
+	// the time the requester consented to (billing.go) — a supporter who ran
+	// 40 minutes past a 30-minute estimate without an approved extension is
+	// paid to the ceiling and no further.
+	totalMin, _ := totalClosedMinutes(ctx, taskID)
+	timeCostCents := calcTaskCostCents(ctx, taskID, totalMin)
+	totalCents := timeCostCents + reimbursedCents
+
+	completeTotalStr := formatMinutes(totalMin)
+	completeCostStr := formatCentsUSD(totalCents)
 
 	if _, err := db.Exec(ctx, `
 		UPDATE public.tasks
-		SET status='completed', completion_photo_url=$2, completion_note=$3, completed_at=now()
+		SET status='completed', completion_photo_url=$2, completion_note=$3, completed_at=now(),
+		    receipt_amount_cents=$4, receipt_photo_url=nullif($5,'')
 		WHERE id = $1::uuid`,
-		taskID, body.CompletionPhotoURL, body.CompletionNote); err != nil {
+		taskID, body.CompletionPhotoURL, body.CompletionNote,
+		body.ReceiptAmountCents, receiptPhotoURL); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
 	}
+
+	// ── The money ──────────────────────────────────────────────────────────
+	//
+	// AFTER the status write, and unable to undo it. A capture that fails —
+	// an expired hold, an unreachable Stripe — leaves a completed task, a
+	// payments row in 'capture_failed', an audit row and an email to ops. It
+	// does not leave a supporter unable to finish a task they have finished.
+	settleCompletedTask(ctx, taskID, meUID, timeCostCents, reimbursedCents)
 
 	log.Printf("[completeTask] sending completion email for task %s", taskID)
 
@@ -3257,13 +3487,13 @@ func cancelTask(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	// 讀任務狀態與擁有者
-	var requesterID, status, cancelTaskTitle string
+	var requesterID, status, cancelTaskTitle, assigneeEmail string
 	var assignedToID *string
 	err := db.QueryRow(ctx, `
-		select requester_id, status, assigned_to_id, COALESCE(title,'')
+		select requester_id, status, assigned_to_id, COALESCE(title,''), COALESCE(assigned_to,'')
 		from public.tasks
 		WHERE id = $1::uuid
-	`, taskID).Scan(&requesterID, &status, &assignedToID, &cancelTaskTitle)
+	`, taskID).Scan(&requesterID, &status, &assignedToID, &cancelTaskTitle, &assigneeEmail)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
@@ -3285,12 +3515,6 @@ func cancelTask(c *gin.Context) {
 		return
 	}
 
-	// 如果你規則是「未接單前才可取消」就擋這裡（也可改成允許已接單但未開工）：
-	if assignedToID != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot cancel after it has been accepted"})
-		return
-	}
-
 	// 是否有未結束工時
 	var hasOpen bool
 	_ = db.QueryRow(ctx, `
@@ -3304,24 +3528,8 @@ func cancelTask(c *gin.Context) {
 		return
 	}
 
-	// Settlement: time actually logged, and whether a supporter ever started.
-	totalMin, err := totalClosedMinutes(ctx, taskID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "calc error"})
-		return
-	}
 	// Any worklog row at all means someone clocked in — the open-session check
-	// above already guarantees every one of them is closed by now. A task with
-	// no rows was cancelled before anyone started and owes nothing.
-	//
-	// Today this is ALWAYS false: the `assignedToID != nil` guard above refuses
-	// to cancel an accepted task, and an unaccepted task cannot have worklogs.
-	// The settled bill is therefore always $0.00 — which is the actual fix
-	// here, because the old arithmetic returned the $12.00 base fee for a task
-	// nobody ever accepted, and then "refunded" it out of the shopping budget.
-	// The hadSession branch is correct and unreachable, deliberately: Phase 2
-	// relaxes that guard to allow cancelling after acceptance, and this is the
-	// settlement it will need on the day it does.
+	// above already guarantees every one of them is closed by now.
 	var hadSession bool
 	if err := db.QueryRow(ctx, `
 		select exists (select 1 from public.worklogs where task_id=$1)
@@ -3329,7 +3537,40 @@ func cancelTask(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
 	}
-	billCents := cancelSettlementCents(taskCategory(ctx, taskID), totalMin, hadSession)
+
+	// An accepted task used to be flatly uncancellable, which left the
+	// requester of a half-done job with no way out but the ops panel. Phase 2b
+	// opens the branch Phase 1 built the settlement for: once there is a
+	// CLOSED work session, the supporter has been paid for what they did and
+	// the cancel is a settlement rather than a walk-out, so it is allowed.
+	//
+	// Accepted with nothing logged is still refused, deliberately. There is
+	// nothing to settle there and the supporter may already be travelling —
+	// cancelling out from under them with no notice and no payment is exactly
+	// the thing the original guard was protecting against.
+	if assignedToID != nil && !hadSession {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "cannot cancel after it has been accepted",
+			"message": "A supporter has accepted this task. Message them to sort it out — once they've logged any time you can cancel and settle what they worked.",
+		})
+		return
+	}
+
+	// Settlement: time actually logged, clamped to what the requester consented
+	// to. A task cancelled before anyone clocked in owes nothing at all — not
+	// even the base fee, because nothing was begun.
+	//
+	// The shopping budget is not an input and never should be: it is an
+	// authorization ceiling, not money anyone has been charged, so a cancel has
+	// nothing to net against it. Nothing is reimbursed here either — a cancel
+	// verifies no receipt.
+	totalMin, err := totalClosedMinutes(ctx, taskID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "calc error"})
+		return
+	}
+	capMinutes, _ := taskTimeCapMinutes(ctx, taskID)
+	billCents := cancelSettlementCents(taskCategory(ctx, taskID), cappedMinutes(totalMin, capMinutes), hadSession)
 
 	// 寫入取消狀態 + 理由（建議你在 tasks 加欄位：cancel_reason text, cancelled_at timestamptz）
 	_, err = db.Exec(ctx, `
@@ -3344,17 +3585,51 @@ func cancelTask(c *gin.Context) {
 		return
 	}
 
-	// The money side of "cancel bills $0": the hold is released, which is what
-	// actually puts the requester's available balance back. Deliberately after
-	// the status write and non-fatal — see releaseTaskHold for why a Stripe
-	// outage must not be able to stop somebody cancelling their own task.
-	released := releaseTaskHold(ctx, taskID, meUID, "requester_cancelled")
+	// The money. Two branches, and which one runs is decided entirely by
+	// whether a supporter ever started:
+	//
+	//	nothing logged  the hold is RELEASED in full. Nothing was earned, so
+	//	                nothing is taken, and releasing is what actually puts
+	//	                the requester's available balance back.
+	//	work logged     the settlement is CAPTURED against the hold and the
+	//	                remainder auto-releases. The supporter travelled and
+	//	                worked; a cancel does not un-earn that.
+	//
+	// Both run after the status write and neither can undo it — see
+	// releaseTaskHold for why a Stripe outage must never be able to stop
+	// somebody cancelling their own task.
+	released := false
+	settled := settlementOutcome{}
+	if billCents > 0 {
+		settled = settleCompletedTask(ctx, taskID, meUID, billCents, 0)
+	} else {
+		released = releaseTaskHold(ctx, taskID, meUID, "requester_cancelled") != nil
+	}
+
+	// The supporter is detached: the task is over, and leaving them assigned to
+	// a cancelled job means it keeps showing up as theirs. Their access to it
+	// is preserved through the worklog they logged (see getTask), so a
+	// supporter who was paid for a cancelled task can still open it and see
+	// what they were paid.
+	detached := false
+	if assignedToID != nil {
+		if tag, err := db.Exec(ctx, `
+			update public.tasks set assigned_to_id = null, assigned_to = ''
+			 where id = $1::uuid
+		`, taskID); err != nil {
+			log.Printf("[cancelTask][ERROR] could not detach supporter task=%s: %v", taskID, err)
+		} else {
+			detached = tag.RowsAffected() > 0
+		}
+	}
 
 	writeAudit(ctx, taskID, meUID, "CANCELLED", in.Reason, map[string]any{
-		"total_minutes": totalMin,
-		"had_session":   hadSession,
-		"bill_cents":    billCents,
-		"hold_released": released != nil,
+		"total_minutes":      totalMin,
+		"had_session":        hadSession,
+		"bill_cents":         billCents,
+		"hold_released":      released,
+		"captured_cents":     settled.CapturedCents,
+		"supporter_detached": detached,
 	})
 
 	// Email requester: cancellation confirmation with reason
@@ -3367,19 +3642,34 @@ func cancelTask(c *gin.Context) {
 	})
 	// TODO: WhatsApp notification here
 
-	// Email supporter (if task was already accepted before cancellation policy changes)
-	notifyAssignee(c, notify.CreateNotificationInput{
-		TaskID:    taskID,
-		Type:      "CANCELLED",
-		Title:     "A task you accepted has been cancelled",
-		Body:      fmt.Sprintf("The requester cancelled the task. Reason: %s", in.Reason),
-		TaskTitle: cancelTaskTitle,
-	})
+	// Email supporter, by the id read BEFORE the detach above — notifyAssignee
+	// re-reads the task to find its recipient, which finds nobody once
+	// assigned_to_id is null. Told what they earned, not just that it ended:
+	// "cancelled" with no number reads as "and you are getting nothing".
+	if assignedToID != nil && *assignedToID != "" {
+		supporterBody := fmt.Sprintf("The requester cancelled the task. Reason: %s", in.Reason)
+		if billCents > 0 {
+			supporterBody = fmt.Sprintf(
+				"The requester cancelled the task. Reason: %s — you're paid %s for the %s you logged.",
+				in.Reason, formatCentsUSD(billCents), formatMinutes(totalMin))
+		}
+		notifyUser(ctx, *assignedToID, assigneeEmail, notify.CreateNotificationInput{
+			TaskID:    taskID,
+			Type:      "CANCELLED",
+			Title:     "A task you accepted has been cancelled",
+			Body:      supporterBody,
+			TaskTitle: cancelTaskTitle,
+		})
+	}
 	// TODO: WhatsApp notification here
 
 	c.JSON(http.StatusOK, gin.H{
 		"total_minutes": totalMin,
 		"bill_cents":    billCents,
+		// What actually moved, when a hold was there to move it from. Zero on
+		// every task posted with PAYMENTS_ENFORCED off, which is all of them
+		// in the running beta.
+		"captured_cents": settled.CapturedCents,
 		// Deprecated, always 0. A cancel has nothing to refund: no money has
 		// been captured at any point in the Phase 1 flow, and the shopping
 		// budget it used to be computed against was never a charge. Kept on
