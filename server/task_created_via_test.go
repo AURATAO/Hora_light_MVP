@@ -35,6 +35,13 @@ import (
 // supabase/migrations/20260711094158_remote_schema.sql so the new migration
 // runs against exactly the table it will meet in prod.
 const createdViaFixture = `
+-- payments first: it references tasks and users, and it is created by a
+-- migration below rather than by this fixture. Without this drop it survives
+-- the CASCADE on tasks — which silently takes its foreign key with it — and
+-- the table then carries rows from every previous test in the same container.
+-- A suite that counts payments rows reads those as its own.
+DROP TABLE IF EXISTS public.payments CASCADE;
+DROP TABLE IF EXISTS public.stripe_webhook_events CASCADE;
 DROP TABLE IF EXISTS public.tasks CASCADE;
 DROP TABLE IF EXISTS public.profiles CASCADE;
 DROP TABLE IF EXISTS public.users CASCADE;
@@ -94,12 +101,30 @@ func setupCreatedViaDB(t *testing.T) {
 	if _, err := pool.Exec(ctx, createdViaFixture); err != nil {
 		t.Fatalf("fixture: %v", err)
 	}
+	// Supabase always has these roles; a bare postgres:16 container does not,
+	// and the payments migration's REVOKE statements name them explicitly.
+	// Without this the suite only passes on a container some other test has
+	// already created them in — which is what it was quietly relying on.
+	if _, err := pool.Exec(ctx, `
+		DO $$ BEGIN
+		  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='anon') THEN
+		    CREATE ROLE anon NOLOGIN;
+		  END IF;
+		  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='authenticated') THEN
+		    CREATE ROLE authenticated NOLOGIN;
+		  END IF;
+		END $$;
+	`); err != nil {
+		t.Fatalf("create supabase roles: %v", err)
+	}
 	// The real migration files, not a paraphrase of them. The payments
 	// migration is here because createTask writes
 	// shopping_budget_approved_cents, which that migration adds — a fixture
 	// that stops at created_via no longer describes the table createTask
-	// inserts into.
-	for _, path := range []string{createdViaMigrationPath, paymentsMigrationPath} {
+	// inserts into. Phase 2a is here for the same reason: createTask now writes
+	// auto_extend_consent and a status ('pending_payment') the fixture's own
+	// CHECK constraint would reject.
+	for _, path := range []string{createdViaMigrationPath, paymentsMigrationPath, phase2aMigrationPath} {
 		migration, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read migration %s: %v", path, err)

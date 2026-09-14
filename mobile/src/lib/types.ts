@@ -17,6 +17,12 @@ export type TaskCategory =
 
 // "removed" is a platform takedown by the HO:RA team (admin_tasks.go), as
 // opposed to "cancelled", which is the requester withdrawing their own task.
+// Deliberately WITHOUT the backend's 'pending_payment'. That status means a
+// task row exists only so a card hold can name it (Stripe Phase 2a) — it is
+// filtered out of every list, feed and profile the server serves, and the
+// post flow learns about it through a 402 carrying a task id rather than
+// through a Task. Widening this union would push a state no screen may render
+// into every status switch in the app.
 export type TaskStatus = "open" | "completed" | "cancelled" | "removed";
 
 export type SupporterStatus = "none" | "applied" | "approved" | "rejected";
@@ -126,6 +132,10 @@ export interface Task {
    * task-detail response — the admin's internal note is never sent. */
   removed_at?: string | null;
   removal_reason?: TaskRemovalReason | null;
+  /** Whether the requester consented at post to the supporter running up to
+   * 15 minutes past the estimate. Requester-only and detail-only: the server
+   * selects it in GET /tasks/:id and omits it from every list. */
+  auto_extend_consent?: boolean;
   created_at: string;
   /** Legacy email columns (S-60.1) — present on every /tasks response. Only
    * for TalkJS participant identity (matches web's existing id-by-email

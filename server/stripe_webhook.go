@@ -12,11 +12,11 @@ package main
 // API call of ours anywhere near it. The webhook is how the payments table
 // learns about money events that no request of ours initiated.
 //
-// PHASE 1 SCOPE. The handler is complete and live; the events it handles are
-// ones no Phase 1 code can currently generate, because nothing calls
-// payments.go yet. It ships now so that the endpoint exists, is registered in
-// the Stripe dashboard, and has been receiving (and correctly ignoring) test
-// traffic long before the first real hold is placed.
+// SCOPE. Phase 1 shipped this handler live against events nothing could yet
+// generate, so the endpoint would be registered, signed and proven long before
+// the first real hold depended on it. Phase 2a makes those events real: a
+// declined or reversed hold now lands on an actual task, which is what
+// syncTaskToLostHold exists to handle.
 
 import (
 	"context"
@@ -183,7 +183,52 @@ func onPaymentIntentStatus(ctx context.Context, event *stripe.Event, status stri
 		return fmt.Errorf("set payment %s to %s: %w", p.ID, status, err)
 	}
 	log.Printf("[stripe][webhook] payment=%s task=%s → %s", p.ID, p.TaskID, status)
+	syncTaskToLostHold(ctx, p, status)
 	return nil
+}
+
+// syncTaskToLostHold is the task side of a hold that is no longer good.
+//
+// Phase 1 shipped the handler above against events no code could generate;
+// now that posting places holds, these events land on real tasks and the
+// payments row is only half the story. Two cases, and they are not alike:
+//
+//   - pending_payment — the task was never posted. It exists only because a
+//     card authentication was in flight, and that authentication has now
+//     failed or been cancelled. Nobody has seen this task; it goes.
+//
+//   - open — the task is live and a supporter may already be on their way.
+//     The hold is gone and it CANNOT be un-posted: cancelling a task out from
+//     under a supporter because a bank reversed an authorization is a worse
+//     outcome than a task that has to be settled by hand. So it is recorded
+//     loudly in audit_logs, where an operator can find it, and left alone.
+//
+// Cancellations we initiated ourselves (cancelTask → Release) also arrive
+// here, and land in the 'open' branch never — Release runs after the status
+// write, so the task is 'cancelled' by then and neither branch fires.
+func syncTaskToLostHold(ctx context.Context, p *Payment, status string) {
+	var taskStatus string
+	if err := db.QueryRow(ctx,
+		`select status from public.tasks where id = $1::uuid`, p.TaskID,
+	).Scan(&taskStatus); err != nil {
+		log.Printf("[stripe][webhook] payment=%s: could not read task %s: %v", p.ID, p.TaskID, err)
+		return
+	}
+
+	switch taskStatus {
+	case taskStatusPendingPayment:
+		log.Printf("[stripe][webhook] task=%s never posted (payment %s) — discarding", p.TaskID, status)
+		discardUnpaidTask(ctx, p.TaskID)
+
+	case "open":
+		log.Printf("[stripe][webhook][LOST HOLD] task=%s is OPEN but its hold is %s (payment=%s) "+
+			"— settlement for this task will have to be handled by hand", p.TaskID, status, p.ID)
+		writeAudit(ctx, p.TaskID, systemActorUID, "PAYMENT_HOLD_LOST", status, map[string]any{
+			"payment_id":               p.ID,
+			"stripe_payment_intent_id": p.StripePaymentIntentID,
+			"payment_status":           status,
+		})
+	}
 }
 
 // onChargeDisputeCreated is the one event a human has to see.

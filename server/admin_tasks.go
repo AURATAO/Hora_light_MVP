@@ -175,6 +175,12 @@ func adminRemoveTask(c *gin.Context) {
 		return
 	}
 
+	// A takedown owes the requester their money back the same way a cancel
+	// does: nothing was captured, so the hold is simply released. Same
+	// best-effort placement and same reasoning as cancelTask — an admin must
+	// be able to take a task down whether or not Stripe is answering.
+	released := releaseTaskHold(ctx, taskID, actorUID, "admin_removed")
+
 	// audit_logs is the existing table for exactly this (job_id is the task id);
 	// it had no writer until now. Best-effort: a failed audit insert must not
 	// undo a takedown that already happened.
@@ -184,6 +190,7 @@ func adminRemoveTask(c *gin.Context) {
 		"previous_assignee_id":    derefOrEmpty(assignedToID),
 		"previous_assignee_email": assignedTo,
 		"closed_worklog_sessions": closedSessions,
+		"hold_released":           released != nil,
 	}
 	metaJSON, _ := json.Marshal(meta)
 	if _, err := db.Exec(ctx, `

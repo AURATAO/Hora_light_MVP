@@ -128,6 +128,31 @@ var Billing = BillingConfig{
 // The shopping budget is added at face value rather than multiplied: it is
 // already a ceiling the requester set, and the $5 buffer is precisely the
 // approved overage tolerance.
+//
+// AUTO-EXTEND IS ALREADY COVERED, and the amount deliberately does NOT depend
+// on tasks.auto_extend_consent. Phase 2a asked whether consenting to
+// AutoExtendMinutes of overrun needs a bigger hold; it does not, and here is
+// the whole argument.
+//
+// Let B = base fee, T = estimated time cost, M = PreAuthMultiplier (1.5),
+// K = PreAuthBufferCents ($5.00), and let the shopping budget cancel out
+// (it is added identically to both sides).
+//
+//	held    = M(B+T) + K
+//	capture = B + T + AutoExtendMinutes x PerMinuteRateCents
+//	margin  = held - capture = (M-1)(B+T) + K - 15 x 50
+//	        = 0.5(B+T) + 500 - 750
+//
+// B is at least BaseFeeDefaultCents ($12.00) and T is never negative, so
+// 0.5(B+T) >= 600 and the margin is at least 350 cents at EVERY duration and
+// category. The worst case is the shortest possible standard task, and it
+// still clears by $3.50; a companionship task clears by $9.75. A test pins
+// this rather than leaving it as a comment — see TestPreAuthCoversAutoExtend.
+//
+// So the hold is sized the same whether or not consent was given, and consent
+// governs only whether the supporter may run over without asking. Making the
+// hold consent-dependent would charge consenting requesters a larger
+// authorization for a cost their hold already covered.
 func preAuthAmountCents(category string, estimatedMinutes, shoppingBudgetCents int) int {
 	timeEstimate := baseFeeCents(category) + timeCostCents(estimatedMinutes)
 	held := int(float64(timeEstimate)*Billing.PreAuthMultiplier) + shoppingBudgetCents + Billing.PreAuthBufferCents

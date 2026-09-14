@@ -39,6 +39,11 @@ const testStripeWebhookSecret = "whsec_test_secret_for_unit_tests"
 // is the point of applying it rather than restating its DDL here.
 const paymentsMigrationPath = "../supabase/migrations/20260911120000_payments_and_billing_schema.sql"
 
+// phase2aMigrationPath adds users.stripe_customer_id, tasks.payment_id and the
+// 'pending_payment' status. Applied after the payments migration because
+// tasks.payment_id references payments(id).
+const phase2aMigrationPath = "../supabase/migrations/20260914120000_stripe_customer_and_task_payment_linkage.sql"
+
 func setupStripeWebhookDB(t *testing.T) {
 	t.Helper()
 	setupAdminOpsDB(t) // users, tasks, worklogs, audit_logs + the pool swap
@@ -75,12 +80,14 @@ func setupStripeWebhookDB(t *testing.T) {
 		t.Fatalf("create supabase roles: %v", err)
 	}
 
-	migration, err := os.ReadFile(paymentsMigrationPath)
-	if err != nil {
-		t.Fatalf("read payments migration: %v", err)
-	}
-	if _, err := db.Exec(context.Background(), string(migration)); err != nil {
-		t.Fatalf("apply payments migration: %v", err)
+	for _, path := range []string{paymentsMigrationPath, phase2aMigrationPath} {
+		migration, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", path, err)
+		}
+		if _, err := db.Exec(context.Background(), string(migration)); err != nil {
+			t.Fatalf("apply migration %s: %v", path, err)
+		}
 	}
 	t.Setenv("STRIPE_WEBHOOK_SECRET", testStripeWebhookSecret)
 }

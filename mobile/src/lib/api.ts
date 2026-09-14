@@ -277,6 +277,15 @@ export interface CreateTaskPayload {
    *  UpdateTaskPayload, which drops it: an edit doesn't change how a task was
    *  created, and the server would ignore it there anyway. */
   created_via?: TaskCreatedVia;
+  /**
+   * Consent for the supporter to run up to 15 minutes past the estimate
+   * without stopping to ask (tasks.auto_extend_consent).
+   *
+   * Optional, and the server reads an absent field as "unchanged" rather than
+   * "refused" — the column defaults to true, which is the behaviour every task
+   * posted before this field existed already had.
+   */
+  auto_extend_consent?: boolean;
 }
 
 export function createTask(payload: CreateTaskPayload): Promise<Task> {
@@ -317,6 +326,76 @@ export interface TaskCostEstimate {
 export function estimateTaskCost(payload: EstimateTaskCostPayload): Promise<TaskCostEstimate> {
   return apiFetch<TaskCostEstimate>("/tasks/estimate", { method: "POST", body: payload });
 }
+
+// ---- Payments (card on file) ----------------------------------------------
+//
+// The Go backend is the only thing that talks to Stripe's REST API; this app
+// talks to Stripe only through the native SDK, with secrets minted here. No
+// card number ever passes through these types — PaymentSheet collects it
+// inside Stripe's own native UI and the app never sees it, which is what keeps
+// the app out of PCI scope.
+
+/** Everything PaymentSheet needs to present in setup mode, in one call. */
+export interface SetupIntentSession {
+  client_secret: string;
+  customer_id: string;
+  ephemeral_key: string;
+  /** Sent by the backend so a key rotation needs no native rebuild. */
+  publishable_key: string;
+  merchant_display_name: string;
+}
+
+export function createSetupIntent(): Promise<SetupIntentSession> {
+  return apiFetch<SetupIntentSession>("/payments/setup-intent", { method: "POST" });
+}
+
+export interface SavedCard {
+  id: string;
+  brand: string;
+  last4: string;
+  exp_month: number;
+  exp_year: number;
+  /** The card a new task's hold would be placed on. */
+  is_default: boolean;
+}
+
+export interface PaymentMethodsResponse {
+  cards: SavedCard[];
+  has_card: boolean;
+  publishable_key: string;
+  /**
+   * Whether posting currently requires a card (the backend's PAYMENTS_ENFORCED
+   * flag). Advisory: POST /tasks answers 402 regardless of what a client
+   * believes. It is here so the card prompt appears before a requester fills
+   * in a form, and so nothing about payments is shown at all while it is off.
+   */
+  payments_enforced: boolean;
+}
+
+export function getPaymentMethods(): Promise<PaymentMethodsResponse> {
+  return apiFetch<PaymentMethodsResponse>("/payments/payment-methods");
+}
+
+export function deletePaymentMethod(id: string): Promise<{ ok: true }> {
+  return apiFetch<{ ok: true }>(`/payments/payment-methods/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+/**
+ * Post a task whose hold needed the cardholder present. Called after the SDK's
+ * handleNextAction resolves; the backend reads the intent's real status from
+ * Stripe rather than believing this call, so it cannot be used to post an
+ * unfunded task.
+ */
+export function confirmTaskPayment(taskId: string): Promise<{ ok: true; status: string }> {
+  return apiFetch<{ ok: true; status: string }>(
+    `/tasks/${encodeURIComponent(taskId)}/payment/confirm`,
+    { method: "POST" }
+  );
+}
+
+// ---- Tasks (requester), continued ------------------------------------------
 
 export function getPostedTasks(params?: KeysetParams): Promise<Task[]> {
   return apiFetch<KeysetEnvelope<Task>>(`/tasks/posted${toQueryString(params)}`).then(unwrapItems);

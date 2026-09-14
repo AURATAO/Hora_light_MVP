@@ -3,7 +3,7 @@ import { ScrollView, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import { AddressField } from "./AddressField";
 import { ScheduledTimeField } from "./ScheduledTimeField";
-import { Button, Input, Pill, PressableScale } from "./ui";
+import { Button, Checkbox, Input, Pill, PressableScale } from "./ui";
 import { ApiError, estimateTaskCost, type CreateTaskPayload } from "../lib/api";
 import { DISABLED_CATEGORY_NOTICE, isCategoryDisabled } from "../lib/beta-notice";
 import { getCategoryMeta } from "../lib/categories";
@@ -34,6 +34,9 @@ export interface TaskFormState {
   transport: TransportOption;
   isImmediate: boolean;
   scheduledDate: Date;
+  /** Consent for the supporter to run up to 15 minutes past the estimate
+   *  without stopping to ask (tasks.auto_extend_consent). */
+  autoExtend: boolean;
 }
 
 export interface TaskFormErrors {
@@ -91,6 +94,11 @@ export function emptyTaskForm(category?: TaskCategory): TaskFormState {
     transport: "none",
     isImmediate: true,
     scheduledDate: defaultScheduledDate(),
+    // Defaults ON, matching the column default and the behaviour every task
+    // posted before this checkbox existed already has: overtime has always
+    // billed without a per-task gate, so starting unchecked would be a change
+    // of terms wearing a new control's clothes.
+    autoExtend: true,
   };
 }
 
@@ -148,6 +156,10 @@ export function taskFormFromTask(task: Task): TaskFormState {
     isImmediate,
     scheduledDate:
       !isImmediate && task.scheduled_at ? new Date(task.scheduled_at) : defaultScheduledDate(),
+    // Absent (any list response, or a backend that predates the column) reads
+    // as consented — the same "unchanged, not refused" rule the server applies
+    // to an omitted field.
+    autoExtend: task.auto_extend_consent ?? true,
   };
 }
 
@@ -244,6 +256,7 @@ export function taskFormToPayload(
     scheduled_at: form.isImmediate ? "" : zeroSeconds(form.scheduledDate).toISOString(),
     transport_required: form.transport,
     created_via: createdVia,
+    auto_extend_consent: form.autoExtend,
   };
 }
 
@@ -446,6 +459,28 @@ export function TaskForm({ form, onChange, errors }: TaskFormProps) {
           ))}
         </View>
       </View>
+
+      {/* A term of the estimate above, so it sits with it rather than in a
+          settings block of its own. Phrased as what it permits, with the cap
+          and the rate stated — the requester is agreeing to a billing term. */}
+      <PressableScale
+        onPress={() => onChange((f) => ({ ...f, autoExtend: !f.autoExtend }))}
+        className="-ml-3 flex-row items-center"
+      >
+        <Checkbox
+          checked={form.autoExtend}
+          onChange={(autoExtend) => onChange((f) => ({ ...f, autoExtend }))}
+          accessibilityLabel="Allow up to 15 extra minutes at the same rate"
+        />
+        <View className="flex-1 pr-1">
+          <Text className="text-body text-ink">
+            Allow up to 15 extra minutes at the same rate if the task runs long
+          </Text>
+          <Text className="mt-0.5 text-caption text-muted">
+            Without this your supporter has to stop and ask before going over.
+          </Text>
+        </View>
+      </PressableScale>
 
       <Input
         label="Shopping budget ($)"
