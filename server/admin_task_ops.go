@@ -253,10 +253,15 @@ func adminCancelTaskHandler(c *gin.Context) {
 		return
 	}
 
+	// Same as the requester's own cancel: nothing was captured, so the hold is
+	// released rather than refunded.
+	released := releaseTaskHold(ctx, taskID, actorUID, "admin_cancelled")
+
 	writeAudit(ctx, taskID, actorUID, "CANCELLED", reason, map[string]any{
 		"admin_email":             actorEmail,
 		"closed_worklog_sessions": closed,
 		"supporter_email":         t.AssigneeEmail,
+		"hold_released":           released != nil,
 	})
 
 	body := fmt.Sprintf("Your task %q has been cancelled by the HO:RA team.", t.Title)

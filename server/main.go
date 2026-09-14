@@ -139,6 +139,11 @@ type Task struct {
 	// removal_note is the admin's internal wording and is never serialized.
 	RemovedAt     *time.Time `json:"removed_at,omitempty"`
 	RemovalReason *string    `json:"removal_reason,omitempty"`
+
+	// Whether the requester consented at post to the supporter running up to
+	// BillingConfig.AutoExtendMinutes past the estimate. Selected only by
+	// getTask, so it is absent from list responses rather than false there.
+	AutoExtendConsent *bool `json:"auto_extend_consent,omitempty"`
 }
 
 type createTaskInput struct {
@@ -157,6 +162,15 @@ type createTaskInput struct {
 	// edit cannot rewrite how a task was created. Empty (any client that omits
 	// it, web included) stores NULL, meaning "unknown".
 	CreatedVia string `json:"created_via"`
+	// Consent for the supporter to run up to BillingConfig.AutoExtendMinutes
+	// past the estimate without asking again (tasks.auto_extend_consent).
+	//
+	// A POINTER because the column defaults to true and an absent field has to
+	// mean "unchanged", not "refused": web and every shipped mobile build send
+	// nothing here, and a plain bool would read their silence as an explicit
+	// denial of something they were never asked. Only a client that actually
+	// rendered the checkbox sends a value.
+	AutoExtendConsent *bool `json:"auto_extend_consent"`
 }
 
 // The closed set behind tasks_created_via_check. Kept in the handler as well as
@@ -295,6 +309,13 @@ func main() {
 	}
 	log.Println("[db] connected")
 
+	// Ops visibility for holds approaching the card networks' ~7-day release
+	// of an uncaptured authorization. Logging only — see watchExpiringPreAuths
+	// for why re-authorizing is deliberately not attempted here. Started
+	// unconditionally: it reads two tables and logs nothing when there is
+	// nothing to say, and a payments-disabled deploy simply never has rows.
+	go watchExpiringPreAuths(context.Background(), 6*time.Hour)
+
 	pgxCfg, err := pgx.ParseConfig(dbURL)
 	if err != nil {
 		log.Fatalf("pgx ParseConfig (stdlib) error: %v", err)
@@ -370,10 +391,14 @@ func main() {
 	// talkjs_webhook.go.
 	RegisterTalkJSWebhooks(r, sqldb)
 	// Stripe payment lifecycle → payments table + ops alerting. Unauthenticated
-	// but signature-verified against the raw body; see stripe_webhook.go. Live
-	// from Phase 1 even though nothing places a hold yet, so the endpoint is
-	// registered and proven before the first real payment depends on it.
+	// but signature-verified against the raw body; see stripe_webhook.go.
+	// Registered and proven since Phase 1; since Phase 2a its events land on
+	// real tasks, which is what syncTaskToLostHold handles.
 	RegisterStripeWebhooks(r)
+	// Card on file: Stripe Customer + SetupIntent + saved-card list/remove.
+	// Session-authenticated and 503-gated on Stripe being configured; see
+	// payments_cards.go.
+	RegisterPaymentRoutes(r, dualAuth(sqldb))
 	RegisterNotificationRoutes(r, sqldb)
 
 	addAvatarUploadRouteV1(r)
@@ -589,6 +614,11 @@ func main() {
 		tasksAPI.POST("/:id/complete", completeTask)
 		tasksAPI.POST("/:id/completion-photo", uploadTaskCompletionPhoto)
 		tasksAPI.POST("/:id/cancel", cancelTask)
+
+		// The second half of a 3DS pre-auth: the client has run the bank's
+		// challenge and this reads the outcome, posting the task or discarding
+		// it. Idempotent — a task already 'open' answers OK.
+		tasksAPI.POST("/:id/payment/confirm", confirmTaskPayment)
 
 		tasksAPI.POST("/:id/clock-in", clockIn)
 		tasksAPI.POST("/:id/clock-out", clockOut)
@@ -1310,8 +1340,10 @@ func listProfileTasks(c *gin.Context) {
 	arg := 1
 
 	// Removed tasks are platform takedowns — they never appear on a public
-	// profile, for either role.
-	where = append(where, "status <> 'removed'")
+	// profile, for either role. pending_payment is not a posted task at all
+	// (see the Phase 2a migration), so it is excluded for the same reason it
+	// is excluded from every feed.
+	where = append(where, "status not in ('removed','pending_payment')")
 
 	if role == "assignee" {
 		where = append(where, fmt.Sprintf("assigned_to_id = $%d::uuid", arg))
@@ -1441,6 +1473,60 @@ func createTask(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
+
+	// Payments gate, resolved BEFORE anything is written. A requester with no
+	// card on file gets a 402 that costs one Stripe round trip and leaves the
+	// database untouched — nothing to clean up, nothing to race.
+	//
+	// With PAYMENTS_ENFORCED off (the default, and the running beta) this whole
+	// block is skipped and posting behaves exactly as it did before Phase 2a.
+	enforcePayment := paymentsEnforced()
+	var payCtx preAuthContext
+	if enforcePayment {
+		if !paymentsEnabled() {
+			// Enforcement on with no Stripe key is a misconfiguration, not a
+			// user error. Refusing every post is the correct failure: the
+			// alternative is posting tasks nobody is holding money for, which
+			// is the exact state the flag exists to prevent.
+			log.Printf("[createTask] PAYMENTS_ENFORCED is on but Stripe is not configured — refusing post")
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"error":   "payments_unavailable",
+				"message": "Payments are temporarily unavailable. Please try again shortly.",
+			})
+			return
+		}
+		// The canonical users.id by email — the same row the task below is
+		// attributed to, not the session uid. They are the same value on every
+		// live path, but the Customer must hang off the row that ends up as
+		// requester_id or a saved card would be invisible to the hold.
+		//
+		// No row yet means a brand-new account, which cannot have a card.
+		var payerUID string
+		_ = db.QueryRow(ctx, `select id::text from public.users where email=$1 limit 1`, email).Scan(&payerUID)
+		if payerUID == "" {
+			c.JSON(http.StatusPaymentRequired, gin.H{
+				"error":   "payment_method_required",
+				"message": "Add a card before posting a task. You're only charged for the time actually worked.",
+			})
+			return
+		}
+
+		var err error
+		payCtx, err = resolvePreAuthContext(ctx, payerUID, email)
+		if errors.Is(err, errNoCardOnFile) {
+			c.JSON(http.StatusPaymentRequired, gin.H{
+				"error":   "payment_method_required",
+				"message": "Add a card before posting a task. You're only charged for the time actually worked.",
+			})
+			return
+		}
+		if err != nil {
+			log.Printf("[createTask] resolve payment context: %v", err)
+			c.JSON(http.StatusBadGateway, gin.H{"error": "payments_error"})
+			return
+		}
+	}
+
 	tx, err := sqldb.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
 		log.Printf("[createTask] BeginTx error: %v", err)
@@ -1523,28 +1609,43 @@ func createTask(c *gin.Context) {
 	if in.CreatedVia != "" {
 		createdVia = in.CreatedVia
 	}
+	// Where the task starts life. With payments enforced it is born
+	// 'pending_payment' — a row that exists only so the hold can name it (see
+	// the Phase 2a migration), invisible to every feed and to the requester,
+	// promoted to 'open' by the same statement that records the authorization.
+	// Without enforcement it is born 'open', exactly as before.
+	initialStatus := "open"
+	if enforcePayment {
+		initialStatus = taskStatusPendingPayment
+	}
+	// Absent means unchanged: the column defaults to true, and only a client
+	// that rendered the checkbox sends a value. See createTaskInput.
+	autoExtend := true
+	if in.AutoExtendConsent != nil {
+		autoExtend = *in.AutoExtendConsent
+	}
 	if err := tx.QueryRowContext(ctx, `
     INSERT INTO public.tasks
       -- shopping_budget_approved_cents starts as the requester's own ask
       -- ($6 twice, deliberately): at post there is nothing to approve beyond
       -- what they set. The columns diverge only when a supporter's
-      -- budget-increase request is approved mid-task (Phase 2), which is what
+      -- budget-increase request is approved mid-task (Phase 2b), which is what
       -- makes "what was authorized, and when" answerable afterwards.
       (title,description,category,location_text,
        estimated_minutes,prepay_amount_cents,shopping_budget_approved_cents,
        is_immediate,scheduled_at,
        requester, requester_id, status, assigned_to, assigned_to_id,
-       transport_required, created_via)
+       transport_required, created_via, auto_extend_consent)
     VALUES
       ($1,$2,$3,$4,
        $5,$6,$6,
        $7,$8,
-       $9, $10::uuid, 'open', '', NULL,
-       $11, $12)
+       $9, $10::uuid, $13, '', NULL,
+       $11, $12, $14)
     RETURNING id, created_at
   `, in.Title, in.Description, in.Category, in.LocationText,
 		in.EstimatedMinutes, in.PrepayAmountCents, in.IsImmediate, when,
-		email, uid, transport, createdVia,
+		email, uid, transport, createdVia, initialStatus, autoExtend,
 	).Scan(&taskID, &createdAt); err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok {
 			log.Printf("[tasks.insert] code=%s tbl=%s col=%s detail=%s where=%s msg=%s",
@@ -1562,6 +1663,93 @@ func createTask(c *gin.Context) {
 		return
 	}
 
+	// ── The hold ───────────────────────────────────────────────────────────
+	//
+	// The task row exists but is not posted. Everything from here either ends
+	// with a hold on the requester's card and the task 'open', or with both
+	// rows gone and a 402 explaining why.
+	if enforcePayment {
+		p, err := CreatePreAuth(ctx, PreAuthInput{
+			TaskID:                taskID,
+			RequesterID:           uid,
+			Category:              in.Category,
+			EstimatedMinutes:      in.EstimatedMinutes,
+			ShoppingBudgetCents:   in.PrepayAmountCents,
+			StripeCustomerID:      payCtx.CustomerID,
+			StripePaymentMethodID: payCtx.PaymentMethodID,
+		})
+
+		var pe *PreAuthError
+		switch {
+		case err == nil && p.Status == paymentStatusAuthorized:
+			if err := promoteTaskToOpen(ctx, taskID, p.ID); err != nil {
+				// The money is held and the task cannot be posted. Releasing is
+				// the only honest move: a hold nobody can see is worse than a
+				// failed post, and the requester can simply try again.
+				log.Printf("[createTask][ERROR] hold %s landed but task=%s could not be posted: %v", p.ID, taskID, err)
+				releaseTaskHold(ctx, taskID, uid, "post_failed_after_hold")
+				discardUnpaidTask(ctx, taskID)
+				c.JSON(500, gin.H{"error": "db error"})
+				return
+			}
+
+		case errors.As(err, &pe) && pe.RequiresAction:
+			// 3DS. Not a refusal — the card is good and wants its owner
+			// present. The task stays parked in 'pending_payment' (invisible to
+			// everyone) until POST /tasks/:id/payment/confirm reads the outcome.
+			c.JSON(http.StatusPaymentRequired, gin.H{
+				"error":             "payment_authentication_required",
+				"message":           pe.Message,
+				"client_secret":     pe.ClientSecret,
+				"payment_intent_id": pe.PaymentIntentID,
+				"task_id":           taskID,
+				"publishable_key":   stripePublishableKey(),
+			})
+			return
+
+		default:
+			// Declined, unreachable, or an intent that came back in some state
+			// other than authorized. No task, no payments row, and a message
+			// naming what the requester can do about it.
+			message := "We couldn't place a hold on your card. Try another card."
+			declineCode := ""
+			if pe != nil {
+				message, declineCode = pe.Message, pe.DeclineCode
+			}
+			if err != nil {
+				log.Printf("[createTask] pre-auth refused task=%s: %v", taskID, err)
+			} else {
+				log.Printf("[createTask] pre-auth for task=%s came back %q, not authorized", taskID, p.Status)
+			}
+			discardUnpaidTask(ctx, taskID)
+			body := gin.H{"error": "payment_required", "message": message}
+			if declineCode != "" {
+				body["decline_code"] = declineCode
+			}
+			c.JSON(http.StatusPaymentRequired, body)
+			return
+		}
+	}
+
+	announceNewTaskInput(taskID, in, email, when)
+
+	c.JSON(201, Task{
+		ID: taskID, Title: in.Title, Description: in.Description, Category: in.Category,
+		LocationText: in.LocationText, EstimatedMinutes: in.EstimatedMinutes,
+		PrepayAmountCents: in.PrepayAmountCents, IsImmediate: in.IsImmediate,
+		ScheduledAt: when, Requester: email, RequesterID: uid,
+		Status: "open", CreatedAt: createdAt, AssignedTo: "", AssignedToID: nil,
+		AutoExtendConsent: &autoExtend,
+	})
+}
+
+// announceNewTaskInput emails the ops allowlist that a task is live.
+//
+// Split out of createTask because a task posted behind a 3DS challenge becomes
+// live in a different request (POST /tasks/:id/payment/confirm), and an
+// announcement that only fires on the straight-through path would silently
+// skip every task that needed a card challenge.
+func announceNewTaskInput(taskID string, in createTaskInput, email string, when *time.Time) {
 	go notify.NotifyAdminNewTask(notify.AdminNewTaskInput{
 		TaskID:           taskID,
 		Title:            in.Title,
@@ -1572,14 +1760,26 @@ func createTask(c *gin.Context) {
 		IsImmediate:      in.IsImmediate,
 		ScheduledAt:      when,
 	})
+}
 
-	c.JSON(201, Task{
-		ID: taskID, Title: in.Title, Description: in.Description, Category: in.Category,
-		LocationText: in.LocationText, EstimatedMinutes: in.EstimatedMinutes,
-		PrepayAmountCents: in.PrepayAmountCents, IsImmediate: in.IsImmediate,
-		ScheduledAt: when, Requester: email, RequesterID: uid,
-		Status: "open", CreatedAt: createdAt, AssignedTo: "", AssignedToID: nil,
-	})
+// announceNewTask is the same announcement re-read from the row, for the 3DS
+// path where the original request body is long gone.
+func announceNewTask(ctx context.Context, taskID string) {
+	var in createTaskInput
+	var email string
+	var when *time.Time
+	err := db.QueryRow(ctx, `
+		select coalesce(title,''), coalesce(category,''), coalesce(requester,''),
+		       coalesce(location_text,''), coalesce(estimated_minutes,0),
+		       coalesce(is_immediate,false), scheduled_at
+		  from public.tasks where id = $1::uuid
+	`, taskID).Scan(&in.Title, &in.Category, &email, &in.LocationText,
+		&in.EstimatedMinutes, &in.IsImmediate, &when)
+	if err != nil {
+		log.Printf("[createTask] could not announce task=%s: %v", taskID, err)
+		return
+	}
+	announceNewTaskInput(taskID, in, email, when)
 }
 
 func scanTask(rows interface{ Scan(dest ...any) error }) (Task, error) {
@@ -1666,7 +1866,11 @@ func listMyTasks(c *gin.Context) {
 		beforeID = &s
 	}
 
-	where := []string{"requester_id = $1::uuid"}
+	// Every status except pending_payment, which is not a task the requester
+	// has posted — it is a row waiting on a card authentication that has not
+	// come back yet, and showing it would put a task in their list that no
+	// supporter can see and that may be deleted a second later.
+	where := []string{"requester_id = $1::uuid", "status <> 'pending_payment'"}
 	args := []any{meUID}
 	arg := 2
 	if beforeCreatedAt != nil && beforeID != nil {
@@ -1788,6 +1992,20 @@ func getTask(c *gin.Context) {
 		}
 		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 		return
+	}
+
+	// The requester's own consent flag, read separately for the same reason
+	// removal_reason is: only the detail screen needs it, and widening the main
+	// SELECT would mean widening the no-travel-columns fallback too. Requester
+	// only — it is a term of their payment, not something the supporter
+	// negotiates.
+	if uid == t.RequesterID {
+		var consent bool
+		if err := db.QueryRow(ctx,
+			`select coalesce(auto_extend_consent, true) from public.tasks where id=$1::uuid`, id,
+		).Scan(&consent); err == nil {
+			t.AutoExtendConsent = &consent
+		}
 	}
 
 	if t.Status == "removed" {
@@ -1922,6 +2140,31 @@ func updateTask(c *gin.Context) {
 			return
 		}
 		when = &tt
+	}
+
+	// An edit cannot outgrow the hold already placed on the card.
+	//
+	// The hold was sized from the ORIGINAL estimate and budget. Raising either
+	// one would leave a task whose settlement can exceed what is authorized,
+	// and Capture clamps to the hold — so the difference is money the platform
+	// silently cannot collect and the supporter is owed. Re-authorizing for the
+	// larger amount is the right answer and is Phase 2b (budget increases);
+	// until then the edit is refused, with the number that would have to be
+	// re-held named so the message is actionable rather than mysterious.
+	//
+	// An edit that lowers or leaves the amount alone passes: over-holding is
+	// harmless (the remainder is released at capture, never charged).
+	if p, err := livePaymentForTask(ctx, id); err == nil && p.AuthorizedCents != nil {
+		if want := preAuthAmountCents(in.Category, in.EstimatedMinutes, in.PrepayAmountCents); want > *p.AuthorizedCents {
+			c.JSON(http.StatusConflict, gin.H{
+				"error": "exceeds_authorized_hold",
+				"message": "That change needs a bigger hold than the one on your card (" +
+					formatCentsUSD(*p.AuthorizedCents) + "). Cancel this task and post it again.",
+				"authorized_cents": *p.AuthorizedCents,
+				"required_cents":   want,
+			})
+			return
+		}
 	}
 
 	// The assigned_to_id check above is advisory only — it produces the friendly
@@ -3101,10 +3344,17 @@ func cancelTask(c *gin.Context) {
 		return
 	}
 
+	// The money side of "cancel bills $0": the hold is released, which is what
+	// actually puts the requester's available balance back. Deliberately after
+	// the status write and non-fatal — see releaseTaskHold for why a Stripe
+	// outage must not be able to stop somebody cancelling their own task.
+	released := releaseTaskHold(ctx, taskID, meUID, "requester_cancelled")
+
 	writeAudit(ctx, taskID, meUID, "CANCELLED", in.Reason, map[string]any{
 		"total_minutes": totalMin,
 		"had_session":   hadSession,
 		"bill_cents":    billCents,
+		"hold_released": released != nil,
 	})
 
 	// Email requester: cancellation confirmation with reason

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import AvatarUploader from '../components/AvatarUploader'
+import PaymentMethods from '../components/PaymentMethods'
 import { useToast } from '../providers/ToastProvider'
 
 export default function Profile() {
@@ -151,6 +152,13 @@ export default function Profile() {
             </>
           )}
         </div>
+
+        {/* Cards on file. Its own card rather than a section of the form
+            above: saving a card is a Stripe round trip that has nothing to do
+            with "Save changes", and putting it inside the form would make one
+            button look like it owned both. Renders nothing at all when the
+            backend has no Stripe configured. */}
+        <PaymentMethods />
 
       </div>
     </div>

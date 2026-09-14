@@ -552,11 +552,14 @@ WhatsApp notifications are stubbed (TODO comments throughout).
 
 ## The Billing Model
 
-The complete pricing, settlement and payment model. Phase 1 (this section's
-subject) ships the billing engine, the payments schema and the Stripe webhook;
-Phases 2 and 3 wire the money flows onto them. Everything described here as
-"Phase 2/3" has schema and config support today and no code path that reaches
-it yet.
+The complete pricing, settlement and payment model.
+
+Phase 1 shipped the billing engine, the payments schema and the Stripe webhook
+with nothing calling them. **Phase 2a (§9 below) wires the first half in**: a
+card on file, a pre-auth at post, and a release on every cancel path — all
+behind `PAYMENTS_ENFORCED`, which is **off** in production. Capture at
+completion, receipts, budget-increase approvals and payouts are Phase 2b/3 and
+still have schema and config support with no code path that reaches them.
 
 **Single source of truth:** `BillingConfig` in `server/billing.go`. Every
 constant below is a field of it. A billing number that is not a field of
@@ -653,6 +656,8 @@ and the full receipt amount; `application_fee_amount` is parameterized via
 | Quote endpoint | `POST /tasks/estimate` → `estimateTaskCost` |
 | Settlement breakdown | `GET /tasks/:id/worklogs` → `cost` object |
 | Stripe calls | `CreatePreAuth` / `Capture` / `Release` — `server/payments.go` |
+| Post-time wiring | `payments_preauth.go` (flag, decline mapping, release, 3DS confirm) |
+| Card on file | `payments_cards.go` (`/payments/*`) |
 | Stripe events | `POST /webhooks/stripe` — `server/stripe_webhook.go` |
 | Ledger | `public.payments`, `public.stripe_webhook_events` |
 | Client rule | display only; `app/src/lib/pricing.test.mjs` fails the build on any local price math |
@@ -698,8 +703,8 @@ Unconfigured payment routes → **503** via `requirePaymentsEnabled()`.
 | Event | Handling |
 |---|---|
 | `payment_intent.succeeded` | record capture; amount taken from Stripe, the authority on what moved |
-| `payment_intent.canceled` | mark the hold released |
-| `payment_intent.payment_failed` | mark the hold dead |
+| `payment_intent.canceled` | mark the hold released; sync the task (§9.5) |
+| `payment_intent.payment_failed` | mark the hold dead; sync the task (§9.5) |
 | `charge.dispute.created` | `audit_logs` row (`PAYMENT_DISPUTED`) **and** email to the ops allowlist |
 | anything else | logged, `200`, ignored — a non-2xx would make Stripe retry for days and eventually disable the endpoint |
 
@@ -714,6 +719,139 @@ dropped — an untraceable dispute is *more* urgent, not less.
 |---|---|
 | `STRIPE_SECRET_KEY` | test key (`sk_test_…`) for now. Absent → payment routes 503, `payments.go` returns `ErrPaymentsDisabled` |
 | `STRIPE_WEBHOOK_SECRET` | endpoint signing secret (`whsec_…`). Absent → webhook 401 |
+| `STRIPE_PUBLISHABLE_KEY` | `pk_test_…`. Sent to both clients in every payments response, so rotating it needs no web deploy and no native rebuild. Public by design (S-12) |
+| `PAYMENTS_ENFORCED` | `1/true/yes/on` → posting requires a card and places a hold. **Anything else, including unset, is off** |
 
 Startup logs whether payments are enabled and whether the key is test or live.
 The key itself is never logged (S-12).
+
+---
+
+### 9. Phase 2a — card on file and the pre-auth
+
+#### 9.1 The flag
+
+`PAYMENTS_ENFORCED` is read on every call, not cached at startup, and defaults
+**off**. With it off, `POST /tasks` behaves exactly as it did before Phase 2a:
+no card required, no hold, no `payments` row, `tasks.payment_id` null. Every
+payment branch in `createTask` is downstream of `paymentsEnforced()`.
+
+Enforcement **on** with no `STRIPE_SECRET_KEY` is a misconfiguration and
+refuses every post with **503** — it never falls through to the unenforced
+path, which would post tasks nobody is holding money for while an operator
+believes payments are live.
+
+#### 9.2 Card-on-file endpoints
+
+All session-authenticated, all behind `requirePaymentsEnabled()` (503 when
+Stripe is unconfigured). The client never names a Stripe customer; it is always
+resolved from the session uid via `users.stripe_customer_id`.
+
+| Endpoint | Returns |
+|---|---|
+| `POST /payments/setup-intent` | `client_secret`, `customer_id`, `ephemeral_key`, `publishable_key`, `merchant_display_name` — everything PaymentSheet needs in setup mode, in one call |
+| `GET /payments/payment-methods` | `cards[]` (`id`, `brand`, `last4`, `exp_month`, `exp_year`, `is_default`), `has_card`, `publishable_key`, `payments_enforced` |
+| `DELETE /payments/payment-methods/:id` | `{ok:true}`; **404** for a card the session does not own (confirming it exists is itself the leak); **409** when it is the charging card and the requester has a live hold |
+
+`users.stripe_customer_id` is created **lazily** on first card-sheet open, not
+at signup — most beta accounts never add a card, and a Customer per signup is a
+permanent row in Stripe's database for a user who never transacts. The persist
+is `coalesce(stripe_customer_id, $2)` so a race keeps one id and discards the
+other.
+
+The SetupIntent is created with `usage: off_session`. A card saved `on_session`
+produces a PaymentMethod the issuer expects a challenge for on every use, which
+would turn every post into a 3DS prompt.
+
+#### 9.3 Posting with the flag on
+
+```
+resolve card (no card → 402 payment_method_required, nothing written)
+  insert task  status = 'pending_payment'          ← in no feed, no list
+    CreatePreAuth  (row written BEFORE the Stripe call)
+      authorized          → task 'open' + tasks.payment_id   → 201
+      authentication_required → task stays parked            → 402 + client_secret
+      declined / anything else → both rows deleted           → 402 + message
+```
+
+**Why `pending_payment` exists.** `payments.task_id` is `NOT NULL`, so the hold
+cannot be recorded before the task row exists; and `payments.go` writes its row
+*before* calling Stripe on purpose, because a live hold with no row naming it
+is unrecoverable where a row naming an intent that may not exist is merely
+untidy. Those two force task → payment row → Stripe call, which would leave an
+`open`, unfunded, acceptable task in the supporters' feed for the second the
+authorization takes. `pending_payment` closes that window by construction: the
+task becomes `open` in the same statement that records the authorization.
+
+Excluded from `listMyTasks`, `listProfileTasks` and every feed (those already
+filter `status='open'`). A stranded row means a 3DS challenge nobody finished;
+the sweep query is at the bottom of the Phase 2a migration.
+
+#### 9.4 3DS / SCA
+
+An off-session confirm that the issuer wants the cardholder present for comes
+back from stripe-go as an **error carrying a good PaymentIntent**. Read as a
+decline it would discard a recoverable attempt and tell the requester their
+card was refused. `classifyPreAuthError` separates the two; the 402 carries
+`client_secret`, `payment_intent_id`, `task_id` and `publishable_key`.
+
+The client runs the challenge with its Stripe SDK and then calls
+**`POST /tasks/:id/payment/confirm`**, which **re-reads the intent from Stripe**
+rather than believing the client:
+
+| Intent status | Result |
+|---|---|
+| `requires_capture` | row → `authorized`, task → `open`, ops announcement fires |
+| `requires_action` / `requires_confirmation` | 402 again; task stays parked |
+| anything else | both rows discarded; 402 |
+
+Idempotent: a task already `open` answers 200.
+
+#### 9.5 Hold lifecycle
+
+| Event | Hold |
+|---|---|
+| requester cancels (`POST /tasks/:id/cancel`) | released; `PAYMENT_RELEASED` audit row |
+| admin cancel / admin remove | released; same audit row |
+| **reassign** | **untouched** — the hold is the requester's money for the same task at the same price |
+| task edit that would need a bigger hold | **409 `exceeds_authorized_hold`**, naming the held amount. Re-authorizing for more is Phase 2b |
+| `payment_intent.canceled/payment_failed` on a `pending_payment` task | both rows discarded |
+| the same on an **open** task | task stays posted; `PAYMENT_HOLD_LOST` audit row + ERROR log |
+
+Release is **best-effort and runs after the status write**: a Stripe outage
+must not be able to stop somebody cancelling their own task. A failure writes
+`PAYMENT_RELEASE_FAILED` to `audit_logs` and logs `[STRANDED HOLD]`; the hold
+expires on its own within a week regardless.
+
+An `open` task whose hold is lost is deliberately **not** un-posted — a
+supporter may already be travelling, and cancelling out from under them is
+worse than a settlement handled by hand.
+
+#### 9.6 Pre-auth expiry — known limitation
+
+Card networks release an uncaptured manual-capture authorization after about
+**7 days**. `watchExpiringPreAuths` runs every 6 hours and **logs only**:
+
+```
+[payments][EXPIRING HOLD] task=… payment=… intent=… amount=$76.75 age=6.2d
+```
+
+for any `open` task with an `authorized` hold older than 6 days. Re-authorizing
+would be a second charge attempt on a week-old task that can itself decline,
+can double-hold if the first release lags, and needs a requester-facing story
+when it fails — it is a later refinement, not part of the phase that first
+places a hold. What happens today if a hold does lapse: `Capture` fails loudly
+at completion rather than silently, which is why the warning exists — so an
+operator sees the task before a supporter works it.
+
+#### 9.7 Auto-extend consent
+
+`tasks.auto_extend_consent` (default **true**) is now set from the post form.
+An **absent** field means unchanged, not refused — web and every shipped mobile
+build send nothing, and reading their silence as a denial would mark them all
+as having declined something they were never asked.
+
+The pre-auth amount deliberately does **not** depend on it. With
+`held = 1.5(B+T) + $5` and `capture = B + T + 15 × $0.50`, the margin is
+`0.5(B+T) + $5 − $7.50 ≥ $3.50` at every duration and both base-fee tiers,
+since `B ≥ $12.00`. `TestPreAuthCoversAutoExtend` pins that floor.

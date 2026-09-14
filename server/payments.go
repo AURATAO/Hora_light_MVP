@@ -2,19 +2,23 @@ package main
 
 // The payments service layer: everything that talks to Stripe about a task.
 //
-// PHASE 1 SCOPE. These three functions are complete and callable, and nothing
-// in any task flow calls them. That is deliberate — Phase 2 wires CreatePreAuth
-// into task creation and Capture/Release into completion and cancellation.
-// Shipping them unwired means the Stripe integration, the payments table and
-// the webhook can be deployed and exercised in test mode without a single
-// user-visible payment surface, so Phase 2 is a wiring change against an
-// integration that already works rather than a big-bang.
+// SCOPE. Phase 1 shipped these three functions complete and called by nothing,
+// so that the Stripe integration, the payments table and the webhook could be
+// deployed and exercised in test mode before any user-visible payment surface
+// existed. Phase 2a cashed that in: CreatePreAuth is now called by createTask
+// and Release by all three cancel paths — a wiring change against an
+// integration that already worked. Capture is still unwired; settlement at
+// completion is Phase 2b.
+//
+// Every one of those call sites is behind PAYMENTS_ENFORCED (default off), so
+// a deploy of this file changes nothing until that flag is flipped. See
+// payments_preauth.go.
 //
 // MONEY FLOW (the whole thing, for orientation)
 //
-//	post        CreatePreAuth  authorize (base+time estimate)x1.5 + budget + $5
-//	completion  Capture        take time cost + verified receipt, release rest
-//	cancel      Release        cancel the hold; nothing was ever captured
+//	post        CreatePreAuth  authorize (base+time estimate)x1.5 + budget + $5   [wired, 2a]
+//	completion  Capture        take time cost + verified receipt, release rest    [2b]
+//	cancel      Release        cancel the hold; nothing was ever captured         [wired, 2a]
 //
 // "Refund of unused time" is not a refund. The pre-auth is a hold; capturing
 // less than the held amount releases the remainder automatically, so the
@@ -203,8 +207,35 @@ func CreatePreAuth(ctx context.Context, in PreAuthInput) (*Payment, error) {
 
 	pi, err := paymentintent.New(params)
 	if err != nil {
-		_ = updatePaymentStatus(ctx, p.ID, paymentStatusFailed, nil)
-		return nil, fmt.Errorf("payments: create intent: %w", err)
+		// A confirm that needs 3DS comes back as an ERROR carrying a perfectly
+		// good PaymentIntent — the card is fine, it just wants the cardholder
+		// present. Treated as a plain failure it would discard a recoverable
+		// attempt and tell the requester their card was declined, which is
+		// both wrong and unfixable from their side. So the intent is attached
+		// and the row stays live; classifyPreAuthError says which case it is.
+		pe := classifyPreAuthError(err)
+		pe.PaymentID = p.ID
+		if pe.RequiresAction && pe.PaymentIntentID != "" {
+			if attachErr := attachIntent(ctx, p.ID, pe.PaymentIntentID, paymentStatusRequiresAuth, nil); attachErr != nil {
+				log.Printf("[payments][ERROR] 3DS intent=%s could not be attached to payment=%s: %v",
+					pe.PaymentIntentID, p.ID, attachErr)
+			}
+			log.Printf("[payments] pre-auth task=%s payment=%s intent=%s needs authentication",
+				in.TaskID, p.ID, pe.PaymentIntentID)
+			return nil, pe
+		}
+		// A declined intent still exists at Stripe, in requires_payment_method
+		// and holding nothing. Recording its id keeps the failed row traceable
+		// to a dashboard entry, which is what a "my card was refused" support
+		// ticket needs.
+		if pe.PaymentIntentID != "" {
+			_ = attachIntent(ctx, p.ID, pe.PaymentIntentID, paymentStatusFailed, nil)
+		} else {
+			_ = updatePaymentStatus(ctx, p.ID, paymentStatusFailed, nil)
+		}
+		log.Printf("[payments] pre-auth task=%s payment=%s FAILED code=%s decline=%s",
+			in.TaskID, p.ID, pe.Code, pe.DeclineCode)
+		return nil, pe
 	}
 
 	status := paymentStatusRequiresAuth

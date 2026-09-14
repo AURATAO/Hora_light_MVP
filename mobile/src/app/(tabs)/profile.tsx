@@ -7,6 +7,7 @@ import * as WebBrowser from "expo-web-browser";
 import Constants from "expo-constants";
 import {
   ChevronRight,
+  CreditCard,
   FileText,
   MessageCircle,
   ShieldCheck,
@@ -342,6 +343,22 @@ export default function Profile() {
           <DetailRow label="Phone" value={profile.phone} />
           <DetailRow label="City" value={profile.city} />
           <DetailRow label="Bio" value={profile.bio} />
+        </Card>
+      </View>
+
+      {/* Cards on file. Its own section rather than a row inside "Contact &
+          about": it is the only thing on this tab that moves money, and it is
+          where a declined post sends the requester. Always shown — a backend
+          with no Stripe configured says so on the screen itself, which is more
+          useful than a row that silently isn't there. */}
+      <View className="mb-6">
+        <Text className="mb-2 text-title font-semibold text-ink">Payments</Text>
+        <Card>
+          <ListRow
+            icon={CreditCard}
+            label="Payment methods"
+            onPress={() => router.push("/profile/payment-methods")}
+          />
         </Card>
       </View>
 

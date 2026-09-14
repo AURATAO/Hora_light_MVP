@@ -12,7 +12,9 @@
       "bundleIdentifier": "co.horaapp.app",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
-        "UIBackgroundModes": ["location"]
+        "UIBackgroundModes": [
+          "location"
+        ]
       }
     },
     "android": {
@@ -80,6 +82,12 @@
           "image": "./assets/splash.png",
           "resizeMode": "cover",
           "enableFullScreenImage_legacy": true
+        }
+      ],
+      [
+        "@stripe/stripe-react-native",
+        {
+          "enableGooglePay": false
         }
       ]
     ],

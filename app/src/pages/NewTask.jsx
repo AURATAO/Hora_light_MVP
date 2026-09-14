@@ -8,6 +8,7 @@ import DurationPicker from '../components/DurationPicker'
 import AddressInput from '../components/AddressInput'
 import { useToast } from '../providers/ToastProvider'
 import { useTaskEstimate, formatCents } from '../hooks/useTaskEstimate'
+import { completeCardAuthentication, readPaymentError, usePaymentGate } from '../hooks/usePaymentGate'
 
 
 const CATEGORY_LABELS = {
@@ -40,6 +41,15 @@ export default function NewTask() {
   const [prefillBannerDismissed, setPrefillBannerDismissed] = useState(false)
 
   const [transport, setTransport] = useState('none')
+  // Consent for the supporter to run up to 15 minutes past the estimate
+  // without stopping to ask. Defaults ON to match the column default and the
+  // behaviour every existing task already has — overtime has always billed
+  // without a per-task gate, so defaulting off would be a change of terms
+  // dressed up as a new checkbox.
+  const [autoExtend, setAutoExtend] = useState(true)
+  // Set when a post is refused for a payment reason, so the message lands next
+  // to the button that produced it rather than in a toast that scrolls away.
+  const [paymentError, setPaymentError] = useState('')
   const [taskType, setTaskType] = useState('task') // 'task' | 'companion'
   const [urlCategory, setUrlCategory] = useState(null) // locked when navigated from CategoryHome
   const [searchParams] = useSearchParams()
@@ -134,6 +144,12 @@ export default function NewTask() {
     shoppingBudgetCents: Math.round(advance * 100),
   })
 
+  // Advisory only — POST /tasks answers 402 regardless of what this says. It
+  // exists so a requester learns they need a card before filling in the form,
+  // and so nothing about payments is shown at all while the flag is off.
+  const payments = usePaymentGate()
+  const needsCard = payments.enforced && !payments.hasCard
+
   const scheduledAtISO = useMemo(() => {
     if (mode !== 'schedule' || !date || !timeStr) return ''
     const dt = new Date(`${date}T${timeStr}`)
@@ -152,6 +168,7 @@ export default function NewTask() {
     }
   }
   setIsSubmitting(true)
+  setPaymentError('')
   try {
     if (!user) throw new Error('Please sign in')
 
@@ -175,13 +192,39 @@ export default function NewTask() {
       is_immediate: mode === 'now',
       scheduled_at: mode === 'schedule' ? scheduledAtISO : '',
       transport_required: transport,
+      auto_extend_consent: autoExtend,
     }
 
     await api('/tasks', { method: 'POST', body: payload, noRedirect: true })
     setSuccessOpen(true)
     return
   } catch (err) {
-    toast(err.message || 'Failed to create task')
+    const failure = readPaymentError(err)
+
+    // A bank that wants the cardholder present. The task already exists,
+    // parked and invisible to everyone; running the challenge and confirming
+    // posts it. Nothing here can post a task on its own — the backend re-reads
+    // the intent from Stripe before it believes any of this.
+    if (failure.kind === 'authenticate') {
+      try {
+        await completeCardAuthentication(failure.payment)
+        setSuccessOpen(true)
+        return
+      } catch (authErr) {
+        setPaymentError(authErr.message || 'That payment was not approved. Try another card.')
+        return
+      }
+    }
+
+    if (failure.kind === 'card') {
+      // Shown inline with a way to fix it, not as a toast: "your card was
+      // declined" with no path to another card is a dead end.
+      setPaymentError(failure.message)
+      payments.refresh()
+      return
+    }
+
+    toast(failure.message)
   } finally {
     setIsSubmitting(false)
   }
@@ -479,6 +522,24 @@ function confirmCompanionPolicy() {
             </div>
           </div>
 
+          {/* Overtime consent. One line, on by default, phrased as what it
+              permits rather than as a setting — the requester is agreeing to a
+              billing term, so it says the rate and the cap. */}
+          <label className="flex items-start gap-3 text-sm cursor-pointer">
+            <input
+              type="checkbox"
+              checked={autoExtend}
+              onChange={e => setAutoExtend(e.target.checked)}
+              className="mt-0.5 h-4 w-4 shrink-0 accent-[#9aab3a]"
+            />
+            <span className="text-white/70">
+              Allow up to 15 extra minutes at the same rate if the task runs long
+              <span className="block text-xs text-white/40">
+                Without this your supporter has to stop and ask before going over.
+              </span>
+            </span>
+          </label>
+
           {/* Estimate summary — every figure comes from POST /tasks/estimate */}
           {estimate && (
             <div className="text-xs text-white/80 rounded-md px-3 py-2 border border-white/20 grid gap-1">
@@ -507,9 +568,40 @@ function confirmCompanionPolicy() {
             </div>
           )}
 
+          {/* Payments. Both of these render nothing while PAYMENTS_ENFORCED is
+              off, which is the whole beta today. */}
+          {needsCard && (
+            <div className="rounded-md border border-white/20 px-3 py-2.5 text-sm">
+              <div className="text-white/80">Add a card to post a task.</div>
+              <div className="mt-0.5 text-xs text-white/50">
+                Posting places a hold; you're only charged for the time actually worked.
+              </div>
+              <button
+                type="button"
+                onClick={() => nav('/profile')}
+                className="mt-2 rounded-md border border-white/20 px-3 py-1.5 text-xs hover:border-white/40"
+              >
+                Add a card
+              </button>
+            </div>
+          )}
+
+          {paymentError && (
+            <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2.5 text-sm text-red-300">
+              <div>{paymentError}</div>
+              <button
+                type="button"
+                onClick={() => nav('/profile')}
+                className="mt-2 rounded-md border border-red-500/30 px-3 py-1.5 text-xs hover:border-red-500/60"
+              >
+                Try another card
+              </button>
+            </div>
+          )}
+
           {/* Actions */}
           <div className="flex gap-3 pt-2">
-            <button type="submit" disabled={!canSubmit || isSubmitting}
+            <button type="submit" disabled={!canSubmit || isSubmitting || needsCard}
               className="rounded-md px-4 py-2 bg-white text-black disabled:opacity-50">
               {isSubmitting ? 'Posting…' : 'Create task'}
             </button>
@@ -518,6 +610,7 @@ function confirmCompanionPolicy() {
                 setTitle(''); setDescription(''); setCategory('quick_errand');
                 setLocs([{ id: nextLocId.current++, result: null }]); setMinutes('30'); setPrepay('');
                 setTransport('none'); setTouched(false); setTaskType('task');
+                setAutoExtend(true); setPaymentError('');
                 setCompPolicyAgreed(false); setCompPolicyChecked(false); setCompPolicyOpen(false);
               }}
               className="rounded-md px-4 py-2 border border-white/20 hover:border-white/40">

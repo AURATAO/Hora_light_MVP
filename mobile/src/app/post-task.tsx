@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { Check, ChevronLeft, Sparkles, X } from "lucide-react-native";
+import { Check, ChevronLeft, CreditCard, Sparkles, X } from "lucide-react-native";
 import { BetaNoticeSheet } from "../components/BetaNoticeSheet";
 import { CompanionshipPolicySheet } from "../components/CompanionshipPolicySheet";
 import {
@@ -14,8 +14,13 @@ import {
   type TaskFormErrors,
   type TaskFormState,
 } from "../components/TaskForm";
-import { Button, Input, Pill, PressableScale, Screen, Skeleton } from "../components/ui";
+import { Button, Card, Input, Pill, PressableScale, Screen, Skeleton } from "../components/ui";
 import { ApiError, createTask, getMe, getTask, parseTask, updateProfile } from "../lib/api";
+import {
+  completeCardAuthentication,
+  getPaymentMethods,
+  readPostFailure,
+} from "../lib/payments";
 import { DISABLED_CATEGORY_NOTICE, isCategoryDisabled } from "../lib/beta-notice";
 import { CATEGORIES, getCategoryMeta } from "../lib/categories";
 import { POST_TASK_AI_HINT, POST_TASK_AI_HINT_COPY } from "../lib/home-content";
@@ -73,6 +78,14 @@ export default function PostTask() {
   const [fieldErrors, setFieldErrors] = useState<TaskFormErrors>({});
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // A payment refusal, kept apart from submitError because it comes with an
+  // action ("Add a card") that a generic error does not.
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+
+  // Advisory gate. POST /tasks answers 402 whatever this says; it exists so a
+  // requester learns they need a card BEFORE filling in the form, and so that
+  // beta users see nothing about payments at all while the flag is off.
+  const [needsCard, setNeedsCard] = useState(false);
 
   // "Post again": the source task's id, not its fields — the form fetches and
   // maps it here rather than having a whole Task serialized through navigation.
@@ -137,6 +150,25 @@ export default function PostTask() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [duplicateId]);
+
+  // Re-checked every time the review step is entered rather than once on
+  // mount: the requester can leave for Payment methods, add a card, and come
+  // back, and the banner has to be gone when they do.
+  const refreshPaymentGate = useCallback(async () => {
+    try {
+      const res = await getPaymentMethods();
+      setNeedsCard(res.payments_enforced && !res.has_card);
+    } catch {
+      // A 503 (no Stripe configured) or any other failure means nothing is
+      // being enforced that this screen can usefully warn about. The 402 from
+      // POST /tasks remains the only thing that actually gates a post.
+      setNeedsCard(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (step === "review") refreshPaymentGate();
+  }, [step, refreshPaymentGate]);
 
   function handleAuthError(e: unknown): boolean {
     if (e instanceof ApiError && e.isAuthError) {
@@ -210,17 +242,55 @@ export default function PostTask() {
     }
 
     setSubmitError(null);
+    setPaymentError(null);
     setSubmitting(true);
     try {
       await createTask(taskFormToPayload(form, origin));
-      setStep("success");
-      closeTimeout.current = setTimeout(() => router.back(), 900);
+      finishPosted();
     } catch (e) {
       if (handleAuthError(e)) return;
-      setSubmitError(e instanceof Error ? e.message : "Couldn't post your task. Try again.");
+      const failure = readPostFailure(e);
+
+      // A bank that wants the cardholder present. The task already exists on
+      // the server, parked and invisible to everyone; running the challenge
+      // and confirming is what posts it. Nothing here can post a task on its
+      // own — the backend re-reads the intent from Stripe first.
+      if (failure.kind === "authenticate") {
+        try {
+          const outcome = await completeCardAuthentication(failure.payment);
+          if (outcome.status === "done") {
+            finishPosted();
+          } else if (outcome.status === "failed") {
+            setPaymentError(outcome.message);
+          } else {
+            // Dismissed the bank's sheet. Nothing was posted and nothing is
+            // wrong; say what to do rather than showing an error.
+            setPaymentError("Your bank didn't confirm that payment. Try posting again.");
+          }
+        } catch (authErr) {
+          if (handleAuthError(authErr)) return;
+          setPaymentError(
+            authErr instanceof Error ? authErr.message : "That payment wasn't approved."
+          );
+        }
+        return;
+      }
+
+      if (failure.kind === "card") {
+        setPaymentError(failure.message);
+        refreshPaymentGate();
+        return;
+      }
+
+      setSubmitError(failure.message);
     } finally {
       setSubmitting(false);
     }
+  }
+
+  function finishPosted() {
+    setStep("success");
+    closeTimeout.current = setTimeout(() => router.back(), 900);
   }
 
   if (step === "success") {
@@ -317,8 +387,48 @@ export default function PostTask() {
         ) : (
           <View className="gap-4 pb-8">
             <TaskForm form={form} onChange={setForm} errors={fieldErrors} />
+
+            {/* Both of these render nothing while PAYMENTS_ENFORCED is off,
+                which is every beta session today. */}
+            {needsCard ? (
+              <Card>
+                <View className="flex-row items-center gap-3">
+                  <CreditCard color={color.muted} size={18} strokeWidth={size.iconStroke} />
+                  <View className="flex-1">
+                    <Text className="text-body font-semibold text-ink">Add a card to post</Text>
+                    <Text className="mt-0.5 text-caption text-muted">
+                      Posting places a hold. You're only charged for the time actually worked.
+                    </Text>
+                  </View>
+                </View>
+                <Button
+                  label="Add a card"
+                  variant="secondary"
+                  onPress={() => router.push("/profile/payment-methods")}
+                  className="mt-3"
+                />
+              </Card>
+            ) : null}
+
+            {paymentError ? (
+              <Card>
+                <Text className="text-body text-danger">{paymentError}</Text>
+                <Button
+                  label="Try another card"
+                  variant="secondary"
+                  onPress={() => router.push("/profile/payment-methods")}
+                  className="mt-3"
+                />
+              </Card>
+            ) : null}
+
             {submitError ? <Text className="text-caption text-danger">{submitError}</Text> : null}
-            <Button label="Post task" onPress={handleSubmit} loading={submitting} />
+            <Button
+              label="Post task"
+              onPress={handleSubmit}
+              loading={submitting}
+              disabled={needsCard}
+            />
           </View>
         )}
       </ScrollView>
