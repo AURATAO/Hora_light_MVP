@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Image, RefreshControl, ScrollView, Text, View } from "react-native";
+import { AppState, Image, RefreshControl, ScrollView, Text, View } from "react-native";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import * as Clipboard from "expo-clipboard";
 import * as Location from "expo-location";
@@ -41,7 +41,15 @@ import {
 } from "../../lib/api";
 import { TRACTION_3_CONFIG, isTractionWindowActive } from "../../lib/beta-notice";
 import { getCategoryMeta } from "../../lib/categories";
-import { startBackgroundGps, stopBackgroundGpsFor } from "../../lib/gps-tracking";
+import {
+  GPS_DEBUG_ROW,
+  isBackgroundGpsHealthy,
+  readBreadcrumb,
+  restartBackgroundGps,
+  startBackgroundGps,
+  stopBackgroundGpsFor,
+  type GpsBreadcrumb,
+} from "../../lib/gps-tracking";
 import { openAddressInMaps, openCoordsInMaps, openRouteInMaps } from "../../lib/maps";
 import { cancelOvertimeReminders, scheduleOvertimeReminders } from "../../lib/overtime-reminders";
 import {
@@ -60,6 +68,11 @@ import type { LatestLocation, PublicProfile, Review, Task, WorklogsSummary } fro
 import { color, size } from "../../theme/tokens";
 
 const GPS_PING_INTERVAL_MS = 30_000;
+
+// How often, while this screen is mounted, we re-check that the background
+// session is still alive. Half the staleness threshold, so a dead session is
+// noticed within roughly one check of going quiet.
+const GPS_HEALTH_CHECK_MS = 30_000;
 
 // The requester polls the supporter's last-known position at half the ping
 // cadence (30s) — often enough to feel current, gentle enough to skip while the
@@ -109,6 +122,13 @@ function firstName(name?: string | null): string {
   return name.trim().split(/\s+/)[0] || "them";
 }
 
+// For the GPS debug row: "42s ago" / "3m ago" / "never".
+function formatAge(at: number | null, now: number): string {
+  if (at === null) return "never";
+  const seconds = Math.max(0, Math.round((now - at) / 1000));
+  return seconds < 90 ? `${seconds}s ago` : `${Math.round(seconds / 60)}m ago`;
+}
+
 function formatClock(iso: string): string {
   return new Date(iso).toLocaleString([], {
     month: "short",
@@ -152,6 +172,10 @@ export default function TaskDetail() {
   //   "foreground" — only "When In Use", so the interval below does the work;
   //   "off"        — no location permission at all, or not clocked in.
   const [gpsMode, setGpsMode] = useState<"off" | "foreground" | "background">("off");
+  // Debug builds only: what the headless task last did, read back from
+  // AsyncStorage. Lets a field test tell "the task never fired" from "the task
+  // fired and the POST failed" with no Xcode attached.
+  const [gpsBreadcrumb, setGpsBreadcrumb] = useState<GpsBreadcrumb | null>(null);
   const [latestLocation, setLatestLocation] = useState<LatestLocation | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [descriptionCopied, setDescriptionCopied] = useState(false);
@@ -468,6 +492,62 @@ export default function TaskDetail() {
       cancelled = true;
     };
   }, [gpsTrackingWanted, id]);
+
+  // Self-heal. The background session can die under us — iOS can stop feeding
+  // it, and before the AsyncStorage fix a screen lock killed it outright. On
+  // every foreground and every 30s while this screen is up, confirm it is
+  // still producing events; if it isn't, hand the work back to the foreground
+  // interval immediately and try to bring the session back. The next check
+  // promotes it to "background" again once it is genuinely alive, so the
+  // supporter is never left with neither path running.
+  useEffect(() => {
+    if (gpsTrackingWanted !== true) return;
+
+    let cancelled = false;
+
+    async function check() {
+      const healthy = await isBackgroundGpsHealthy(id);
+      if (cancelled) return;
+      if (healthy) {
+        setGpsMode("background");
+        return;
+      }
+      // Cover the hole first, restart second: if the restart is slow or fails
+      // (permission downgraded to "When In Use" in Settings), the interval is
+      // already running rather than waiting on the answer.
+      setGpsMode((mode) => (mode === "background" ? "foreground" : mode));
+      if (cancelled) return;
+      await restartBackgroundGps(id);
+    }
+
+    check();
+    const timer = setInterval(check, GPS_HEALTH_CHECK_MS);
+    const sub = AppState.addEventListener("change", (next) => {
+      if (next === "active") check();
+    });
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      sub.remove();
+    };
+  }, [gpsTrackingWanted, id]);
+
+  // Debug builds only: poll the breadcrumb for the row below.
+  useEffect(() => {
+    if (!GPS_DEBUG_ROW || gpsTrackingWanted !== true) return;
+    let cancelled = false;
+    async function read() {
+      const crumb = await readBreadcrumb();
+      if (!cancelled) setGpsBreadcrumb(crumb);
+    }
+    read();
+    const timer = setInterval(read, GPS_HEALTH_CHECK_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [gpsTrackingWanted]);
 
   // Foreground fallback — the original path, unchanged in behaviour but now
   // gated on gpsMode instead of hasOpenWorklog, so it only runs when
@@ -809,6 +889,16 @@ export default function TaskDetail() {
                 {isOvertime ? <Text className="text-caption text-danger">Over the estimated time</Text> : null}
                 <Button label="Clock out" onPress={handleClockOut} loading={clockLoading} />
                 {gpsNotice ? <Text className="text-caption text-muted">{gpsNotice}</Text> : null}
+                {/* Debug builds only — the headless task's own breadcrumb, so a
+                    field test can separate "never fired" from "fired, POST
+                    failed" without Xcode attached. */}
+                {GPS_DEBUG_ROW && gpsBreadcrumb ? (
+                  <Text className="text-caption text-muted">
+                    {`gps ${gpsMode} · ${gpsBreadcrumb.events} events (${formatAge(gpsBreadcrumb.lastEventAt, now)}) · ` +
+                      `${gpsBreadcrumb.pings} pings (${formatAge(gpsBreadcrumb.lastPingAt, now)})` +
+                      (gpsBreadcrumb.note ? ` · ${gpsBreadcrumb.note}` : "")}
+                  </Text>
+                ) : null}
               </>
             ) : (
               <Button label="Clock in" onPress={handleClockIn} loading={clockLoading} />

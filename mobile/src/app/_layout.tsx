@@ -1,6 +1,6 @@
 import "../global.css";
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
-import { StyleSheet, View } from "react-native";
+import { AppState, StyleSheet, View } from "react-native";
 import { Stack, router } from "expo-router";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -99,10 +99,6 @@ export default function RootLayout() {
       // server upsert makes repeat calls harmless. Fire-and-forget — it never
       // throws and must not gate auth resolution.
       registerForPushNotifications();
-      // Stop background location that outlived its worklog — a force-quit
-      // mid-task, or a clock-out that happened elsewhere. Needs the session,
-      // so it runs here rather than at module scope. Fire-and-forget.
-      reconcileBackgroundGps();
       try {
         const profile = await getProfile();
         setState({ loading: false, authenticated: true, profile });
@@ -125,6 +121,19 @@ export default function RootLayout() {
       authListener.subscription.unsubscribe();
     };
   }, [checkSession]);
+
+  // Stop background location that outlived its worklog — a force-quit
+  // mid-task, or a clock-out that happened on another device. Launch plus
+  // every foreground, and deliberately NOT wired to onAuthStateChange: a
+  // routine token refresh fires that listener mid-task, and reconcile is
+  // allowed to end a live GPS session. Fire-and-forget; it never throws.
+  useEffect(() => {
+    reconcileBackgroundGps();
+    const sub = AppState.addEventListener("change", (next) => {
+      if (next === "active") reconcileBackgroundGps();
+    });
+    return () => sub.remove();
+  }, []);
 
   // Deep-link a tapped push to its screen — /task/[id] for task events,
   // /task/[id]/chat for a new chat message. Covers all three states:
