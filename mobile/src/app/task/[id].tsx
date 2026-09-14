@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AppState, Image, RefreshControl, ScrollView, Text, View } from "react-native";
+import { Alert, AppState, Image, Linking, RefreshControl, ScrollView, Text, View } from "react-native";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import * as Clipboard from "expo-clipboard";
 import * as Location from "expo-location";
@@ -16,6 +16,7 @@ import {
   Pencil,
   ShieldAlert,
 } from "lucide-react-native";
+import { BudgetIncreaseSheet, type BudgetIncreaseSubmit } from "../../components/BudgetIncreaseSheet";
 import { CancelTaskSheet } from "../../components/CancelTaskSheet";
 import { CompleteTaskSheet, type CompleteTaskPayload } from "../../components/CompleteTaskSheet";
 import { ReviewSheet } from "../../components/ReviewSheet";
@@ -28,12 +29,16 @@ import {
   clockIn,
   clockOut,
   completeTask,
+  getExtensions,
   getLatestLocation,
   getMe,
   getPublicProfile,
   getProfileReviews,
   getTask,
   getWorklogs,
+  requestBudgetIncrease,
+  requestTimeExtension,
+  resolveExtension,
   sendGpsPing,
   submitReview,
   type SubmitReviewPayload,
@@ -64,7 +69,19 @@ import {
   removalNotice,
   statusLabel,
 } from "../../lib/task-utils";
-import type { LatestLocation, PublicProfile, Review, Task, WorklogsSummary } from "../../lib/types";
+import { SUPPORT_EMAIL } from "../../lib/constants";
+import type {
+  ExtensionRequest,
+  ExtensionsResponse,
+  LatestLocation,
+  PublicProfile,
+  Review,
+  Settlement,
+  Task,
+  TaskCost,
+  TimeCapState,
+  WorklogsSummary,
+} from "../../lib/types";
 import { color, size } from "../../theme/tokens";
 
 const GPS_PING_INTERVAL_MS = 30_000;
@@ -82,6 +99,16 @@ const LOCATION_POLL_INTERVAL_MS = 60_000;
 
 // How long the "Copied" confirmation replaces the section label.
 const COPIED_FEEDBACK_MS = 1500;
+
+// How often the mid-task asks are refetched while a task is active.
+//
+// Fast, and deliberately so. This is the only clock either party has on a
+// five-minute approval window: the supporter is standing in a shop waiting for
+// an answer, and the SERVER applies the expiry on every read of this list — so
+// a poll is simultaneously how the answer arrives and how the timeout is made
+// to happen. Five seconds means "within seconds of it happening", which is the
+// promise the flow makes.
+const EXTENSIONS_POLL_INTERVAL_MS = 5_000;
 
 // The exact body server/main.go's acceptTask returns to the loser of a
 // concurrent accept — from its guarded UPDATE (0 rows matched) and from the
@@ -156,6 +183,13 @@ export default function TaskDetail() {
   const [cancelOpen, setCancelOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [completeOpen, setCompleteOpen] = useState(false);
+  const [budgetOpen, setBudgetOpen] = useState(false);
+  // The mid-task asks, plus the two numbers that go with them (the currently
+  // approved budget and the time ceiling). Null until the first fetch; the
+  // sections that read it render nothing until then rather than guessing.
+  const [extensions, setExtensions] = useState<ExtensionsResponse | null>(null);
+  const [extensionBusy, setExtensionBusy] = useState(false);
+  const [extensionError, setExtensionError] = useState<string | null>(null);
 
   const [accepting, setAccepting] = useState(false);
   const [acceptError, setAcceptError] = useState<string | null>(null);
@@ -359,6 +393,11 @@ export default function TaskDetail() {
         worklogs: [...(w?.worklogs ?? []), wl],
         total_minutes: w?.total_minutes ?? 0,
         total_cost_cents: w?.total_cost_cents ?? 0,
+        // Carried forward rather than blanked: the settlement and the cost
+        // breakdown are unchanged by a clock-in, and dropping them here would
+        // make the cards below them flicker out until load() lands.
+        cost: w?.cost ?? null,
+        settlement: w?.settlement ?? null,
       }));
       if (task?.estimated_minutes) {
         scheduleOvertimeReminders(id, task.title, task.estimated_minutes).catch(() => {});
@@ -384,7 +423,7 @@ export default function TaskDetail() {
       setWorklogs((w) =>
         w
           ? { ...w, worklogs: w.worklogs.map((existing) => (existing.id === wl.id ? wl : existing)) }
-          : { worklogs: [wl], total_minutes: 0, total_cost_cents: 0 }
+          : { worklogs: [wl], total_minutes: 0, total_cost_cents: 0, cost: null, settlement: null }
       );
       cancelOvertimeReminders(id).catch(() => {});
       await load();
@@ -396,19 +435,45 @@ export default function TaskDetail() {
     }
   }
 
-  async function handleCompleteSubmit({ photoUri, photoMimeType, photoFileName, note }: CompleteTaskPayload) {
+  async function handleCompleteSubmit({
+    photoUri,
+    photoMimeType,
+    photoFileName,
+    note,
+    receiptCents,
+    receiptPhoto,
+  }: CompleteTaskPayload) {
     try {
       const { url } = await uploadCompletionPhoto(id, {
         uri: photoUri,
         mimeType: photoMimeType,
         fileName: photoFileName,
       });
+      // The receipt rides the same upload endpoint and bucket as the completion
+      // photo — same kind of file, same phone, same moment. Uploaded second so
+      // a failure here does not orphan the completion photo any more than the
+      // completion itself failing would.
+      let receiptURL: string | undefined;
+      if (receiptPhoto) {
+        const uploaded = await uploadCompletionPhoto(id, {
+          uri: receiptPhoto.uri,
+          mimeType: receiptPhoto.mimeType,
+          fileName: receiptPhoto.fileName,
+        });
+        receiptURL = uploaded.url;
+      }
       const updated = await completeTask(id, {
         completion_photo_url: url,
         completion_note: note || undefined,
+        receipt_amount_cents: receiptCents,
+        receipt_photo_url: receiptURL,
       });
       setTask(updated);
       cancelOvertimeReminders(id).catch(() => {});
+      // The settlement the requester and supporter are both about to read comes
+      // from the worklogs payload, not from the task — refetch so the
+      // completed screen shows the real total rather than the running one.
+      await load();
     } catch (e) {
       handleAuthError(e);
       throw e;
@@ -416,8 +481,102 @@ export default function TaskDetail() {
     setCompleteOpen(false);
   }
 
+  // ── The mid-task asks ────────────────────────────────────────────────────
+
+  const loadExtensions = useCallback(async () => {
+    try {
+      setExtensions(await getExtensions(id));
+    } catch {
+      // Silent. This runs on a five-second timer; a dropped poll leaves the
+      // last answer on screen, which is right, and an error banner that
+      // flickers every five seconds is worse than no banner.
+    }
+  }, [id]);
+
+  async function handleBudgetRequest({
+    requestedCents,
+    reason,
+    fallback,
+    fallbackNote,
+  }: BudgetIncreaseSubmit) {
+    try {
+      await requestBudgetIncrease(id, {
+        requested_cents: requestedCents,
+        reason: reason || undefined,
+        fallback,
+        fallback_note: fallbackNote || undefined,
+      });
+    } catch (e) {
+      handleAuthError(e);
+      throw e;
+    }
+    setBudgetOpen(false);
+    await loadExtensions();
+  }
+
+  async function handleTimeRequest(minutes: number) {
+    setExtensionBusy(true);
+    setExtensionError(null);
+    try {
+      await requestTimeExtension(id, minutes);
+      await loadExtensions();
+    } catch (e) {
+      if (handleAuthError(e)) return;
+      setExtensionError(e instanceof Error ? e.message : "Couldn't send your request. Try again.");
+    } finally {
+      setExtensionBusy(false);
+    }
+  }
+
+  // Requester's one tap. A 409 here is not an error the requester caused — the
+  // request timed out, or their other device already answered — so the refetch
+  // below is what actually resolves the screen, and the message just says what
+  // happened.
+  async function handleResolve(request: ExtensionRequest, decision: "approve" | "deny") {
+    setExtensionBusy(true);
+    setExtensionError(null);
+    try {
+      await resolveExtension(id, request.id, decision);
+      await Promise.all([loadExtensions(), load()]);
+    } catch (e) {
+      if (handleAuthError(e)) return;
+      setExtensionError(e instanceof Error ? e.message : "Couldn't send your answer. Try again.");
+      await loadExtensions();
+    } finally {
+      setExtensionBusy(false);
+    }
+  }
+
+  // "Report a problem" on a settled task. A mailto with the task id in the
+  // subject, not a dispute system: for beta, ops reading an email and fixing it
+  // by hand in the Stripe dashboard is the whole process, and building a
+  // dispute flow for it would be building the wrong thing well.
+  async function handleReportProblem() {
+    const subject = encodeURIComponent(`Problem with task ${id}`);
+    const url = `mailto:${SUPPORT_EMAIL}?subject=${subject}`;
+    if (await Linking.canOpenURL(url)) {
+      await Linking.openURL(url);
+      return;
+    }
+    Alert.alert("No mail app", `Write to us at ${SUPPORT_EMAIL} and mention task ${id}.`);
+  }
+
   const hasOpenWorklog = worklogs ? worklogs.worklogs.some((wl) => wl.end_at === null) : false;
   const openWorklog = worklogs?.worklogs.find((wl) => wl.end_at === null) ?? null;
+
+  // The mid-task asks, reduced to the three things the UI actually renders:
+  // the one still waiting on an answer, the most recent one overall (so a
+  // denial or a timeout stays on screen until something replaces it), and
+  // whether this task is in a state where asking is possible at all.
+  const pendingExtension = extensions?.items.find((e) => e.status === "pending") ?? null;
+  const latestExtension = extensions?.items.length
+    ? extensions.items[extensions.items.length - 1]
+    : null;
+  const settlement: Settlement | null = worklogs?.settlement ?? null;
+  const capState = settlement?.time_cap ?? null;
+  const approvedBudgetCents =
+    extensions?.approved_budget_cents ?? settlement?.approved_budget_cents ?? 0;
+  const isTaskActive = task?.status === "open" && !!task?.assigned_to_id;
 
   // The requester's live-location view mirrors web (app/src/pages/TaskDetail.jsx)
   // but narrows the gate to "supporter is actually clocked in" (an open worklog)
@@ -603,6 +762,32 @@ export default function TaskDetail() {
     };
   }, [gpsMode, id]);
 
+  // Both sides: poll the mid-task asks while the task is live and this screen
+  // is focused.
+  //
+  // This poll is load-bearing rather than cosmetic. The server applies the
+  // five-minute expiry on every read of this list, so polling is both how the
+  // supporter learns the answer and how "no answer" becomes an answer at all —
+  // which is why it runs for the supporter as well as the requester, and why
+  // it is fast. useFocusEffect tears it down on blur, so nothing ticks in the
+  // background.
+  useFocusEffect(
+    useCallback(() => {
+      if (!isTaskActive || meId === null) return;
+      let active = true;
+      async function poll() {
+        if (!active) return;
+        await loadExtensions();
+      }
+      poll();
+      const interval = setInterval(poll, EXTENSIONS_POLL_INTERVAL_MS);
+      return () => {
+        active = false;
+        clearInterval(interval);
+      };
+    }, [isTaskActive, meId, loadExtensions])
+  );
+
   // Requester side: poll the supporter's last-known position every 60s, but only
   // while this screen is focused AND the supporter is clocked in. useFocusEffect
   // tears the interval down when the screen blurs, so no timer runs in the
@@ -730,6 +915,22 @@ export default function TaskDetail() {
           <Badge label={statusLabel(status)} variant="success" />
           <Text className="text-caption text-muted">{formatRelativeTime(task.created_at)}</Text>
         </View>
+
+        {/* A question with a five-minute fuse on it, so it goes above
+            everything else on the screen — a requester who has to scroll past
+            the address to find it will not answer it in time. */}
+        {isRequester && isTaskActive && pendingExtension ? (
+          <ApprovalCard
+            request={pendingExtension}
+            approvedBudgetCents={approvedBudgetCents}
+            supporterName={firstName(supporter?.name)}
+            busy={extensionBusy}
+            error={extensionError}
+            nowMs={now}
+            onApprove={() => handleResolve(pendingExtension, "approve")}
+            onDeny={() => handleResolve(pendingExtension, "deny")}
+          />
+        ) : null}
 
         {/* Info */}
         <View className="mb-4 gap-3 rounded-card border border-line bg-surface p-4">
@@ -907,6 +1108,25 @@ export default function TaskDetail() {
           </View>
         ) : null}
 
+        {/* The supporter's side of the same conversation: what they are
+            currently allowed to spend and how long they are being paid for,
+            and the two ways to ask for more of either. */}
+        {isAssignee && isTaskActive ? (
+          <SupporterAskCard
+            approvedBudgetCents={approvedBudgetCents}
+            capState={capState}
+            pending={pendingExtension}
+            latest={latestExtension}
+            timeChoices={extensions?.time_choices ?? []}
+            timeoutMinutes={extensions?.timeout_minutes ?? 0}
+            busy={extensionBusy}
+            error={extensionError}
+            nowMs={now}
+            onAskBudget={() => setBudgetOpen(true)}
+            onAskTime={handleTimeRequest}
+          />
+        ) : null}
+
         {/* Progress */}
         {task.assigned_to_id && worklogs ? (
           <View className="mb-4 gap-3 rounded-card border border-line bg-surface p-4">
@@ -940,13 +1160,31 @@ export default function TaskDetail() {
               <Text className="text-caption text-muted">Total time</Text>
               <Text className="text-caption text-ink">{formatMinutes(worklogs.total_minutes)}</Text>
             </View>
-            <View className="flex-row justify-between">
-              <Text className="text-caption font-semibold text-ink">Total cost</Text>
-              <Text className="text-caption font-semibold text-ink">
-                {formatCost(worklogs.total_cost_cents)}
-              </Text>
-            </View>
+            {/* The running total while the task is live. Once it is over, the
+                settlement card below owns the number — showing both would be
+                two totals on one screen, and they are the same total. */}
+            {task.status === "open" ? (
+              <View className="flex-row justify-between">
+                <Text className="text-caption font-semibold text-ink">Total cost so far</Text>
+                <Text className="text-caption font-semibold text-ink">
+                  {formatCost(worklogs.total_cost_cents)}
+                </Text>
+              </View>
+            ) : null}
           </View>
+        ) : null}
+
+        {/* What was charged, itemized, for both sides. The one settlement
+            surface — the same numbers the requester's card was billed for and
+            the supporter was paid from, so neither has to take the other's
+            word for it. */}
+        {settlement && worklogs?.cost && task.status !== "open" ? (
+          <SettlementCard
+            cost={worklogs.cost}
+            settlement={settlement}
+            isRequester={isRequester}
+            onReportProblem={handleReportProblem}
+          />
         ) : null}
 
         {/* Completion */}
@@ -1077,10 +1315,338 @@ export default function TaskDetail() {
       )}
       <CompleteTaskSheet
         visible={completeOpen}
+        approvedBudgetCents={approvedBudgetCents}
+        toleranceCents={extensions?.tolerance_cents ?? 0}
         onClose={() => setCompleteOpen(false)}
         onSubmit={handleCompleteSubmit}
       />
+      <BudgetIncreaseSheet
+        visible={budgetOpen}
+        approvedBudgetCents={approvedBudgetCents}
+        timeoutMinutes={extensions?.timeout_minutes ?? 0}
+        onClose={() => setBudgetOpen(false)}
+        onSubmit={handleBudgetRequest}
+      />
     </Screen>
+  );
+}
+
+// How long is left on a request, in the words someone glancing at a lock
+// screen needs. Counts against the server's own deadline (expires_at), never
+// the phone's idea of five minutes from when the screen loaded.
+function formatCountdown(expiresAt: string, nowMs: number): string {
+  const remaining = new Date(expiresAt).getTime() - nowMs;
+  if (remaining <= 0) return "time's up";
+  const seconds = Math.ceil(remaining / 1000);
+  if (seconds < 60) return `${seconds}s left`;
+  return `${Math.ceil(seconds / 60)} min left`;
+}
+
+// What the supporter is asking for, in one phrase, for whichever kind it is.
+function askPhrase(request: ExtensionRequest): string {
+  if (request.kind === "budget") {
+    return `${formatCost(request.requested_cents ?? 0)} more`;
+  }
+  return `${request.requested_minutes ?? 0} more minutes`;
+}
+
+// The requester's one-tap decision.
+//
+// Approve is the only solid button on the screen while this is up (DESIGN.md
+// §5) — a requester's active task otherwise has no primary CTA, and this is
+// unambiguously the thing they opened the app to do.
+function ApprovalCard({
+  request,
+  approvedBudgetCents,
+  supporterName,
+  busy,
+  error,
+  nowMs,
+  onApprove,
+  onDeny,
+}: {
+  request: ExtensionRequest;
+  approvedBudgetCents: number;
+  supporterName: string;
+  busy: boolean;
+  error: string | null;
+  nowMs: number;
+  onApprove: () => void;
+  onDeny: () => void;
+}) {
+  const isBudget = request.kind === "budget";
+  return (
+    <View className="mb-4 gap-3 rounded-card border border-line bg-surface p-4">
+      <Text className="text-caption font-semibold text-muted">
+        {isBudget ? "Budget request" : "Time request"}
+      </Text>
+      <Text className="text-body text-ink">
+        {supporterName} is asking for {askPhrase(request)}.
+      </Text>
+      {request.reason ? <Text className="text-caption text-ink">{request.reason}</Text> : null}
+      {isBudget ? (
+        <View className="flex-row justify-between">
+          <Text className="text-caption text-muted">New budget if you approve</Text>
+          <Text className="text-caption text-ink">
+            {formatCost(approvedBudgetCents + (request.requested_cents ?? 0))}
+          </Text>
+        </View>
+      ) : null}
+      <Text className="text-caption text-muted">
+        {formatCountdown(request.expires_at, nowMs)} — no answer counts as a no.
+      </Text>
+      {error ? <Text className="text-caption text-danger">{error}</Text> : null}
+      <View className="gap-2">
+        <Button label="Approve" onPress={onApprove} loading={busy} />
+        <Button label="Not this time" variant="secondary" onPress={onDeny} disabled={busy} />
+      </View>
+    </View>
+  );
+}
+
+// The supporter's standing picture of what they may spend and how long they
+// are paid for, plus the two ways to ask for more.
+//
+// The approved budget is shown AT ALL TIMES on a shopping task, not only when
+// something is outstanding: it is the number they are about to be held to at
+// the till, and a supporter who has to remember it is a supporter who will pay
+// the difference themselves.
+function SupporterAskCard({
+  approvedBudgetCents,
+  capState,
+  pending,
+  latest,
+  timeChoices,
+  timeoutMinutes,
+  busy,
+  error,
+  nowMs,
+  onAskBudget,
+  onAskTime,
+}: {
+  approvedBudgetCents: number;
+  capState: TimeCapState | null;
+  pending: ExtensionRequest | null;
+  latest: ExtensionRequest | null;
+  timeChoices: number[];
+  timeoutMinutes: number;
+  busy: boolean;
+  error: string | null;
+  nowMs: number;
+  onAskBudget: () => void;
+  onAskTime: (minutes: number) => void;
+}) {
+  const hasBudget = approvedBudgetCents > 0;
+  // A resolved request is worth showing only until it has been superseded —
+  // and above all when it was DENIED or EXPIRED, because that is the moment
+  // the supporter's own fallback becomes the instruction.
+  const showResolved =
+    !pending && latest && (latest.status === "denied" || latest.status === "expired");
+
+  if (!hasBudget && !capState && !pending && !showResolved) return null;
+
+  return (
+    <View className="mb-4 gap-3 rounded-card border border-line bg-surface p-4">
+      <Text className="text-caption font-semibold text-muted">What you're covered for</Text>
+
+      {hasBudget ? (
+        <View className="flex-row justify-between">
+          <Text className="text-caption text-muted">Approved budget</Text>
+          <Text className="text-caption text-ink">{formatCost(approvedBudgetCents)}</Text>
+        </View>
+      ) : null}
+
+      {capState && capState.cap.cap_minutes > 0 ? (
+        <View className="flex-row justify-between">
+          <Text className="text-caption text-muted">Paid time</Text>
+          <Text className="text-caption text-ink">
+            {formatMinutes(capState.logged_minutes)} of {formatMinutes(capState.cap.cap_minutes)}
+          </Text>
+        </View>
+      ) : null}
+
+      {/* Layer 1, in the supporter's hands. Never an instruction to stop —
+          they decide when it is safe to wrap up — only a statement that the
+          meter has stopped. */}
+      {capState?.reached ? (
+        <Text className="text-caption text-danger">
+          Time cap reached — anything past this isn't billed. Ask for more time, or wrap up
+          whenever you judge it right. The task can still be completed at any point.
+        </Text>
+      ) : capState?.warning ? (
+        <Text className="text-caption text-muted">
+          About {formatMinutes(capState.remaining_minutes)} left on the time that was agreed.
+        </Text>
+      ) : null}
+
+      {pending ? (
+        <View className="gap-1 border-t border-line pt-3">
+          <Text className="text-caption text-ink">
+            Waiting on an answer: {askPhrase(pending)}.
+          </Text>
+          <Text className="text-caption text-muted">
+            {formatCountdown(pending.expires_at, nowMs)}
+            {pending.fallback_instruction ? "" : ` — no answer after ${timeoutMinutes} min counts as a no.`}
+          </Text>
+        </View>
+      ) : null}
+
+      {showResolved && latest ? (
+        <View className="gap-1 border-t border-line pt-3">
+          <Text className="text-caption text-ink">
+            {latest.status === "expired"
+              ? `No response to your request for ${askPhrase(latest)}.`
+              : `Your request for ${askPhrase(latest)} wasn't approved.`}
+          </Text>
+          {latest.fallback_instruction ? (
+            <Text className="text-caption font-semibold text-ink">
+              {latest.fallback_instruction}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
+
+      {error ? <Text className="text-caption text-danger">{error}</Text> : null}
+
+      {/* Secondary throughout: Clock out is this screen's one solid CTA. */}
+      {!pending ? (
+        <View className="gap-2 border-t border-line pt-3">
+          {hasBudget ? (
+            <Button
+              label="Ask for more budget"
+              variant="secondary"
+              onPress={onAskBudget}
+              disabled={busy}
+            />
+          ) : null}
+          {/* Offered only once the ceiling is in sight. Before that it is an
+              answer to a question nobody has asked. */}
+          {(capState?.warning || capState?.reached) && timeChoices.length > 0 ? (
+            <View className="flex-row gap-2">
+              {timeChoices.map((minutes) => (
+                <Button
+                  key={minutes}
+                  label={`Ask for +${minutes} min`}
+                  variant="secondary"
+                  onPress={() => onAskTime(minutes)}
+                  disabled={busy}
+                  className="flex-1"
+                />
+              ))}
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+// The settlement, itemized, for both roles.
+//
+// Every number here was computed in Go and is rendered verbatim (S-05). The
+// only thing this component decides is which of them a given reader sees: the
+// receipt photo is the requester's evidence of what their money bought and the
+// supporter's own upload, so both see it — but only the requester is offered
+// the "something's wrong" route, because they are the one who was charged.
+function SettlementCard({
+  cost,
+  settlement,
+  isRequester,
+  onReportProblem,
+}: {
+  cost: TaskCost;
+  settlement: Settlement;
+  isRequester: boolean;
+  onReportProblem: () => void;
+}) {
+  const overran =
+    cost.cap_minutes !== undefined &&
+    cost.billed_minutes !== undefined &&
+    cost.total_minutes > cost.billed_minutes;
+
+  return (
+    <View className="mb-4 gap-3 rounded-card border border-line bg-surface p-4">
+      <Text className="text-caption font-semibold text-muted">
+        {settlement.state === "captured" ? "What was charged" : "Settlement"}
+      </Text>
+
+      <View className="flex-row justify-between">
+        <Text className="text-caption text-muted">Base fee</Text>
+        <Text className="text-caption text-ink">{formatCost(cost.base_fee_cents)}</Text>
+      </View>
+      <Text className="-mt-2 text-caption text-muted">
+        Covers the first {cost.included_minutes} minutes.
+      </Text>
+
+      <View className="flex-row justify-between">
+        <Text className="text-caption text-muted">
+          {cost.billable_minutes} billable min × {formatCost(cost.per_minute_rate_cents)}
+        </Text>
+        <Text className="text-caption text-ink">{formatCost(cost.time_cost_cents)}</Text>
+      </View>
+
+      {/* Said plainly rather than buried: the supporter worked longer than the
+          requester agreed to pay for, and both of them should see that in the
+          same words. */}
+      {overran ? (
+        <Text className="-mt-2 text-caption text-muted">
+          {formatMinutes(cost.total_minutes)} logged; billed to the agreed{" "}
+          {formatMinutes(cost.billed_minutes ?? 0)}.
+        </Text>
+      ) : null}
+
+      {settlement.approved_budget_cents > 0 ? (
+        <View className="flex-row justify-between">
+          <Text className="text-caption text-muted">
+            Receipt {settlement.approved_budget_cents > 0
+              ? `(budget ${formatCost(settlement.approved_budget_cents)})`
+              : ""}
+          </Text>
+          <Text className="text-caption text-ink">
+            {formatCost(cost.shopping_receipt_cents ?? 0)}
+          </Text>
+        </View>
+      ) : null}
+
+      <View className="flex-row justify-between border-t border-line pt-2">
+        <Text className="text-body font-semibold text-ink">
+          {settlement.state === "captured" ? "Total charged" : "Total"}
+        </Text>
+        <Text className="text-body font-semibold text-ink">{formatCost(cost.total_cents)}</Text>
+      </View>
+
+      {settlement.state === "not_charged" ? (
+        <Text className="text-caption text-muted">
+          Nothing has been charged — payments are not switched on for this task.
+        </Text>
+      ) : null}
+      {/* Deliberately calm, and deliberately not an action. Ops have already
+          been told; there is nothing for either party to do, and a red alarm
+          here would send both of them chasing something already in hand. */}
+      {settlement.state === "capture_failed" ? (
+        <Text className="text-caption text-muted">
+          We couldn't complete the payment for this task. The HO:RA team has been notified and will
+          sort it out — there's nothing you need to do.
+        </Text>
+      ) : null}
+
+      {settlement.receipt_photo_url ? (
+        <View className="gap-2">
+          <Text className="text-caption text-muted">Receipt</Text>
+          <Image
+            source={{ uri: settlement.receipt_photo_url }}
+            className="h-40 w-full rounded-sm"
+            resizeMode="cover"
+          />
+        </View>
+      ) : null}
+
+      {isRequester ? (
+        <PressableScale onPress={onReportProblem} hitSlop={8} className="min-h-11 justify-center">
+          <Text className="text-caption font-semibold text-brand">Report a problem</Text>
+        </PressableScale>
+      ) : null}
+    </View>
   );
 }
 

@@ -204,9 +204,20 @@ func TestBillingPreAuthCoversTheHappyPath(t *testing.T) {
 	}
 
 	// The documented shape, spelled out once: 30 min standard is
-	// ($12.00 + $7.50) x 1.5 = $29.25, + $20.00 budget + $5.00 buffer = $54.25.
-	if got := preAuthAmountCents("standard", 30, 2000); got != 5425 {
-		t.Errorf("preAuthAmountCents(standard, 30, 2000) = %d, want 5425", got)
+	// ($12.00 + $7.50) x 1.5 = $29.25, + $20.00 budget + $5.00 buffer, plus the
+	// $5.00 overage tolerance because this task has a budget = $59.25.
+	//
+	// That last term is a Phase 2b correction. The buffer alone used to stand
+	// in for both the tolerance and the auto-extend headroom, which is the same
+	// $5 counted twice — see preAuthAmountCents and
+	// TestPhase2bPreAuthCoversCappedSettlement, which found the $1.50
+	// undercapture it produced on short shopping tasks.
+	if got := preAuthAmountCents("standard", 30, 2000); got != 5925 {
+		t.Errorf("preAuthAmountCents(standard, 30, 2000) = %d, want 5925", got)
+	}
+	// A task with no budget is unchanged: no budget, no tolerance, no extra.
+	if got := preAuthAmountCents("standard", 30, 0); got != 3425 {
+		t.Errorf("preAuthAmountCents(standard, 30, 0) = %d, want 3425 — the no-budget hold moved", got)
 	}
 }
 

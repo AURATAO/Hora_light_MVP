@@ -126,6 +126,8 @@ CREATE TABLE public.device_push_tokens (
 var removeMigrationPaths = []string{
 	"../supabase/migrations/20260818140000_task_removed_status.sql",
 	"../supabase/migrations/20260818150000_notification_type_completed_supporter.sql",
+	"../supabase/migrations/20260909120000_notification_type_task_reassigned.sql",
+	"../supabase/migrations/20260914130000_notification_types_phase2b.sql",
 }
 
 const adminEmail = "taoaura.lavoro@gmail.com"
@@ -648,6 +650,23 @@ var notificationTypesEmitted = []string{
 	"COMPLETED",
 	"COMPLETED_SUPPORTER",
 	"TASK_REMOVED",
+	// Admin reassignment (server/admin_reassign.go). Emitted since the
+	// 20260909 migration and missing from this list until Phase 2b went
+	// looking — which is the failure mode the list exists to catch, so it is
+	// worth saying out loud that the list only works if it is added to.
+	"TASK_REASSIGNED",
+	// NEW_MESSAGE is deliberately ABSENT and must stay absent. Chat notifies
+	// through notify.SendPush directly (server/talkjs_webhook.go) and never
+	// through notify.Create, so it never reaches this enum column — adding it
+	// here would demand an enum value for a row nothing inserts.
+	//
+	// Phase 2b — the mid-task ask (server/extensions.go) and the three-layer
+	// time cap (server/timecap.go).
+	"BUDGET_INCREASE_REQUESTED",
+	"TIME_EXTENSION_REQUESTED",
+	"EXTENSION_RESOLVED",
+	"TIME_CAP_WARNING",
+	"TIME_CAP_REACHED",
 }
 
 func TestAdminRemoveNotificationEnumCoversEveryEmittedType(t *testing.T) {

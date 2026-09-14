@@ -6,8 +6,11 @@ Authoritative version: `skills/constitution/STANDARDS.md` S-01, S-10, S-11.
 ### Rule 1 — All Hora table reads/writes go through the Go backend API
 
 All reads and writes to Hora MVP tables (`users`, `profiles`, `tasks`,
-`worklogs`, `notifications`, `task_gps_pings`, `reviews`) **MUST** go through
-the Go backend API. Never use the Supabase JS client, PostgREST, or any
+`worklogs`, `notifications`, `task_gps_pings`, `reviews`, `payments`,
+`stripe_webhook_events`, `extension_requests`) **MUST** go through the Go
+backend API. The last three are the money tables: a client-direct read of
+`payments` would expose charge history, and a client-direct write to
+`extension_requests` would be self-approval of a charge. Never use the Supabase JS client, PostgREST, or any
 direct database connection from client code for these tables.
 
 ### Rule 2 — Permitted direct Supabase calls from clients

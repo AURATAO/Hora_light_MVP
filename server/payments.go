@@ -194,6 +194,35 @@ func CreatePreAuth(ctx context.Context, in PreAuthInput) (*Payment, error) {
 			"kind":         paymentKindTaskPayment,
 		},
 	}
+	// Incremental authorization, requested only when an operator has turned it
+	// on. OFF BY DEFAULT, and that default is not caution — it is measured.
+	//
+	// Asking for it is documented as harmless ("if_available" is supposed to
+	// mean "grant it where the card supports it"). On this Stripe account it is
+	// not harmless: an off-session confirm carrying the option fails outright
+	// with
+	//
+	//   payment_intent_invalid_parameter — "This account is not eligible for
+	//   the requested card features."
+	//
+	// and the intent lands in requires_payment_method holding nothing. It was
+	// requested unconditionally for about an hour of Phase 2b and would have
+	// turned every single post into a 402 the moment PAYMENTS_ENFORCED went on
+	// — the smoke test is what caught it, which is the entire reason that file
+	// talks to the real API instead of a fake.
+	//
+	// So it is behind STRIPE_INCREMENTAL_AUTH, to be flipped on the day the
+	// account is enabled for flexible payments and the smoke test is re-run.
+	// Until then an approved budget increase that outgrows its hold opens a
+	// supplementary hold instead, which every card supports.
+	if stripeIncrementalAuthEnabled() {
+		params.PaymentMethodOptions = &stripe.PaymentIntentPaymentMethodOptionsParams{
+			Card: &stripe.PaymentIntentPaymentMethodOptionsCardParams{
+				RequestIncrementalAuthorization: stripe.String(
+					string(stripe.PaymentIntentPaymentMethodOptionsCardRequestIncrementalAuthorizationIfAvailable)),
+			},
+		}
+	}
 	params.SetIdempotencyKey("preauth_" + p.ID)
 	if in.StripeCustomerID != "" {
 		params.Customer = stripe.String(in.StripeCustomerID)
@@ -321,6 +350,13 @@ func Capture(ctx context.Context, taskID string, timeCostCents, shoppingReceiptC
 		taskID, p.ID, pi.ID, total, timeCostCents, shoppingReceiptCents)
 
 	p.Status = paymentStatusCaptured
+	// What Stripe says moved, not what we asked for — the two differ whenever
+	// the clamp above bit, and a caller splitting a settlement across a second
+	// hold has to know which it was. (Phase 2b: payments_settlement.go.)
+	received := int(pi.AmountReceived)
+	p.CapturedCents = &received
+	p.TimeCostCents = &timeCostCents
+	p.ShoppingReceiptCents = &shoppingReceiptCents
 	return p, nil
 }
 

@@ -44,6 +44,11 @@ const paymentsMigrationPath = "../supabase/migrations/20260911120000_payments_an
 // tasks.payment_id references payments(id).
 const phase2aMigrationPath = "../supabase/migrations/20260914120000_stripe_customer_and_task_payment_linkage.sql"
 
+// phase2bMigrationPath adds payments.kind 'budget_increase', status
+// 'capture_failed' and the tasks.settled_* read model. Applied last because it
+// rewrites the CHECK constraints the payments migration created.
+const phase2bMigrationPath = "../supabase/migrations/20260914150000_payments_capture_failed_and_budget_increase.sql"
+
 func setupStripeWebhookDB(t *testing.T) {
 	t.Helper()
 	setupAdminOpsDB(t) // users, tasks, worklogs, audit_logs + the pool swap
@@ -80,7 +85,7 @@ func setupStripeWebhookDB(t *testing.T) {
 		t.Fatalf("create supabase roles: %v", err)
 	}
 
-	for _, path := range []string{paymentsMigrationPath, phase2aMigrationPath} {
+	for _, path := range []string{paymentsMigrationPath, phase2aMigrationPath, phase2bMigrationPath} {
 		migration, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read migration %s: %v", path, err)

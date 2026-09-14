@@ -1,5 +1,16 @@
 import type { LucideIcon } from "lucide-react-native";
-import { CheckCircle2, ClipboardCheck, LogIn, LogOut, MessageCircle, Repeat2, XCircle } from "lucide-react-native";
+import {
+  CheckCircle2,
+  ClipboardCheck,
+  Clock,
+  HandCoins,
+  LogIn,
+  LogOut,
+  MessageCircle,
+  Repeat2,
+  TimerOff,
+  XCircle,
+} from "lucide-react-native";
 import type { NotificationType } from "./types";
 import { color } from "../theme/tokens";
 
@@ -28,6 +39,19 @@ const NOTIFICATION_META: Record<NotificationType, NotificationMeta> = {
   // looking at it — the server-composed title and body carry that.
   TASK_REASSIGNED: { icon: Repeat2, tint: "neutral" },
   NEW_MESSAGE: { icon: MessageCircle, tint: "neutral" },
+
+  // Stripe Phase 2b. All five are neutral, and none is danger — a supporter
+  // asking for another $8, or a task reaching the time everyone agreed to, is
+  // ordinary and not a failure. Reserving danger for cancellations is what
+  // keeps it meaning something in this list.
+  BUDGET_INCREASE_REQUESTED: { icon: HandCoins, tint: "neutral" },
+  TIME_EXTENSION_REQUESTED: { icon: Clock, tint: "neutral" },
+  // One type for approved / denied / expired, same reasoning as
+  // TASK_REASSIGNED: the outcome is in the server-composed title and body, and
+  // the same row reads differently depending on which side you are on.
+  EXTENSION_RESOLVED: { icon: HandCoins, tint: "neutral" },
+  TIME_CAP_WARNING: { icon: Clock, tint: "neutral" },
+  TIME_CAP_REACHED: { icon: TimerOff, tint: "neutral" },
 };
 
 // Falls back to a neutral message icon for any type the client doesn't

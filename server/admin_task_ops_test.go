@@ -39,6 +39,7 @@ import (
 // Mirrors reassignFixture, plus worklogs.updated_at — which production has and
 // the older fixtures omit, and which these handlers write.
 const adminOpsFixture = `
+DROP TABLE IF EXISTS public.extension_requests CASCADE;
 DROP TABLE IF EXISTS public.audit_logs CASCADE;
 DROP TABLE IF EXISTS public.device_push_tokens CASCADE;
 DROP TABLE IF EXISTS public.notifications CASCADE;
@@ -133,6 +134,21 @@ CREATE TABLE public.device_push_tokens (
 	created_at timestamptz NOT NULL DEFAULT now(),
 	last_seen_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Supabase always has these roles; a bare postgres:16 container does not, and
+-- the migrations applied on top of this fixture REVOKE on them by name. Created
+-- here rather than skipped so the REVOKEs are actually exercised — they are the
+-- part of those migrations guarding the ledger and the approval table against
+-- the schema's ALTER DEFAULT PRIVILEGES, and a run that silently skipped them
+-- would be testing a different migration than the one that ships.
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='anon') THEN
+    CREATE ROLE anon NOLOGIN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='authenticated') THEN
+    CREATE ROLE authenticated NOLOGIN;
+  END IF;
+END $$;
 `
 
 func setupAdminOpsDB(t *testing.T) {

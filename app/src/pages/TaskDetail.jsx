@@ -19,6 +19,10 @@ import { useTaskEstimate, formatCents } from '../hooks/useTaskEstimate'
  * Go; this component does no arithmetic, which is the point.
  */
 function CostLine({ cost }) {
+  // The verified receipt, once there is one. Distinct from
+  // shopping_budget_cents, which is a ceiling and was never a charge — this is
+  // the number that is actually in total_cents.
+  const receipt = cost.shopping_receipt_cents || 0
   return (
     <div className="text-sm">
       Base fee <b>{formatCents(cost.base_fee_cents)}</b>
@@ -26,7 +30,104 @@ function CostLine({ cost }) {
         {' '}(first {cost.included_minutes} min included) + time ({cost.billable_minutes} billable min
         {' '}× {formatCents(cost.per_minute_rate_cents)}) <b>{formatCents(cost.time_cost_cents)}</b>
       </span>
+      {receipt > 0 && (
+        <span className="text-white/60"> + receipt <b className="text-white">{formatCents(receipt)}</b></span>
+      )}
       <span> = <b>{formatCents(cost.total_cents)}</b></span>
+    </div>
+  )
+}
+
+/**
+ * What was charged, itemized, for whichever side of the task is reading it.
+ *
+ * Every number comes from GET /tasks/:id/worklogs — the same payload the
+ * running cost line above is built from, because "what does this cost" and
+ * "what was I charged" are one question asked at two moments (S-05). The only
+ * thing this component decides is which parts a given reader sees.
+ */
+function SettlementPanel({ cost, settlement, isOwner, taskId }) {
+  if (!cost || !settlement) return null
+
+  const overran =
+    typeof cost.cap_minutes === 'number' &&
+    typeof cost.billed_minutes === 'number' &&
+    cost.total_minutes > cost.billed_minutes
+
+  return (
+    <div className="border border-white/20 rounded-md p-3 space-y-2 text-sm">
+      <div className="text-xs text-white/60">
+        {settlement.state === 'captured' ? 'What was charged' : 'Settlement'}
+      </div>
+
+      <div className="flex justify-between text-white/70">
+        <span>Base fee <span className="text-white/40">(first {cost.included_minutes} min)</span></span>
+        <span className="text-white">{formatCents(cost.base_fee_cents)}</span>
+      </div>
+      <div className="flex justify-between text-white/70">
+        <span>{cost.billable_minutes} billable min × {formatCents(cost.per_minute_rate_cents)}</span>
+        <span className="text-white">{formatCents(cost.time_cost_cents)}</span>
+      </div>
+
+      {/* Said plainly rather than left to be inferred from two numbers that
+          disagree: the supporter worked longer than the requester agreed to
+          pay for, and both of them see it in the same words. */}
+      {overran && (
+        <div className="text-xs text-white/40">
+          {cost.total_minutes} min logged; billed to the agreed {cost.billed_minutes} min.
+        </div>
+      )}
+
+      {settlement.approved_budget_cents > 0 && (
+        <div className="flex justify-between text-white/70">
+          <span>Receipt <span className="text-white/40">(budget {formatCents(settlement.approved_budget_cents)})</span></span>
+          <span className="text-white">{formatCents(cost.shopping_receipt_cents || 0)}</span>
+        </div>
+      )}
+
+      <div className="border-t border-white/10 pt-2 flex justify-between font-semibold">
+        <span>{settlement.state === 'captured' ? 'Total charged' : 'Total'}</span>
+        <span>{formatCents(cost.total_cents)}</span>
+      </div>
+
+      {settlement.state === 'not_charged' && (
+        <div className="text-xs text-white/40">
+          Nothing has been charged — payments are not switched on for this task.
+        </div>
+      )}
+      {/* Calm on purpose, and not an action. Ops have already been emailed;
+          there is nothing for either party to do, and an alarm here would send
+          both of them chasing something that is already in hand. */}
+      {settlement.state === 'capture_failed' && (
+        <div className="text-xs text-white/40">
+          We couldn&apos;t complete the payment for this task. The HO:RA team has been notified and
+          will sort it out — there&apos;s nothing you need to do.
+        </div>
+      )}
+
+      {settlement.receipt_photo_url && (
+        <div className="space-y-1">
+          <div className="text-xs text-white/60">Receipt</div>
+          <img
+            src={settlement.receipt_photo_url}
+            alt="Receipt"
+            className="w-full rounded-lg object-cover max-h-64"
+          />
+        </div>
+      )}
+
+      {/* A mailto, not a dispute system. For beta, ops reading an email and
+          fixing it by hand in the Stripe dashboard IS the process — building a
+          dispute flow around it would be building the wrong thing well. Only
+          the requester is offered it: they are the one who was charged. */}
+      {isOwner && (
+        <a
+          className="inline-block text-xs text-white/60 underline hover:text-white"
+          href={`mailto:support@horaapp.co?subject=${encodeURIComponent(`Problem with task ${taskId}`)}`}
+        >
+          Report a problem
+        </a>
+      )}
     </div>
   )
 }
@@ -57,6 +158,24 @@ export default function TaskDetail() {
   const [completionNote, setCompletionNote] = useState('')
   const [photoUploading, setPhotoUploading] = useState(false)
   const completionPhotoInputRef = useRef(null)
+
+  // Shopping settlement (Stripe Phase 2b). Only in play on a task with an
+  // approved budget, where the server REFUSES a completion that says nothing
+  // about the receipt — a client that skipped this could not complete such a
+  // task at all.
+  const [receiptAmount, setReceiptAmount] = useState('')
+  const [receiptPhotoURL, setReceiptPhotoURL] = useState('')
+  const [receiptUploading, setReceiptUploading] = useState(false)
+  const receiptPhotoInputRef = useRef(null)
+
+  // The mid-task asks, and the two numbers that come with them.
+  const [extensions, setExtensions] = useState(null)
+  const [extBusy, setExtBusy] = useState(false)
+  const [extError, setExtError] = useState('')
+  const [askAmount, setAskAmount] = useState('')
+  const [askReason, setAskReason] = useState('')
+  const [askFallback, setAskFallback] = useState('')
+  const [askFallbackNote, setAskFallbackNote] = useState('')
 
   // Travel time estimate (supporter only, after task is accepted)
   const [travelEst, setTravelEst] = useState(null)   // { travel_minutes, task_minutes, total_minutes }
@@ -189,6 +308,10 @@ export default function TaskDetail() {
               const w = await api(`/tasks/${id}/worklogs`)
               if (alive) setWork(w)
             } catch {/* ignore */ }
+            try {
+              const x = await api(`/tasks/${id}/extensions`)
+              if (alive) setExtensions(x)
+            } catch {/* ignore */ }
           }
         }).catch((e) => {
           if (alive) setError(e.message || 'Failed to load')
@@ -196,6 +319,19 @@ export default function TaskDetail() {
       })()
     return () => { alive = false }
   }, [user, id])
+
+  // Poll the mid-task asks while the task is live. Five seconds, because this
+  // is the only clock either party has on a five-minute approval window — and
+  // because the server expires a stale request on each read, so the poll is
+  // what makes "no answer" resolve at all.
+  useEffect(() => {
+    if (!isTaskActive || !user?.id) return
+    const isParty = task?.requester_id === user.id || task?.assigned_to_id === user.id
+    if (!isParty) return
+    const timer = setInterval(loadExtensions, 5000)
+    return () => clearInterval(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTaskActive, user?.id, task?.requester_id, task?.assigned_to_id, id])
 
   function normalizeLocationItem(x) {
     if (!x) return { label: '' }
@@ -379,13 +515,17 @@ export default function TaskDetail() {
     })
   }
 
-  async function uploadCompletionPhoto(file) {
+  // One uploader for both photos. The receipt goes through the same endpoint
+  // and the same bucket as the completion photo — same kind of file, same
+  // moment, same flow — so a second storage path would be a second thing to
+  // keep working for no gain.
+  async function uploadCompletionPhoto(file, setURL = setCompletionPhotoURL, setBusy = setPhotoUploading) {
     if (!file) return
     if (file.size > 5 * 1024 * 1024) {
       toast('Max 5MB — please choose a smaller image', 'error')
       return
     }
-    setPhotoUploading(true)
+    setBusy(true)
     try {
       const fd = new FormData()
       fd.append('file', file)
@@ -409,12 +549,12 @@ export default function TaskDetail() {
       const data = await res.json().catch(() => ({}))
       console.log('[uploadCompletionPhoto] status=%d body=', res.status, data)
       if (!res.ok) throw new Error(data?.error || `Upload failed (${res.status})`)
-      setCompletionPhotoURL(data.url)
+      setURL(data.url)
     } catch (err) {
       console.error('[uploadCompletionPhoto] error:', err)
       toast(err.message || 'Photo upload failed', 'error')
     } finally {
-      setPhotoUploading(false)
+      setBusy(false)
     }
   }
 
@@ -422,6 +562,15 @@ export default function TaskDetail() {
     await wrap(async () => {
       try {
         const completeBody = { completion_photo_url: completionPhotoURL, completion_note: completionNote }
+        // Sent only on a task that actually has a budget. Elsewhere the field
+        // is absent rather than 0: the server reads an absent receipt on a
+        // shopping task as "you haven't told us", which is the whole point of
+        // the distinction, and sending a spurious 0 on every other task would
+        // put a receipt of record on tasks nobody shopped for.
+        if (approvedBudgetCents > 0) {
+          completeBody.receipt_amount_cents = receiptCents
+          if (receiptPhotoURL) completeBody.receipt_photo_url = receiptPhotoURL
+        }
         console.log('[completeTask] body:', completeBody)
         await api(`/tasks/${id}/complete`, {
           method: 'POST',
@@ -432,9 +581,89 @@ export default function TaskDetail() {
         // nothing else on web prompts them. Outside it, unchanged.
         navigate(questionnaireActive ? `/tasks/${id}/review` : '/my?tab=done', { replace: true })
       } catch (e) {
-        toast(e.message || 'Complete failed')
+        // The one completion failure the supporter can fix from here: an
+        // over-budget receipt means "ask for an increase, or correct the
+        // amount", and the server's message says which. Surfaced verbatim
+        // rather than flattened into "Complete failed".
+        toast(e?.body?.message || e.message || 'Complete failed')
       }
     })
+  }
+
+  // ── Mid-task asks (Stripe Phase 2b) ──────────────────────────────────────
+  //
+  // Loaded on every reload and polled while the task is live. The poll is
+  // load-bearing rather than cosmetic: the server applies the five-minute
+  // expiry on every read of this list, so polling is simultaneously how the
+  // answer arrives and how "no answer" becomes an answer at all.
+  async function loadExtensions() {
+    try {
+      setExtensions(await api(`/tasks/${id}/extensions`))
+    } catch {
+      // Silent — this runs on a timer, and a banner that flickers every few
+      // seconds is worse than a stale card.
+    }
+  }
+
+  async function sendBudgetAsk() {
+    const dollars = Number(String(askAmount).replace(/[^0-9.]/g, ''))
+    if (!Number.isFinite(dollars) || dollars <= 0) {
+      setExtError('Enter how much more you need.')
+      return
+    }
+    if (!askFallback) {
+      setExtError("Choose what to do if there's no answer.")
+      return
+    }
+    setExtBusy(true)
+    setExtError('')
+    try {
+      await api(`/tasks/${id}/budget-increase`, {
+        method: 'POST',
+        body: {
+          requested_cents: Math.round(dollars * 100),
+          reason: askReason || undefined,
+          fallback: askFallback,
+          fallback_note: askFallbackNote || undefined,
+        },
+      })
+      setAskAmount(''); setAskReason(''); setAskFallback(''); setAskFallbackNote('')
+      await loadExtensions()
+    } catch (e) {
+      setExtError(e?.body?.message || e.message || "Couldn't send your request.")
+    } finally {
+      setExtBusy(false)
+    }
+  }
+
+  async function sendTimeAsk(minutes) {
+    setExtBusy(true)
+    setExtError('')
+    try {
+      await api(`/tasks/${id}/time-extension`, { method: 'POST', body: { requested_minutes: minutes } })
+      await loadExtensions()
+    } catch (e) {
+      setExtError(e?.body?.message || e.message || "Couldn't send your request.")
+    } finally {
+      setExtBusy(false)
+    }
+  }
+
+  // The requester's one click. A 409 is not their mistake — the request timed
+  // out, or their phone already answered it — so the refetch is what actually
+  // resolves the card and the message only says what happened.
+  async function resolveAsk(extensionId, decision) {
+    setExtBusy(true)
+    setExtError('')
+    try {
+      await api(`/tasks/${id}/extensions/${extensionId}/${decision}`, { method: 'POST' })
+      await Promise.all([loadExtensions(), reloadWorkAndTask()])
+    } catch (e) {
+      setExtError(e?.body?.message || e.message || "Couldn't send your answer.")
+      await loadExtensions()
+    } finally {
+      setExtBusy(false)
+    }
   }
 
   // 進入編輯模式時把 task 值灌入表單（與你原本相同邏輯）
@@ -529,6 +758,20 @@ export default function TaskDetail() {
     enabled: Boolean(task?.category) && !hasLogged,
   })
   const costBreakdown = hasLogged ? work.cost : estimatedCost
+
+  // ── Stripe Phase 2b, derived once ───────────────────────────────────────
+  const settlement = work?.settlement || null
+  const capState = settlement?.time_cap || null
+  const approvedBudgetCents =
+    extensions?.approved_budget_cents ?? settlement?.approved_budget_cents ?? 0
+  const toleranceCents = extensions?.tolerance_cents ?? 0
+  const pendingAsk = (extensions?.items || []).find(e => e.status === 'pending') || null
+  const latestAsk = (extensions?.items || []).slice(-1)[0] || null
+  const isTaskActive = task?.status === 'open' && Boolean(task?.assigned_to_id)
+  const receiptCents = (() => {
+    const n = Number(String(receiptAmount).replace(/[^0-9.]/g, ''))
+    return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) : 0
+  })()
 
   async function saveEdit() {
     await wrap(async () => {
@@ -697,6 +940,207 @@ export default function TaskDetail() {
             </div>
             <DebugMe />
 
+            {/* A question with a five-minute fuse on it, so it sits above the
+                travel card and the cost card rather than below them — a
+                requester who has to scroll to find it will not answer in time. */}
+            {isOwner && isTaskActive && pendingAsk && (
+              <div className="border border-white/20 rounded-md p-3 space-y-2 text-sm">
+                <div className="text-xs text-white/60">
+                  {pendingAsk.kind === 'budget' ? 'Budget request' : 'Time request'}
+                </div>
+                <div>
+                  Your supporter is asking for{' '}
+                  <b>
+                    {pendingAsk.kind === 'budget'
+                      ? `${formatCents(pendingAsk.requested_cents || 0)} more`
+                      : `${pendingAsk.requested_minutes || 0} more minutes`}
+                  </b>.
+                </div>
+                {pendingAsk.reason && <div className="text-white/70">{pendingAsk.reason}</div>}
+                {pendingAsk.kind === 'budget' && (
+                  <div className="flex justify-between text-white/70">
+                    <span>New budget if you approve</span>
+                    <span className="text-white">
+                      {formatCents(approvedBudgetCents + (pendingAsk.requested_cents || 0))}
+                    </span>
+                  </div>
+                )}
+                <div className="text-xs text-white/40">
+                  No answer within {extensions?.timeout_minutes ?? 5} minutes counts as a no.
+                </div>
+                {extError && <div className="text-xs text-red-300">{extError}</div>}
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    disabled={extBusy}
+                    onClick={() => resolveAsk(pendingAsk.id, 'approve')}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-white text-black font-medium disabled:opacity-40"
+                  >
+                    Approve
+                  </button>
+                  <button
+                    type="button"
+                    disabled={extBusy}
+                    onClick={() => resolveAsk(pendingAsk.id, 'deny')}
+                    className="px-3 py-1.5 text-xs rounded-lg border border-white/20 hover:border-white/40 disabled:opacity-40"
+                  >
+                    Not this time
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* The supporter's side: what they're covered for, and the two ways
+                to ask for more of it. The approved budget is shown at all times
+                on a shopping task, not only when something is outstanding — it
+                is the number they are about to be held to at the till. */}
+            {isAssignee && isTaskActive && (approvedBudgetCents > 0 || capState?.cap?.cap_minutes > 0) && (
+              <div className="border border-white/20 rounded-md p-3 space-y-2 text-sm">
+                <div className="text-xs text-white/60">What you&apos;re covered for</div>
+
+                {approvedBudgetCents > 0 && (
+                  <div className="flex justify-between text-white/70">
+                    <span>Approved budget</span>
+                    <span className="text-white">{formatCents(approvedBudgetCents)}</span>
+                  </div>
+                )}
+                {capState?.cap?.cap_minutes > 0 && (
+                  <div className="flex justify-between text-white/70">
+                    <span>Paid time</span>
+                    <span className="text-white">
+                      {capState.logged_minutes} of {capState.cap.cap_minutes} min
+                    </span>
+                  </div>
+                )}
+
+                {/* Never an instruction to stop — the supporter decides when it
+                    is safe to wrap up. Only a statement that the meter has. */}
+                {capState?.reached ? (
+                  <div className="text-xs text-white/60">
+                    Time cap reached — anything past this isn&apos;t billed. Ask for more time, or wrap
+                    up whenever you judge it right. You can still complete the task at any point.
+                  </div>
+                ) : capState?.warning ? (
+                  <div className="text-xs text-white/60">
+                    About {capState.remaining_minutes} min left on the time that was agreed.
+                  </div>
+                ) : null}
+
+                {pendingAsk ? (
+                  <div className="border-t border-white/10 pt-2 text-white/70">
+                    Waiting on an answer:{' '}
+                    {pendingAsk.kind === 'budget'
+                      ? `${formatCents(pendingAsk.requested_cents || 0)} more`
+                      : `${pendingAsk.requested_minutes || 0} more minutes`}.
+                  </div>
+                ) : latestAsk && (latestAsk.status === 'denied' || latestAsk.status === 'expired') ? (
+                  <div className="border-t border-white/10 pt-2 space-y-1">
+                    <div className="text-white/70">
+                      {latestAsk.status === 'expired'
+                        ? 'No response to your last request.'
+                        : "Your last request wasn't approved."}
+                    </div>
+                    {latestAsk.fallback_instruction && (
+                      <div className="text-white">{latestAsk.fallback_instruction}</div>
+                    )}
+                  </div>
+                ) : null}
+
+                {extError && <div className="text-xs text-red-300">{extError}</div>}
+
+                {!pendingAsk && (
+                  <div className="border-t border-white/10 pt-2 space-y-2">
+                    {approvedBudgetCents > 0 && (
+                      <div className="space-y-2">
+                        <div className="flex gap-2">
+                          <input
+                            className="w-24 rounded-lg bg-white/5 border border-white/15 px-2 py-1 text-sm"
+                            placeholder="0.00"
+                            inputMode="decimal"
+                            value={askAmount}
+                            onChange={e => setAskAmount(e.target.value)}
+                          />
+                          <input
+                            className="flex-1 rounded-lg bg-white/5 border border-white/15 px-2 py-1 text-sm"
+                            placeholder="Why? (optional)"
+                            value={askReason}
+                            onChange={e => setAskReason(e.target.value)}
+                          />
+                        </div>
+                        <div className="text-xs text-white/60">
+                          If there&apos;s no answer in {extensions?.timeout_minutes ?? 5} minutes:
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {[
+                            { value: 'buy_alternative', label: 'Buy an alternative' },
+                            { value: 'skip_item', label: 'Skip this item' },
+                          ].map(opt => (
+                            <button
+                              key={opt.value}
+                              type="button"
+                              onClick={() => setAskFallback(opt.value)}
+                              className={[
+                                'px-3 py-1 text-xs rounded-full border transition',
+                                askFallback === opt.value
+                                  ? 'border-white bg-white/10'
+                                  : 'border-white/20 hover:border-white/40',
+                              ].join(' ')}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                        {askFallback === 'buy_alternative' && (
+                          <input
+                            className="w-full rounded-lg bg-white/5 border border-white/15 px-2 py-1 text-sm"
+                            placeholder="Which alternative?"
+                            value={askFallbackNote}
+                            onChange={e => setAskFallbackNote(e.target.value)}
+                          />
+                        )}
+                        <button
+                          type="button"
+                          disabled={extBusy}
+                          onClick={sendBudgetAsk}
+                          className="px-3 py-1.5 text-xs rounded-lg border border-white/20 hover:border-white/40 disabled:opacity-40"
+                        >
+                          Ask for more budget
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Offered only once the ceiling is in sight. Before that it
+                        answers a question nobody has asked. */}
+                    {(capState?.warning || capState?.reached) && (extensions?.time_choices || []).length > 0 && (
+                      <div className="flex gap-2">
+                        {extensions.time_choices.map(minutes => (
+                          <button
+                            key={minutes}
+                            type="button"
+                            disabled={extBusy}
+                            onClick={() => sendTimeAsk(minutes)}
+                            className="px-3 py-1.5 text-xs rounded-lg border border-white/20 hover:border-white/40 disabled:opacity-40"
+                          >
+                            Ask for +{minutes} min
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* What was charged, for both roles, once the task is over. */}
+            {(isOwner || isAssignee) && task?.status !== 'open' && (
+              <SettlementPanel
+                cost={work?.cost}
+                settlement={settlement}
+                isOwner={isOwner}
+                taskId={id}
+              />
+            )}
+
             {/* Travel estimate card — shown to assignee only */}
             {isAssignee && task.assigned_to_id && (travelLoading || travelEst) && (
               <div className="border border-white/20 rounded-md p-3 space-y-2 text-sm">
@@ -742,8 +1186,11 @@ export default function TaskDetail() {
                         </div>
                       )
                     ) : task?.status === 'completed' ? (
+                      // The full breakdown lives in SettlementPanel below;
+                      // this stays as the one-line answer to "what did it
+                      // come to", so the card is not two totals deep.
                       <div className="text-sm">
-                        Final cost: <b>{formatCents(work.total_cost_cents)}</b>
+                        Final cost: <b>{formatCents(work.cost?.total_cents ?? work.total_cost_cents)}</b>
                       </div>
                     ) : (
                       <div className="space-y-1">
@@ -1109,6 +1556,71 @@ export default function TaskDetail() {
             onChange={e => setCompletionNote(e.target.value)}
           />
 
+          {/* Shopping settlement. Only on a task with an approved budget —
+              everywhere else there is nothing to account for, and the server
+              wants no receipt field at all. Zero is a real answer here
+              ("nothing was bought") and needs no photo. */}
+          {approvedBudgetCents > 0 && (
+            <div className="space-y-2 border-t border-white/10 pt-4">
+              <p className="text-xs text-white/60">
+                Receipt total <span className="text-red-400">*</span>
+                <span className="text-white/40">
+                  {' '}— budget {formatCents(approvedBudgetCents)}, reimbursed up to{' '}
+                  {formatCents(approvedBudgetCents + toleranceCents)}
+                </span>
+              </p>
+              <input
+                className="w-full rounded-lg bg-white/5 border border-white/15 px-3 py-2 text-sm text-white placeholder-white/40 focus:outline-none focus:border-white/30"
+                placeholder="0.00 (enter 0 if you didn't buy anything)"
+                inputMode="decimal"
+                value={receiptAmount}
+                onChange={e => setReceiptAmount(e.target.value)}
+              />
+              {receiptCents > 0 && (
+                receiptPhotoURL ? (
+                  <div className="relative">
+                    <img
+                      src={receiptPhotoURL}
+                      alt="Receipt preview"
+                      className="w-full rounded-lg object-cover max-h-48"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => { setReceiptPhotoURL(''); if (receiptPhotoInputRef.current) receiptPhotoInputRef.current.value = '' }}
+                      className="absolute top-1 right-1 bg-black/60 text-white rounded-full w-6 h-6 text-xs flex items-center justify-center hover:bg-black/80"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ) : (
+                  <label className={[
+                    'flex items-center justify-center w-full h-20 rounded-lg',
+                    'border-2 border-dashed border-white/20 hover:border-white/40',
+                    'cursor-pointer transition text-white/50 text-sm',
+                    receiptUploading ? 'opacity-60 pointer-events-none' : '',
+                  ].join(' ')}>
+                    {receiptUploading ? 'Uploading…' : 'Add a photo of the receipt'}
+                    <input
+                      ref={receiptPhotoInputRef}
+                      type="file"
+                      className="sr-only"
+                      accept="image/png,image/jpeg,image/webp,image/gif,image/heic,image/heif"
+                      onChange={e => uploadCompletionPhoto(e.target.files?.[0], setReceiptPhotoURL, setReceiptUploading)}
+                      disabled={receiptUploading}
+                    />
+                  </label>
+                )
+              )}
+              {receiptCents > approvedBudgetCents + toleranceCents && (
+                <p className="text-xs text-red-300">
+                  That&apos;s over the approved budget. Ask for a budget increase before completing,
+                  or correct the amount — the most you can claim is{' '}
+                  {formatCents(approvedBudgetCents + toleranceCents)}.
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Buttons */}
           <div className="flex gap-3 justify-end">
             <button
@@ -1121,7 +1633,15 @@ export default function TaskDetail() {
             <button
               type="button"
               onClick={markCompleted}
-              disabled={!completionPhotoURL || photoUploading}
+              disabled={
+                !completionPhotoURL ||
+                photoUploading ||
+                receiptUploading ||
+                (approvedBudgetCents > 0 &&
+                  (String(receiptAmount).trim() === '' ||
+                    receiptCents > approvedBudgetCents + toleranceCents ||
+                    (receiptCents > 0 && !receiptPhotoURL)))
+              }
               className="px-4 py-2 text-sm rounded-lg bg-white text-black font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/90 transition"
             >
               Confirm Complete
