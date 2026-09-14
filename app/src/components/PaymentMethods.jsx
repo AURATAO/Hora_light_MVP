@@ -145,8 +145,9 @@ export default function PaymentMethods() {
   const toast = useToast()
   const [cards, setCards] = useState([])
   const [loading, setLoading] = useState(true)
-  // Set when payments are not configured on the backend at all (503). The
-  // whole section hides rather than showing an error a user cannot act on.
+  // Set when this backend has no payments surface — either Stripe is not
+  // configured (503) or the routes are not deployed yet (404). The whole
+  // section hides rather than showing an error a user cannot act on.
   const [unavailable, setUnavailable] = useState(false)
   const [removingId, setRemovingId] = useState('')
   const [setup, setSetup] = useState(null) // { clientSecret, publishableKey }
@@ -158,7 +159,13 @@ export default function PaymentMethods() {
       setCards(res?.cards || [])
       setUnavailable(false)
     } catch (e) {
-      if (e.status === 503) setUnavailable(true)
+      // 404 as well as 503, and deliberately: web and the Go backend deploy
+      // separately (Render's auto-deploy is manual), so there is always a
+      // window where this build is live against a backend that has no
+      // /payments routes. Hiding the section is the correct read of "this
+      // backend does not do payments" — an error toast on the settings page
+      // for a staged deploy is noise nobody can act on.
+      if (e.status === 503 || e.status === 404) setUnavailable(true)
       else if (e.status !== 401) toast("Couldn't load your payment methods")
     } finally {
       setLoading(false)

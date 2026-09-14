@@ -76,7 +76,9 @@ export async function presentAddCardSheet(): Promise<PaymentOutcome> {
   try {
     session = await createSetupIntent();
   } catch (e) {
-    if (e instanceof ApiError && e.status === 503) {
+    // 503 (Stripe unconfigured) and 404 (a build talking to a backend without
+    // these routes yet) mean the same thing to the person holding the phone.
+    if (e instanceof ApiError && (e.status === 503 || e.status === 404)) {
       return { status: "failed", message: "Card payments are temporarily unavailable." };
     }
     throw e;

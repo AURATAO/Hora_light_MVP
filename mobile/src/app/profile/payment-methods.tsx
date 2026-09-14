@@ -67,8 +67,10 @@ export default function PaymentMethodsScreen() {
 
   const [cards, setCards] = useState<SavedCardRow[]>([]);
   const [loading, setLoading] = useState(true);
-  // Stripe isn't configured on the backend at all. The screen says so once
-  // rather than showing an empty list and an Add button that 503s.
+  // This backend has no payments surface — Stripe unconfigured (503), or a
+  // build running against a backend that predates these routes (404). The
+  // screen says so once rather than showing an empty list and an Add button
+  // that fails.
   const [unavailable, setUnavailable] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -90,7 +92,7 @@ export default function PaymentMethodsScreen() {
       setError(null);
     } catch (e) {
       if (handleAuthError(e)) return;
-      if (e instanceof ApiError && e.status === 503) {
+      if (e instanceof ApiError && (e.status === 503 || e.status === 404)) {
         setUnavailable(true);
       } else {
         setError(e instanceof Error ? e.message : "Couldn't load your cards");
