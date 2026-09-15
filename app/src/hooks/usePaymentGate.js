@@ -63,6 +63,31 @@ export function usePaymentGate() {
  * same words as one that went straight through. Throws with a showable
  * `.message` otherwise.
  */
+/**
+ * Run the bank's challenge, and nothing else.
+ *
+ * Split out of completeCardAuthentication because settling an outstanding
+ * balance needs exactly this half and none of the other: there is no task to
+ * post, so there is nothing to confirm afterwards — the settle endpoint is
+ * simply called again, and it re-reads the intent's real state from Stripe.
+ *
+ * Throws with a showable `.message`; resolves when the challenge is done.
+ */
+export async function runCardChallenge({ publishable_key, client_secret }) {
+  const publishableKey = publishable_key || FALLBACK_PUBLISHABLE_KEY
+  if (!publishableKey || !client_secret) {
+    throw new Error("We couldn't complete that payment. Please try again.")
+  }
+  const stripe = await loadStripe(publishableKey)
+  if (!stripe) {
+    throw new Error("We couldn't reach our payment provider. Please try again.")
+  }
+  const { error } = await stripe.handleNextAction({ clientSecret: client_secret })
+  if (error) {
+    throw new Error(error.message || 'That payment was not approved. Try another card.')
+  }
+}
+
 export async function completeCardAuthentication({ publishable_key, client_secret, task_id }) {
   const publishableKey = publishable_key || FALLBACK_PUBLISHABLE_KEY
   if (!publishableKey || !client_secret || !task_id) {

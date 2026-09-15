@@ -133,6 +133,31 @@ export async function presentAddCardSheet(): Promise<PaymentOutcome> {
  * The backend re-reads the intent from Stripe rather than trusting this call,
  * so nothing here can post a task that was not actually paid for.
  */
+/**
+ * Run the bank's challenge, and nothing else.
+ *
+ * Split out of completeCardAuthentication because settling an outstanding
+ * balance needs exactly this half: there is no task to post, so there is
+ * nothing to confirm afterwards — the settle endpoint is simply called again
+ * and re-reads the intent's real state from Stripe.
+ */
+export async function runCardChallenge(details: {
+  publishable_key?: string;
+  client_secret?: string;
+}): Promise<PaymentOutcome> {
+  const { publishable_key, client_secret } = details;
+  if (!client_secret) {
+    return { status: "failed", message: "We couldn't complete that payment. Try again." };
+  }
+  await applyPublishableKey(publishable_key ?? "");
+  const { error } = await handleNextAction(client_secret);
+  if (error) {
+    if (error.code === "Canceled") return { status: "canceled" };
+    return { status: "failed", message: error.message };
+  }
+  return { status: "done" };
+}
+
 export async function completeCardAuthentication(details: {
   publishable_key?: string;
   client_secret?: string;

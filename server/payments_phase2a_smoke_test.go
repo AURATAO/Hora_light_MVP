@@ -270,7 +270,7 @@ func TestPhase2aSmokePostPlacesHoldForTheBillingAmount(t *testing.T) {
 
 	// 60 minutes, $20 budget: ($12.00 base + $22.50 time) x 1.5 + $20 + $5.
 	const minutes, budgetCents = 60, 2000
-	want := preAuthAmountCents("delivery", minutes, budgetCents)
+	want := preAuthAmountCents("delivery", minutes, budgetCents, Billing.PerMinuteRateCents)
 
 	code, body := postTaskJSONAs(t, email,
 		`{"title":"Grocery run","category":"delivery","estimated_minutes":60,"prepay_amount_cents":2000,"is_immediate":true,"auto_extend_consent":true}`)

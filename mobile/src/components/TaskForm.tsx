@@ -7,6 +7,7 @@ import { Button, Checkbox, Input, Pill, PressableScale } from "./ui";
 import { ApiError, estimateTaskCost, type CreateTaskPayload } from "../lib/api";
 import { DISABLED_CATEGORY_NOTICE, isCategoryDisabled } from "../lib/beta-notice";
 import { getCategoryMeta } from "../lib/categories";
+import { highBudgetWarning, surgeRateNote } from "../lib/payment-copy";
 import { formatCost, formatMinutes, formatScheduledAt, zeroSeconds } from "../lib/task-utils";
 import type { ParsedTask, Task, TaskCategory, TaskCreatedVia } from "../lib/types";
 
@@ -277,6 +278,8 @@ export function TaskForm({ form, onChange, errors }: TaskFormProps) {
     timeCostCents: number;
     shoppingCents: number;
     totalCents: number;
+    surgeRate: boolean;
+    highBudgetWarningCents: number;
   } | null>(null);
 
   // Pre-submission price quote — server-computed (S-05), matching web's summary
@@ -303,6 +306,11 @@ export function TaskForm({ form, onChange, errors }: TaskFormProps) {
           category: form.category as TaskCategory,
           estimated_minutes: minutes,
           prepay_amount_cents: prepayCents,
+          // The rate depends on when the work happens, not on when this form
+          // was opened: a 21:30 task filled in at 6pm is quoted the evening
+          // rate.
+          is_immediate: form.isImmediate,
+          scheduled_at: form.isImmediate ? "" : zeroSeconds(form.scheduledDate).toISOString(),
         });
         if (cancelled) return;
         setEstimate({
@@ -317,6 +325,8 @@ export function TaskForm({ form, onChange, errors }: TaskFormProps) {
           // The key was renamed in Stripe Phase 1; the backend sends both.
           shoppingCents: result.shopping_budget_cents ?? result.shopping_cents ?? 0,
           totalCents: result.total_cents,
+          surgeRate: result.surge_rate ?? false,
+          highBudgetWarningCents: result.high_budget_warning_cents ?? 0,
         });
       } catch (e) {
         if (cancelled) return;
@@ -558,8 +568,50 @@ export function TaskForm({ form, onChange, errors }: TaskFormProps) {
             <Text className="text-caption font-semibold text-ink">Total estimate</Text>
             <Text className="text-caption font-semibold text-ink">{formatCost(estimate.totalCents)}</Text>
           </View>
+          {/* Why this task costs more than usual. The wording, the rate and the
+              included block all come from the server quote. */}
+          {surgeRateNote({
+            surge_rate: estimate.surgeRate,
+            per_minute_rate_cents: estimate.perMinuteRateCents,
+            included_minutes: estimate.includedMinutes,
+          }) ? (
+            <Text className="text-caption text-muted">
+              {surgeRateNote({
+                surge_rate: estimate.surgeRate,
+                per_minute_rate_cents: estimate.perMinuteRateCents,
+                included_minutes: estimate.includedMinutes,
+              })}
+            </Text>
+          ) : null}
+          <Text className="text-caption text-muted">
+            This exact amount is reserved on your card when you post. You&apos;re charged for
+            what&apos;s actually used.
+          </Text>
+        </View>
+      ) : null}
+
+      {/* A lot of money about to be reserved. Warns in the danger colour and
+          blocks nothing — the post button below stays enabled. */}
+      {estimate &&
+      highBudgetWarning(shoppingBudgetCents(form), {
+        high_budget_warning_cents: estimate.highBudgetWarningCents,
+      }) ? (
+        <View className="mt-3 rounded-card border border-danger bg-surface p-3">
+          <Text className="text-caption text-danger">
+            {highBudgetWarning(shoppingBudgetCents(form), {
+              high_budget_warning_cents: estimate.highBudgetWarningCents,
+            })}
+          </Text>
         </View>
       ) : null}
     </View>
   );
+}
+
+// The typed budget in integer cents, for the warning threshold. The only place
+// this file turns a typed string into money, and it does no pricing — the
+// threshold it is compared against comes from the server.
+function shoppingBudgetCents(form: TaskFormState): number {
+  const budget = form.shoppingBudget ? Number(form.shoppingBudget) : 0;
+  return Number.isFinite(budget) && budget > 0 ? Math.round(budget * 100) : 0;
 }

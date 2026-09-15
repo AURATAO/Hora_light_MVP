@@ -1453,16 +1453,11 @@ func createTask(c *gin.Context) {
 	if in.PrepayAmountCents < 0 {
 		in.PrepayAmountCents = 0
 	}
-	// The beta shopping cap, enforced. Both clients have advertised "$30 max
-	// per task" in their beta notices since launch while nothing checked it —
-	// a requester could post a $500 budget and the row stored $500. Rejected
-	// rather than clamped: silently posting a task with a budget smaller than
-	// the one the requester typed is how a supporter ends up out of pocket.
-	// The DB CHECK added alongside this is the backstop, not the message.
-	if in.PrepayAmountCents > Billing.ShoppingBudgetCapCents {
-		c.JSON(http.StatusBadRequest, shoppingBudgetCapError())
-		return
-	}
+	// No cap on the shopping budget. The $30 one was the wrong protection:
+	// the ENTIRE budget is now reserved on the requester's card at post, so
+	// they see and authorize the exact number before anything is held, and a
+	// cap only refused legitimate tasks. The post form warns in red above
+	// BillingConfig.HighBudgetWarningCents and still submits.
 	// Attribution is optional — web and the shipped TestFlight build send
 	// nothing, and those tasks are stored unattributed rather than guessed at.
 	// A value that IS sent has to be one we can count, so a typo is rejected
@@ -1506,6 +1501,28 @@ func createTask(c *gin.Context) {
 	enforcePayment := paymentsEnforced()
 	var payCtx preAuthContext
 	if enforcePayment {
+		// An unpaid completion blocks the next post. The requester was told
+		// when it failed, is told again by a banner on every screen, and can
+		// clear it in one tap — this is the wall that makes those worth
+		// reading. Checked before the card is resolved so an owing requester
+		// costs no Stripe round trip.
+		//
+		// Deliberately requester-side only: a SUPPORTER is never gated on
+		// anything to do with this, and payouts are not withheld. The platform
+		// carries the float. See skills/payments-runbook.md.
+		var payerID string
+		_ = db.QueryRow(ctx, `select id::text from public.users where email=$1 limit 1`, email).Scan(&payerID)
+		if owed := outstandingBalanceFor(ctx, payerID); owed != nil {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "outstanding_balance",
+				"message": fmt.Sprintf(
+					"You have an outstanding balance of %s from %q. Settle it to keep posting.",
+					formatCentsUSD(owed.TotalCents), owed.TaskTitle),
+				"outstanding": owed,
+			})
+			return
+		}
+
 		if !paymentsEnabled() {
 			// Enforcement on with no Stripe key is a misconfiguration, not a
 			// user error. Refusing every post is the correct failure: the
@@ -1647,6 +1664,15 @@ func createTask(c *gin.Context) {
 	if in.AutoExtendConsent != nil {
 		autoExtend = *in.AutoExtendConsent
 	}
+	// THE RATE, RESOLVED ONCE. From the scheduled start for a scheduled task,
+	// from now for an ASAP one — and then stored, so nothing downstream ever
+	// re-derives it. A task posted at 20:50 bills at the standard rate for its
+	// whole run even if it finishes at 22:30. See resolveRateCentsPerMin.
+	rateStart := time.Now()
+	if when != nil {
+		rateStart = *when
+	}
+	rateCents := resolveRateCentsPerMin(rateStart)
 	if err := tx.QueryRowContext(ctx, `
     INSERT INTO public.tasks
       -- shopping_budget_approved_cents starts as the requester's own ask
@@ -1658,17 +1684,17 @@ func createTask(c *gin.Context) {
        estimated_minutes,prepay_amount_cents,shopping_budget_approved_cents,
        is_immediate,scheduled_at,
        requester, requester_id, status, assigned_to, assigned_to_id,
-       transport_required, created_via, auto_extend_consent)
+       transport_required, created_via, auto_extend_consent, rate_cents_per_min)
     VALUES
       ($1,$2,$3,$4,
        $5,$6,$6,
        $7,$8,
        $9, $10::uuid, $13, '', NULL,
-       $11, $12, $14)
+       $11, $12, $14, $15)
     RETURNING id, created_at
   `, in.Title, in.Description, in.Category, in.LocationText,
 		in.EstimatedMinutes, in.PrepayAmountCents, in.IsImmediate, when,
-		email, uid, transport, createdVia, initialStatus, autoExtend,
+		email, uid, transport, createdVia, initialStatus, autoExtend, rateCents,
 	).Scan(&taskID, &createdAt); err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok {
 			log.Printf("[tasks.insert] code=%s tbl=%s col=%s detail=%s where=%s msg=%s",
@@ -1698,6 +1724,7 @@ func createTask(c *gin.Context) {
 			Category:              in.Category,
 			EstimatedMinutes:      in.EstimatedMinutes,
 			ShoppingBudgetCents:   in.PrepayAmountCents,
+			RateCents:             rateCents,
 			StripeCustomerID:      payCtx.CustomerID,
 			StripePaymentMethodID: payCtx.PaymentMethodID,
 		})
@@ -2179,10 +2206,6 @@ func updateTask(c *gin.Context) {
 	// Same cap as createTask — this is a full replace (see the PATCH note on
 	// UpdateTaskPayload), so an edit is every bit as capable of setting an
 	// over-cap budget as a create.
-	if in.PrepayAmountCents > Billing.ShoppingBudgetCapCents {
-		c.JSON(http.StatusBadRequest, shoppingBudgetCapError())
-		return
-	}
 
 	var when *time.Time
 	if in.IsImmediate {
@@ -2210,7 +2233,11 @@ func updateTask(c *gin.Context) {
 	// An edit that lowers or leaves the amount alone passes: over-holding is
 	// harmless (the remainder is released at capture, never charged).
 	if p, err := livePaymentForTask(ctx, id); err == nil && p.AuthorizedCents != nil {
-		if want := preAuthAmountCents(in.Category, in.EstimatedMinutes, in.PrepayAmountCents); want > *p.AuthorizedCents {
+		// The task's OWN rate, not a freshly resolved one: an edit must not
+		// silently re-price a task into the evening band because it happens to
+		// be being edited at 21:05.
+		if want := preAuthAmountCents(in.Category, in.EstimatedMinutes, in.PrepayAmountCents,
+			taskRateCentsPerMin(ctx, id)); want > *p.AuthorizedCents {
 			c.JSON(http.StatusConflict, gin.H{
 				"error": "exceeds_authorized_hold",
 				"message": "That change needs a bigger hold than the one on your card (" +
@@ -3056,14 +3083,14 @@ func getWorklogs(c *gin.Context) {
 		// that was not; the distinction is whether a session ever existed, so
 		// it is made here where that is known rather than pushed into the
 		// pricing primitive.
-		cost = quoteTask(inputs.Category, 0, 0)
+		cost = quoteTask(inputs.Category, 0, 0, inputs.RateCents)
 		cost.BaseFeeCents = 0
 		cost.TimeCostCents = 0
 		cost.TotalCents = 0
 	case taskStatus == "completed" || taskStatus == "cancelled":
 		cost = inputs.quote()
 	default:
-		cost = quoteTask(inputs.Category, cappedMinutes(totalMin, inputs.CapMinutes), 0)
+		cost = quoteTask(inputs.Category, cappedMinutes(totalMin, inputs.CapMinutes), 0, inputs.RateCents)
 		cost.TotalMinutes = totalMin
 		cost.BilledMinutes = cappedMinutes(totalMin, inputs.CapMinutes)
 		cost.CapMinutes = inputs.CapMinutes
@@ -3594,7 +3621,8 @@ func cancelTask(c *gin.Context) {
 		return
 	}
 	capMinutes, _ := taskTimeCapMinutes(ctx, taskID)
-	billCents := cancelSettlementCents(taskCategory(ctx, taskID), cappedMinutes(totalMin, capMinutes), hadSession)
+	billCents := cancelSettlementCents(taskCategory(ctx, taskID), cappedMinutes(totalMin, capMinutes),
+		hadSession, taskRateCentsPerMin(ctx, taskID))
 
 	// 寫入取消狀態 + 理由（建議你在 tasks 加欄位：cancel_reason text, cancelled_at timestamptz）
 	_, err = db.Exec(ctx, `

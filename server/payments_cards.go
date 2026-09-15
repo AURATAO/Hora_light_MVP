@@ -58,6 +58,12 @@ func RegisterPaymentRoutes(r *gin.Engine, authMiddleware gin.HandlerFunc) {
 		p.POST("/setup-intent", createSetupIntentHandler)
 		p.GET("/payment-methods", listPaymentMethodsHandler)
 		p.DELETE("/payment-methods/:id", deletePaymentMethodHandler)
+
+		// What a requester owes from a completion that could not be charged,
+		// and the one-tap retry that clears it. GET is polled by the banner on
+		// both clients; POST is the Settle button.
+		p.GET("/outstanding-balance", outstandingBalanceHandler)
+		p.POST("/settle-balance", settleOutstandingBalance)
 	}
 }
 

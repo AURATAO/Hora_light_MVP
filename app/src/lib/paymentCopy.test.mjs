@@ -2,10 +2,13 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   formatCardLabel,
+  highBudgetWarning,
   holdPlacedMessage,
+  holdReleasedMessage,
   holdSummary,
   holdWillBeReleasedMessage,
-  holdReleasedMessage,
+  outstandingBalanceMessage,
+  surgeRateNote,
 } from './paymentCopy.js'
 
 /**
@@ -13,9 +16,13 @@ import {
  *
  * A live tester posted a task, was told nothing about their card, assumed the
  * post had failed and cancelled it. The money was correct throughout; the
- * silence was the defect. These tests hold the two properties that silence
- * violated: a real number is always named, and nothing is said at all when
- * there is no number to name.
+ * silence was the defect. Two rules came out of it and every test below is one
+ * of them:
+ *
+ *   1. A real number, always. Never a hedge, never "$0.00" standing in for
+ *      "we don't know" — where there is no number, there is no message.
+ *   2. Never the word "refund". A released authorization is not one; nothing
+ *      was taken.
  */
 
 test('a card is named the way a cardholder reads it', () => {
@@ -23,7 +30,7 @@ test('a card is named the way a cardholder reads it', () => {
   assert.equal(formatCardLabel({ card_brand: 'mastercard', card_last4: '5100' }), 'Mastercard ••5100')
   assert.equal(formatCardLabel({ card_brand: 'amex', card_last4: '0005' }), 'American Express ••0005')
   // An unrecognised brand degrades to "Card" rather than dropping the whole
-  // clause — the last four are the half the cardholder recognises, and a raw
+  // clause — the last four are the half a cardholder recognises, and a raw
   // Stripe slug is not copy. Same fallback the saved-cards list uses.
   assert.equal(formatCardLabel({ card_brand: 'cartes_bancaires', card_last4: '1111' }), 'Card ••1111')
   assert.equal(formatCardLabel({ card_last4: '4242' }), 'Card ••4242')
@@ -33,17 +40,51 @@ test('no card, no clause — never "your card (unknown)"', () => {
   for (const payment of [null, undefined, {}, { card_brand: 'visa' }]) {
     assert.equal(formatCardLabel(payment), '')
   }
-  // The hold is still announced, just without naming a card.
-  const msg = holdPlacedMessage({ authorized_cents: 7675 })
-  assert.match(msg, /\$76\.75 on your card\./)
-  assert.doesNotMatch(msg, /\(/)
 })
 
-test('the post-success message names the amount and the card', () => {
-  const msg = holdPlacedMessage({ authorized_cents: 7675, card_brand: 'visa', card_last4: '4242' })
-  assert.match(msg, /reserved \$76\.75 on your card \(Visa ••4242\)/)
-  assert.match(msg, /only be charged for actual time and purchases/)
-  assert.match(msg, /released automatically/)
+test('the post-success line is the amount and what it is made of', () => {
+  const msg = holdPlacedMessage({
+    authorized_cents: 4950,
+    time_cost_cents: 1950,
+    shopping_budget_cents: 3000,
+  })
+  assert.equal(msg.primary, '$49.50 reserved — $19.50 time + $30.00 budget')
+  assert.equal(msg.secondary, "Charged only for what's used. Rest released automatically.")
+})
+
+test('no shopping means a single number, not a breakdown with a zero in it', () => {
+  const msg = holdPlacedMessage({ authorized_cents: 1950, time_cost_cents: 1950 })
+  assert.equal(msg.primary, '$19.50 reserved')
+  assert.doesNotMatch(msg.primary, /\$0\.00/)
+  assert.doesNotMatch(msg.primary, /budget/)
+})
+
+test('a hold the server could not break down still states the total', () => {
+  // The server omits the split when it does not reconcile with the authorized
+  // amount. A breakdown that fails to add up to the number beside it is worse
+  // than no breakdown at all.
+  assert.equal(holdPlacedMessage({ authorized_cents: 4950 }).primary, '$49.50 reserved')
+})
+
+test('the post-success confirmation does not name a card', () => {
+  // Which card it landed on matters when you are looking at a live task and
+  // wondering what is held. At the moment of posting, the number is the
+  // message — the card stays on the task-detail line.
+  const msg = holdPlacedMessage({
+    authorized_cents: 4950,
+    time_cost_cents: 1950,
+    shopping_budget_cents: 3000,
+    card_brand: 'visa',
+    card_last4: '4242',
+  })
+  assert.doesNotMatch(`${msg.primary} ${msg.secondary}`, /visa|4242/i)
+})
+
+test('the task-detail line DOES name the card', () => {
+  assert.equal(
+    holdSummary({ authorized_cents: 4950, card_brand: 'visa', card_last4: '4242' }),
+    '$49.50 reserved · Visa ••4242'
+  )
 })
 
 test('no hold means nothing is said about money', () => {
@@ -58,6 +99,46 @@ test('no hold means nothing is said about money', () => {
   assert.equal(holdReleasedMessage({ captured_cents: 0, released_cents: 0 }), null)
   assert.equal(holdReleasedMessage({}), null)
   assert.equal(holdReleasedMessage(null), null)
+})
+
+test('the evening rate explains itself, in the server’s numbers', () => {
+  assert.equal(
+    surgeRateNote({ surge_rate: true, per_minute_rate_cents: 100, included_minutes: 15 }),
+    'Evening rate: $1.00/min after the first 15 minutes.'
+  )
+  assert.equal(surgeRateNote({ surge_rate: false, per_minute_rate_cents: 50 }), null)
+  assert.equal(surgeRateNote(null), null)
+})
+
+test('a large budget warns, at the server’s threshold', () => {
+  const quote = { high_budget_warning_cents: 50000 }
+  assert.equal(highBudgetWarning(49999, quote), null)
+  assert.match(highBudgetWarning(50000, quote), /High budget/)
+  assert.match(highBudgetWarning(250000, quote), /reserved on your card/)
+  // No threshold from the server means no warning invented locally — the
+  // clients must not carry their own copy of it (S-05).
+  assert.equal(highBudgetWarning(250000, {}), null)
+  assert.equal(highBudgetWarning(0, quote), null)
+})
+
+test('an outstanding balance names the amount and where it came from', () => {
+  const msg = outstandingBalanceMessage({
+    total_cents: 1250,
+    task_title: 'Pick up a parcel',
+    task_count: 1,
+  })
+  assert.match(msg, /outstanding balance of \$12\.50/)
+  assert.match(msg, /Pick up a parcel/)
+  assert.match(msg, /settle it to keep posting/)
+
+  assert.match(
+    outstandingBalanceMessage({ total_cents: 3000, task_title: 'Pick up a parcel', task_count: 3 }),
+    /and 2 more/
+  )
+
+  for (const none of [null, undefined, {}, { total_cents: 0 }]) {
+    assert.equal(outstandingBalanceMessage(none), null)
+  }
 })
 
 test('the cancel dialog promises a specific amount back, before anything happens', () => {
@@ -91,17 +172,25 @@ test('a settlement that consumed the whole hold still reads correctly', () => {
   assert.doesNotMatch(msg, /\$0\.00/)
 })
 
-test('no message ever hedges about the amount', () => {
+test('no message ever hedges about the amount, and none says "refund"', () => {
+  const placed = holdPlacedMessage({
+    authorized_cents: 4950,
+    time_cost_cents: 1950,
+    shopping_budget_cents: 3000,
+  })
   const messages = [
-    holdPlacedMessage({ authorized_cents: 7675, card_brand: 'visa', card_last4: '4242' }),
+    placed.primary,
     holdSummary({ authorized_cents: 7675, card_brand: 'visa', card_last4: '4242' }),
     holdWillBeReleasedMessage({ authorized_cents: 7675 }),
     holdReleasedMessage({ captured_cents: 2450, released_cents: 5225 }),
     holdReleasedMessage({ captured_cents: 0, released_cents: 7675 }),
+    outstandingBalanceMessage({ total_cents: 1250, task_title: 'A task', task_count: 1 }),
+    surgeRateNote({ surge_rate: true, per_minute_rate_cents: 100, included_minutes: 15 }),
   ]
   for (const msg of messages) {
     assert.ok(msg, 'expected a message')
     assert.match(msg, /\$\d/, `no amount in: ${msg}`)
+    assert.doesNotMatch(msg, /refund/i, `says "refund" in: ${msg}`)
     for (const hedge of [/\bmay be charged\b/i, /\bmight\b/i, /\bapproximately\b/i, /\bup to\b/i]) {
       assert.doesNotMatch(msg, hedge, `hedged wording in: ${msg}`)
     }

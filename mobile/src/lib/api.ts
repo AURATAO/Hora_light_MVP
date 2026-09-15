@@ -7,6 +7,7 @@ import type {
   ExtensionsResponse,
   GpsPing,
   LatestLocation,
+  OutstandingBalance,
   ParsedTask,
   Profile,
   PublicProfile,
@@ -302,6 +303,10 @@ export interface EstimateTaskCostPayload {
   category: TaskCategory;
   estimated_minutes: number;
   prepay_amount_cents: number;
+  /** When the work would start. Decides the rate — the evening band is a
+   *  property of when the task happens, not of when the form was opened. */
+  is_immediate?: boolean;
+  scheduled_at?: string;
 }
 
 export interface TaskCostEstimate {
@@ -317,6 +322,15 @@ export interface TaskCostEstimate {
   per_minute_rate_cents?: number;
   /** Replaces `shopping_cents`. Both are sent; prefer this one. */
   shopping_budget_cents?: number;
+  /** Whether the evening rate applies to this quote. */
+  surge_rate?: boolean;
+  /** What posting will actually reserve. Identical to total_cents — the hold
+   *  IS the estimate plus the budget — and sent separately because that
+   *  identity is a design decision, not a coincidence a client should assume. */
+  hold_cents?: number;
+  /** Where the post form starts warning about a large reservation. Server-owned
+   *  so both clients warn at the same number (S-05). */
+  high_budget_warning_cents?: number;
 
   /**
    * @deprecated The pre-Phase-1 name for `shopping_budget_cents`. The backend
@@ -401,6 +415,35 @@ export function confirmTaskPayment(
     `/tasks/${encodeURIComponent(taskId)}/payment/confirm`,
     { method: "POST" }
   );
+}
+
+// ---- Outstanding balance ---------------------------------------------------
+//
+// A completion that settled above its hold and could not be charged leaves a
+// balance. While one exists, POST /tasks answers 403 outstanding_balance and
+// both clients show a persistent banner. Supporters are never gated on it —
+// payouts go out regardless and the platform carries the float.
+
+export function getOutstandingBalance(): Promise<{ outstanding: OutstandingBalance | null }> {
+  return apiFetch<{ outstanding: OutstandingBalance | null }>("/payments/outstanding-balance");
+}
+
+export interface SettleBalanceResult {
+  ok?: true;
+  settled_cents: number;
+  outstanding: OutstandingBalance | null;
+}
+
+/**
+ * Retry every outstanding charge off-session.
+ *
+ * Throws ApiError(402) with `client_secret` when the issuer wants the
+ * cardholder present — run the challenge with the Stripe SDK and call this
+ * again. That is the one failure a retry can actually fix, and the reason this
+ * is a button rather than a background job.
+ */
+export function settleBalance(): Promise<SettleBalanceResult> {
+  return apiFetch<SettleBalanceResult>("/payments/settle-balance", { method: "POST" });
 }
 
 // ---- Tasks (requester), continued ------------------------------------------

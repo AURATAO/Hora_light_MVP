@@ -124,7 +124,8 @@ func setupCreatedViaDB(t *testing.T) {
 	// inserts into. Phase 2a is here for the same reason: createTask now writes
 	// auto_extend_consent and a status ('pending_payment') the fixture's own
 	// CHECK constraint would reject.
-	for _, path := range []string{createdViaMigrationPath, paymentsMigrationPath, phase2aMigrationPath} {
+	for _, path := range []string{createdViaMigrationPath, paymentsMigrationPath, phase2aMigrationPath,
+		phase2bMigrationPath, cardDisplayMigrationPath, restructureMigrationPath} {
 		migration, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read migration %s: %v", path, err)

@@ -7,6 +7,7 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 import { useFocusEffect, useRouter } from "expo-router";
+import { OutstandingBalanceBanner } from "../../components/OutstandingBalanceBanner";
 import * as SecureStore from "expo-secure-store";
 import {
   ArrowRight,
@@ -359,6 +360,11 @@ export default function Home() {
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={color.muted} />
       }
     >
+      {/* Renders nothing unless a completion could not be charged — which is
+          nearly always. When it does render, it is above everything: the
+          balance blocks posting, so it has to be seen wherever the requester
+          is rather than only on the screen that refuses them. */}
+      <OutstandingBalanceBanner />
       <View className="mb-6 mt-4 h-11 items-center justify-center">
         <Logo height={36} />
         <PressableScale

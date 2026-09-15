@@ -343,7 +343,7 @@ func TestTraction3AuthorizationAndState(t *testing.T) {
 
 // The classic sheet (web's ReviewPage, and mobile outside the window) keeps
 // working — and an omitted value_rating reaches the column as NULL rather than
-// '' , which the CHECK constraint would have rejected.
+// ” , which the CHECK constraint would have rejected.
 func TestTraction3ClassicReviewStillWorks(t *testing.T) {
 	setupTraction3DB(t)
 	task, requester, supporter := seedCompletedTask(t, "completed")

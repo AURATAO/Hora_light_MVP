@@ -338,21 +338,12 @@ func requestBudgetIncrease(c *gin.Context) {
 		})
 		return
 	}
-	// Bounded per request rather than absolutely: an approved increase is
-	// exactly the mechanism for exceeding the original ask, so capping the
-	// resulting ceiling at $30 would defeat the feature. Capping one request
-	// at the same $30 keeps a mistyped "$800" from reaching a requester's lock
-	// screen as a one-tap approval.
-	if in.RequestedCents > Billing.ShoppingBudgetCapCents {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "increase_over_cap",
-			"message": fmt.Sprintf(
-				"A single increase can't be more than %s. Ask for less, or ask twice.",
-				formatCentsUSD(Billing.ShoppingBudgetCapCents)),
-			"cap_cents": Billing.ShoppingBudgetCapCents,
-		})
-		return
-	}
+	// No upper bound. There is no cap on a shopping budget any more (the $30
+	// one refused legitimate tasks), and there is no cap on raising one
+	// either: the requester reads the amount on their own screen and taps
+	// Approve, which is a better check than a constant. An approved increase
+	// raises the ceiling only — nothing is authorized at approval time, and
+	// the whole overage is collected at completion.
 	if in.Fallback != fallbackBuyAlternative && in.Fallback != fallbackSkipItem {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   "fallback_required",
@@ -564,12 +555,18 @@ func resolveExtension(c *gin.Context, decision string) {
 		return
 	}
 
-	// The money and the ceiling move only on an approval. A denial writes
-	// nothing but the row: there is nothing to undo, because nothing was
-	// granted in advance.
-	var hold *holdAdjustment
+	// The ceiling moves only on an approval, and ONLY the ceiling. Nothing is
+	// authorized here: an approval is permission to spend, not a charge, and
+	// everything an approval makes possible is collected at completion against
+	// the hold and — if it outgrew the hold — a balance charge.
+	//
+	// This used to attempt a Stripe incremental authorization, then fall back
+	// to opening a second hold, all inside the requester's Approve tap. It is
+	// gone: it put two network round trips in a one-tap interaction, it could
+	// half-succeed, and it existed only to keep the capture inside a hold the
+	// system no longer over-sizes.
 	if decision == extensionStatusApproved {
-		hold = applyApprovedExtension(ctx, taskID, e)
+		applyApprovedExtension(ctx, taskID, e)
 	}
 
 	meta := map[string]any{
@@ -578,28 +575,17 @@ func resolveExtension(c *gin.Context, decision string) {
 		"requested_cents":   e.RequestedCents,
 		"requested_minutes": e.RequestedMinutes,
 	}
-	if hold != nil {
-		meta["hold_method"] = hold.Method
-		meta["hold_shortfall_cents"] = hold.ShortfallCents
-		if hold.Err != "" {
-			meta["hold_error"] = hold.Err
-		}
-	}
 	writeAudit(ctx, taskID, meUID, "EXTENSION_"+strings.ToUpper(decision), e.Kind, meta)
 	log.Printf("[extensions] %s id=%s task=%s kind=%s by=%s", decision, e.ID, taskID, e.Kind, meUID)
 
 	go announceExtensionResolution(context.Background(), e)
 
 	approvedBudget, capDetail := postResolutionState(ctx, taskID)
-	body := gin.H{
+	c.JSON(http.StatusOK, gin.H{
 		"request":               e,
 		"approved_budget_cents": approvedBudget,
 		"time_cap":              capDetail,
-	}
-	if hold != nil {
-		body["hold"] = hold
-	}
-	c.JSON(http.StatusOK, body)
+	})
 }
 
 func postResolutionState(ctx context.Context, taskID string) (int, TimeCap) {
@@ -623,21 +609,13 @@ func extensionResolvedMessage(status string) string {
 	return "This request has already been answered."
 }
 
-// applyApprovedExtension moves the ceiling the approval raised, then makes the
-// hold cover it.
-//
-// The ceiling moves FIRST and unconditionally. If growing the hold fails, the
-// requester has still approved the spend and the supporter still has
-// permission to make it — the platform's inability to authorize more money is
-// the platform's problem to settle, not a reason to tell a supporter standing
-// in a shop that the yes they were just given does not count. The shortfall
-// surfaces at capture (the clamp in payments.go logs UNDERCAPTURE) and in the
-// audit row written by the caller.
-func applyApprovedExtension(ctx context.Context, taskID string, e ExtensionRequest) *holdAdjustment {
+// applyApprovedExtension moves the ceiling the approval raised. That is all it
+// does — there is no money side to an approval any more.
+func applyApprovedExtension(ctx context.Context, taskID string, e ExtensionRequest) {
 	switch e.Kind {
 	case extensionKindBudget:
 		if e.RequestedCents == nil {
-			return nil
+			return
 		}
 		if _, err := db.Exec(ctx, `
 			update public.tasks
@@ -646,7 +624,7 @@ func applyApprovedExtension(ctx context.Context, taskID string, e ExtensionReque
 		`, taskID, *e.RequestedCents); err != nil {
 			log.Printf("[extensions][ERROR] approved budget increase id=%s not applied to task=%s: %v",
 				e.ID, taskID, err)
-			return nil
+			return
 		}
 
 	case extensionKindTime:
@@ -665,8 +643,6 @@ func applyApprovedExtension(ctx context.Context, taskID string, e ExtensionReque
 			log.Printf("[extensions][ERROR] could not reset time-cap latches task=%s: %v", taskID, err)
 		}
 	}
-
-	return ensureHoldCoversTask(ctx, taskID)
 }
 
 // ── Telling people ─────────────────────────────────────────────────────────

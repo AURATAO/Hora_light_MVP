@@ -71,14 +71,35 @@ paying can agree to pay more.
 
 **Do not** cancel the task. Nothing in the system does, at any point.
 
-### 3. `[HO:RA] Payment disputed — $X (reason)`
+### 3. `[HO:RA] Balance due — $X uncollected`
+
+**Means:** a completed task settled for MORE than its hold and the difference
+could not be charged. Since the billing restructure the hold is exactly the
+estimate plus the budget, so any overrun or over-budget receipt is collected as
+a second charge — this is that charge failing.
+
+**State:** task `completed`. A `payments` row with `kind='completion_balance'`,
+`status='balance_due'`. `audit_logs` has `PAYMENT_BALANCE_DUE`. The requester
+has been notified in-app and by email, **is blocked from posting** (403
+`outstanding_balance`), and sees a persistent banner with a Settle button.
+
+**The supporter is unaffected and has been paid.** Payouts are deliberately NOT
+gated on this: the platform carries the float. A supporter must never learn
+that their requester's card failed.
+
+**Do: usually nothing.** The requester settles it themselves in one tap, and
+the three outcomes are handled in-app — settled, 3DS challenge, or still
+declined. Chase only if it stays outstanding: the block is the collection
+mechanism, and it is a strong one.
+
+### 4. `[HO:RA] Payment disputed — $X (reason)`
 
 Unchanged from Phase 1. A dispute has a response deadline in days and loses by
 default if missed. `audit_logs` `action='PAYMENT_DISPUTED'`; respond in the
 Stripe dashboard → Payments → Disputes. A dispute that could not be traced to a
 task is filed against the nil UUID — those are *more* urgent, not less.
 
-### 4. Log-only: `[payments][EXPIRING HOLD]` and `[payments][STRANDED HOLD]`
+### 5. Log-only: `[payments][EXPIRING HOLD]` and `[payments][STRANDED HOLD]`
 
 Not emails — they appear in the Render logs, from the 6-hourly watcher.
 

@@ -576,8 +576,8 @@ literals in `main.go` and three hand-copied duplicates in the web app.
 | Base fee | **$12.00** default, **$25.00** companionship/companion |
 | Included | the **first 15 minutes** are inside the base fee |
 | Billable minutes | `max(total_logged_minutes − 15, 0)` |
-| Rate | **$0.50/min** on billable minutes only |
-| Task time cost | `base_fee + billable_minutes × $0.50` |
+| Rate | **$0.50/min**, or **$1.00/min** from **21:00 America/New_York** — resolved once at post and stored on the task (§11.1) |
+| Task time cost | `base_fee + billable_minutes × the task's stored rate` |
 
 `total_logged_minutes` is the sum across **all closed worklog sessions** on the
 task. A laundry-style task clocked in and out three times bills the sum of the
@@ -626,26 +626,14 @@ separate is what makes "was this overage approved, and when" answerable later.
 ### 3. Authorization and capture (Phase 2)
 
 ```
-pre-auth at post  = (base_fee + estimated time cost) × 1.5 + budget + $5.00
-                    + $5.00 overage tolerance, when budget > 0
+pre-auth at post  = base_fee + estimated time cost + shopping budget
 capture at done   = time_cost + verified receipt amount
+                    …and the difference, if it exceeds the hold (§11.2)
 ```
 
-That last term is a **Phase 2b correction**. `PreAuthBufferCents` was standing in
-for both the $5 auto-approved overage tolerance *and* the auto-extend headroom —
-the same $5 counted twice — so a short shopping task held less than its ceiling
-settlement: a 15-minute delivery with a $15 budget held $38.00 against a
-settlement of $39.50. Undercapture of up to $1.50 per such task, silent except
-for one log line. `TestPhase2bPreAuthCoversCappedSettlement` sweeps every
-duration and both tiers against the ceiling settlement and is what found it; the
-no-budget hold is unchanged.
-
-The multiplier applies to the **whole** time-based estimate, base fee included.
-Applying it to the per-minute portion alone does not survive an example: a
-30-minute task estimates $12.00 + $7.50 = $19.50, and 1.5 × $7.50 + $5.00 =
-$16.25 would be a hold too small to cover a task that ran exactly to estimate.
-`TestBillingPreAuthCoversTheHappyPath` asserts hold ≥ on-estimate capture
-across the preset durations.
+**The hold is exactly what the requester was shown.** No multiplier, no buffer,
+no auto-extend headroom — see §11 for what that trades away and what pays for
+it. Auto-extend consent does **not** change the hold by a cent.
 
 `CaptureMethod` is **manual**. The uncaptured remainder of the hold
 auto-releases — **that is how "unused time is refunded" works, and it involves
@@ -870,10 +858,11 @@ An **absent** field means unchanged, not refused — web and every shipped mobil
 build send nothing, and reading their silence as a denial would mark them all
 as having declined something they were never asked.
 
-The pre-auth amount deliberately does **not** depend on it. With
-`held = 1.5(B+T) + $5` and `capture = B + T + 15 × $0.50`, the margin is
-`0.5(B+T) + $5 − $7.50 ≥ $3.50` at every duration and both base-fee tiers,
-since `B ≥ $12.00`. `TestPreAuthCoversAutoExtend` pins that floor.
+The pre-auth amount deliberately does **not** depend on it — and since the
+restructure (§11) that is structural rather than argued: `preAuthAmountCents`
+takes no consent argument at all. Two requesters who asked for the same task
+see the same hold. Minutes worked past the estimate under consent are collected
+at completion like any other overage.
 
 ---
 
@@ -1136,3 +1125,152 @@ about it. Display only — brand and last four, nothing replayable.
 The strings live in one module per client — `app/src/lib/paymentCopy.js` and
 `mobile/src/lib/payment-copy.ts`, word-for-word twins — because a requester who
 posts on web and cancels on their phone has to be told the same thing twice.
+
+---
+
+### 11. The billing restructure — reserve what you show, settle the rest
+
+Supersedes the hold shape in §3 and the approval-time authorization in §10.3.
+
+#### 11.1 The evening rate
+
+```
+rate = $1.00/min  when the task STARTS at or after 21:00 America/New_York
+       $0.50/min  otherwise
+```
+
+**Resolved once, at post**, from the scheduled start (posting time for ASAP),
+and stored on `tasks.rate_cents_per_min`. Estimate, ceilings, settlement and
+every line of copy read the stored value; nothing re-derives it.
+
+A task starting at **20:50 bills at $0.50 for its whole run**, even if it
+finishes at 22:30. Deriving the rate at read time would re-price a task in
+flight and make the same task cost different amounts depending on when somebody
+opened a screen. A price is a term of an agreement, fixed when the agreement is
+made.
+
+`resolveRateCentsPerMin(start time.Time) int` in `server/billing.go` is the
+**only** place this is decided, and the seam a weather or festival surge hangs
+off. Nothing else in the codebase may branch on time to decide money. A missing
+tzdata falls back to the standard rate — under-charging, never over-charging.
+
+`POST /tasks/estimate` takes `is_immediate` / `scheduled_at` and returns
+`per_minute_rate_cents` plus `surge_rate`, so a form quoting a 21:30 task at
+6pm quotes the evening rate and can say why.
+
+#### 11.2 The hold, and what pays for shrinking it
+
+```
+hold = base fee + estimated time cost + shopping budget
+```
+
+Exactly the quote, to the cent —
+`TestPreAuthHoldIsExactlyTheEstimatePlusBudget` asserts the two functions
+cannot disagree. **`PreAuthMultiplier` and `PreAuthBufferCents` are gone**, and
+so is the shopping-budget cap in Go and in the DB.
+
+What this gives up: a capture is no longer guaranteed to fit inside its hold. A
+task that runs to its ceiling, or returns a receipt at the top of the
+tolerance, settles above what was reserved. That difference is charged at
+completion as a **separate immediate-capture intent**, `payments.kind =
+'completion_balance'`.
+
+| Outcome | Result |
+|---|---|
+| total ≤ hold | capture the total; Stripe releases the remainder itself |
+| total > hold, balance charge succeeds | hold captured in full + a second charge |
+| total > hold, balance charge fails | `payments.status = 'balance_due'` |
+
+A failed balance charge **never** blocks the completion and **never** touches
+the supporter. Payouts are not gated on it — the platform carries the float.
+
+#### 11.3 Outstanding balance
+
+Derived from `balance_due` rows per requester; there is no table and no
+denormalized total, because the ledger already says it.
+
+| | |
+|---|---|
+| `GET /payments/outstanding-balance` | `{outstanding: null}` for everybody who owes nothing |
+| `POST /payments/settle-balance` | retries every owed row off-session |
+| `POST /tasks` while one exists | **403 `outstanding_balance`** |
+
+Both clients show a persistent red banner with a Settle button. Persistent
+because the block is persistent: a reason announced once, in a toast, days ago,
+is indistinguishable from a broken app.
+
+**`settle-balance` has three outcomes**, and the middle one is why it is a
+button rather than a background retry:
+
+| Outcome | Response |
+|---|---|
+| settled | `200`; the block lifts |
+| issuer wants the cardholder | **402 `payment_authentication_required`** + `client_secret`. The client runs the same 3DS flow posting uses and calls settle again. |
+| still declined | **402 `payment_required`** + a showable message. The block stays. |
+
+An off-session charge that failed for 3DS **cannot** be rescued by retrying it
+off-session — only by putting the cardholder in front of it.
+
+#### 11.4 Approvals authorize nothing
+
+Budget and time approvals keep the request / approve / 5-minute-timeout /
+fallback flow exactly as §10.3 describes it, but an approval now **only raises
+the ceiling**. No incremental authorization, no supplementary hold, nothing
+inside the requester's one tap. `STRIPE_INCREMENTAL_AUTH` is deleted. Every
+overage is collected at completion.
+
+#### 11.5 No cap on a shopping budget
+
+The $30 ceiling is gone from Go and from the DB CHECK. It was written when the
+hold was a multiple of the estimate and the budget was an abstract ceiling
+nobody had been charged against; now the whole budget is reserved at post and
+the requester authorizes the exact number. A cap only refused legitimate tasks.
+
+What replaces it **warns and does not block**: at or above
+`BillingConfig.HighBudgetWarningCents` ($500) the post form shows a red notice,
+*"High budget — this full amount will be reserved on your card."* The threshold
+ships on the estimate response so both clients warn at the same number.
+
+#### 11.6 The confirmation copy
+
+```
+$49.50 reserved — $19.50 time + $30.00 budget
+Charged only for what's used. Rest released automatically.
+```
+
+Two short lines. No shopping → the single number, no breakdown with a `$0.00`
+in it. **No card on the post-success screen** — it stays on the task-detail
+line, where somebody asking "what is held, and on what" is actually looking.
+
+The split comes from `TaskPayment.time_cost_cents` / `shopping_budget_cents`
+and is sent **only when it reconciles** with `authorized_cents`; a breakdown
+that fails to add up to the number beside it is worse than none. Same rules as
+before, pinned by `app/src/lib/paymentCopy.test.mjs`: a real number always,
+and never the word *refund*.
+
+#### 11.7 The complete constant list
+
+| Constant | Value |
+|---|---|
+| `BaseFeeDefaultCents` | 1200 |
+| `BaseFeeCompanionshipCents` | 2500 |
+| `PerMinuteRateCents` | 50 |
+| `IncludedMinutes` | 15 |
+| `SurgeRateCentsPerMin` | 100 |
+| `SurgeStartHour` | 21 |
+| `SurgeTimezone` | `America/New_York` |
+| `OverageToleranceCents` | 500 |
+| `HighBudgetWarningCents` | 50000 |
+| `AutoExtendMinutes` | 15 |
+| `GracePeriodMinutes` | 30 |
+| `ApprovalTimeoutMinutes` | 5 |
+| `CapWarningLeadMinutes` | 5 |
+| `ApplicationFeeBasisPoints` | 0 |
+| `Currency` | `usd` |
+
+**Removed:** `PreAuthMultiplier`, `PreAuthBufferCents`, `ShoppingBudgetCapCents`.
+`PreAuthBufferCents` and `OverageToleranceCents` were both $5 and, once the
+buffer stopped padding the hold, meant the same thing — the receipt tolerance.
+Keeping two identical constants for one concept is the drift `BillingConfig`
+exists to prevent, so the surviving name is the one that describes what it now
+does.

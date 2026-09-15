@@ -128,6 +128,7 @@ var removeMigrationPaths = []string{
 	"../supabase/migrations/20260818150000_notification_type_completed_supporter.sql",
 	"../supabase/migrations/20260909120000_notification_type_task_reassigned.sql",
 	"../supabase/migrations/20260914130000_notification_types_phase2b.sql",
+	"../supabase/migrations/20260915140000_notification_type_balance_due.sql",
 }
 
 const adminEmail = "taoaura.lavoro@gmail.com"
@@ -667,6 +668,9 @@ var notificationTypesEmitted = []string{
 	"EXTENSION_RESOLVED",
 	"TIME_CAP_WARNING",
 	"TIME_CAP_REACHED",
+	// The billing restructure: a completion that outgrew its hold and could
+	// not be charged (server/payments_settlement.go markBalanceDue).
+	"BALANCE_DUE",
 }
 
 func TestAdminRemoveNotificationEnumCoversEveryEmittedType(t *testing.T) {

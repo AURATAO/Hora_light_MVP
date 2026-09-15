@@ -158,6 +158,7 @@ var reassignMigrationPaths = []string{
 	// after the migration that ships diverged from it.
 	"../supabase/migrations/20260914130000_notification_types_phase2b.sql",
 	"../supabase/migrations/20260914140000_extension_requests.sql",
+	"../supabase/migrations/20260915140000_notification_type_balance_due.sql",
 }
 
 func setupReassignDB(t *testing.T) {
