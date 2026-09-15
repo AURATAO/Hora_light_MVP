@@ -10,6 +10,7 @@ import PlaceInput from '../components/PlaceInput'
 import { useToast } from '../providers/ToastProvider'
 import { isTractionWindowActive } from '../lib/traction'
 import { useTaskEstimate, formatCents } from '../hooks/useTaskEstimate'
+import { holdSummary } from '../lib/paymentCopy'
 
 
 /**
@@ -760,6 +761,11 @@ export default function TaskDetail() {
   // adjacent showing the same number — so that line defers to this.
   const showSettlementPanel =
     (isOwner || isAssignee) && task?.status !== 'open' && Boolean(work?.cost && settlement)
+
+  // The hold on the requester's card. Server-attached and requester-only — the
+  // key is absent from the supporter's copy of this task, so this is null for
+  // them by construction rather than by a check here.
+  const holdLine = holdSummary(task?.payment)
   const receiptCents = (() => {
     const n = Number(String(receiptAmount).replace(/[^0-9.]/g, ''))
     return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) : 0
@@ -1157,6 +1163,36 @@ export default function TaskDetail() {
                 isOwner={isOwner}
                 taskId={id}
               />
+            )}
+
+            {/* What is reserved, for the requester of a live task. The whole
+                failure this addresses is an off-session pre-auth being silent:
+                a requester who cannot see that money was held assumes the post
+                failed and cancels it. Gone once the task closes — the
+                settlement card then says what became of it. */}
+            {isOwner && holdLine && task?.status === 'open' && (
+              <div className="border border-white/20 rounded-md p-3 space-y-1 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-white/70">On hold</span>
+                  <span className="text-white font-medium">{holdLine}</span>
+                </div>
+                <p className="text-xs text-white/40">
+                  Not a charge. You&apos;re billed for actual time and purchases when the task
+                  completes, and anything unused is released automatically.
+                </p>
+                {/* Deliberately NOT repeating the CostLine here: the estimate
+                    card directly below already renders it from the same server
+                    quote, and two identical breakdowns stacked on one screen
+                    read as two different numbers being described. This card
+                    answers only what that one cannot — what is reserved, on
+                    which card, and that it is not a charge. */}
+                {task?.prepay_amount_cents > 0 && (
+                  <p className="text-xs text-white/40">
+                    The hold also covers up to {formatCents(task.prepay_amount_cents)} of shopping,
+                    reimbursed against the receipt.
+                  </p>
+                )}
+              </div>
             )}
 
             {/* Travel estimate card — shown to assignee only */}

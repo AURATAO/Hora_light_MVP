@@ -16,6 +16,7 @@ import {
 } from "../components/TaskForm";
 import { Button, Card, Input, Pill, PressableScale, Screen, Skeleton } from "../components/ui";
 import { ApiError, createTask, getMe, getTask, parseTask, updateProfile } from "../lib/api";
+import { holdPlacedMessage } from "../lib/payment-copy";
 import {
   completeCardAuthentication,
   getPaymentMethods,
@@ -26,7 +27,7 @@ import { CATEGORIES, getCategoryMeta } from "../lib/categories";
 import { POST_TASK_AI_HINT, POST_TASK_AI_HINT_COPY } from "../lib/home-content";
 import { useBetaNoticeGate } from "../lib/use-beta-notice-gate";
 import { useCompanionshipGate } from "../lib/use-companionship-gate";
-import type { TaskCategory, TaskCreatedVia } from "../lib/types";
+import type { TaskCategory, TaskCreatedVia, TaskPayment } from "../lib/types";
 import { color, size } from "../theme/tokens";
 import { useAuthState } from "./_layout";
 
@@ -69,6 +70,10 @@ export default function PostTask() {
   const [aiHintVisible, setAiHintVisible] = useState(hintParam === POST_TASK_AI_HINT);
 
   const [step, setStep] = useState<Step>("describe");
+  // The hold confirmation, or null when there is none to report. Holding the
+  // MESSAGE rather than the payment keeps the success screen from having to
+  // know anything about how a hold is worded.
+  const [postedHold, setPostedHold] = useState<string | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<TaskCategory | undefined>(initialCategory);
   const [describeText, setDescribeText] = useState("");
   const [parsing, setParsing] = useState(false);
@@ -245,8 +250,10 @@ export default function PostTask() {
     setPaymentError(null);
     setSubmitting(true);
     try {
-      await createTask(taskFormToPayload(form, origin));
-      finishPosted();
+      // The 201 carries the hold the server just placed, so the success screen
+      // can name it without a refetch.
+      const posted = await createTask(taskFormToPayload(form, origin));
+      finishPosted(posted?.payment ?? null);
     } catch (e) {
       if (handleAuthError(e)) return;
       const failure = readPostFailure(e);
@@ -259,7 +266,9 @@ export default function PostTask() {
         try {
           const outcome = await completeCardAuthentication(failure.payment);
           if (outcome.status === "done") {
-            finishPosted();
+            // A task posted through a bank challenge confirms its hold in
+            // exactly the same words as one that went straight through.
+            finishPosted(outcome.payment ?? null);
           } else if (outcome.status === "failed") {
             setPaymentError(outcome.message);
           } else {
@@ -288,18 +297,31 @@ export default function PostTask() {
     }
   }
 
-  function finishPosted() {
+  function finishPosted(payment: TaskPayment | null) {
+    setPostedHold(holdPlacedMessage(payment));
     setStep("success");
-    closeTimeout.current = setTimeout(() => router.back(), 900);
+    // A money confirmation must not vanish before it can be read. With no hold
+    // to report there is nothing to read and the original bounce-back stands;
+    // with one, the requester dismisses it themselves.
+    if (!holdPlacedMessage(payment)) {
+      closeTimeout.current = setTimeout(() => router.back(), 900);
+    }
   }
 
   if (step === "success") {
     return (
       <Screen scroll={false}>
-        <View className="flex-1 items-center justify-center gap-3">
+        <View className="flex-1 items-center justify-center gap-3 px-6">
           <Check color={color.brand} size={32} strokeWidth={size.iconStroke} />
           <Text className="text-title font-semibold text-ink">Task posted</Text>
-          <Text className="text-caption text-muted">Back to your tasks…</Text>
+          {postedHold ? (
+            <>
+              <Text className="text-center text-caption text-muted">{postedHold}</Text>
+              <Button label="Done" onPress={() => router.back()} className="mt-4 w-full" />
+            </>
+          ) : (
+            <Text className="text-caption text-muted">Back to your tasks…</Text>
+          )}
         </View>
       </Screen>
     );

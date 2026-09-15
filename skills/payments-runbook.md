@@ -126,6 +126,35 @@ all.
 
 ---
 
+## What the requester is told, and when
+
+Worth knowing before answering a support message, because the answer is usually
+"it already happened and their bank hasn't caught up".
+
+| Moment | What they see |
+|---|---|
+| post succeeds | the amount reserved and the card it is on |
+| task open | "On hold — $X reserved · Visa ••4242", and that it is not a charge |
+| cancelling | the amount that will be released, before they confirm |
+| cancelled | what was charged, what was released, and that a statement can lag **1–7 days** |
+| completed | the itemized settlement (§"What a settlement is made of") |
+
+**"The money is still showing on my statement."** Almost always this. Releasing
+an authorization is instant on Stripe's side and invisible on the cardholder's
+until their bank posts the reversal, which is on the bank's schedule. Check the
+payments row: `canceled` means it is done and there is nothing to chase. A
+capture that took *less* than the hold behaves the same way — the remainder is
+freed with no refund and no event.
+
+**A hold with no card named** ("reserved on your card", no brand) is a hold
+placed before `payments.card_brand` existed, or one where Stripe returned no
+charge detail. Harmless and display-only; the amount is still correct.
+
+**The supporter must never be shown any of this.** The hold, the amount and the
+card are attached to the task payload for the requester alone. If a supporter
+ever reports seeing a reserved amount, that is a security bug, not a copy bug —
+escalate it rather than editing the wording.
+
 ## What a settlement is made of
 
 Both parties see the same breakdown on the task screen, from

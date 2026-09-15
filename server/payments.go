@@ -124,6 +124,12 @@ type Payment struct {
 	CapturedCents         *int
 	TimeCostCents         *int
 	ShoppingReceiptCents  *int
+
+	// Display only, and requester-only on the wire. See the 20260915120000
+	// migration for why this is stored at authorization rather than read back
+	// from the customer's current default card.
+	CardBrand string
+	CardLast4 string
 }
 
 // Payment kinds and statuses. These strings are enforced by CHECK constraints
@@ -223,6 +229,11 @@ func CreatePreAuth(ctx context.Context, in PreAuthInput) (*Payment, error) {
 			},
 		}
 	}
+	// The charge, so the card that actually took the hold comes back with the
+	// intent rather than costing a second API call. Its brand and last four are
+	// what the requester is shown ("reserved on Visa ••4242") — see
+	// recordPaymentCard.
+	params.AddExpand("latest_charge")
 	params.SetIdempotencyKey("preauth_" + p.ID)
 	if in.StripeCustomerID != "" {
 		params.Customer = stripe.String(in.StripeCustomerID)
@@ -278,6 +289,9 @@ func CreatePreAuth(ctx context.Context, in PreAuthInput) (*Payment, error) {
 	if err := attachIntent(ctx, p.ID, pi.ID, status, authorized); err != nil {
 		return nil, fmt.Errorf("payments: attach intent %s: %w", pi.ID, err)
 	}
+	brand, last4 := cardFromIntent(pi)
+	recordPaymentCard(ctx, p.ID, brand, last4)
+	p.CardBrand, p.CardLast4 = brand, last4
 
 	log.Printf("[payments] pre-auth task=%s payment=%s intent=%s amount=%d status=%s",
 		in.TaskID, p.ID, pi.ID, amount, pi.Status)
@@ -454,6 +468,39 @@ func recordCapture(ctx context.Context, paymentID string, capturedCents, timeCos
 		 where id = $1::uuid
 	`, paymentID, paymentStatusCaptured, capturedCents, timeCostCents, shoppingReceiptCents)
 	return err
+}
+
+// cardFromIntent pulls the display card off an authorized intent.
+//
+// Returns empty strings whenever the shape is not there — an unexpanded
+// charge, a non-card payment method, an intent that never reached a charge.
+// Every caller treats that as "do not name a card", so a missing brand costs a
+// sentence of copy and nothing else.
+func cardFromIntent(pi *stripe.PaymentIntent) (brand, last4 string) {
+	if pi == nil || pi.LatestCharge == nil || pi.LatestCharge.PaymentMethodDetails == nil {
+		return "", ""
+	}
+	card := pi.LatestCharge.PaymentMethodDetails.Card
+	if card == nil {
+		return "", ""
+	}
+	return string(card.Brand), card.Last4
+}
+
+// recordPaymentCard stores the display card. Best-effort and deliberately not
+// fatal: the hold has landed by the time this runs, and failing a post because
+// we could not write "visa"/"4242" would trade real money for a label.
+func recordPaymentCard(ctx context.Context, paymentID, brand, last4 string) {
+	if brand == "" && last4 == "" {
+		return
+	}
+	if _, err := db.Exec(ctx, `
+		update public.payments
+		   set card_brand = nullif($2,''), card_last4 = nullif($3,''), updated_at = now()
+		 where id = $1::uuid
+	`, paymentID, brand, last4); err != nil {
+		log.Printf("[payments] could not record display card for payment=%s: %v", paymentID, err)
+	}
 }
 
 // livePaymentForTask returns the task's payment that is still in play — the

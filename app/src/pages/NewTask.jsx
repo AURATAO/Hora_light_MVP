@@ -8,6 +8,7 @@ import DurationPicker from '../components/DurationPicker'
 import AddressInput from '../components/AddressInput'
 import { useToast } from '../providers/ToastProvider'
 import { useTaskEstimate, formatCents } from '../hooks/useTaskEstimate'
+import { holdPlacedMessage } from '../lib/paymentCopy'
 import { completeCardAuthentication, readPaymentError, usePaymentGate } from '../hooks/usePaymentGate'
 
 
@@ -38,6 +39,14 @@ export default function NewTask() {
   const [date, setDate] = useState('')
   const [timeStr, setTimeStr] = useState('')
   const [successOpen, setSuccessOpen] = useState(false)
+  // What the server reserved, as returned by the post. Rendered on the success
+  // screen so a requester SEES the hold — an off-session pre-auth is otherwise
+  // completely silent, which is what led a live tester to assume their post
+  // had failed and cancel it.
+  const [postedPayment, setPostedPayment] = useState(null)
+  // Null whenever there is no hold to report, and the success screen then says
+  // nothing about money rather than "$0.00 reserved".
+  const holdMessage = holdPlacedMessage(postedPayment)
   const [prefillBannerDismissed, setPrefillBannerDismissed] = useState(false)
 
   const [transport, setTransport] = useState('none')
@@ -195,7 +204,10 @@ export default function NewTask() {
       auto_extend_consent: autoExtend,
     }
 
-    await api('/tasks', { method: 'POST', body: payload, noRedirect: true })
+    const posted = await api('/tasks', { method: 'POST', body: payload, noRedirect: true })
+    // The hold the server just placed, straight off the 201 — no refetch. Null
+    // with payments off, and the success screen then says nothing about money.
+    setPostedPayment(posted?.payment ?? null)
     setSuccessOpen(true)
     return
   } catch (err) {
@@ -207,7 +219,11 @@ export default function NewTask() {
     // the intent from Stripe before it believes any of this.
     if (failure.kind === 'authenticate') {
       try {
-        await completeCardAuthentication(failure.payment)
+        // A task posted through a bank challenge has to confirm its hold in
+        // exactly the same words as one that went straight through; the
+        // confirm endpoint echoes the payment back for that reason.
+        const confirmed = await completeCardAuthentication(failure.payment)
+        setPostedPayment(confirmed?.payment ?? null)
         setSuccessOpen(true)
         return
       } catch (authErr) {
@@ -623,8 +639,10 @@ function confirmCompanionPolicy() {
         open={successOpen}
         onClose={goToPosted}        // 點背景/ESC/右上角都導去 posted
         title="Task Posted !"
-        // 1.5 秒後跳轉
-        autoCloseMs={5000}
+        // A money confirmation must not vanish on a timer — the requester has
+        // to be able to read what was reserved and on which card. With no hold
+        // to report there is nothing to read and the old auto-close stands.
+        autoCloseMs={holdMessage ? undefined : 5000}
         actions={
           <>
             <button
@@ -635,7 +653,11 @@ function confirmCompanionPolicy() {
             </button>
           </>
         }
-      />
+      >
+        {holdMessage && (
+          <p className="text-sm text-white/80">{holdMessage}</p>
+        )}
+      </Modal>
       <Modal
         open={compPolicyOpen}
         onClose={() => {

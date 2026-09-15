@@ -58,7 +58,10 @@ export function usePaymentGate() {
  * The backend re-reads the intent from Stripe rather than believing this call,
  * so a failure to reach it leaves the task unposted rather than posted unpaid.
  *
- * Returns nothing on success and throws with a showable `.message` otherwise.
+ * Returns the confirm response on success — which carries the hold that was
+ * just placed, so a task posted through a bank challenge can confirm it in the
+ * same words as one that went straight through. Throws with a showable
+ * `.message` otherwise.
  */
 export async function completeCardAuthentication({ publishable_key, client_secret, task_id }) {
   const publishableKey = publishable_key || FALLBACK_PUBLISHABLE_KEY
@@ -78,7 +81,7 @@ export async function completeCardAuthentication({ publishable_key, client_secre
     throw new Error(error.message || 'That payment was not approved. Try another card.')
   }
 
-  await confirmTaskPayment(task_id)
+  return confirmTaskPayment(task_id)
 }
 
 /**

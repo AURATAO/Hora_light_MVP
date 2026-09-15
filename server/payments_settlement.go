@@ -622,3 +622,80 @@ func settleCompletedTask(ctx context.Context, taskID, actorUID string, timeCostC
 	}
 	return out
 }
+
+// ── What the requester is told about their hold ────────────────────────────
+
+// TaskPayment is the money side of a task, as the REQUESTER sees it.
+//
+// REQUESTER ONLY. It is attached by taskPaymentView's callers behind an
+// explicit ownership check and must never reach the supporter: what somebody
+// reserved and which card they reserved it on is theirs, and a supporter has
+// no use for either. `payments` is deny-all at the database for the same
+// reason (S-10) — this is the one narrow, deliberate window onto it.
+//
+// Everything here is a number the server already computed. Clients render it
+// verbatim and derive nothing (S-05): there is no client-side arithmetic that
+// can disagree with what Stripe was actually asked to hold.
+type TaskPayment struct {
+	// What is authorized on the card right now, or was before settlement.
+	AuthorizedCents int `json:"authorized_cents"`
+	// requires_auth / authorized / captured / canceled / failed / capture_failed.
+	Status string `json:"status"`
+
+	// Display card. Both empty on a hold placed before this was recorded, or
+	// where Stripe returned no charge detail — clients drop the card clause
+	// rather than inventing one.
+	CardBrand string `json:"card_brand,omitempty"`
+	CardLast4 string `json:"card_last4,omitempty"`
+
+	// Settlement, present once the money has moved. CapturedCents is what was
+	// actually taken; ReleasedCents is the rest of the hold, which Stripe frees
+	// on its own — it is NOT a refund and the copy must not call it one.
+	CapturedCents int `json:"captured_cents"`
+	ReleasedCents int `json:"released_cents"`
+}
+
+// taskPaymentView reads the task's payment row, or nil when there is none.
+//
+// Nil is the normal answer in the running beta: with PAYMENTS_ENFORCED off no
+// task has a hold, and every surface that renders this treats nil as "say
+// nothing about money" rather than as "$0.00 reserved", which would be a
+// confident lie.
+//
+// Deliberately NOT livePaymentForTask: this has to keep answering after the
+// hold is captured or released, because that is exactly when the requester
+// most wants to know what happened to it.
+func taskPaymentView(ctx context.Context, taskID string) *TaskPayment {
+	var p TaskPayment
+	var authorized, captured *int
+	var brand, last4 string
+	err := db.QueryRow(ctx, `
+		select coalesce(authorized_cents, 0), captured_cents, status,
+		       coalesce(card_brand,''), coalesce(card_last4,'')
+		  from public.payments
+		 where task_id = $1::uuid and kind = $2
+		 order by created_at desc
+		 limit 1
+	`, taskID, paymentKindTaskPayment).Scan(&authorized, &captured, &p.Status, &brand, &last4)
+	if err != nil {
+		return nil
+	}
+	p.AuthorizedCents = derefIntOr(authorized, 0)
+	p.CapturedCents = derefIntOr(captured, 0)
+	p.CardBrand, p.CardLast4 = brand, last4
+
+	// The released half is derived, not stored: Stripe frees the remainder of
+	// a partially-captured authorization itself, so there is no event and no
+	// column recording it — only the arithmetic. Floored at zero so a clamped
+	// capture can never report a negative release.
+	switch p.Status {
+	case paymentStatusCaptured:
+		if rest := p.AuthorizedCents - p.CapturedCents; rest > 0 {
+			p.ReleasedCents = rest
+		}
+	case paymentStatusCanceled:
+		// Nothing was taken, so the whole hold went back.
+		p.ReleasedCents = p.AuthorizedCents
+	}
+	return &p
+}

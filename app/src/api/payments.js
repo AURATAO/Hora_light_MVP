@@ -56,20 +56,9 @@ export function confirmTaskPayment(taskId) {
   return api(`/tasks/${encodeURIComponent(taskId)}/payment/confirm`, { method: 'POST' })
 }
 
-/** Brand slugs as Stripe spells them → what a person calls the card. */
-const BRAND_LABELS = {
-  visa: 'Visa',
-  mastercard: 'Mastercard',
-  amex: 'American Express',
-  discover: 'Discover',
-  diners: 'Diners Club',
-  jcb: 'JCB',
-  unionpay: 'UnionPay',
-}
-
-export function brandLabel(brand) {
-  return BRAND_LABELS[brand] || 'Card'
-}
+// Re-exported from its own leaf module so the hold confirmations can import it
+// without pulling the API client in. Same map, one definition.
+export { brandLabel } from '../lib/cardBrand.js'
 
 /** "04 / 2029" — zero-padded, because "4 / 2029" doesn't read as an expiry. */
 export function formatExpiry(month, year) {

@@ -62,6 +62,27 @@ func TestPhase2bSmokeCaptureLessThanTheHoldReleasesTheRest(t *testing.T) {
 	held := derefIntOr(p.AuthorizedCents, 0)
 	t.Logf("held %s", formatCentsUSD(held))
 
+	// The display card, which only a real authorization can produce: it comes
+	// off the expanded charge on the intent, and getting the expand wrong
+	// fails silently — the hold still lands, and the requester is simply told
+	// "reserved on your card" with no card named. pm_card_visa is 4242.
+	if p.CardBrand != "visa" || p.CardLast4 != "4242" {
+		t.Errorf("card not read off the authorization: brand=%q last4=%q", p.CardBrand, p.CardLast4)
+	}
+	var rowBrand, rowLast4 string
+	if err := db.QueryRow(context.Background(),
+		`select coalesce(card_brand,''), coalesce(card_last4,'') from public.payments where id=$1::uuid`,
+		p.ID).Scan(&rowBrand, &rowLast4); err != nil {
+		t.Fatalf("read display card: %v", err)
+	}
+	if rowBrand != "visa" || rowLast4 != "4242" {
+		t.Errorf("card not persisted: brand=%q last4=%q", rowBrand, rowLast4)
+	}
+	// And it is what the requester's task payload will carry.
+	if view := taskPaymentView(context.Background(), taskID); view == nil || view.CardLast4 != "4242" {
+		t.Errorf("taskPaymentView does not name the card: %+v", view)
+	}
+
 	// Settle at well under the hold: 30 minutes and a $17.40 receipt.
 	const timeCost, receipt = 1950, 1740
 	out := settleTaskPayment(context.Background(), taskID, timeCost, receipt)

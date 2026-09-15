@@ -144,6 +144,13 @@ type Task struct {
 	// BillingConfig.AutoExtendMinutes past the estimate. Selected only by
 	// getTask, so it is absent from list responses rather than false there.
 	AutoExtendConsent *bool `json:"auto_extend_consent,omitempty"`
+
+	// The hold on the requester's card: what is reserved, on which card, and
+	// what became of it. REQUESTER ONLY — set by getTask and createTask behind
+	// an explicit ownership check, and by nothing else. omitempty, so it is
+	// absent (not null) for the supporter, for a browsing stranger, and for
+	// every task posted with PAYMENTS_ENFORCED off.
+	Payment *TaskPayment `json:"payment,omitempty"`
 }
 
 type createTaskInput struct {
@@ -1749,6 +1756,16 @@ func createTask(c *gin.Context) {
 
 	announceNewTaskInput(taskID, in, email, when)
 
+	// The hold, on the 201 itself. The post-success screen has to be able to
+	// say what was reserved without a second round trip — the whole failure
+	// this addresses is a requester seeing nothing happen and concluding the
+	// post did not work. Nil with payments off, and the screen then says
+	// nothing about money rather than "$0.00 reserved".
+	var placed *TaskPayment
+	if enforcePayment {
+		placed = taskPaymentView(ctx, taskID)
+	}
+
 	c.JSON(201, Task{
 		ID: taskID, Title: in.Title, Description: in.Description, Category: in.Category,
 		LocationText: in.LocationText, EstimatedMinutes: in.EstimatedMinutes,
@@ -1756,6 +1773,7 @@ func createTask(c *gin.Context) {
 		ScheduledAt: when, Requester: email, RequesterID: uid,
 		Status: "open", CreatedAt: createdAt, AssignedTo: "", AssignedToID: nil,
 		AutoExtendConsent: &autoExtend,
+		Payment:           placed,
 	})
 }
 
@@ -2037,6 +2055,12 @@ func getTask(c *gin.Context) {
 		).Scan(&consent); err == nil {
 			t.AutoExtendConsent = &consent
 		}
+		// The hold, so an open task can say "$76.75 reserved on Visa ••4242"
+		// instead of leaving the requester to guess whether the post took the
+		// money. Inside this branch and nowhere else: an admin reading someone
+		// else's task through the ops panel does not get it either, because
+		// the ops panel has the ledger and does not need it here.
+		t.Payment = taskPaymentView(ctx, id)
 	}
 
 	if t.Status == "removed" {
@@ -3598,6 +3622,12 @@ func cancelTask(c *gin.Context) {
 	// Both run after the status write and neither can undo it — see
 	// releaseTaskHold for why a Stripe outage must never be able to stop
 	// somebody cancelling their own task.
+	// Read the hold BEFORE touching it. Once released the row is 'canceled'
+	// and once captured it is 'captured'; either way the authorized amount is
+	// still on the row, but the card brand and the pre-settlement picture are
+	// easiest to take here, in one read, while nothing has moved.
+	heldBefore := taskPaymentView(ctx, taskID)
+
 	released := false
 	settled := settlementOutcome{}
 	if billCents > 0 {
@@ -3663,13 +3693,33 @@ func cancelTask(c *gin.Context) {
 	}
 	// TODO: WhatsApp notification here
 
-	c.JSON(http.StatusOK, gin.H{
+	// What the requester is owed an answer about: how much was held, how much
+	// of it was taken, and how much went back. The client renders these three
+	// numbers verbatim — "Charged $X for completed time; the remaining $Y hold
+	// has been released" — rather than subtracting anything itself.
+	//
+	// authorized_cents is 0 and released_cents is 0 on every task posted with
+	// PAYMENTS_ENFORCED off, which is all of them in the running beta; the
+	// clients say nothing about money in that case rather than "$0.00
+	// released".
+	authorizedCents := 0
+	if heldBefore != nil {
+		authorizedCents = heldBefore.AuthorizedCents
+	}
+	releasedCents := authorizedCents - settled.CapturedCents
+	if releasedCents < 0 {
+		releasedCents = 0
+	}
+
+	body := gin.H{
 		"total_minutes": totalMin,
 		"bill_cents":    billCents,
 		// What actually moved, when a hold was there to move it from. Zero on
 		// every task posted with PAYMENTS_ENFORCED off, which is all of them
 		// in the running beta.
-		"captured_cents": settled.CapturedCents,
+		"captured_cents":   settled.CapturedCents,
+		"authorized_cents": authorizedCents,
+		"released_cents":   releasedCents,
 		// Deprecated, always 0. A cancel has nothing to refund: no money has
 		// been captured at any point in the Phase 1 flow, and the shopping
 		// budget it used to be computed against was never a charge. Kept on
@@ -3677,7 +3727,15 @@ func cancelTask(c *gin.Context) {
 		// drop it with those builds. Phase 2 replaces the idea entirely — the
 		// unused part of a pre-auth is *released*, not refunded.
 		"refund_cents": 0,
-	})
+	}
+	// Named so the confirmation can say which card the money is going back to,
+	// the same way the post said which card it came from. Omitted entirely
+	// when unknown — see TaskPayment.
+	if heldBefore != nil && heldBefore.CardLast4 != "" {
+		body["card_brand"] = heldBefore.CardBrand
+		body["card_last4"] = heldBefore.CardLast4
+	}
+	c.JSON(http.StatusOK, body)
 }
 
 // -------- Travel Estimate --------
