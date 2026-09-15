@@ -147,6 +147,18 @@ export default function NewTask() {
   // task that will actually be posted rather than a near-miss of it.
   const effectiveCategory = taskType === 'companion' ? 'companion' : (urlCategory || category)
 
+  // Declared ABOVE the estimate call that reads it. It used to sit below, and
+  // because a hook's ARGUMENTS are evaluated during render — exactly like a
+  // dependency array — the whole Post Task page threw
+  // "Cannot access 'scheduledAtISO' before initialization" the moment the
+  // evening rate needed a start time. Depends only on state declared at the
+  // top of the component, so there is nothing keeping it down there.
+  const scheduledAtISO = useMemo(() => {
+    if (mode !== 'schedule' || !date || !timeStr) return ''
+    const dt = new Date(`${date}T${timeStr}`)
+    return Number.isNaN(dt.getTime()) ? '' : dt.toISOString()
+  }, [mode, date, timeStr])
+
   // Server-computed (S-05). This used to be three useMemos reimplementing the
   // fee schedule here; the backend is the only thing that knows it now.
   const estimate = useTaskEstimate({
@@ -164,12 +176,6 @@ export default function NewTask() {
   // and so nothing about payments is shown at all while the flag is off.
   const payments = usePaymentGate()
   const needsCard = payments.enforced && !payments.hasCard
-
-  const scheduledAtISO = useMemo(() => {
-    if (mode !== 'schedule' || !date || !timeStr) return ''
-    const dt = new Date(`${date}T${timeStr}`)
-    return Number.isNaN(dt.getTime()) ? '' : dt.toISOString()
-  }, [mode, date, timeStr])
 
   async function onSubmit(e) {
   e.preventDefault()
