@@ -15,6 +15,13 @@ step "go build / vet / test (I-03)"
 step "web build check (I-04)"
 ( cd app && npm run build ) || red "app build"
 
+# The web app's static guards (S-05 price math, hook-dependency TDZ). These
+# existed and were never run by anything — which is how a dependency array
+# naming a const declared 440 lines below it reached production and took
+# TaskDetail down for every viewer. A guard nothing executes is a comment.
+step "web static guards (S-05 + hook deps)"
+( cd app && npm test ) || red "app static guards"
+
 if [ -d mobile ]; then
   step "mobile typecheck (I-04)"
   ( cd mobile && npx tsc --noEmit ) || red "mobile typecheck"
