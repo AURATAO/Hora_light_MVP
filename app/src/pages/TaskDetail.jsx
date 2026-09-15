@@ -320,19 +320,6 @@ export default function TaskDetail() {
     return () => { alive = false }
   }, [user, id])
 
-  // Poll the mid-task asks while the task is live. Five seconds, because this
-  // is the only clock either party has on a five-minute approval window — and
-  // because the server expires a stale request on each read, so the poll is
-  // what makes "no answer" resolve at all.
-  useEffect(() => {
-    if (!isTaskActive || !user?.id) return
-    const isParty = task?.requester_id === user.id || task?.assigned_to_id === user.id
-    if (!isParty) return
-    const timer = setInterval(loadExtensions, 5000)
-    return () => clearInterval(timer)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isTaskActive, user?.id, task?.requester_id, task?.assigned_to_id, id])
-
   function normalizeLocationItem(x) {
     if (!x) return { label: '' }
     if (typeof x === 'string') return { label: x }
@@ -768,10 +755,41 @@ export default function TaskDetail() {
   const pendingAsk = (extensions?.items || []).find(e => e.status === 'pending') || null
   const latestAsk = (extensions?.items || []).slice(-1)[0] || null
   const isTaskActive = task?.status === 'open' && Boolean(task?.assigned_to_id)
+  // Whether the itemized settlement card below is going to render. The cost
+  // card's one-line "Final cost" is redundant next to it — the two sat
+  // adjacent showing the same number — so that line defers to this.
+  const showSettlementPanel =
+    (isOwner || isAssignee) && task?.status !== 'open' && Boolean(work?.cost && settlement)
   const receiptCents = (() => {
     const n = Number(String(receiptAmount).replace(/[^0-9.]/g, ''))
     return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) : 0
   })()
+
+  // Poll the mid-task asks while the task is live. Five seconds, because this
+  // is the only clock either party has on a five-minute approval window — and
+  // because the server expires a stale request on each read, so the poll is
+  // what makes "no answer" resolve at all.
+  //
+  // THIS HOOK MUST STAY BELOW THE DERIVED CONSTS ABOVE. A dependency array is
+  // evaluated during render, at the point the useEffect CALL appears — not
+  // when the effect body runs — so a `const` declared further down the
+  // component is in its temporal dead zone at that moment. This effect was
+  // originally written up beside the other useEffects, ~440 lines above
+  // `isTaskActive`, and every render of this page threw
+  // "Cannot access 'isTaskActive' before initialization" before any of it
+  // reached the screen. Nothing about the effect's body was wrong; the
+  // position of the call was.
+  //
+  // Hook order is unaffected: there is no early return anywhere above this
+  // point, so it still runs unconditionally on every render.
+  useEffect(() => {
+    if (!isTaskActive || !user?.id) return
+    const isParty = task?.requester_id === user.id || task?.assigned_to_id === user.id
+    if (!isParty) return
+    const timer = setInterval(loadExtensions, 5000)
+    return () => clearInterval(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTaskActive, user?.id, task?.requester_id, task?.assigned_to_id, id])
 
   async function saveEdit() {
     await wrap(async () => {
@@ -1132,7 +1150,7 @@ export default function TaskDetail() {
             )}
 
             {/* What was charged, for both roles, once the task is over. */}
-            {(isOwner || isAssignee) && task?.status !== 'open' && (
+            {showSettlementPanel && (
               <SettlementPanel
                 cost={work?.cost}
                 settlement={settlement}
@@ -1172,7 +1190,11 @@ export default function TaskDetail() {
               </div>
             )}
 
-            {(isOwner || isAssignee) && (
+            {/* The running-cost card. Hidden once the itemized settlement card
+                is showing: every other child of this container is gated on
+                `status === 'open'`, so on a settled task it would render as an
+                empty bordered box under the settlement. */}
+            {(isOwner || isAssignee) && !showSettlementPanel && (
               <div className="border border-white/20 rounded-md p-3 space-y-2">
                 <div className="flex items-center justify-between">
                   <div>
@@ -1186,9 +1208,10 @@ export default function TaskDetail() {
                         </div>
                       )
                     ) : task?.status === 'completed' ? (
-                      // The full breakdown lives in SettlementPanel below;
-                      // this stays as the one-line answer to "what did it
-                      // come to", so the card is not two totals deep.
+                      // Reached only when the settlement card could not render
+                      // (no `cost` in the payload — an older backend, or a
+                      // worklogs read that 403'd). The one-line total is the
+                      // honest fallback there.
                       <div className="text-sm">
                         Final cost: <b>{formatCents(work.cost?.total_cents ?? work.total_cost_cents)}</b>
                       </div>
