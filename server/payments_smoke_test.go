@@ -59,13 +59,12 @@ func TestPaymentsSmokeCreateAndRelease(t *testing.T) {
 	ctx := context.Background()
 
 	// A 60-minute standard task with a $20.00 shopping budget:
-	//   ($12.00 base + $22.50 time) x 1.5 + $20.00 budget + $5.00 buffer
-	//   + $5.00 overage tolerance = $81.75
+	//   $12.00 base + 45 billable min x $0.50 = $34.50, + $20.00 budget = $54.50.
 	//
-	// The tolerance term is a Phase 2b correction: the buffer alone used to
-	// stand in for both it and the auto-extend headroom, which undercaptured a
-	// short shopping task by up to $1.50. See preAuthAmountCents.
-	const wantAmount = 8175
+	// EXACTLY the quote. No multiplier, no buffer — the billing restructure
+	// made the hold equal to what the requester is shown, which is why this
+	// number dropped from $81.75.
+	const wantAmount = 5450
 	in := PreAuthInput{
 		TaskID:              w.taskID,
 		RequesterID:         w.requesterID,
@@ -73,7 +72,7 @@ func TestPaymentsSmokeCreateAndRelease(t *testing.T) {
 		EstimatedMinutes:    60,
 		ShoppingBudgetCents: 2000,
 	}
-	if got := preAuthAmountCents(in.Category, in.EstimatedMinutes, in.ShoppingBudgetCents); got != wantAmount {
+	if got := preAuthAmountCents(in.Category, in.EstimatedMinutes, in.ShoppingBudgetCents, Billing.PerMinuteRateCents); got != wantAmount {
 		t.Fatalf("pre-auth amount = %d, want %d", got, wantAmount)
 	}
 

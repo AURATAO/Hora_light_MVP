@@ -90,7 +90,7 @@ func TestBillingQuoteTable(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := quoteTask(tc.category, tc.minutes, tc.budget)
+			got := quoteTask(tc.category, tc.minutes, tc.budget, Billing.PerMinuteRateCents)
 			if got.BaseFeeCents != tc.wantBase {
 				t.Errorf("base fee = %d, want %d", got.BaseFeeCents, tc.wantBase)
 			}
@@ -117,7 +117,7 @@ func TestBillingQuoteTable(t *testing.T) {
 func TestBillingMultiSessionConsumesInclusionOnce(t *testing.T) {
 	const summed = 10 + 20
 
-	got := quoteTask("standard", summed, 0)
+	got := quoteTask("standard", summed, 0, Billing.PerMinuteRateCents)
 	if got.BillableMinutes != 15 {
 		t.Fatalf("billable minutes = %d, want 15", got.BillableMinutes)
 	}
@@ -125,7 +125,7 @@ func TestBillingMultiSessionConsumesInclusionOnce(t *testing.T) {
 		t.Fatalf("total = %d, want %d (base $12.00 + $7.50)", got.TotalCents, 1200+750)
 	}
 
-	perSession := timeCostCents(10) + timeCostCents(20)
+	perSession := timeCostCents(10, Billing.PerMinuteRateCents) + timeCostCents(20, Billing.PerMinuteRateCents)
 	if perSession == got.TimeCostCents {
 		t.Fatal("per-session and summed inclusion agree — the test cannot detect the bug it exists for")
 	}
@@ -172,7 +172,7 @@ func TestBillingCancelSettlement(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := cancelSettlementCents(tc.category, tc.minutes, tc.hadSession); got != tc.want {
+			if got := cancelSettlementCents(tc.category, tc.minutes, tc.hadSession, Billing.PerMinuteRateCents); got != tc.want {
 				t.Errorf("cancelSettlementCents = %d, want %d", got, tc.want)
 			}
 		})
@@ -183,7 +183,7 @@ func TestBillingCancelSettlement(t *testing.T) {
 // authorization ceiling; nothing has been charged against it.
 func TestBillingSettlementIgnoresShoppingBudget(t *testing.T) {
 	for _, budget := range []int{0, 500, 3000} {
-		if got := cancelSettlementCents("standard", 45, true); got != 2700 {
+		if got := cancelSettlementCents("standard", 45, true, Billing.PerMinuteRateCents); got != 2700 {
 			t.Errorf("cancel settlement moved with a %d budget in scope: got %d, want 2700", budget, got)
 		}
 	}
@@ -195,29 +195,27 @@ func TestBillingPreAuthCoversTheHappyPath(t *testing.T) {
 	// as the per-minute portion alone.
 	for _, minutes := range []int{15, 30, 60, 90, 120, 240} {
 		for _, category := range []string{"standard", "companionship"} {
-			hold := preAuthAmountCents(category, minutes, 0)
-			capture := quoteTask(category, minutes, 0).TotalCents
+			hold := preAuthAmountCents(category, minutes, 0, Billing.PerMinuteRateCents)
+			capture := quoteTask(category, minutes, 0, Billing.PerMinuteRateCents).TotalCents
 			if hold < capture {
 				t.Errorf("%s %dmin: hold %d < on-estimate capture %d", category, minutes, hold, capture)
 			}
 		}
 	}
 
-	// The documented shape, spelled out once: 30 min standard is
-	// ($12.00 + $7.50) x 1.5 = $29.25, + $20.00 budget + $5.00 buffer, plus the
-	// $5.00 overage tolerance because this task has a budget = $59.25.
-	//
-	// That last term is a Phase 2b correction. The buffer alone used to stand
-	// in for both the tolerance and the auto-extend headroom, which is the same
-	// $5 counted twice — see preAuthAmountCents and
-	// TestPhase2bPreAuthCoversCappedSettlement, which found the $1.50
-	// undercapture it produced on short shopping tasks.
-	if got := preAuthAmountCents("standard", 30, 2000); got != 5925 {
-		t.Errorf("preAuthAmountCents(standard, 30, 2000) = %d, want 5925", got)
+	// The documented shape, spelled out once: 30 min standard is $12.00 base +
+	// 15 billable min x $0.50 = $19.50, plus the $20.00 budget = $39.50. No
+	// multiplier, no buffer — exactly what the requester is quoted.
+	if got := preAuthAmountCents("standard", 30, 2000, Billing.PerMinuteRateCents); got != 3950 {
+		t.Errorf("preAuthAmountCents(standard, 30, 2000) = %d, want 3950", got)
 	}
-	// A task with no budget is unchanged: no budget, no tolerance, no extra.
-	if got := preAuthAmountCents("standard", 30, 0); got != 3425 {
-		t.Errorf("preAuthAmountCents(standard, 30, 0) = %d, want 3425 — the no-budget hold moved", got)
+	if got := preAuthAmountCents("standard", 30, 0, Billing.PerMinuteRateCents); got != 1950 {
+		t.Errorf("preAuthAmountCents(standard, 30, 0) = %d, want 1950", got)
+	}
+	// The evening rate doubles the per-minute half and nothing else: the base
+	// fee and the budget are not surge-priced.
+	if got := preAuthAmountCents("standard", 30, 2000, Billing.SurgeRateCentsPerMin); got != 4700 {
+		t.Errorf("evening preAuthAmountCents(standard, 30, 2000) = %d, want 4700", got)
 	}
 }
 
@@ -283,21 +281,39 @@ func TestBillingEstimateKeepsLegacyShoppingKeyForShippedMobile(t *testing.T) {
 	}
 }
 
-func TestBillingEstimateRejectsOverCapBudget(t *testing.T) {
-	code, out := callEstimate(t, `{"category":"standard","estimated_minutes":30,"prepay_amount_cents":3001}`)
-	if code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 for a $30.01 budget", code)
+// There is no cap on a shopping budget any more, and a big one is quoted
+// rather than refused.
+//
+// The $30 cap was written when the hold was a multiple of the estimate and the
+// budget was an abstract ceiling nobody had been charged against. Now the whole
+// budget is reserved on the card at post — the requester sees and authorizes
+// the exact number — so refusing it protected nobody and blocked real tasks.
+// What replaces it is a warning the form renders; the server just quotes.
+func TestBillingEstimateQuotesAnyBudget(t *testing.T) {
+	for _, budget := range []int{3000, 3001, 50000, 250000} {
+		code, out := callEstimate(t, `{"category":"delivery","estimated_minutes":30,"prepay_amount_cents":`+
+			itoa(budget)+`}`)
+		if code != http.StatusOK {
+			t.Fatalf("budget %s refused with %d (%v)", formatCentsUSD(budget), code, out)
+		}
+		// base $12.00 + 15 billable x $0.50 + the budget, held in full.
+		want := float64(1950 + budget)
+		if out["total_cents"] != want {
+			t.Errorf("budget %s: total %v, want %v", formatCentsUSD(budget), out["total_cents"], want)
+		}
+		if out["hold_cents"] != want {
+			t.Errorf("budget %s: hold %v, want %v — the hold IS the quote",
+				formatCentsUSD(budget), out["hold_cents"], want)
+		}
 	}
-	if out["error"] != "shopping_budget_over_cap" {
-		t.Errorf("error = %v, want shopping_budget_over_cap", out["error"])
-	}
-	if out["cap_cents"].(float64) != 3000 {
-		t.Errorf("cap_cents = %v, want 3000", out["cap_cents"])
-	}
+}
 
-	// Exactly at the cap is fine — the rejection is strictly above it.
-	if code, _ := callEstimate(t, `{"category":"standard","estimated_minutes":30,"prepay_amount_cents":3000}`); code != http.StatusOK {
-		t.Errorf("status = %d at exactly the cap, want 200", code)
+// The form needs the threshold from the server, not from a constant of its
+// own, or the two clients drift apart on when to warn (S-05).
+func TestBillingEstimateCarriesTheHighBudgetWarningThreshold(t *testing.T) {
+	_, out := callEstimate(t, `{"category":"delivery","estimated_minutes":30,"prepay_amount_cents":0}`)
+	if out["high_budget_warning_cents"] != float64(Billing.HighBudgetWarningCents) {
+		t.Errorf("threshold = %v, want %d", out["high_budget_warning_cents"], Billing.HighBudgetWarningCents)
 	}
 }
 
@@ -347,7 +363,7 @@ func TestBillingMultiSessionSettlementAgainstDB(t *testing.T) {
 
 	// The bug this guards: applying the inclusion per session would price the
 	// same work at $12.00 + $2.50.
-	if got == 1200+timeCostCents(10)+timeCostCents(20) {
+	if got == 1200+timeCostCents(10, Billing.PerMinuteRateCents)+timeCostCents(20, Billing.PerMinuteRateCents) {
 		t.Error("inclusion is being applied per session, not once per task")
 	}
 }

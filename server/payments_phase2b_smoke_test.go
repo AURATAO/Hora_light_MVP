@@ -13,12 +13,11 @@ package main
 //     and the remainder releases itself — the entire "you only pay for the
 //     time worked" promise, which involves no refund
 //   - a capture cannot exceed its hold, which is why Capture clamps
-//   - whether an online card PaymentIntent supports INCREMENTAL AUTHORIZATION.
-//     This is the open question the phase was asked to answer, and the answer
-//     decides whether an approved budget increase grows the existing hold or
-//     opens a second one. The test asserts neither outcome — it asserts that
-//     ensureHoldCoversTask ends up covered either way, and LOGS which path ran
-//     so the answer is recorded rather than assumed.
+//   - that a settlement which OUTGROWS its hold can be collected as a second
+//     immediate charge on the same saved card, right after the first intent
+//     was captured. The hold is now exactly the estimate, so this is the path
+//     every overrun takes — and whether Stripe permits it is a fact about
+//     Stripe, not about this code.
 //
 //	docker run -d --rm --name hora-p2b-test -e POSTGRES_PASSWORD=test \
 //	  -e POSTGRES_DB=horatest -p 55434:5432 postgres:16
@@ -28,6 +27,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stripe/stripe-go/v86"
@@ -119,9 +119,14 @@ func TestPhase2bSmokeCaptureLessThanTheHoldReleasesTheRest(t *testing.T) {
 	}
 }
 
-// A capture cannot exceed its hold — which is why Capture clamps rather than
-// letting Stripe refuse, and why the clamp logs UNDERCAPTURE when it bites.
-func TestPhase2bSmokeCaptureIsClampedToTheHold(t *testing.T) {
+// A single capture cannot exceed its hold — so settlement takes the hold in
+// full and collects the rest separately.
+//
+// The clamp inside Capture is still real and still logs UNDERCAPTURE; what
+// changed is that the shortfall is no longer written off. This asserts both
+// halves: the capture stops at the hold, and the requester is nonetheless
+// charged everything they owe.
+func TestPhase2bSmokeCaptureIsClampedAndTheRestCollected(t *testing.T) {
 	requireStripeSmoke(t)
 	setupStripeWebhookDB(t)
 
@@ -134,6 +139,7 @@ func TestPhase2bSmokeCaptureIsClampedToTheHold(t *testing.T) {
 		RequesterID:           uid,
 		Category:              "delivery",
 		EstimatedMinutes:      30,
+		RateCents:             Billing.PerMinuteRateCents,
 		StripeCustomerID:      stripeCustomerIDFor(t, uid),
 		StripePaymentMethodID: defaultPMFor(t, uid),
 	})
@@ -142,41 +148,49 @@ func TestPhase2bSmokeCaptureIsClampedToTheHold(t *testing.T) {
 	}
 	held := derefIntOr(p.AuthorizedCents, 0)
 
-	// Ask for twice the hold. The clamp is what keeps this a capture rather
-	// than a Stripe error surfaced to a supporter finishing a task.
-	out := settleTaskPayment(context.Background(), taskID, held*2, 0)
+	// Owe twice the hold.
+	owed := held * 2
+	out := settleTaskPayment(context.Background(), taskID, owed, 0)
 	if out.Err != nil {
 		t.Fatalf("settle: %v", out.Err)
 	}
-	if out.CapturedCents != held {
-		t.Errorf("captured %s against a %s hold", formatCentsUSD(out.CapturedCents), formatCentsUSD(held))
+	if out.CapturedCents != owed {
+		t.Errorf("collected %s of %s owed", formatCentsUSD(out.CapturedCents), formatCentsUSD(owed))
+	}
+
+	// The hold itself was taken for exactly its own amount — not more.
+	pi, err := paymentintent.Get(p.StripePaymentIntentID, nil)
+	if err != nil {
+		t.Fatalf("fetch intent: %v", err)
+	}
+	if int(pi.AmountReceived) != held {
+		t.Errorf("the hold was captured for %s, not its %s",
+			formatCentsUSD(int(pi.AmountReceived)), formatCentsUSD(held))
 	}
 }
 
-// THE OPEN QUESTION. Does a saved online card support incremental
-// authorization, or does an approved budget increase need a second hold?
+// A settlement that outgrows its hold, against the real API.
 //
-// Deliberately asserts the OUTCOME (the task ends up covered for what it can
-// now settle at) rather than the METHOD, and logs the method. Stripe's support
-// for incremental authorization on online payments is narrow and can change;
-// a test that demanded one path would start failing for a reason that is not a
-// bug in this codebase, and a test that demanded the other would stop noticing
-// the day the good path became available.
-func TestPhase2bSmokeBudgetIncreaseGrowsTheHoldSomehow(t *testing.T) {
+// This is the branch the restructure creates and the one no offline test can
+// prove: the hold is now exactly the estimate, so a task that runs over has to
+// be collected with a SECOND charge on the saved card — a different intent, an
+// immediate capture, off-session, after the first one is already captured.
+// Whether Stripe lets you do that to a customer you have just captured from is
+// a fact about Stripe.
+func TestPhase2bSmokeOverageIsChargedAsASecondPayment(t *testing.T) {
 	requireStripeSmoke(t)
 	setupStripeWebhookDB(t)
 
-	const email = "increase.smoke@example.test"
+	const email = "overage.smoke@example.test"
 	uid, _ := seedRequesterWithCard(t, email, testPMVisa)
 	taskID := seedSmokeTask(t, uid, email)
-	setTaskBudget(t, taskID, 2000)
 
 	p, err := CreatePreAuth(context.Background(), PreAuthInput{
 		TaskID:                taskID,
 		RequesterID:           uid,
 		Category:              "delivery",
 		EstimatedMinutes:      30,
-		ShoppingBudgetCents:   2000,
+		RateCents:             Billing.PerMinuteRateCents,
 		StripeCustomerID:      stripeCustomerIDFor(t, uid),
 		StripePaymentMethodID: defaultPMFor(t, uid),
 	})
@@ -184,60 +198,39 @@ func TestPhase2bSmokeBudgetIncreaseGrowsTheHoldSomehow(t *testing.T) {
 		t.Fatalf("pre-auth: %v", err)
 	}
 	held := derefIntOr(p.AuthorizedCents, 0)
-
-	// A budget increase large enough that the existing hold cannot cover the
-	// new ceiling: +$30 on a $20 budget.
-	if _, err := db.Exec(context.Background(), `
-		update public.tasks
-		   set shopping_budget_approved_cents = shopping_budget_approved_cents + 3000
-		 where id = $1::uuid
-	`, taskID); err != nil {
-		t.Fatalf("raise budget: %v", err)
+	// The hold is the bare estimate now: $12.00 + 15 billable x $0.50.
+	if held != 1950 {
+		t.Fatalf("hold %s, want $19.50 — the hold is no longer the bare estimate", formatCentsUSD(held))
 	}
 
-	needed := projectedSettlementCents(context.Background(), taskID)
-	if needed <= held {
-		t.Fatalf("the raised budget does not outgrow the hold (%s vs %s) — this test proves nothing",
-			formatCentsUSD(needed), formatCentsUSD(held))
-	}
-
-	adj := ensureHoldCoversTask(context.Background(), taskID)
-	if adj == nil {
-		t.Fatal("no hold adjustment attempted on a task whose settlement outgrew its hold")
-	}
-	t.Logf("INCREMENTAL AUTHORIZATION RESULT: method=%q shortfall=%s authorized_now=%s err=%q",
-		adj.Method, formatCentsUSD(adj.ShortfallCents), formatCentsUSD(adj.AuthorizedNow), adj.Err)
-
-	if adj.Method == "failed" {
-		t.Fatalf("neither an increment nor a supplementary hold worked: %s", adj.Err)
-	}
-	if adj.AuthorizedNow < needed {
-		t.Errorf("authorized %s against a projected settlement of %s",
-			formatCentsUSD(adj.AuthorizedNow), formatCentsUSD(needed))
-	}
-
-	// Whichever path ran, a settlement above the original hold must now be
-	// collectable in full.
-	settleAt := held + 1000
-	out := settleTaskPayment(context.Background(), taskID, 1950, settleAt-1950)
+	// Settle for $10 more than was ever reserved.
+	const overBy = 1000
+	out := settleTaskPayment(context.Background(), taskID, held+overBy, 0)
 	if out.Err != nil {
 		t.Fatalf("settle: %v", out.Err)
 	}
-	if out.CapturedCents != settleAt {
-		t.Errorf("captured %s of %s owed — the grown hold did not cover the settlement",
-			formatCentsUSD(out.CapturedCents), formatCentsUSD(settleAt))
+	if out.BalanceDueCents != 0 {
+		t.Fatalf("a good card left %s outstanding", formatCentsUSD(out.BalanceDueCents))
+	}
+	if out.CapturedCents != held+overBy {
+		t.Errorf("collected %s of %s owed", formatCentsUSD(out.CapturedCents), formatCentsUSD(held+overBy))
 	}
 
-	// And nothing is left holding the requester's money.
-	var live int
+	// Two rows: the hold, captured in full, and the balance charge.
+	var kinds string
 	if err := db.QueryRow(context.Background(), `
-		select count(*) from public.payments
-		 where task_id = $1::uuid and status in ('requires_auth','authorized')
-	`, taskID).Scan(&live); err != nil {
-		t.Fatalf("count live holds: %v", err)
+		select string_agg(kind || ':' || status, ', ' order by created_at)
+		  from public.payments where task_id = $1::uuid
+	`, taskID).Scan(&kinds); err != nil {
+		t.Fatalf("read ledger: %v", err)
 	}
-	if live != 0 {
-		t.Errorf("%d hold(s) still standing after settlement", live)
+	t.Logf("ledger: %s", kinds)
+	if !strings.Contains(kinds, "completion_balance:captured") {
+		t.Errorf("no captured completion_balance row: %s", kinds)
+	}
+	// And nothing is left owing.
+	if owed := outstandingBalanceFor(context.Background(), uid); owed != nil {
+		t.Errorf("balance outstanding after a successful collection: %+v", owed)
 	}
 }
 

@@ -136,6 +136,21 @@ export interface TaskPayment {
    *  its own. Releasing is NOT a refund and the copy must not call it one. */
   captured_cents: number;
   released_cents: number;
+  /** What the hold is MADE OF. Present only when the two reconcile with
+   *  authorized_cents — a breakdown that fails to add up to the number beside
+   *  it is worse than no breakdown, so the server omits it rather than guess. */
+  time_cost_cents?: number;
+  shopping_budget_cents?: number;
+}
+
+/** What a requester owes from a completion that could not be charged. While
+ *  this is non-null, POST /tasks answers 403 — see the banner. Supporters are
+ *  never gated on anything here; the platform carries the float. */
+export interface OutstandingBalance {
+  total_cents: number;
+  task_id: string;
+  task_title: string;
+  task_count: number;
 }
 
 export interface Task {
@@ -218,6 +233,9 @@ export interface TaskCost {
    * This is the number in `total_cents`; `shopping_budget_cents` is the
    * ceiling and was never a charge. */
   shopping_receipt_cents?: number;
+  /** Whether per_minute_rate_cents is the evening rate, so a client can say
+   *  WHY it is quoting more without knowing the rate or when it starts. */
+  surge_rate?: boolean;
 }
 
 /**

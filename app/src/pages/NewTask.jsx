@@ -8,7 +8,7 @@ import DurationPicker from '../components/DurationPicker'
 import AddressInput from '../components/AddressInput'
 import { useToast } from '../providers/ToastProvider'
 import { useTaskEstimate, formatCents } from '../hooks/useTaskEstimate'
-import { holdPlacedMessage } from '../lib/paymentCopy'
+import { highBudgetWarning, holdPlacedMessage, surgeRateNote } from '../lib/paymentCopy'
 import { completeCardAuthentication, readPaymentError, usePaymentGate } from '../hooks/usePaymentGate'
 
 
@@ -126,7 +126,9 @@ export default function NewTask() {
       // The beta cap the notice has always advertised, now enforced by the
       // backend too — caught here so the message arrives while typing rather
       // than as a 400 after pressing Create.
-      else if (n > 30) e.prepay = 'Maximum shopping budget during beta is $30.00'
+      // No cap. The whole budget is reserved on the card at post, so the
+      // requester sees and authorizes the exact number — a limit here only
+      // refused real tasks. A large one warns instead; see the notice below.
     }
     if (mode === 'schedule' && (!date || !timeStr)) e.when = 'Pick date & time'
     // companion policy is enforced via its own modal
@@ -151,6 +153,10 @@ export default function NewTask() {
     category: effectiveCategory,
     estimatedMinutes: minutes,
     shoppingBudgetCents: Math.round(advance * 100),
+    // The rate depends on when the work happens, not on when this form was
+    // opened: a 21:30 task filled in at 6pm has to be quoted the evening rate.
+    isImmediate: mode === 'now',
+    scheduledAt: scheduledAtISO,
   })
 
   // Advisory only — POST /tasks answers 402 regardless of what this says. It
@@ -581,6 +587,24 @@ function confirmCompanionPolicy() {
                 <span>Total estimate</span>
                 <b>{formatCents(estimate.total_cents)}</b>
               </div>
+              {/* Why this task costs more than the usual rate. The wording,
+                  the rate and the included block all come from the quote. */}
+              {surgeRateNote(estimate) && (
+                <div className="text-white/60">{surgeRateNote(estimate)}</div>
+              )}
+              <div className="text-white/50">
+                This exact amount is reserved on your card when you post. You&apos;re charged for
+                what&apos;s actually used.
+              </div>
+            </div>
+          )}
+
+          {/* A lot of money about to be reserved. Warns, never blocks — the
+              danger colour is the whole point, and the button below stays
+              enabled. */}
+          {highBudgetWarning(Math.round(advance * 100), estimate) && (
+            <div className="text-xs rounded-md px-3 py-2 border border-red-400/40 bg-red-400/10 text-red-300">
+              {highBudgetWarning(Math.round(advance * 100), estimate)}
             </div>
           )}
 
@@ -655,7 +679,10 @@ function confirmCompanionPolicy() {
         }
       >
         {holdMessage && (
-          <p className="text-sm text-white/80">{holdMessage}</p>
+          <div className="space-y-1">
+            <p className="text-sm font-semibold text-white">{holdMessage.primary}</p>
+            <p className="text-xs text-white/60">{holdMessage.secondary}</p>
+          </div>
         )}
       </Modal>
       <Modal

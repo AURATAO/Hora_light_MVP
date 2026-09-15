@@ -40,52 +40,71 @@ import (
 
 // ── 1. Arithmetic ──────────────────────────────────────────────────────────
 
-// The claim billing.go's preAuthAmountCents comment makes, pinned.
+// THE hold invariant, and the whole point of the restructure: what is reserved
+// is exactly what the requester was shown.
 //
-// A requester who ticks "allow up to 15 extra minutes" must not need a bigger
-// hold than one who doesn't — the whole reason the pre-auth amount ignores
-// tasks.auto_extend_consent. If a future change to PreAuthMultiplier,
-// PreAuthBufferCents, AutoExtendMinutes or PerMinuteRateCents breaks that, it
-// breaks here rather than as an undercapture months later.
+//	hold == base fee + estimated time cost + shopping budget
 //
-// The check is: hold >= what a task that runs exactly AutoExtendMinutes past
-// its estimate would settle at. Swept across every duration a HO:RA task can
-// plausibly have, both base-fee tiers, and with and without a shopping budget.
-func TestPreAuthCoversAutoExtend(t *testing.T) {
-	overrun := Billing.AutoExtendMinutes * Billing.PerMinuteRateCents
-
-	worst := -1
-	worstCase := ""
+// No multiplier, no buffer, no headroom. What this replaced held 1.5x the time
+// estimate plus the budget plus $5, so somebody quoted $19.50 watched $34.25
+// leave their available balance with nothing anywhere explaining the gap.
+func TestPreAuthHoldIsExactlyTheEstimatePlusBudget(t *testing.T) {
 	for _, category := range []string{"delivery", "companion"} {
-		for _, minutes := range []int{1, 5, 15, 16, 30, 45, 60, 90, 120, 240, 480} {
-			for _, budget := range []int{0, 1500, Billing.ShoppingBudgetCapCents} {
-				held := preAuthAmountCents(category, minutes, budget)
-
-				// What the task settles at if it runs the full auto-extend
-				// past its estimate. The shopping budget settles against a
-				// receipt capped at the budget, so the budget itself is the
-				// ceiling on that half.
-				settled := baseFeeCents(category) + timeCostCents(minutes+Billing.AutoExtendMinutes) + budget
-
-				margin := held - settled
-				if margin < 0 {
-					t.Errorf("%s %dmin budget=%d: hold %d cannot cover an auto-extended settlement of %d (short by %d)",
-						category, minutes, budget, held, settled, -margin)
-				}
-				if worst < 0 || margin < worst {
-					worst, worstCase = margin, category
+		for _, minutes := range []int{0, 1, 5, 15, 16, 30, 45, 60, 90, 120, 240, 480} {
+			// Deliberately includes budgets far above the old $30 cap: there
+			// is no cap any more, and a $2,500 budget must hold $2,500.
+			for _, budget := range []int{0, 500, 3000, 50000, 250000} {
+				for _, rate := range []int{Billing.PerMinuteRateCents, Billing.SurgeRateCentsPerMin} {
+					want := baseFeeCents(category) + timeCostCents(minutes, rate) + budget
+					got := preAuthAmountCents(category, minutes, budget, rate)
+					if got != want {
+						t.Errorf("%s %dmin budget=%s rate=%d: hold %s, want %s",
+							category, minutes, formatCentsUSD(budget), rate,
+							formatCentsUSD(got), formatCentsUSD(want))
+					}
 				}
 			}
 		}
 	}
 
-	// The comment in billing.go derives a floor of 350 cents. Asserting the
-	// derived number, not just non-negativity, is what makes the comment a
-	// claim the suite actually checks.
-	if worst < 350 {
-		t.Errorf("worst-case margin is %d cents (%s), below the $3.50 the billing.go proof derives", worst, worstCase)
+	// And the quote a requester is SHOWN is the hold, to the cent. Two
+	// different functions that must not be able to disagree — that
+	// disagreement is precisely the defect being removed.
+	for _, minutes := range []int{15, 30, 90} {
+		for _, budget := range []int{0, 2000, 120000} {
+			quoted := quoteTask("delivery", minutes, budget, Billing.PerMinuteRateCents).TotalCents
+			held := preAuthAmountCents("delivery", minutes, budget, Billing.PerMinuteRateCents)
+			if quoted != held {
+				t.Errorf("%dmin budget=%s: quoted %s but held %s",
+					minutes, formatCentsUSD(budget), formatCentsUSD(quoted), formatCentsUSD(held))
+			}
+		}
 	}
-	t.Logf("worst-case auto-extend margin: %s over a %s settlement", formatCentsUSD(worst), formatCentsUSD(overrun))
+}
+
+// Auto-extend consent must not change the hold by so much as a cent.
+//
+// It governs whether a supporter may keep working past the estimate without
+// asking; it has nothing to do with what is reserved, and two requesters who
+// asked for the same task must see the same number. The old hold quietly
+// charged a larger authorization for that convenience.
+//
+// preAuthAmountCents takes no consent argument at all now, which is the
+// structural guarantee. This is the behavioural one: the hold must be strictly
+// SMALLER than a hold sized to cover the auto-extend window, i.e. that headroom
+// is genuinely gone rather than folded in somewhere else.
+func TestHoldIsIdenticalWithAndWithoutAutoExtendConsent(t *testing.T) {
+	for _, minutes := range []int{16, 30, 60, 240} {
+		for _, budget := range []int{0, 2000} {
+			held := preAuthAmountCents("delivery", minutes, budget, Billing.PerMinuteRateCents)
+			padded := baseFeeCents("delivery") +
+				timeCostCents(minutes+Billing.AutoExtendMinutes, Billing.PerMinuteRateCents) + budget
+			if held >= padded {
+				t.Errorf("%dmin budget=%s: hold %s still carries auto-extend headroom (padded would be %s)",
+					minutes, formatCentsUSD(budget), formatCentsUSD(held), formatCentsUSD(padded))
+			}
+		}
+	}
 }
 
 // A requester reads these. Two things are being checked: that a known decline
@@ -553,7 +572,7 @@ func TestPhase2aEditCannotOutgrowTheHold(t *testing.T) {
 	requesterID, _ := body["requester_id"].(string)
 
 	// A hold sized for exactly this task as posted.
-	held := preAuthAmountCents("delivery", 30, 0)
+	held := preAuthAmountCents("delivery", 30, 0, Billing.PerMinuteRateCents)
 	if _, err := db.Exec(context.Background(), `
 		insert into public.payments (task_id, requester_id, kind, status,
 		                             stripe_payment_intent_id, authorized_cents)

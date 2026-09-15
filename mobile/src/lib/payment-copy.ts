@@ -44,17 +44,79 @@ export function formatCardLabel(payment?: TaskPayment | null): string {
   return `${BRAND_LABELS[brand] ?? "Card"} ••${last4}`;
 }
 
-/** What the requester is told the moment a task posts. Null when there is no
- *  hold — every task posted with PAYMENTS_ENFORCED off. */
-export function holdPlacedMessage(payment?: TaskPayment | null): string | null {
+/**
+ * The post-success confirmation, as two lines.
+ *
+ *   primary    "$49.50 reserved — $19.50 time + $30.00 budget"
+ *   secondary  "Charged only for what's used. Rest released automatically."
+ *
+ * Short on purpose: the long version was a paragraph, and a paragraph on a
+ * success screen is a paragraph nobody reads — which defeats the point, since
+ * the reason this exists is a requester seeing nothing and assuming the post
+ * had failed.
+ *
+ * No card here. Which card it landed on matters when you are looking at a live
+ * task; at the moment of posting the number is the message. The card stays on
+ * the task-detail line.
+ */
+export interface HoldMessage {
+  primary: string;
+  secondary: string;
+}
+
+export function holdPlacedMessage(payment?: TaskPayment | null): HoldMessage | null {
   if (!payment?.authorized_cents) return null;
-  const card = formatCardLabel(payment);
-  const on = card ? `on your card (${card})` : "on your card";
-  return (
-    `We've reserved ${formatCost(payment.authorized_cents)} ${on}. ` +
-    `You'll only be charged for actual time and purchases when the task completes — ` +
-    `anything unused is released automatically.`
-  );
+  return {
+    primary: holdBreakdown(payment),
+    secondary: "Charged only for what's used. Rest released automatically.",
+  };
+}
+
+// The split comes from the server and only when it reconciles with the total;
+// nothing is added up here (S-05). No budget means the single number rather
+// than "— $19.50 time + $0.00 budget", which is noise pretending to be detail.
+function holdBreakdown(payment: TaskPayment): string {
+  const total = formatCost(payment.authorized_cents);
+  const budget = payment.shopping_budget_cents ?? 0;
+  const time = payment.time_cost_cents ?? 0;
+  if (budget > 0 && time > 0) {
+    return `${total} reserved — ${formatCost(time)} time + ${formatCost(budget)} budget`;
+  }
+  return `${total} reserved`;
+}
+
+/** Why a task is quoted more than usual. Null unless the evening rate applies;
+ *  every number comes from the server quote. */
+export function surgeRateNote(quote?: {
+  surge_rate?: boolean;
+  per_minute_rate_cents?: number;
+  included_minutes?: number;
+} | null): string | null {
+  if (!quote?.surge_rate) return null;
+  return `Evening rate: ${formatCost(quote.per_minute_rate_cents ?? 0)}/min after the first ${quote.included_minutes ?? 0} minutes.`;
+}
+
+/** The red notice when a lot of money is about to be reserved. The threshold
+ *  comes from the server so both clients warn at the same number (S-05). */
+export function highBudgetWarning(
+  budgetCents: number,
+  quote?: { high_budget_warning_cents?: number } | null
+): string | null {
+  const threshold = quote?.high_budget_warning_cents;
+  if (!threshold || !budgetCents || budgetCents < threshold) return null;
+  return "High budget — this full amount will be reserved on your card.";
+}
+
+/** The persistent banner when a completion could not be charged. Names the
+ *  amount and the task, because "you have a balance" with no number is the
+ *  same vagueness that caused the original incident. */
+export function outstandingBalanceMessage(
+  outstanding?: { total_cents?: number; task_title?: string; task_count?: number } | null
+): string | null {
+  if (!outstanding?.total_cents) return null;
+  const from = outstanding.task_title ? ` from \u201C${outstanding.task_title}\u201D` : "";
+  const more = (outstanding.task_count ?? 1) > 1 ? ` and ${(outstanding.task_count ?? 1) - 1} more` : "";
+  return `You have an outstanding balance of ${formatCost(outstanding.total_cents)}${from}${more} — settle it to keep posting.`;
 }
 
 /** The short form for a task-detail row: "$76.75 reserved · Visa ••4242". */

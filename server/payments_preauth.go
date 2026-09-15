@@ -534,37 +534,3 @@ func reportExpiringPreAuths(ctx context.Context) {
 		log.Printf("[payments][expiry] %d open task(s) carrying a hold older than %dd", n, preAuthWarnAfterDays)
 	}
 }
-
-// stripeIncrementalAuthEnabled reports whether this deployment may ask Stripe
-// for incremental authorization on a card hold.
-//
-// OFF by default, and the default is a measured fact rather than caution. On
-// the account this project runs on, an off-session confirm carrying
-// `payment_method_options[card][request_incremental_authorization]` is refused
-// outright:
-//
-//	payment_intent_invalid_parameter
-//	"This account is not eligible for the requested card features."
-//
-// Not a soft "capability not granted" — the confirm fails, the intent ends in
-// requires_payment_method holding nothing, and the post would 402. Requesting
-// it is therefore only safe once Stripe has enabled flexible payments on the
-// account, which is exactly the kind of thing that changes without anybody
-// here noticing, so it is a flag and not a constant.
-//
-// Read on every call for the same reason PAYMENTS_ENFORCED is: flipping it is
-// a deliberate, watched operation and should not need an operator to reason
-// about which process is running which value.
-//
-// To turn on: enable incremental authorization in the Stripe dashboard, set
-// STRIPE_INCREMENTAL_AUTH=1, and re-run
-// `go test ./ -run Phase2bSmoke -v` with STRIPE_SMOKE=1 — the budget-increase
-// smoke test logs which path actually ran.
-func stripeIncrementalAuthEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("STRIPE_INCREMENTAL_AUTH"))) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
-	}
-}

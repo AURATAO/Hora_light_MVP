@@ -27,7 +27,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -44,43 +46,65 @@ type BillingConfig struct {
 	BaseFeeCompanionshipCents int
 
 	// Time. The first IncludedMinutes are inside the base fee; every minute
-	// after that bills at PerMinuteRateCents.
+	// after that bills at the task's RESOLVED rate — PerMinuteRateCents
+	// normally, SurgeRateCentsPerMin for an evening task.
 	PerMinuteRateCents int
 	IncludedMinutes    int
+
+	// Evening surge. From SurgeStartHour local time in SurgeTimezone, minutes
+	// past the included block bill at SurgeRateCentsPerMin.
+	//
+	// RESOLVED ONCE, AT POST, from the task's scheduled start, and stored on
+	// the task — never re-derived afterwards. A task starting at 20:50 bills
+	// at the standard rate for its whole run even if it finishes at 22:30,
+	// because the price a requester agreed to must not change while somebody
+	// is working. resolveRateCentsPerMin is the one place this is decided, and
+	// the seam a future weather or festival surge hangs off.
+	SurgeRateCentsPerMin int
+	SurgeStartHour       int
+	SurgeTimezone        string
 
 	// Shopping. The requester approves a budget at post; the supporter fronts
 	// the money and is reimbursed the verified receipt amount, capped at the
 	// approved budget plus OverageToleranceCents. Anything above that needed
 	// an approved budget increase BEFORE the purchase — there is no
-	// after-the-fact charging, so an unapproved overage is the supporter's own
-	// cost.
-	ShoppingBudgetCapCents int
-	OverageToleranceCents  int
+	// after-the-fact charging against the budget, so an unapproved overage is
+	// the supporter's own cost.
+	//
+	// There is NO ceiling on the budget itself, and the $30 one that used to
+	// live here (in Go AND in a DB CHECK) was the wrong shape of protection:
+	// the entire budget is now reserved on the card at post, so the requester
+	// sees and authorizes the exact number before anything happens. A cap only
+	// refused legitimate tasks. What replaces it warns rather than refuses —
+	// see HighBudgetWarningCents.
+	OverageToleranceCents int
+
+	// Where the post form starts warning, in red, that this is a lot of money
+	// to reserve. ADVISORY ONLY: nothing refuses a budget above it and the
+	// server does not enforce it. It lives here rather than in the clients so
+	// both warn at the same number (S-05) and moving it is one edit.
+	HighBudgetWarningCents int
 
 	// Time overrun. A supporter may run AutoExtendMinutes past the estimate
 	// without a fresh approval when the requester consented at post
 	// (tasks.auto_extend_consent). GracePeriodMinutes is the window in which
 	// an overrun is flagged to ops rather than billed silently.
+	//
+	// Note what is NOT here any more: auto-extend does not affect the HOLD.
+	// The hold is exactly the estimate plus the budget, and every minute past
+	// it — consented or approved — is collected at completion. See
+	// preAuthAmountCents.
 	AutoExtendMinutes  int
 	GracePeriodMinutes int
 
-	// How long a requester has to one-tap approve a budget increase before it
-	// auto-DENIES and the supporter's pre-selected fallback executes (Phase 2).
+	// How long a requester has to one-tap approve a budget or time increase
+	// before it auto-DENIES and the supporter's pre-selected fallback runs.
 	ApprovalTimeoutMinutes int
 
 	// How far ahead of the billable-time ceiling both parties are warned that
-	// it is coming (Phase 2b, Layer 2). Small on purpose: a warning that fires
-	// at half the estimate is noise, and one that fires at the ceiling is not
-	// a warning. Five minutes is roughly one shop queue — long enough for a
-	// requester to answer and a supporter to act on silence.
+	// it is coming. Small on purpose: a warning that fires at half the
+	// estimate is noise, and one that fires at the ceiling is not a warning.
 	CapWarningLeadMinutes int
-
-	// Pre-authorization held at post time:
-	//   time_estimate_cost x PreAuthMultiplier + budget + PreAuthBufferCents
-	// The hold is deliberately larger than the expected capture; the unused
-	// remainder is released, never refunded (Phase 2).
-	PreAuthMultiplier  float64
-	PreAuthBufferCents int
 
 	// Marketplace take, in basis points of the captured total. Zero during
 	// beta: supporters keep 100% of time cost and the full receipt amount.
@@ -102,11 +126,16 @@ var Billing = BillingConfig{
 	BaseFeeDefaultCents:       1200, // $12.00
 	BaseFeeCompanionshipCents: 2500, // $25.00
 
-	PerMinuteRateCents: 50, // $0.50/min
+	PerMinuteRateCents: 50, // $0.50/min, standard
 	IncludedMinutes:    15,
 
-	ShoppingBudgetCapCents: 3000, // $30.00 — enforced in Go AND by a DB CHECK
-	OverageToleranceCents:  500,  // $5.00 auto-approved over the budget
+	SurgeRateCentsPerMin: 100, // $1.00/min from 21:00 New York
+	SurgeStartHour:       21,
+	SurgeTimezone:        "America/New_York",
+
+	OverageToleranceCents: 500, // $5.00 auto-approved over the approved budget
+
+	HighBudgetWarningCents: 50000, // $500.00 — warn loudly, refuse nothing
 
 	AutoExtendMinutes:  15,
 	GracePeriodMinutes: 30,
@@ -114,69 +143,101 @@ var Billing = BillingConfig{
 	ApprovalTimeoutMinutes: 5,
 	CapWarningLeadMinutes:  5,
 
-	PreAuthMultiplier:  1.5,
-	PreAuthBufferCents: 500, // $5.00
-
 	ApplicationFeeBasisPoints: 0, // beta: platform takes nothing
 
 	Currency: "usd",
 }
 
-// preAuthAmountCents is the hold placed on the requester's card at post time:
+// ── The rate ───────────────────────────────────────────────────────────────
+
+// resolveRateCentsPerMin is the ONLY place a task's per-minute rate is
+// decided. Called once, at post, from the task's scheduled start (posting time
+// for an ASAP task); the answer is stored on tasks.rate_cents_per_min and
+// every later read — estimate, ceiling, settlement, copy — uses the stored
+// value.
 //
-//	(base fee + estimated time cost) x PreAuthMultiplier + budget + buffer
+// WHY RESOLVE ONCE AND STORE. The alternative, deriving the rate whenever a
+// price is computed, silently re-prices a task in flight: a 20:50 job that runs
+// to 21:10 would settle partly at a rate nobody quoted, and the same task would
+// cost different amounts depending on when somebody happened to open the
+// screen. A price is a term of an agreement, so it is fixed when the agreement
+// is made.
 //
-// The multiplier applies to the whole time-based estimate, base fee included,
-// not to the per-minute portion alone. The alternative reading does not
-// survive contact with an example: a 30-minute task estimates $12.00 base +
-// $7.50 time = $19.50, and holding 1.5x the $7.50 alone gives $11.25 + $5.00 =
-// $16.25 — less than the capture on a task that runs exactly to estimate. A
-// hold that cannot cover the happy path is not a hold.
-//
-// The shopping budget is added at face value rather than multiplied: it is
-// already a ceiling the requester set. The $5 auto-approved overage tolerance
-// is added ON TOP of it, and only when there is a budget at all.
-//
-// That addition is a Phase 2b correction to a real gap. The buffer was
-// originally described as covering the tolerance, which double-counted it: the
-// same $5 was standing in for the tolerance AND for the auto-extend headroom,
-// and on a short shopping task there was not enough of it to go round. A
-// 15-minute delivery with a $15 budget held $38.00 against a ceiling
-// settlement of $39.50 — an undercapture of $1.50 on every such task, silent
-// except for one log line. TestPhase2bPreAuthCoversCappedSettlement is what
-// found it and is what keeps it closed.
-//
-// AUTO-EXTEND IS ALREADY COVERED, and the amount deliberately does NOT depend
-// on tasks.auto_extend_consent. Phase 2a asked whether consenting to
-// AutoExtendMinutes of overrun needs a bigger hold; it does not, and here is
-// the whole argument.
-//
-// Let B = base fee, T = estimated time cost, M = PreAuthMultiplier (1.5),
-// K = PreAuthBufferCents ($5.00), and let the shopping budget cancel out
-// (it is added identically to both sides).
-//
-//	held    = M(B+T) + K
-//	capture = B + T + AutoExtendMinutes x PerMinuteRateCents
-//	margin  = held - capture = (M-1)(B+T) + K - 15 x 50
-//	        = 0.5(B+T) + 500 - 750
-//
-// B is at least BaseFeeDefaultCents ($12.00) and T is never negative, so
-// 0.5(B+T) >= 600 and the margin is at least 350 cents at EVERY duration and
-// category. The worst case is the shortest possible standard task, and it
-// still clears by $3.50; a companionship task clears by $9.75. A test pins
-// this rather than leaving it as a comment — see TestPreAuthCoversAutoExtend.
-//
-// So the hold is sized the same whether or not consent was given, and consent
-// governs only whether the supporter may run over without asking. Making the
-// hold consent-dependent would charge consenting requesters a larger
-// authorization for a cost their hold already covered.
-func preAuthAmountCents(category string, estimatedMinutes, shoppingBudgetCents int) int {
-	timeEstimate := baseFeeCents(category) + timeCostCents(estimatedMinutes)
-	held := int(float64(timeEstimate)*Billing.PreAuthMultiplier) + shoppingBudgetCents + Billing.PreAuthBufferCents
-	if shoppingBudgetCents > 0 {
-		held += Billing.OverageToleranceCents
+// THIS IS THE SURGE SEAM. Weather, festivals, demand — all of them are "look at
+// the start time and the world, return a rate", and all of them belong in this
+// function. Nothing else in the codebase may branch on time to decide money.
+func resolveRateCentsPerMin(start time.Time) int {
+	loc, err := time.LoadLocation(Billing.SurgeTimezone)
+	if err != nil {
+		// A missing tzdata must not silently double everybody's rate. The
+		// standard rate is the safe direction: it under-charges rather than
+		// over-charges, and it is what every task billed at before surge
+		// existed.
+		log.Printf("[billing] timezone %q unavailable (%v) — falling back to the standard rate",
+			Billing.SurgeTimezone, err)
+		return Billing.PerMinuteRateCents
 	}
-	return held
+	if start.In(loc).Hour() >= Billing.SurgeStartHour {
+		return Billing.SurgeRateCentsPerMin
+	}
+	return Billing.PerMinuteRateCents
+}
+
+// isSurgeRate reports whether a stored rate is the evening one, so a client can
+// be told WHY it is being quoted more without re-deriving anything.
+func isSurgeRate(rateCents int) bool {
+	return rateCents >= Billing.SurgeRateCentsPerMin
+}
+
+// normalizeRate guards every read of a stored rate. Rows written before
+// tasks.rate_cents_per_min existed, and any row where it is somehow zero, bill
+// at the standard rate rather than free.
+func normalizeRate(rateCents int) int {
+	if rateCents <= 0 {
+		return Billing.PerMinuteRateCents
+	}
+	return rateCents
+}
+
+// taskRateCentsPerMin reads the rate a task was posted at.
+func taskRateCentsPerMin(ctx context.Context, taskID string) int {
+	var rate int
+	_ = db.QueryRow(ctx,
+		`select coalesce(rate_cents_per_min, 0) from public.tasks where id = $1::uuid`,
+		taskID).Scan(&rate)
+	return normalizeRate(rate)
+}
+
+// preAuthAmountCents is the hold placed on the requester's card at post:
+//
+//	base fee + estimated time cost + shopping budget
+//
+// EXACTLY WHAT THEY WERE SHOWN. No multiplier, no buffer, no headroom for
+// auto-extend. The number on the confirmation and the number on their
+// statement are the same number, and that is the entire design.
+//
+// What this replaced held 1.5x the time estimate plus the budget plus $5 —
+// which meant a requester quoted $19.50 saw $34.25 disappear from their
+// available balance with nothing anywhere explaining the gap. Over-holding is
+// cheap for the platform and expensive for the person whose card it is: it is
+// their money, frozen, and "we took more than we said in case" is not a thing
+// you can put on a confirmation screen.
+//
+// THE TRADE, stated plainly: a task that runs past its estimate, or comes back
+// with a receipt above the approved budget, can now settle for MORE than was
+// held. That difference is collected at completion as a second charge against
+// the saved card (payments.kind = 'completion_balance'), and if that charge
+// fails the requester carries an outstanding balance that blocks further
+// posting. See settleTaskPayment. The alternative — keep over-holding so the
+// capture always fits — pays for a rare collection failure with a permanent,
+// invisible tax on every honest requester's available balance.
+//
+// Auto-extend consent deliberately does NOT appear here. It governs whether a
+// supporter may keep working past the estimate without asking; it has nothing
+// to do with what is reserved, and two requesters who asked for the same task
+// must see the same hold.
+func preAuthAmountCents(category string, estimatedMinutes, shoppingBudgetCents, rateCents int) int {
+	return baseFeeCents(category) + timeCostCents(estimatedMinutes, rateCents) + shoppingBudgetCents
 }
 
 // isCompanionship reports whether a category bills at the companionship base
@@ -213,9 +274,15 @@ func billableMinutes(totalMinutes int) int {
 	return totalMinutes - Billing.IncludedMinutes
 }
 
-// timeCostCents is what the logged time costs on top of the base fee.
-func timeCostCents(totalMinutes int) int {
-	return billableMinutes(totalMinutes) * Billing.PerMinuteRateCents
+// timeCostCents is what the logged time costs on top of the base fee, at the
+// task's own resolved rate.
+//
+// The rate is a PARAMETER, never read from Billing here: two tasks running at
+// the same moment can be on different rates (one posted at 20:50, one at
+// 21:05), so a function that reached for the global would price one of them
+// wrong. Callers pass the task's stored rate; taskRateCentsPerMin reads it.
+func timeCostCents(totalMinutes, rateCents int) int {
+	return billableMinutes(totalMinutes) * normalizeRate(rateCents)
 }
 
 // TaskQuote is one itemized price. It is what /tasks/estimate returns and what
@@ -229,6 +296,10 @@ type TaskQuote struct {
 	// constant of its own, which is the drift S-05 exists to prevent — it is
 	// how the web app ended up with three copies of the schedule.
 	PerMinuteRateCents int `json:"per_minute_rate_cents"`
+	// Whether PerMinuteRateCents is the evening rate, so a client can say WHY
+	// it is quoting more without knowing what the evening rate is or when it
+	// starts.
+	SurgeRate bool `json:"surge_rate"`
 	// Minutes the quote was computed against — the requester's estimate on a
 	// pre-submission quote, actual logged time at settlement.
 	TotalMinutes    int `json:"total_minutes"`
@@ -262,19 +333,21 @@ type TaskQuote struct {
 
 // quoteTask prices a task: base fee for the category, plus time beyond the
 // included block, plus the shopping budget the requester approved.
-func quoteTask(category string, totalMinutes, shoppingBudgetCents int) TaskQuote {
+func quoteTask(category string, totalMinutes, shoppingBudgetCents, rateCents int) TaskQuote {
 	if totalMinutes < 0 {
 		totalMinutes = 0
 	}
 	if shoppingBudgetCents < 0 {
 		shoppingBudgetCents = 0
 	}
+	rateCents = normalizeRate(rateCents)
 	base := baseFeeCents(category)
-	time := timeCostCents(totalMinutes)
+	time := timeCostCents(totalMinutes, rateCents)
 	return TaskQuote{
 		BaseFeeCents:        base,
 		IncludedMinutes:     Billing.IncludedMinutes,
-		PerMinuteRateCents:  Billing.PerMinuteRateCents,
+		PerMinuteRateCents:  rateCents,
+		SurgeRate:           isSurgeRate(rateCents),
 		TotalMinutes:        totalMinutes,
 		BillableMinutes:     billableMinutes(totalMinutes),
 		TimeCostCents:       time,
@@ -328,7 +401,8 @@ func taskCategory(ctx context.Context, taskID string) string {
 // about what a task costs. See taskTimeCapMinutes for what the ceiling is.
 func calcTaskCostCents(ctx context.Context, taskID string, totalMinutes int) int {
 	capMinutes, _ := taskTimeCapMinutes(ctx, taskID)
-	return baseFeeCents(taskCategory(ctx, taskID)) + timeCostCentsCapped(totalMinutes, capMinutes)
+	return baseFeeCents(taskCategory(ctx, taskID)) +
+		timeCostCentsCapped(totalMinutes, capMinutes, taskRateCentsPerMin(ctx, taskID))
 }
 
 // ── The billable-time ceiling ──────────────────────────────────────────────
@@ -366,8 +440,8 @@ func cappedMinutes(totalMinutes, capMinutes int) int {
 }
 
 // timeCostCentsCapped is timeCostCents against the consented ceiling.
-func timeCostCentsCapped(totalMinutes, capMinutes int) int {
-	return timeCostCents(cappedMinutes(totalMinutes, capMinutes))
+func timeCostCentsCapped(totalMinutes, capMinutes, rateCents int) int {
+	return timeCostCents(cappedMinutes(totalMinutes, capMinutes), rateCents)
 }
 
 // timeCapWarningMinutes is the logged total at which Layer 2 fires: far enough
@@ -482,9 +556,9 @@ func receiptWithinTolerance(receiptCents, approvedBudgetCents int) bool {
 // The budget stays on the quote as context — "you approved $20, the receipt
 // was $17.40" is the sentence the requester needs — but it is the RECEIPT that
 // is added to the total, because the budget was never a charge.
-func quoteSettlement(category string, totalMinutes, capMinutes, approvedBudgetCents, receiptCents int) TaskQuote {
+func quoteSettlement(category string, totalMinutes, capMinutes, approvedBudgetCents, receiptCents, rateCents int) TaskQuote {
 	billed := cappedMinutes(totalMinutes, capMinutes)
-	q := quoteTask(category, billed, approvedBudgetCents)
+	q := quoteTask(category, billed, approvedBudgetCents, rateCents)
 	// quoteTask reports the minutes it priced. Settlement needs both: what was
 	// worked, and what was billable after the ceiling.
 	q.TotalMinutes = totalMinutes
@@ -506,11 +580,11 @@ func quoteSettlement(category string, totalMinutes, capMinutes, approvedBudgetCe
 // The shopping budget is not an input here and never should be. It is an
 // authorization ceiling, not money anyone has been charged, so a cancel has
 // nothing to net against it.
-func cancelSettlementCents(category string, totalMinutes int, hadSession bool) int {
+func cancelSettlementCents(category string, totalMinutes int, hadSession bool, rateCents int) int {
 	if !hadSession {
 		return 0
 	}
-	return baseFeeCents(category) + timeCostCents(totalMinutes)
+	return baseFeeCents(category) + timeCostCents(totalMinutes, rateCents)
 }
 
 // ── POST /tasks/estimate ───────────────────────────────────────────────────
@@ -532,6 +606,13 @@ func estimateTaskCost(c *gin.Context) {
 		Category          string `json:"category"`
 		EstimatedMinutes  int    `json:"estimated_minutes"`
 		PrepayAmountCents int    `json:"prepay_amount_cents"`
+		// When the task would start, RFC3339. Decides the rate, because the
+		// evening rate is a property of when the work happens, not of when the
+		// form was opened — a requester filling in a 21:30 task at 6pm has to
+		// be quoted the evening rate. Absent or unparseable means ASAP, which
+		// resolves against now.
+		ScheduledAt string `json:"scheduled_at"`
+		IsImmediate bool   `json:"is_immediate"`
 	}
 	if err := c.BindJSON(&in); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
@@ -543,25 +624,49 @@ func estimateTaskCost(c *gin.Context) {
 	if in.PrepayAmountCents < 0 {
 		in.PrepayAmountCents = 0
 	}
-	// A quote above the cap is refused rather than silently quoted at the cap:
-	// the form would otherwise show a total the requester never asked for.
-	if in.PrepayAmountCents > Billing.ShoppingBudgetCapCents {
-		c.JSON(http.StatusBadRequest, shoppingBudgetCapError())
-		return
-	}
 
-	c.JSON(http.StatusOK, quoteTask(in.Category, in.EstimatedMinutes, in.PrepayAmountCents))
+	// No cap. A budget larger than the requester expected to type is warned
+	// about in the form, never refused here — the whole amount is reserved on
+	// their card at post, so they see and authorize the exact number before
+	// anything is held. See BillingConfig.HighBudgetWarningCents.
+	quote := quoteTask(in.Category, in.EstimatedMinutes, in.PrepayAmountCents,
+		resolveRateCentsPerMin(estimateStartAt(in.IsImmediate, in.ScheduledAt)))
+
+	c.JSON(http.StatusOK, gin.H{
+		"base_fee_cents":        quote.BaseFeeCents,
+		"included_minutes":      quote.IncludedMinutes,
+		"per_minute_rate_cents": quote.PerMinuteRateCents,
+		"surge_rate":            quote.SurgeRate,
+		"total_minutes":         quote.TotalMinutes,
+		"billable_minutes":      quote.BillableMinutes,
+		"time_cost_cents":       quote.TimeCostCents,
+		"shopping_budget_cents": quote.ShoppingBudgetCents,
+		"shopping_cents":        quote.ShoppingCentsLegacy,
+		"total_cents":           quote.TotalCents,
+		// What posting will actually reserve. Identical to total_cents today —
+		// the hold IS the estimate plus the budget — and sent as its own field
+		// because that identity is a design decision rather than a coincidence,
+		// and a client should not have to know it holds in order to render a
+		// confirmation.
+		"hold_cents": quote.TotalCents,
+		// The threshold at which the form warns about a large reservation.
+		// Server-owned so both clients warn at the same number (S-05).
+		"high_budget_warning_cents": Billing.HighBudgetWarningCents,
+	})
 }
 
-// shoppingBudgetCapError is the one phrasing of the cap rejection, shared by
-// the quote endpoint and by task create/update so a requester cannot be told
-// two different limits.
-func shoppingBudgetCapError() gin.H {
-	return gin.H{
-		"error":     "shopping_budget_over_cap",
-		"message":   "The maximum shopping budget during beta is " + formatCentsUSD(Billing.ShoppingBudgetCapCents) + ".",
-		"cap_cents": Billing.ShoppingBudgetCapCents,
+// estimateStartAt is when the quoted task would begin, for rate resolution.
+// An unparseable or absent time is treated as ASAP rather than rejected: a bad
+// scheduled_at is the form's problem to report, and quoting at the current
+// rate is the honest fallback.
+func estimateStartAt(isImmediate bool, scheduledAt string) time.Time {
+	if isImmediate || scheduledAt == "" {
+		return time.Now()
 	}
+	if t, err := time.Parse(time.RFC3339, scheduledAt); err == nil {
+		return t
+	}
+	return time.Now()
 }
 
 // formatCentsUSD renders integer cents for humans. Money is integer cents

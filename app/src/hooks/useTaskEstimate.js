@@ -31,6 +31,10 @@ export function useTaskEstimate({
   category,
   estimatedMinutes,
   shoppingBudgetCents = 0,
+  // When the work would start. Decides the rate — the evening band is a
+  // property of when the task happens, not of when the form was opened.
+  isImmediate = true,
+  scheduledAt = '',
   enabled = true,
 }) {
   const [estimate, setEstimate] = useState(null)
@@ -55,13 +59,15 @@ export function useTaskEstimate({
             category,
             estimated_minutes: minutes,
             prepay_amount_cents: Math.max(0, Math.round(shoppingBudgetCents || 0)),
+            is_immediate: isImmediate,
+            scheduled_at: scheduledAt || '',
           },
         })
         if (!cancelled) setEstimate(result)
       } catch {
-        // Includes the over-cap 400, where the form's own validation is
-        // already telling the user what is wrong. Showing no price is the
-        // correct outcome either way.
+        // Showing no price is the correct outcome for any failure here — a
+        // stale number is worse than none on the screen where somebody decides
+        // whether to spend money.
         if (!cancelled) setEstimate(null)
       }
     }, 300)
@@ -70,7 +76,7 @@ export function useTaskEstimate({
       cancelled = true
       clearTimeout(timer)
     }
-  }, [category, estimatedMinutes, shoppingBudgetCents, enabled])
+  }, [category, estimatedMinutes, shoppingBudgetCents, isImmediate, scheduledAt, enabled])
 
   return estimate
 }

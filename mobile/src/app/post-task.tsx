@@ -16,7 +16,7 @@ import {
 } from "../components/TaskForm";
 import { Button, Card, Input, Pill, PressableScale, Screen, Skeleton } from "../components/ui";
 import { ApiError, createTask, getMe, getTask, parseTask, updateProfile } from "../lib/api";
-import { holdPlacedMessage } from "../lib/payment-copy";
+import { highBudgetWarning, holdPlacedMessage, surgeRateNote, type HoldMessage } from "../lib/payment-copy";
 import {
   completeCardAuthentication,
   getPaymentMethods,
@@ -73,7 +73,7 @@ export default function PostTask() {
   // The hold confirmation, or null when there is none to report. Holding the
   // MESSAGE rather than the payment keeps the success screen from having to
   // know anything about how a hold is worded.
-  const [postedHold, setPostedHold] = useState<string | null>(null);
+  const [postedHold, setPostedHold] = useState<HoldMessage | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<TaskCategory | undefined>(initialCategory);
   const [describeText, setDescribeText] = useState("");
   const [parsing, setParsing] = useState(false);
@@ -316,7 +316,10 @@ export default function PostTask() {
           <Text className="text-title font-semibold text-ink">Task posted</Text>
           {postedHold ? (
             <>
-              <Text className="text-center text-caption text-muted">{postedHold}</Text>
+              <Text className="text-center text-body font-semibold text-ink">
+                {postedHold.primary}
+              </Text>
+              <Text className="text-center text-caption text-muted">{postedHold.secondary}</Text>
               <Button label="Done" onPress={() => router.back()} className="mt-4 w-full" />
             </>
           ) : (

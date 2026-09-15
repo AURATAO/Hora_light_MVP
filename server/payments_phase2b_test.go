@@ -111,7 +111,7 @@ func TestPhase2bTimeCapArithmetic(t *testing.T) {
 			if got := billableMinutes(billed); got != tc.wantBillableMinutes {
 				t.Errorf("billable minutes = %d, want %d", got, tc.wantBillableMinutes)
 			}
-			if got := timeCostCentsCapped(tc.logged, tc.capMinutes); got != tc.wantTimeCostCents {
+			if got := timeCostCentsCapped(tc.logged, tc.capMinutes, Billing.PerMinuteRateCents); got != tc.wantTimeCostCents {
 				t.Errorf("time cost = %d, want %d", got, tc.wantTimeCostCents)
 			}
 		})
@@ -146,10 +146,10 @@ func TestPhase2bTimeCapIsPerTaskNotPerSession(t *testing.T) {
 		total += m
 	}
 
-	perTask := timeCostCentsCapped(total, capMinutes)
+	perTask := timeCostCentsCapped(total, capMinutes, Billing.PerMinuteRateCents)
 	perSession := 0
 	for _, m := range sessions {
-		perSession += timeCostCentsCapped(m, capMinutes)
+		perSession += timeCostCentsCapped(m, capMinutes, Billing.PerMinuteRateCents)
 	}
 
 	// 45 capped -> 30 billable -> $15.00
@@ -236,43 +236,44 @@ func TestPhase2bReceiptTolerance(t *testing.T) {
 	}
 }
 
-// The Phase 2a hold has to cover a Phase 2b settlement, which is a different
-// claim from TestPreAuthCoversAutoExtend: that one checked time only, and
-// settlement now also carries a verified receipt up to budget + tolerance.
+// The hold NO LONGER covers a worst-case settlement, and that is deliberate.
 //
-// If this fails, the pre-auth is too small and every shopping task at the top
-// of its budget would undercapture — silently costing the platform the
-// difference on each one.
-func TestPhase2bPreAuthCoversCappedSettlement(t *testing.T) {
-	worst := -1
-	worstCase := ""
-	for _, category := range []string{"delivery", "companion"} {
-		for _, estimate := range []int{1, 5, 15, 16, 30, 45, 60, 90, 120, 240, 480} {
-			for _, budget := range []int{0, 1500, Billing.ShoppingBudgetCapCents} {
-				held := preAuthAmountCents(category, estimate, budget)
+// This replaced a test asserting the opposite. The old hold was padded so a
+// capture always fit inside it; the new one is exactly what the requester was
+// shown, so a task that runs to its ceiling with a receipt at the top of the
+// tolerance settles for MORE than was reserved. That difference is collected
+// at completion (payments.kind = 'completion_balance').
+//
+// Pinned because it is a design decision that looks like a bug: anyone reading
+// preAuthAmountCents and settlement side by side will notice the gap, and this
+// is where they find out it is intended and what pays for it.
+func TestPhase2bSettlementCanExceedTheHold(t *testing.T) {
+	const category, estimate, budget = "delivery", 30, 2000
+	rate := Billing.PerMinuteRateCents
 
-				// The ceiling settlement: every consented minute billed, and a
-				// receipt at the very top of what is reimbursable.
-				capMinutes := estimate + Billing.AutoExtendMinutes
-				settled := baseFeeCents(category) + timeCostCentsCapped(capMinutes, capMinutes)
-				if budget > 0 {
-					settled += budget + Billing.OverageToleranceCents
-				}
+	held := preAuthAmountCents(category, estimate, budget, rate)
 
-				margin := held - settled
-				if margin < 0 {
-					t.Errorf("%s %dmin budget=%s: hold %s cannot cover a ceiling settlement of %s (short by %s)",
-						category, estimate, formatCentsUSD(budget), formatCentsUSD(held),
-						formatCentsUSD(settled), formatCentsUSD(-margin))
-				}
-				if worst < 0 || margin < worst {
-					worst = margin
-					worstCase = fmt.Sprintf("%s %dmin budget=%s", category, estimate, formatCentsUSD(budget))
-				}
-			}
-		}
+	// The worst case: every consented minute worked, and a receipt at the very
+	// top of what is reimbursable.
+	capMinutes := estimate + Billing.AutoExtendMinutes
+	settled := baseFeeCents(category) +
+		timeCostCentsCapped(capMinutes, capMinutes, rate) +
+		budget + Billing.OverageToleranceCents
+
+	if settled <= held {
+		t.Fatalf("settlement %s does not exceed the hold %s — this test no longer describes the model",
+			formatCentsUSD(settled), formatCentsUSD(held))
 	}
-	t.Logf("tightest margin %s on %s", formatCentsUSD(worst), worstCase)
+	t.Logf("worst case settles %s above a %s hold; the difference is charged at completion",
+		formatCentsUSD(settled-held), formatCentsUSD(held))
+
+	// And the on-estimate case still fits exactly, with nothing left over —
+	// the common path takes no second charge and releases nothing.
+	onEstimate := baseFeeCents(category) + timeCostCents(estimate, rate) + budget
+	if onEstimate != held {
+		t.Errorf("a task that runs exactly to estimate settles %s against a %s hold",
+			formatCentsUSD(onEstimate), formatCentsUSD(held))
+	}
 }
 
 // ── 2. Settlement (DB, no network) ─────────────────────────────────────────

@@ -66,21 +66,21 @@ func SendEmail(p EmailPayload) error {
 }
 
 type CreateNotificationInput struct {
-	DB             *sql.DB
-	UserID         string
-	TaskID         string
-	Type           string
-	Title          string
-	Body           string
-	SendEmail      bool
-	EmailTo        string
-	SupporterName  string
-	TaskTitle      string
-	ClockInTime    string
-	SessionTime    string
-	TotalLogged    string
-	EstimatedCost  string
-	FinalCost      string
+	DB                 *sql.DB
+	UserID             string
+	TaskID             string
+	Type               string
+	Title              string
+	Body               string
+	SendEmail          bool
+	EmailTo            string
+	SupporterName      string
+	TaskTitle          string
+	ClockInTime        string
+	SessionTime        string
+	TotalLogged        string
+	EstimatedCost      string
+	FinalCost          string
 	SenderName         string
 	MessagePreview     string
 	CompletionPhotoURL string
@@ -90,6 +90,16 @@ type CreateNotificationInput struct {
 func Create(ctx context.Context, in CreateNotificationInput) error {
 	log.Printf("[notify] type=%s user=%s task=%s sendEmail=%v emailTo=%s",
 		in.Type, in.UserID, in.TaskID, in.SendEmail, in.EmailTo)
+
+	// A nil handle is an error, not a panic. Several callers reach this from a
+	// goroutine on a background context (extension resolutions, expiries, push
+	// fan-out), so this code can still be running after the process has begun
+	// tearing its database connection down — and `(*sql.DB)(nil).ExecContext`
+	// segfaults rather than returning. One unlucky notification must not take
+	// the server with it.
+	if in.DB == nil {
+		return fmt.Errorf("notify: no database handle for a %s notification", in.Type)
+	}
 
 	var emailSentAt *time.Time
 
