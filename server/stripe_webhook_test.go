@@ -49,6 +49,10 @@ const phase2aMigrationPath = "../supabase/migrations/20260914120000_stripe_custo
 // rewrites the CHECK constraints the payments migration created.
 const phase2bMigrationPath = "../supabase/migrations/20260914150000_payments_capture_failed_and_budget_increase.sql"
 
+// cardDisplayMigrationPath adds payments.card_brand / card_last4 — the card a
+// hold was authorized against, which the requester's confirmation names.
+const cardDisplayMigrationPath = "../supabase/migrations/20260915120000_payments_card_display.sql"
+
 func setupStripeWebhookDB(t *testing.T) {
 	t.Helper()
 	setupAdminOpsDB(t) // users, tasks, worklogs, audit_logs + the pool swap
@@ -85,7 +89,7 @@ func setupStripeWebhookDB(t *testing.T) {
 		t.Fatalf("create supabase roles: %v", err)
 	}
 
-	for _, path := range []string{paymentsMigrationPath, phase2aMigrationPath, phase2bMigrationPath} {
+	for _, path := range []string{paymentsMigrationPath, phase2aMigrationPath, phase2bMigrationPath, cardDisplayMigrationPath} {
 		migration, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read migration %s: %v", path, err)

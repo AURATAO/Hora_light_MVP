@@ -70,6 +70,7 @@ import {
   statusLabel,
 } from "../../lib/task-utils";
 import { SUPPORT_EMAIL } from "../../lib/constants";
+import { holdSummary, holdWillBeReleasedMessage } from "../../lib/payment-copy";
 import type {
   ExtensionRequest,
   ExtensionsResponse,
@@ -323,8 +324,9 @@ export default function TaskDetail() {
   }
 
   async function handleCancelConfirm(reason: string) {
+    let result;
     try {
-      await cancelTask(id, reason);
+      result = await cancelTask(id, reason);
     } catch (e) {
       handleAuthError(e);
       throw e;
@@ -332,7 +334,10 @@ export default function TaskDetail() {
     setTask((t) =>
       t ? { ...t, status: "cancelled", cancel_reason: reason, cancelled_at: new Date().toISOString() } : t
     );
-    setCancelOpen(false);
+    // Deliberately NOT closing the sheet: it now shows what happened to the
+    // hold, and a sheet that dismisses itself takes that confirmation with it.
+    // The requester closes it themselves.
+    return result;
   }
 
   // One submit path for both sheets: the classic review and either
@@ -577,6 +582,10 @@ export default function TaskDetail() {
   const approvedBudgetCents =
     extensions?.approved_budget_cents ?? settlement?.approved_budget_cents ?? 0;
   const isTaskActive = task?.status === "open" && !!task?.assigned_to_id;
+  // The hold on the requester's card. Requester-only by construction: the
+  // server omits the key from the supporter's copy of the task, so this is
+  // null for them without a check here.
+  const holdLine = holdSummary(task?.payment);
 
   // The requester's live-location view mirrors web (app/src/pages/TaskDetail.jsx)
   // but narrows the gate to "supporter is actually clocked in" (an open worklog)
@@ -1028,6 +1037,30 @@ export default function TaskDetail() {
           ) : null}
         </View>
 
+        {/* What is reserved, for the requester of a live task. The whole
+            failure this addresses is an off-session pre-auth being silent: a
+            requester who cannot see that money was held assumes the post
+            failed and cancels it. Gone once the task closes — the settlement
+            card then says what became of it. */}
+        {isRequester && holdLine && task.status === "open" ? (
+          <View className="mb-4 gap-2 rounded-card border border-line bg-surface p-4">
+            <View className="flex-row items-center justify-between">
+              <Text className="text-caption font-semibold text-muted">On hold</Text>
+              <Text className="text-caption text-ink">{holdLine}</Text>
+            </View>
+            <Text className="text-caption text-muted">
+              Not a charge. You're billed for actual time and purchases when the task completes,
+              and anything unused is released automatically.
+            </Text>
+            {task.prepay_amount_cents && task.prepay_amount_cents > 0 ? (
+              <Text className="text-caption text-muted">
+                The hold also covers up to {formatCost(task.prepay_amount_cents)} of shopping,
+                reimbursed against the receipt.
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
+
         {/* Supporter */}
         {isRequester && task.assigned_to_id ? (
           <View className="mb-4 rounded-card border border-line bg-surface">
@@ -1302,7 +1335,12 @@ export default function TaskDetail() {
         ) : null}
       </ScrollView>
 
-      <CancelTaskSheet visible={cancelOpen} onClose={() => setCancelOpen(false)} onConfirm={handleCancelConfirm} />
+      <CancelTaskSheet
+        visible={cancelOpen}
+        willReleaseMessage={holdWillBeReleasedMessage(task.payment)}
+        onClose={() => setCancelOpen(false)}
+        onConfirm={handleCancelConfirm}
+      />
       {questionnaireActive ? (
         <TractionReviewSheet
           visible={reviewOpen}

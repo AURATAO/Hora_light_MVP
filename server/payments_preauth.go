@@ -391,7 +391,12 @@ func confirmTaskPayment(c *gin.Context) {
 		return
 	}
 
-	pi, err := paymentintent.Get(p.StripePaymentIntentID, nil)
+	// Same expand as CreatePreAuth: a task posted through a 3DS challenge has
+	// to be able to tell its requester which card the money is reserved on,
+	// exactly like one that went straight through.
+	getParams := &stripe.PaymentIntentParams{}
+	getParams.AddExpand("latest_charge")
+	pi, err := paymentintent.Get(p.StripePaymentIntentID, getParams)
 	if err != nil {
 		log.Printf("[payments][confirm] fetch intent=%s: %v", p.StripePaymentIntentID, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "payments_error"})
@@ -413,10 +418,19 @@ func confirmTaskPayment(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 			return
 		}
+		brand, last4 := cardFromIntent(pi)
+		recordPaymentCard(ctx, p.ID, brand, last4)
 		log.Printf("[payments] 3DS confirmed task=%s payment=%s intent=%s amount=%d",
 			taskID, p.ID, pi.ID, authorized)
 		announceNewTask(ctx, taskID)
-		c.JSON(http.StatusOK, gin.H{"ok": true, "status": "open"})
+		// The hold, echoed back so the client can confirm it to the requester
+		// in the same breath as the post — the straight-through path does the
+		// same from the 201.
+		c.JSON(http.StatusOK, gin.H{
+			"ok":      true,
+			"status":  "open",
+			"payment": taskPaymentView(ctx, taskID),
+		})
 
 	case stripe.PaymentIntentStatusRequiresAction, stripe.PaymentIntentStatusRequiresConfirmation:
 		// Still waiting on the cardholder. The task stays parked.

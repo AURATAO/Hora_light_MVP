@@ -1190,3 +1190,164 @@ func listExtensionsAs(t *testing.T, taskID, uid, email string) map[string]any {
 	}
 	return decodeFirstJSON(t, w)
 }
+
+// ── 7. What the requester is told about their hold ─────────────────────────
+
+// The property that matters most here, and the one no amount of careful copy
+// substitutes for: what somebody reserved, and on which card, is REQUESTER
+// ONLY. A supporter reading the same task must not receive it — not as a
+// field they happen not to render, but absent from the payload.
+func TestPhase2bHoldIsVisibleToTheRequesterOnly(t *testing.T) {
+	setupStripeWebhookDB(t)
+	w := seedOpsWorld(t, "open")
+	paymentID := seedAuthorizedHold(t, w.taskID, w.requesterID)
+	seedDisplayCard(t, paymentID, "visa", "4242")
+
+	// Requester: the whole point of the change.
+	code, requesterView := getTaskAs(t, w.taskID, w.requesterID, requesterEmail)
+	if code != http.StatusOK {
+		t.Fatalf("getTask as requester: %d", code)
+	}
+	payment, ok := requesterView["payment"].(map[string]any)
+	if !ok {
+		t.Fatalf("the requester cannot see their own hold: %v", requesterView["payment"])
+	}
+	if got := num(payment["authorized_cents"]); got != 7675 {
+		t.Errorf("authorized = %s, want $76.75", formatCentsUSD(got))
+	}
+	if payment["card_brand"] != "visa" || payment["card_last4"] != "4242" {
+		t.Errorf("card not named: brand=%v last4=%v", payment["card_brand"], payment["card_last4"])
+	}
+	if payment["status"] != paymentStatusAuthorized {
+		t.Errorf("status = %v, want authorized", payment["status"])
+	}
+
+	// Supporter: absent, not empty. `omitempty` is what makes this a missing
+	// key rather than a zeroed object a careless client would render as
+	// "$0.00 reserved on".
+	code, supporterView := getTaskAs(t, w.taskID, w.supporterID, oldSupporterEmail)
+	if code != http.StatusOK {
+		t.Fatalf("getTask as supporter: %d", code)
+	}
+	if _, present := supporterView["payment"]; present {
+		t.Fatalf("the supporter can see the requester's hold: %v", supporterView["payment"])
+	}
+	// And nothing leaked in under another name.
+	raw, _ := json.Marshal(supporterView)
+	for _, secret := range []string{"7675", "4242", "card_last4", "authorized_cents"} {
+		if strings.Contains(string(raw), secret) {
+			t.Errorf("supporter payload contains %q: %s", secret, raw)
+		}
+	}
+}
+
+// A task with no hold — every task in the running beta — says nothing about
+// money at all. The key is absent, so a client cannot mistake it for
+// "$0.00 reserved", which would be a confident lie about somebody's card.
+func TestPhase2bTaskWithNoHoldCarriesNoPaymentBlock(t *testing.T) {
+	setupStripeWebhookDB(t)
+	w := seedOpsWorld(t, "open")
+
+	_, view := getTaskAs(t, w.taskID, w.requesterID, requesterEmail)
+	if _, present := view["payment"]; present {
+		t.Fatalf("a task with no hold reported a payment: %v", view["payment"])
+	}
+}
+
+// Cancel has to answer three questions with real numbers: how much was held,
+// how much was taken, how much went back.
+func TestPhase2bCancelReportsWhatWasReleased(t *testing.T) {
+	t.Run("nothing worked — the whole hold goes back", func(t *testing.T) {
+		setupStripeWebhookDB(t)
+		w := seedOpsWorld(t, "open")
+		if _, err := db.Exec(context.Background(),
+			`update public.tasks set assigned_to_id = null, assigned_to = '' where id=$1::uuid`,
+			w.taskID); err != nil {
+			t.Fatalf("unassign: %v", err)
+		}
+		paymentID := seedAuthorizedHold(t, w.taskID, w.requesterID)
+		seedDisplayCard(t, paymentID, "visa", "4242")
+
+		code, body := cancelAs(t, w.taskID, w.requesterID, "changed my mind")
+		if code != http.StatusOK {
+			t.Fatalf("cancel: %d (%v)", code, body)
+		}
+		if got := num(body["authorized_cents"]); got != 7675 {
+			t.Errorf("authorized = %s, want $76.75", formatCentsUSD(got))
+		}
+		if got := num(body["captured_cents"]); got != 0 {
+			t.Errorf("captured %s on a task nobody started", formatCentsUSD(got))
+		}
+		if got := num(body["released_cents"]); got != 7675 {
+			t.Errorf("released = %s, want the whole $76.75", formatCentsUSD(got))
+		}
+		if body["card_last4"] != "4242" {
+			t.Errorf("the confirmation cannot name the card: %v", body["card_last4"])
+		}
+	})
+
+	t.Run("work logged — charged some, released the rest", func(t *testing.T) {
+		setupStripeWebhookDB(t)
+		w := seedOpsWorld(t, "open")
+		seedWorklog(t, w.taskID, 40, false)
+		seedAuthorizedHold(t, w.taskID, w.requesterID)
+
+		code, body := cancelAs(t, w.taskID, w.requesterID, "plans changed")
+		if code != http.StatusOK {
+			t.Fatalf("cancel: %d (%v)", code, body)
+		}
+		// base $12.00 + 25 billable x $0.50 = $24.50 owed. Stripe is not
+		// configured in this test, so nothing actually moves and captured is 0
+		// — what is under test is that the three numbers are reported and add
+		// up, not Stripe's behaviour (payments_phase2b_smoke_test.go covers
+		// that against the real API).
+		if got := num(body["bill_cents"]); got != 2450 {
+			t.Errorf("bill = %s, want $24.50", formatCentsUSD(got))
+		}
+		held := num(body["authorized_cents"])
+		captured := num(body["captured_cents"])
+		released := num(body["released_cents"])
+		if held != 7675 {
+			t.Errorf("authorized = %s, want $76.75", formatCentsUSD(held))
+		}
+		if captured+released != held {
+			t.Errorf("the money does not add up: captured %s + released %s != held %s",
+				formatCentsUSD(captured), formatCentsUSD(released), formatCentsUSD(held))
+		}
+	})
+}
+
+// A hold that never happened must not produce a confident number. With
+// payments off the cancel still answers, and answers zero — which the clients
+// read as "say nothing", not as "$0.00 released".
+func TestPhase2bCancelWithNoHoldReportsZeroes(t *testing.T) {
+	setupStripeWebhookDB(t)
+	w := seedOpsWorld(t, "open")
+	if _, err := db.Exec(context.Background(),
+		`update public.tasks set assigned_to_id = null, assigned_to = '' where id=$1::uuid`,
+		w.taskID); err != nil {
+		t.Fatalf("unassign: %v", err)
+	}
+
+	code, body := cancelAs(t, w.taskID, w.requesterID, "changed my mind")
+	if code != http.StatusOK {
+		t.Fatalf("cancel: %d (%v)", code, body)
+	}
+	for _, key := range []string{"authorized_cents", "captured_cents", "released_cents"} {
+		if got := num(body[key]); got != 0 {
+			t.Errorf("%s = %s on a task that never had a hold", key, formatCentsUSD(got))
+		}
+	}
+	if _, present := body["card_last4"]; present {
+		t.Errorf("a card was named for a hold that never existed: %v", body["card_last4"])
+	}
+}
+
+func seedDisplayCard(t *testing.T, paymentID, brand, last4 string) {
+	t.Helper()
+	if _, err := db.Exec(context.Background(),
+		`update public.payments set card_brand=$2, card_last4=$3 where id=$1::uuid`,
+		paymentID, brand, last4); err != nil {
+		t.Fatalf("seed display card: %v", err)
+	}
+}

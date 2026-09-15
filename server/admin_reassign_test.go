@@ -126,6 +126,23 @@ CREATE TABLE public.device_push_tokens (
 	created_at timestamptz NOT NULL DEFAULT now(),
 	last_seen_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Supabase always has these roles; a bare postgres:16 container does not, and
+-- the migrations applied on top of this fixture REVOKE on them by name.
+--
+-- This fixture got away without them until a Phase 2b migration added a REVOKE
+-- and the suite started passing only on a container where some EARLIER test
+-- had already created them — green on a warm container, red on a fresh one.
+-- Created here so this fixture stands on its own, like createdViaFixture and
+-- adminOpsFixture already do.
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='anon') THEN
+    CREATE ROLE anon NOLOGIN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='authenticated') THEN
+    CREATE ROLE authenticated NOLOGIN;
+  END IF;
+END $$;
 `
 
 // Real migration files, in order, so the tests meet the schema the handler will

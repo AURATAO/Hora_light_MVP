@@ -75,7 +75,9 @@ export function useTaskEstimate({
   return estimate
 }
 
-/** Renders integer cents. The one place the web app turns money into a string. */
-export function formatCents(cents) {
-  return `$${((cents || 0) / 100).toFixed(2)}`
-}
+// Renders integer cents. Re-exported from its own leaf module
+// (src/lib/formatCents.js) so that plain `node --test` files can import the
+// formatter without pulling React and the API client in with it. Every
+// existing `import { formatCents } from '../hooks/useTaskEstimate'` keeps
+// working unchanged.
+export { formatCents } from '../lib/formatCents.js'

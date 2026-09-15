@@ -115,6 +115,29 @@ export interface PublicProfile {
   asg_completed: number;
 }
 
+/**
+ * The hold on the requester's card: what is reserved, on which card, and what
+ * became of it.
+ *
+ * REQUESTER ONLY. The server attaches it to GET /tasks/:id and POST /tasks for
+ * the requester and omits the key entirely for everyone else, so a supporter's
+ * copy of a task does not carry it — this is optional here because it is
+ * genuinely absent, not because it is sometimes empty.
+ */
+export interface TaskPayment {
+  /** What is authorized on the card right now, or was before settlement. */
+  authorized_cents: number;
+  status: "requires_auth" | "authorized" | "captured" | "canceled" | "failed" | "capture_failed";
+  /** Display only, and both absent on a hold placed before the card was
+   *  recorded. Clients drop the card clause rather than inventing one. */
+  card_brand?: string;
+  card_last4?: string;
+  /** What was actually taken, and the rest of the hold — which Stripe frees on
+   *  its own. Releasing is NOT a refund and the copy must not call it one. */
+  captured_cents: number;
+  released_cents: number;
+}
+
 export interface Task {
   id: string;
   title: string;
@@ -150,6 +173,9 @@ export interface Task {
    * this is the raw amount the supporter typed, before the budget cap. */
   receipt_amount_cents?: number | null;
   receipt_photo_url?: string | null;
+  /** The hold on the card. Requester-only and detail-only — absent from every
+   *  list response and from the supporter's copy of the same task. */
+  payment?: TaskPayment;
   created_at: string;
   /** Legacy email columns (S-60.1) — present on every /tasks response. Only
    * for TalkJS participant identity (matches web's existing id-by-email

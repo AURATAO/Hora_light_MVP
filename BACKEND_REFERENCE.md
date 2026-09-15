@@ -1080,3 +1080,59 @@ would be three places to forget.
 Go build that emits them** (S-21). `TestAdminRemoveNotificationEnumCoversEveryEmittedType`
 is the regression net; it also gained `TASK_REASSIGNED`, which had been emitted
 since September and was missing from the list.
+
+#### 10.8 Telling the requester about the hold
+
+An off-session pre-auth is **silent**. Nothing about it is visible to the
+person whose card it is: no sheet, no challenge, no confirmation. In live
+testing a requester posted a task, saw nothing about their money, concluded the
+post had failed, and cancelled it — cancelling the very hold they were worried
+had not been placed.
+
+The money was correct throughout. The gap was communication, and it is closed
+on three surfaces that must tell one story:
+
+| Surface | Says |
+|---|---|
+| post success | "We've reserved $76.75 on your card (Visa ••4242). You'll only be charged for actual time and purchases when the task completes — anything unused is released automatically." |
+| the open task | "On hold — $76.75 reserved · Visa ••4242", plus "Not a charge…" |
+| cancel, before | "Your reserved $76.75 will be released immediately." |
+| cancel, after | "Reserved $76.75 released. Depending on your bank, it may take 1–7 days to disappear from your statement." — or, with work logged, "Charged $24.50 for completed time; the remaining $52.25 hold has been released." |
+
+**What the API exposes.** `Task.payment`, a `TaskPayment` block:
+`authorized_cents`, `status`, `card_brand`, `card_last4`, `captured_cents`,
+`released_cents`. Attached by **`GET /tasks/:id` and `POST /tasks`** (and echoed
+by `POST /tasks/:id/payment/confirm`, so a 3DS post confirms in the same words
+as a straight-through one).
+
+**REQUESTER ONLY**, and `omitempty`, so the key is *absent* from the
+supporter's copy of a task rather than present-and-empty — a zeroed object is
+something a careless client renders as "$0.00 reserved on". It is attached
+inside an explicit `uid == RequesterID` branch and nowhere else; no list
+endpoint carries it. `TestPhase2bHoldIsVisibleToTheRequesterOnly` asserts both
+halves and scans the supporter's raw payload for the amount and the last four.
+
+`POST /tasks/:id/cancel` gained `authorized_cents`, `released_cents` and
+`card_brand`/`card_last4` alongside the existing `bill_cents` and
+`captured_cents`. **`released_cents` is computed in Go**, not by the client
+subtracting one figure from another — Stripe frees the remainder of a
+partially-captured authorization itself, there is no event recording it, and a
+client doing its own arithmetic can disagree with what actually happened.
+
+**`payments.card_brand` / `card_last4`** (migration 20260915120000) record the
+card *at authorization*, not the requester's current default. The hold does not
+move when they change their default card, so neither does what they are told
+about it. Display only — brand and last four, nothing replayable.
+
+**Copy rules**, both learned from the incident and both pinned by
+`app/src/lib/paymentCopy.test.mjs`:
+
+1. **Always a real number.** Never "your card may be charged" — vagueness about
+   somebody's money is what caused the cancellation. Where the amount is
+   unknown the helpers return `null` and the surface renders nothing.
+2. **Never "refund".** A released authorization is not a refund and must not be
+   called one; nothing was taken.
+
+The strings live in one module per client — `app/src/lib/paymentCopy.js` and
+`mobile/src/lib/payment-copy.ts`, word-for-word twins — because a requester who
+posts on web and cancels on their phone has to be told the same thing twice.

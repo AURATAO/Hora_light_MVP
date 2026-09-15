@@ -15,6 +15,7 @@ import type {
   Task,
   TaskCategory,
   TaskCost,
+  TaskPayment,
   TaskCreatedVia,
   TravelEstimate,
   User,
@@ -393,8 +394,10 @@ export function deletePaymentMethod(id: string): Promise<{ ok: true }> {
  * Stripe rather than believing this call, so it cannot be used to post an
  * unfunded task.
  */
-export function confirmTaskPayment(taskId: string): Promise<{ ok: true; status: string }> {
-  return apiFetch<{ ok: true; status: string }>(
+export function confirmTaskPayment(
+  taskId: string
+): Promise<{ ok: true; status: string; payment?: TaskPayment }> {
+  return apiFetch<{ ok: true; status: string; payment?: TaskPayment }>(
     `/tasks/${encodeURIComponent(taskId)}/payment/confirm`,
     { method: "POST" }
   );
@@ -443,6 +446,15 @@ export interface CancelTaskResult {
   total_minutes: number;
   bill_cents: number;
   refund_cents: number;
+  /** What the hold was, what was taken from it, and what went back. All three
+   *  are 0 on a task that never had one — the confirmation then says nothing
+   *  about money rather than "$0.00 released". */
+  authorized_cents?: number;
+  captured_cents?: number;
+  released_cents?: number;
+  /** The card the money is going back to, when it is known. */
+  card_brand?: string;
+  card_last4?: string;
 }
 
 export function cancelTask(id: string, reason: string): Promise<CancelTaskResult> {

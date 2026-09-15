@@ -6,6 +6,7 @@ import {
 } from "@stripe/stripe-react-native";
 import { ApiError } from "./api-error";
 import { confirmTaskPayment, createSetupIntent, getPaymentMethods } from "./api";
+import type { TaskPayment } from "./types";
 
 /**
  * Stripe orchestration for the app. Everything native-SDK-shaped lives here so
@@ -58,7 +59,10 @@ async function applyPublishableKey(key: string): Promise<void> {
 
 /** What a card sheet or a challenge can end as. */
 export type PaymentOutcome =
-  | { status: "done" }
+  /** `payment` is present only on the post-a-task challenge, where the confirm
+   *  endpoint echoes back the hold that just landed — the success screen needs
+   *  it to say what was reserved. Saving a card carries none. */
+  | { status: "done"; payment?: TaskPayment }
   /** The person closed the sheet. Not an error — nothing to show. */
   | { status: "canceled" }
   | { status: "failed"; message: string };
@@ -152,8 +156,8 @@ export async function completeCardAuthentication(details: {
   }
 
   try {
-    await confirmTaskPayment(task_id);
-    return { status: "done" };
+    const confirmed = await confirmTaskPayment(task_id);
+    return { status: "done", payment: confirmed?.payment };
   } catch (e) {
     return {
       status: "failed",
