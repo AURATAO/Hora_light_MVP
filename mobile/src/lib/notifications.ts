@@ -1,5 +1,6 @@
 import type { LucideIcon } from "lucide-react-native";
 import {
+  Banknote,
   CheckCircle2,
   ClipboardCheck,
   Clock,
@@ -52,6 +53,11 @@ const NOTIFICATION_META: Record<NotificationType, NotificationMeta> = {
   EXTENSION_RESOLVED: { icon: HandCoins, tint: "neutral" },
   TIME_CAP_WARNING: { icon: Clock, tint: "neutral" },
   TIME_CAP_REACHED: { icon: TimerOff, tint: "neutral" },
+
+  // Stripe Phase 3. The only unambiguously good money event in the list —
+  // brand, like the completion events, because it reads the same way to
+  // everyone who can see it (its only recipient is the supporter being paid).
+  PAYOUT_SENT: { icon: Banknote, tint: "brand" },
 };
 
 // Falls back to a neutral message icon for any type the client doesn't

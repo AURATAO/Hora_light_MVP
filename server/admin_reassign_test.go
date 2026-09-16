@@ -159,6 +159,10 @@ var reassignMigrationPaths = []string{
 	"../supabase/migrations/20260914130000_notification_types_phase2b.sql",
 	"../supabase/migrations/20260914140000_extension_requests.sql",
 	"../supabase/migrations/20260915140000_notification_type_balance_due.sql",
+	// Phase 3. PAYOUT_SENT is written by the settlement path the moment a
+	// transfer lands, so the enum value has to exist in the fixture for the
+	// same reason the Phase 2b ones do.
+	"../supabase/migrations/20260916130000_notification_type_payouts.sql",
 }
 
 func setupReassignDB(t *testing.T) {

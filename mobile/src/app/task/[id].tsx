@@ -25,6 +25,7 @@ import { Avatar, Badge, Button, EmptyState, PressableScale, Screen, Skeleton } f
 import {
   ApiError,
   acceptTask,
+  isPayoutsOnboardingRequired,
   cancelTask,
   clockIn,
   clockOut,
@@ -199,6 +200,11 @@ export default function TaskDetail() {
   // Accept block (and any error inside it) unmounts, so a message rendered
   // there would blink out of existence before it could be read.
   const [acceptLost, setAcceptLost] = useState(false);
+  // The payouts gate (Stripe Phase 3). Kept separate from acceptError because
+  // it is not a failure to retry: the supporter can do this task, they just
+  // have nowhere for the money to land yet, and the only useful response is a
+  // route into onboarding rather than the same button again.
+  const [payoutsGate, setPayoutsGate] = useState<string | null>(null);
   const [clockLoading, setClockLoading] = useState(false);
   const [clockError, setClockError] = useState<string | null>(null);
   // Which capture path is live for this clock-in, and the single source the
@@ -372,6 +378,14 @@ export default function TaskDetail() {
       await load();
     } catch (e) {
       if (handleAuthError(e)) return;
+      if (isPayoutsOnboardingRequired(e)) {
+        // The task is still open behind this — the server refuses BEFORE the
+        // claiming update, so nothing was taken off the board and coming back
+        // after onboarding finds it exactly as it was.
+        const body = (e as ApiError).body as Record<string, unknown> | undefined;
+        setPayoutsGate(typeof body?.message === "string" ? body.message : "");
+        return;
+      }
       if (e instanceof ApiError && e.message === ACCEPT_LOST_ERROR) {
         // Someone else won. Say so plainly, refetch so this screen stops
         // offering a task that is gone, then hand them back to the feed.
@@ -1329,8 +1343,37 @@ export default function TaskDetail() {
             leave the task acceptable, so the button is still here to retry. */}
         {isAvailableToAccept ? (
           <View className="mb-8 gap-2">
-            <Button label="Accept task" onPress={handleAccept} loading={accepting} />
-            {acceptError ? <Text className="text-caption text-danger">{acceptError}</Text> : null}
+            {/* The payouts gate takes the screen's one solid CTA when it is
+                up (DESIGN.md §1): "Accept task" cannot succeed until payouts
+                are set up, so offering both would be offering a button that
+                is guaranteed to fail. Brand tint rather than danger — nothing
+                went wrong, there is just a step missing. */}
+            {payoutsGate !== null ? (
+              <View className="gap-3 rounded-card bg-brand-tint p-4">
+                <Text className="text-body font-semibold text-brand">
+                  Set up payouts to start earning
+                </Text>
+                <Text className="text-caption text-brand">
+                  {payoutsGate ||
+                    "Add your bank details through Stripe. It only takes a couple of minutes."}
+                </Text>
+                <Button label="Set up payouts" onPress={() => router.push("/profile/earnings")} />
+                <PressableScale
+                  onPress={() => setPayoutsGate(null)}
+                  hitSlop={8}
+                  className="min-h-11 justify-center"
+                >
+                  <Text className="text-caption font-semibold text-brand">Not now</Text>
+                </PressableScale>
+              </View>
+            ) : (
+              <>
+                <Button label="Accept task" onPress={handleAccept} loading={accepting} />
+                {acceptError ? (
+                  <Text className="text-caption text-danger">{acceptError}</Text>
+                ) : null}
+              </>
+            )}
           </View>
         ) : null}
 
@@ -1690,6 +1733,41 @@ function SettlementCard({
           We couldn't complete the payment for this task. The HO:RA team has been notified and will
           sort it out — there's nothing you need to do.
         </Text>
+      ) : null}
+
+      {/* What the SUPPORTER earned, and only ever on their own copy: the
+          server attaches `earned` behind an assignment check, so a requester's
+          settlement has no such key. The requester's version of this card says
+          what they were CHARGED — one settlement, two disjoint views, and
+          neither is ever shown to the other party. */}
+      {settlement.earned ? (
+        <View className="gap-1 border-t border-line pt-3">
+          <Text className="text-caption font-semibold text-muted">You earned</Text>
+          <View className="flex-row justify-between">
+            <Text className="flex-1 pr-2 text-caption text-muted">
+              {formatCost(settlement.earned.time_cents)} (time)
+              {settlement.earned.reimbursement_cents > 0
+                ? ` + ${formatCost(settlement.earned.reimbursement_cents)} (reimbursement)`
+                : ""}
+            </Text>
+            <Text className="text-body font-semibold text-ink">
+              {formatCost(settlement.earned.total_cents)}
+            </Text>
+          </View>
+          {/* "On its way", never "paid". Stripe executes the transfer when the
+              requester's charge settles, and the bank deposit is a further step
+              on its daily payout schedule — telling somebody the money is in
+              their account when it is two days out is how tickets get made. */}
+          {settlement.earned.payout_status === "paid" ? (
+            <Text className="text-caption text-muted">On its way to your bank.</Text>
+          ) : null}
+          {settlement.earned.payout_status === "failed" ? (
+            <Text className="text-caption text-muted">
+              We couldn&apos;t send this yet. The HO:RA team has been notified — there&apos;s
+              nothing you need to do.
+            </Text>
+          ) : null}
+        </View>
       ) : null}
 
       {settlement.receipt_photo_url ? (

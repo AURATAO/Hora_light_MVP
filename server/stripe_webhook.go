@@ -52,11 +52,53 @@ func RegisterStripeWebhooks(r *gin.Engine) {
 	r.POST("/webhooks/stripe", handleStripeWebhook)
 }
 
+// stripeWebhookSecrets returns every endpoint secret this deployment accepts.
+//
+// TWO ENDPOINTS, ONE URL, TWO SECRETS. Stripe scopes a webhook endpoint to
+// either "your account" or "connected accounts", never both, and Phase 3 needs
+// events from each: payment_intent.* and transfer.* are platform events, while
+// account.updated and payout.failed for a supporter's Express account are
+// connected-account events. Two endpoints in the dashboard can point at this
+// same URL, but each is signed with its OWN secret — so verification has to
+// try both rather than assume one.
+//
+// Order matters only for speed: the account secret is tried first because it
+// signs the overwhelming majority of traffic.
+func stripeWebhookSecrets() []string {
+	var out []string
+	for _, name := range []string{"STRIPE_WEBHOOK_SECRET", "STRIPE_CONNECT_WEBHOOK_SECRET"} {
+		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// verifyStripeEvent checks the signature against each configured secret and
+// returns the first that verifies.
+//
+// A failure against ALL of them is indistinguishable from a forgery and is
+// treated as one. Note what this does NOT do: fall back to parsing the body
+// when no secret matches. The signature is the entire authentication of an
+// unauthenticated endpoint, and an event that cannot be verified is not a
+// degraded event, it is an unknown one.
+func verifyStripeEvent(raw []byte, sigHeader string) (stripe.Event, error) {
+	secrets := stripeWebhookSecrets()
+	var lastErr error = fmt.Errorf("no webhook secret configured")
+	for _, secret := range secrets {
+		event, err := webhook.ConstructEvent(raw, sigHeader, secret)
+		if err == nil {
+			return event, nil
+		}
+		lastErr = err
+	}
+	return stripe.Event{}, lastErr
+}
+
 func handleStripeWebhook(c *gin.Context) {
-	secret := strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET"))
-	if secret == "" {
+	if len(stripeWebhookSecrets()) == 0 {
 		// Nothing can be authenticated, so nothing is trusted. Fail closed.
-		log.Printf("[stripe][webhook] STRIPE_WEBHOOK_SECRET not set — rejecting")
+		log.Printf("[stripe][webhook] no STRIPE_WEBHOOK_SECRET / STRIPE_CONNECT_WEBHOOK_SECRET set — rejecting")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
@@ -76,7 +118,9 @@ func handleStripeWebhook(c *gin.Context) {
 	// header, recomputes HMAC-SHA256 over "timestamp.body" with the endpoint
 	// secret, compares in constant time, and enforces the default 5-minute
 	// timestamp tolerance so a captured request cannot be replayed later.
-	event, err := webhook.ConstructEvent(raw, c.GetHeader("Stripe-Signature"), secret)
+	// verifyStripeEvent runs it against each configured endpoint secret — see
+	// its note on why there are two.
+	event, err := verifyStripeEvent(raw, c.GetHeader("Stripe-Signature"))
 	if err != nil {
 		log.Printf("[stripe][webhook] signature verification failed: %v", err)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -115,6 +159,28 @@ func handleStripeWebhook(c *gin.Context) {
 		err = onPaymentIntentStatus(ctx, &event, paymentStatusFailed)
 	case "charge.dispute.created":
 		err = onChargeDisputeCreated(ctx, &event)
+
+	// ── Phase 3: the supporter's side ──────────────────────────────────────
+	//
+	// account.updated is the event the accept gate depends on. It is what
+	// keeps users.stripe_payouts_enabled honest without the gate making an API
+	// call per accept, and it fires on exactly the transitions that matter:
+	// onboarding completing, a document expiring, a deadline passing.
+	// CONNECTED-ACCOUNT SCOPED — it arrives at the second endpoint.
+	case "account.updated":
+		err = onAccountUpdated(ctx, &event)
+
+	// Money coming back out of a supporter's account, almost always because
+	// the charge that funded it was disputed or refunded. Platform-scoped.
+	case "transfer.reversed":
+		err = onTransferReversed(ctx, &event)
+
+	// The LAST leg: the supporter's bank rejecting a deposit. Not a transfer
+	// failure — the money is in their Stripe balance and our payouts rows are
+	// all still correct — so this notifies rather than updates.
+	// CONNECTED-ACCOUNT SCOPED.
+	case "payout.failed":
+		err = onConnectedPayoutFailed(ctx, &event)
 	default:
 		// Unknown or unsubscribed event types are acknowledged, not errored.
 		// A 4xx/5xx here would make Stripe retry an event we will never care

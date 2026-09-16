@@ -413,6 +413,11 @@ func main() {
 	// Session-authenticated and 503-gated on Stripe being configured; see
 	// payments_cards.go.
 	RegisterPaymentRoutes(r, dualAuth(sqldb))
+	// Phase 3 — the supporter's side of the money: Connect Express onboarding,
+	// payout status, the Express dashboard link and the Earnings read model.
+	// Same session auth and same 503-on-unconfigured-Stripe gate as the card
+	// routes; see payments_connect.go.
+	RegisterConnectRoutes(r, dualAuth(sqldb))
 	RegisterNotificationRoutes(r, sqldb)
 
 	addAvatarUploadRouteV1(r)
@@ -439,6 +444,14 @@ func main() {
 	r.POST("/admin/tasks/:id/force-complete", dualAuth(sqldb), requireOpsAdmin(), adminForceCompleteTask)
 	r.POST("/admin/tasks/:id/cancel", dualAuth(sqldb), requireOpsAdmin(), adminCancelTaskHandler)
 	r.POST("/admin/tasks/:id/adjust-time", dualAuth(sqldb), requireOpsAdmin(), adminAdjustTime)
+
+	// Re-sending a transfer that Stripe refused — a supporter whose connected
+	// account was restricted or had requirements overdue at settlement time.
+	// Same allowlist and audit trail as the task actions above, and held to a
+	// tighter guard than any of them because it is the one admin action that
+	// moves money: it refuses outright if the payout already has a transfer
+	// id. See payments_payouts.go.
+	r.POST("/admin/payouts/:id/retry", dualAuth(sqldb), requireOpsAdmin(), adminRetryPayout)
 
 	// 列出所有路由（除錯用）
 
@@ -2663,6 +2676,32 @@ func acceptTask(c *gin.Context) {
 		return
 	}
 
+	// Phase 3: can we actually pay this person?
+	//
+	// Checked BEFORE the claiming UPDATE, so a supporter who cannot be paid
+	// never takes the task off the board — refusing after the claim would
+	// leave the task assigned to someone we then told to go away.
+	//
+	// A no-op while PAYMENTS_ENFORCED is off, which is the running beta: the
+	// whole payouts surface is optional until the flag flips, and this returns
+	// true before reading anything. See supporterPayoutsReady for why it reads
+	// a cached column rather than calling Stripe on a path where supporters
+	// are racing each other for a task.
+	if ready, err := supporterPayoutsReady(ctx, meUID); err != nil || !ready {
+		if err != nil {
+			log.Printf("[accept] task=%s supporter=%s payout readiness unreadable: %v", id, meUID, err)
+		}
+		// 403 rather than 402: nothing is owed and no payment is required —
+		// the supporter is simply not yet set up to receive one. The clients
+		// branch on the error code, not the status, and turn it into the
+		// "Set up payouts to start earning" prompt with the onboarding CTA.
+		c.JSON(http.StatusForbidden, gin.H{
+			"error":   "payouts_onboarding_required",
+			"message": "Set up payouts to start earning. It takes a couple of minutes and you only do it once.",
+		})
+		return
+	}
+
 	// The check above is advisory only — it exists to produce friendly errors.
 	// The real guard is here: the WHERE clause re-tests availability inside the
 	// UPDATE, so two concurrent accepts serialize on the row lock and only the
@@ -3113,6 +3152,23 @@ func getWorklogs(c *gin.Context) {
 	if inputs.ReceiptPhotoURL != "" {
 		settlement["receipt_photo_url"] = inputs.ReceiptPhotoURL
 	}
+
+	// Phase 3 — what the SUPPORTER earned, attached only for the supporter.
+	//
+	// The mirror image of TaskPayment, and deliberately disjoint from it. The
+	// requester's half of this screen says what was reserved and on which card;
+	// this half says what was earned and what it was made of. Neither ever
+	// reaches the other party, and the two are assembled in different places so
+	// that no future edit can accidentally merge them: `payment` is attached by
+	// taskPaymentView's callers behind an ownership check, this by the branch
+	// below.
+	//
+	// Absent, not zeroed, for the requester — same reasoning as `payment`'s
+	// omitempty. A requester who saw `earned: {}` would be shown a supporter's
+	// pay packet reading $0.00, which is both untrue and none of their business.
+	if assignedToID != nil && *assignedToID == meUID {
+		settlement["earned"] = supporterEarningsView(ctx, taskID, meUID, cost)
+	}
 	// What actually moved, when anything did. Absent on every task posted with
 	// PAYMENTS_ENFORCED off, where the figures above are what WOULD be charged.
 	var settledTotal *int
@@ -3172,6 +3228,76 @@ func settlementState(ctx context.Context, taskID, taskStatus string) string {
 		return "not_charged"
 	}
 	return "estimated"
+}
+
+// SupporterEarnings is a task's money as its SUPPORTER sees it.
+//
+// SUPPORTER ONLY. Everything here is about money arriving; nothing is about
+// where it came from. There is no requester, no card, no hold, no authorized
+// amount and no capture status — a supporter has no more business knowing what
+// the requester's bank did than the requester has knowing the supporter's.
+//
+// Every figure is computed here and rendered verbatim (S-05). The clients add
+// nothing up, so "You earned $19.50 (time) + $12.40 (reimbursement)" cannot
+// disagree with what was actually transferred.
+type SupporterEarnings struct {
+	// The time half: base fee plus billable minutes at the task's resolved
+	// rate. What the supporter is paid for their hours.
+	TimeCents int `json:"time_cents"`
+	// The receipt half: money they fronted, coming back. NOT earnings in any
+	// meaningful sense, which is exactly why it is a separate number — a
+	// supporter who sees one total for a shopping task cannot tell what they
+	// actually made from what they are being handed back.
+	ReimbursementCents int `json:"reimbursement_cents"`
+	// The sum, net of the platform cut. Zero cut during beta, so today it is
+	// simply time + reimbursement.
+	TotalCents int `json:"total_cents"`
+
+	// What actually happened to the transfer, when there is one.
+	//
+	//	(absent)  no payout row — the task settled before Phase 3, or the
+	//	          supporter has no connected account. The figures above are
+	//	          what they are OWED.
+	//	pending   recorded, transfer not confirmed
+	//	paid      sent. NOT "in your bank" — see the copy note in
+	//	          notifySupporterPaid.
+	//	failed    ops have been told; nobody needs to do anything in-app
+	PayoutStatus string `json:"payout_status,omitempty"`
+}
+
+// supporterEarningsView builds the supporter's half from the same TaskQuote
+// the requester's half is built from.
+//
+// Reusing that quote rather than re-deriving is the point: the requester's
+// total and the supporter's total are two views of ONE settlement, and
+// computing them from one value is what stops them drifting into a state where
+// the app tells two people different things about the same forty minutes.
+func supporterEarningsView(ctx context.Context, taskID, supporterID string, cost TaskQuote) SupporterEarnings {
+	e := SupporterEarnings{
+		TimeCents:          cost.BaseFeeCents + cost.TimeCostCents,
+		ReimbursementCents: cost.ShoppingReceiptCents,
+	}
+	gross := e.TimeCents + e.ReimbursementCents
+	e.TotalCents = gross - platformCutCents(gross)
+
+	// The transfer, if one exists. A task may have two payout rows (the hold
+	// and a completion balance), so the worst status wins: 'failed' if
+	// anything failed, then 'pending', then 'paid'. Reporting 'paid' while
+	// half the money is stuck would be the wrong way round.
+	var status *string
+	if err := db.QueryRow(ctx, `
+		select case
+		         when bool_or(status = $3) then $3
+		         when bool_or(status = $4) then $4
+		         else $5
+		       end
+		  from public.payouts
+		 where task_id = $1::uuid and supporter_id = $2::uuid
+		having count(*) > 0
+	`, taskID, supporterID, payoutStatusFailed, payoutStatusPending, payoutStatusPaid).Scan(&status); err == nil && status != nil {
+		e.PayoutStatus = *status
+	}
+	return e
 }
 
 // POST /tasks/:id/completion-photo — upload a completion photo to Supabase Storage.

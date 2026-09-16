@@ -42,6 +42,13 @@ export default function App() {
           <Route path="tasks/:id/review" element={<ReviewPage />} />
           <Route path="my" element={<My />} />
           <Route path="profile" element={<Profile />} />
+          {/* Where Stripe sends a supporter back to after payout onboarding —
+              it is the return_url and refresh_url the backend mints every
+              Account Link with. Renders the profile page, whose Earnings card
+              reads ?onboarding= and either re-reads the account or mints a
+              fresh link. A dedicated screen would be a second place for the
+              same state machine to live. */}
+          <Route path="profile/earnings" element={<Profile />} />
           <Route path="become-supporter" element={<BecomeSupporter />} />
           <Route path="u/:id" element={<PublicProfilePage />} />
         </Route>

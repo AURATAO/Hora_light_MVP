@@ -67,7 +67,11 @@ export type NotificationType =
   | "TIME_EXTENSION_REQUESTED"
   | "EXTENSION_RESOLVED"
   | "TIME_CAP_WARNING"
-  | "TIME_CAP_REACHED";
+  | "TIME_CAP_REACHED"
+  // Stripe Phase 3. Deep-links to the task like the rest: the supporter's cut
+  // is shown on the settlement card there, and Profile → Earnings is where the
+  // running total lives.
+  | "PAYOUT_SENT";
 
 // GET /auth/me — discriminated on `auth` so callers narrow before reading fields.
 export type User =
@@ -283,6 +287,27 @@ export interface Settlement {
   receipt_photo_url?: string;
   captured_cents?: number;
   settled_at?: string | null;
+  /**
+   * What the SUPPORTER earned. Present ONLY on the supporter's own copy of
+   * this payload — the server attaches it behind an assignment check, so a
+   * requester's Settlement has no `earned` key at all.
+   *
+   * The mirror of the requester-only `payment` block on Task: one settlement,
+   * two disjoint views, and neither ever reaches the other party.
+   */
+  earned?: SupporterEarnings;
+}
+
+/** A settled task's money, from the side of the person who did the work. */
+export interface SupporterEarnings {
+  /** Base fee + billable minutes. What they made. */
+  time_cents: number;
+  /** Money they fronted, coming back. Separate on purpose — it is not income. */
+  reimbursement_cents: number;
+  /** The sum, net of the platform cut (zero during beta). */
+  total_cents: number;
+  /** Absent when no transfer exists yet: the figures above are what is OWED. */
+  payout_status?: "pending" | "paid" | "failed";
 }
 
 // GET /tasks/:id/worklogs

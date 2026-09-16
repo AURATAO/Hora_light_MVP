@@ -6,6 +6,7 @@ import * as SecureStore from "expo-secure-store";
 import * as WebBrowser from "expo-web-browser";
 import Constants from "expo-constants";
 import {
+  Banknote,
   ChevronRight,
   CreditCard,
   FileText,
@@ -359,6 +360,20 @@ export default function Profile() {
             label="Payment methods"
             onPress={() => router.push("/profile/payment-methods")}
           />
+          {/* Getting paid, for approved supporters only. Below payment methods
+              because the two are opposite directions of the same tab — money
+              leaving, then money arriving — and a payouts row on a requester's
+              profile is an invitation to a flow that does not apply to them. */}
+          {profile.supporter_status === "approved" ? (
+            <>
+              <View className="h-px bg-line" />
+              <ListRow
+                icon={Banknote}
+                label="Earnings"
+                onPress={() => router.push("/profile/earnings")}
+              />
+            </>
+          ) : null}
         </Card>
       </View>
 
