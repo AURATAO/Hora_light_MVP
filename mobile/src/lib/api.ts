@@ -813,3 +813,77 @@ export function getTalkjsSignature(): Promise<string> {
 }
 
 export { ApiError } from "./api-error";
+
+// ── Phase 3: getting paid ──────────────────────────────────────────────────
+//
+// The supporter's half of the money. Nothing here ever touches a bank account,
+// an SSN or an identity document — Stripe collects all of it, on its own
+// domain, through a URL this backend mints. The app only ever holds that URL
+// and a status word.
+
+/** not_started → in_progress → complete. The Earnings screen is a machine over this. */
+export type OnboardingState = "not_started" | "in_progress" | "complete";
+
+export interface ConnectStatus {
+  state: OnboardingState;
+  payouts_enabled: boolean;
+  details_submitted: boolean;
+  /** Stripe's own field names. Render the COUNT, never the names. */
+  requirements_due: string[];
+  /** Whether accepting is currently gated on payouts (PAYMENTS_ENFORCED). */
+  payouts_enforced: boolean;
+}
+
+export interface EarningsTransfer {
+  task_id: string;
+  task_title: string;
+  amount_cents: number;
+  time_cents: number;
+  receipt_cents: number;
+  status: "pending" | "paid" | "failed";
+  created_at: string;
+}
+
+export interface Earnings {
+  onboarding: ConnectStatus;
+  /** Lifetime PAID, not lifetime earned-on-paper — money in flight is excluded. */
+  lifetime_earned_cents: number;
+  transfers: EarningsTransfer[];
+}
+
+/**
+ * Start or resume payout onboarding.
+ *
+ * The returned URL is SINGLE-USE and grants access to the supporter's own
+ * personal information. Open it immediately in an in-app browser; never store
+ * it, never log it, never send it anywhere.
+ */
+export function createOnboardingLink(): Promise<{ url: string }> {
+  return apiFetch<{ url: string }>("/payments/connect/onboarding-link", { method: "POST" });
+}
+
+export function getConnectStatus(): Promise<ConnectStatus> {
+  return apiFetch<ConnectStatus>("/payments/connect/status");
+}
+
+/** One-time URL into the Stripe Express dashboard. 404 before onboarding. */
+export function createLoginLink(): Promise<{ url: string }> {
+  return apiFetch<{ url: string }>("/payments/connect/login-link", { method: "POST" });
+}
+
+export function getEarnings(): Promise<Earnings> {
+  return apiFetch<Earnings>("/payments/earnings");
+}
+
+/**
+ * Whether a failed accept was the payouts gate rather than a real failure.
+ *
+ * 403 and not 402: nothing is owed and no payment is required — the supporter
+ * simply has nowhere for money to land yet, and the only useful response is the
+ * onboarding CTA rather than a retry.
+ */
+export function isPayoutsOnboardingRequired(e: unknown): boolean {
+  if (!(e instanceof ApiError) || e.status !== 403) return false;
+  const body = (e.body ?? {}) as Record<string, unknown>;
+  return body.error === "payouts_onboarding_required";
+}

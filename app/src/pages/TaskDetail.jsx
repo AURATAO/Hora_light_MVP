@@ -11,6 +11,7 @@ import { useToast } from '../providers/ToastProvider'
 import { isTractionWindowActive } from '../lib/traction'
 import { useTaskEstimate, formatCents } from '../hooks/useTaskEstimate'
 import { holdSummary, timeBasisNote } from '../lib/paymentCopy'
+import { isPayoutsOnboardingRequired } from '../api/payments'
 
 
 /**
@@ -106,6 +107,42 @@ function SettlementPanel({ cost, settlement, isOwner, taskId }) {
         </div>
       )}
 
+      {/* What the SUPPORTER earned, sent only to them (server/main.go
+          attaches `earned` behind an assignment check). The requester's
+          version of this panel shows what they were CHARGED; this is the same
+          settlement from the other side, and the two are deliberately never
+          shown to the same person. */}
+      {settlement.earned && (
+        <div className="border-t border-white/10 pt-2 space-y-1">
+          <div className="text-xs text-white/60">You earned</div>
+          <div className="flex justify-between">
+            <span className="text-white/70">
+              {formatCents(settlement.earned.time_cents)} (time)
+              {settlement.earned.reimbursement_cents > 0 && (
+                <> + {formatCents(settlement.earned.reimbursement_cents)} (reimbursement)</>
+              )}
+            </span>
+            <span className="font-semibold text-white">
+              {formatCents(settlement.earned.total_cents)}
+            </span>
+          </div>
+          {/* "On its way", never "paid": Stripe executes the transfer when the
+              requester's charge settles, and the bank deposit is a further
+              step on its daily payout schedule. Telling somebody the money is
+              in their account when it is two days out is how support tickets
+              get made. */}
+          {settlement.earned.payout_status === 'paid' && (
+            <div className="text-xs text-white/40">On its way to your bank.</div>
+          )}
+          {settlement.earned.payout_status === 'failed' && (
+            <div className="text-xs text-white/40">
+              We couldn&apos;t send this yet. The HO:RA team has been notified — there&apos;s nothing
+              you need to do.
+            </div>
+          )}
+        </div>
+      )}
+
       {settlement.receipt_photo_url && (
         <div className="space-y-1">
           <div className="text-xs text-white/60">Receipt</div>
@@ -179,6 +216,11 @@ export default function TaskDetail() {
   const [askReasonOther, setAskReasonOther] = useState('')
   const [askFallback, setAskFallback] = useState('')
   const [askFallbackNote, setAskFallbackNote] = useState('')
+
+  // The payouts gate: a supporter tried to accept and has not set up payouts.
+  // Holds the backend's own wording so the prompt cannot drift from the
+  // refusal that produced it.
+  const [payoutsGate, setPayoutsGate] = useState(null)
 
   // Travel time estimate (supporter only, after task is accepted)
   const [travelEst, setTravelEst] = useState(null)   // { travel_minutes, task_minutes, total_minutes }
@@ -460,7 +502,14 @@ export default function TaskDetail() {
         await api(`/tasks/${id}/accept`, { method: 'POST' })
         await reloadWorkAndTask()
       } catch (e) {
-        if (e?.body?.error === 'not available') {
+        if (isPayoutsOnboardingRequired(e)) {
+          // Not an error and not a race — the payouts gate. The supporter can
+          // do this task; they just have nowhere for the money to land yet.
+          // Sending them straight to Earnings is the only useful response,
+          // and the task is still open when they come back because the gate
+          // refuses BEFORE the claim.
+          setPayoutsGate(e?.body?.message || '')
+        } else if (e?.body?.error === 'not available') {
           // Lost the race — someone else accepted first. Pull the fresh state
           // so the Accept button disappears.
           toast('This task was just accepted by someone else.')
@@ -897,6 +946,36 @@ export default function TaskDetail() {
                 </button>
               )}
             </div>
+
+            {/* The payouts gate. Shown in place of a toast because it carries
+                an ACTION and a toast does not — a supporter told "set up
+                payouts" with nothing to tap has been given a dead end. The
+                task is still open behind this: the backend refuses before the
+                claim, so nothing was taken off the board. */}
+            {payoutsGate !== null && (
+              <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 space-y-2">
+                <div className="text-sm text-white">Set up payouts to start earning</div>
+                <p className="text-xs text-white/60">
+                  {payoutsGate || 'Add your bank details through Stripe. It only takes a couple of minutes.'}
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => navigate('/profile/earnings')}
+                    className="rounded-md px-3 py-1.5 text-xs font-semibold text-white hover:brightness-110"
+                    style={{ backgroundColor: '#3A5A2D' }}
+                  >
+                    Set up payouts
+                  </button>
+                  <button
+                    onClick={() => setPayoutsGate(null)}
+                    className="rounded-md border border-white/20 px-3 py-1.5 text-xs text-white/70 hover:border-white/40"
+                  >
+                    Not now
+                  </button>
+                </div>
+              </div>
+            )}
+
             <h2 className="text-2xl font-semibold flex-1">{task.title}</h2>
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
               <div className="flex items-center gap-3">

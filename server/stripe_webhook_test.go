@@ -58,6 +58,13 @@ const cardDisplayMigrationPath = "../supabase/migrations/20260915120000_payments
 // balance needs. Last, because it rewrites CHECKs the earlier ones created.
 const restructureMigrationPath = "../supabase/migrations/20260915130000_billing_restructure.sql"
 
+// Phase 3: users.stripe_account_id + the status cache, public.payouts, and
+// payments.stripe_charge_id. Applied rather than restated, like every
+// migration in this fixture — a hand-copied CREATE TABLE keeps passing after
+// the shipped one diverges from it, and for a money table that is exactly the
+// divergence nobody would notice.
+const connectPayoutsMigrationPath = "../supabase/migrations/20260916120000_connect_payouts.sql"
+
 func setupStripeWebhookDB(t *testing.T) {
 	t.Helper()
 	setupAdminOpsDB(t) // users, tasks, worklogs, audit_logs + the pool swap
@@ -68,6 +75,7 @@ func setupStripeWebhookDB(t *testing.T) {
 	// unique constraint. Dropped AFTER setupAdminOpsDB so that tasks and users
 	// exist for the migration's foreign keys.
 	if _, err := db.Exec(context.Background(), `
+		DROP TABLE IF EXISTS public.payouts CASCADE;
 		DROP TABLE IF EXISTS public.payments CASCADE;
 		DROP TABLE IF EXISTS public.stripe_webhook_events CASCADE;
 	`); err != nil {
@@ -95,7 +103,7 @@ func setupStripeWebhookDB(t *testing.T) {
 	}
 
 	for _, path := range []string{paymentsMigrationPath, phase2aMigrationPath, phase2bMigrationPath, cardDisplayMigrationPath,
-		restructureMigrationPath} {
+		restructureMigrationPath, connectPayoutsMigrationPath} {
 		migration, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read migration %s: %v", path, err)

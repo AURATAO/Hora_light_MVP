@@ -140,13 +140,15 @@ func collectCompletionBalance(ctx context.Context, taskID, requesterID string, a
 		return p
 	}
 
-	if err := recordCapture(ctx, p.ID, int(pi.AmountReceived), 0, 0); err != nil {
+	chargeID := chargeIDFromIntent(pi)
+	if err := recordCapture(ctx, p.ID, int(pi.AmountReceived), 0, 0, chargeID); err != nil {
 		log.Printf("[payments][balance][ERROR] charged intent=%s but did not record payment=%s: %v",
 			pi.ID, p.ID, err)
 	}
 	log.Printf("[payments][balance] task=%s payment=%s intent=%s collected %s",
 		taskID, p.ID, pi.ID, formatCentsUSD(amountCents))
 	p.Status = paymentStatusCaptured
+	p.StripeChargeID = chargeID
 	return p
 }
 
@@ -174,6 +176,9 @@ func chargeBalanceOffSession(ctx context.Context, p *Payment, taskID, requesterI
 		PaymentMethod: stripe.String(payCtx.PaymentMethodID),
 		Confirm:       stripe.Bool(true),
 		OffSession:    stripe.Bool(true),
+		// Same task id the pre-auth carries, so a supporter transfer funded by
+		// this charge groups with the rest of the task's money in Stripe.
+		TransferGroup: stripe.String(taskID),
 		Metadata: map[string]string{
 			"task_id":      taskID,
 			"requester_id": requesterID,
@@ -271,6 +276,10 @@ type settlementOutcome struct {
 	// Err is set when the CAPTURE itself failed — nothing was collected at
 	// all. The task is still completed; the payment row is in capture_failed.
 	Err error
+	// Who was paid, when anybody was. Empty on a task nobody accepted, and on
+	// every task settled before Phase 3. Reported so the completion response
+	// can tell the supporter what they earned without a second lookup.
+	SupporterID string
 }
 
 // settleTaskPayment collects what a finished task owes.
@@ -311,13 +320,18 @@ func settleTaskPayment(ctx context.Context, taskID string, timeCostCents, receip
 		return out
 	}
 	out.CapturedCents = derefIntOr(captured.CapturedCents, 0)
+	// What the HOLD alone covered, kept before the balance branch adds to it.
+	// The supporter's first transfer is funded by this charge and may not
+	// exceed it — see payoutForTask.
+	mainCaptured := out.CapturedCents
 
 	// The overage. This is the branch the whole restructure buys: holding
 	// exactly the estimate means a task that ran over settles above its hold,
 	// and the difference is charged now rather than pre-emptively frozen on
 	// everybody's card for weeks.
+	var balance *Payment
 	if shortfall := total - out.CapturedCents; shortfall > 0 {
-		balance := collectCompletionBalance(ctx, taskID, main.RequesterID, shortfall)
+		balance = collectCompletionBalance(ctx, taskID, main.RequesterID, shortfall)
 		switch {
 		case balance == nil:
 			out.BalanceDueCents = shortfall
@@ -327,7 +341,69 @@ func settleTaskPayment(ctx context.Context, taskID string, timeCostCents, receip
 			out.BalanceDueCents = shortfall
 		}
 	}
+
+	// ── Phase 3: the supporter's side of the same settlement ──────────────
+	//
+	// ONE PAYOUT PER CAPTURED PAYMENT, and that is not an implementation
+	// detail — it is what makes the whole thing idempotent. Each transfer is
+	// tied by source_transaction to the exact charge that funded it, so it
+	// cannot be paid before that money arrives and cannot exceed it; and
+	// payouts.payment_id is UNIQUE, so a second settle of the same payment
+	// cannot produce a second transfer.
+	//
+	// Nothing below can fail the settlement. payoutForTask never returns an
+	// error the caller acts on, for the same reason capture does not: by this
+	// line the task is complete and the requester has been charged, and a
+	// transfer problem is an ops ticket rather than a reason to unwind money
+	// that has already moved.
+	out.SupporterID = taskSupporterID(ctx, taskID)
+	if out.SupporterID != "" {
+		// How much the balance charge actually collected. Distinct from
+		// BalanceDueCents, which is what it FAILED to collect.
+		balanceCaptured := 0
+		if balance != nil && balance.Status == paymentStatusCaptured {
+			balanceCaptured = total - mainCaptured
+		}
+		for _, split := range settlementPayouts(total, mainCaptured, balanceCaptured) {
+			in := payoutInput{
+				TaskID:         taskID,
+				SupporterID:    out.SupporterID,
+				OwedCents:      split.OwedCents,
+				ShortfallCents: split.ShortfallCents,
+			}
+			switch split.Source {
+			case payoutSourceHold:
+				in.PaymentID, in.SourceChargeID = main.ID, captured.StripeChargeID
+			case payoutSourceBalance:
+				in.PaymentID, in.SourceChargeID = balance.ID, balance.StripeChargeID
+			}
+			payoutForTask(ctx, in)
+		}
+	}
 	return out
+}
+
+// taskSupporterID is who worked the task, or empty when nobody did.
+//
+// Read at settlement rather than passed in because all three closing paths
+// (complete, force-complete, a cancel that settled real work) reach here with
+// different amounts of the task already in hand, and the assignment is the one
+// thing all three can agree to look up the same way.
+func taskSupporterID(ctx context.Context, taskID string) string {
+	var supporterID *string
+	if err := db.QueryRow(ctx,
+		`select assigned_to_id from public.tasks where id = $1::uuid`, taskID,
+	).Scan(&supporterID); err != nil || supporterID == nil {
+		return ""
+	}
+	return *supporterID
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // markCaptureFailed is the whole difference between "we know this task was
@@ -664,7 +740,7 @@ func settleOutstandingBalance(c *gin.Context) {
 		p := &Payment{ID: d.id, TaskID: d.taskID, RequesterID: uid, StripePaymentIntentID: d.intentID}
 		pi, err := chargeBalanceOffSession(ctx, p, d.taskID, uid, d.cents)
 		if err == nil {
-			if recErr := recordCapture(ctx, d.id, int(pi.AmountReceived), 0, 0); recErr != nil {
+			if recErr := recordCapture(ctx, d.id, int(pi.AmountReceived), 0, 0, chargeIDFromIntent(pi)); recErr != nil {
 				log.Printf("[payments][settle][ERROR] charged %s but did not record %s: %v",
 					pi.ID, d.id, recErr)
 			}

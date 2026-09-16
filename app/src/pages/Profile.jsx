@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import AvatarUploader from '../components/AvatarUploader'
+import Earnings from '../components/Earnings'
 import PaymentMethods from '../components/PaymentMethods'
 import { useToast } from '../providers/ToastProvider'
 
@@ -14,6 +15,11 @@ export default function Profile() {
   const [city, setCity] = useState('')
   const [bio, setBio] = useState('')
   const [avatarUrl, setAvatarUrl] = useState('')
+  // Approved supporters only see the Earnings card. Held as its own piece of
+  // state rather than derived at render because the profile load is the only
+  // thing that knows it, and an undefined here would flash the card to
+  // requesters for one frame.
+  const [supporterStatus, setSupporterStatus] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [submitted, setSubmitted] = useState(false)
@@ -26,6 +32,7 @@ export default function Profile() {
         setCity(p?.city ?? '')
         setBio(p?.bio ?? '')
         setAvatarUrl(p?.avatar_url ?? '')
+        setSupporterStatus(p?.supporter_status ?? '')
       })
       .catch(() => {})
       .finally(() => setLoading(false))
@@ -159,6 +166,13 @@ export default function Profile() {
             button look like it owned both. Renders nothing at all when the
             backend has no Stripe configured. */}
         <PaymentMethods />
+
+        {/* Getting paid. Its own card below the cards-on-file one, and the two
+            are deliberately not merged: one is about money leaving this
+            person and the other about money arriving, and they apply to
+            different roles. Renders nothing for anyone who is not an approved
+            supporter. */}
+        <Earnings isSupporter={supporterStatus === 'approved'} />
 
       </div>
     </div>

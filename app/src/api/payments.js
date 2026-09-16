@@ -73,3 +73,72 @@ export function formatExpiry(month, year) {
 export function isExpired(month, year) {
   return new Date(year, month, 1) <= new Date()
 }
+
+// ── Phase 3: getting paid ──────────────────────────────────────────────────
+//
+// The supporter's half of the money. Same rule as everything above: these all
+// go through the Go backend, and nothing here ever touches a bank account or
+// an identity document — those are collected by Stripe, on Stripe's own
+// domain, through a URL the backend mints. This app never sees either.
+
+/**
+ * Start (or resume) payout onboarding.
+ *
+ * Returns `{ url }` — a SINGLE-USE Stripe-hosted link that grants access to
+ * the supporter's own personal information. Navigate to it immediately; never
+ * store it, share it, or put it in a link someone could come back to.
+ */
+export function createOnboardingLink() {
+  return api('/payments/connect/onboarding-link', { method: 'POST' })
+}
+
+/** Where onboarding has got to: state, payouts_enabled, requirements_due. */
+export function getConnectStatus() {
+  return api('/payments/connect/status')
+}
+
+/**
+ * A one-time URL into the Stripe Express dashboard, where the supporter sees
+ * their own balance, payout schedule and bank account. Refused (404) for
+ * somebody who has not onboarded.
+ */
+export function createLoginLink() {
+  return api('/payments/connect/login-link', { method: 'POST' })
+}
+
+/** Onboarding state + lifetime earned + recent transfers, in one call. */
+export function getEarnings() {
+  return api('/payments/earnings')
+}
+
+/**
+ * Whether a failed accept was the payouts gate rather than a real error.
+ *
+ * The backend answers 403 `payouts_onboarding_required` when PAYMENTS_ENFORCED
+ * is on and the supporter has not finished onboarding. It is NOT a 402: nothing
+ * is owed and no payment is required — they are simply not set up to receive
+ * one, and the only useful response is the onboarding CTA.
+ */
+export function isPayoutsOnboardingRequired(e) {
+  return e?.status === 403 && e?.body?.error === 'payouts_onboarding_required'
+}
+
+/** Copy for each onboarding state. One place, so both the Earnings card and
+ *  the accept-gate prompt say the same thing about the same state. */
+export const ONBOARDING_COPY = {
+  not_started: {
+    title: 'Set up payouts to start earning',
+    body: 'Add your bank details through Stripe. It takes a couple of minutes and you only do it once.',
+    cta: 'Set up payouts',
+  },
+  in_progress: {
+    title: 'Finish setting up payouts',
+    body: 'Stripe still needs a few details before we can pay you.',
+    cta: 'Continue setup',
+  },
+  complete: {
+    title: 'Payouts are set up',
+    body: 'Payments land in your bank automatically.',
+    cta: 'Manage payouts',
+  },
+}

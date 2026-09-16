@@ -130,6 +130,12 @@ type Payment struct {
 	// from the customer's current default card.
 	CardBrand string
 	CardLast4 string
+
+	// The charge behind a captured intent. Phase 3's supporter transfer uses
+	// it as source_transaction, which is what lets the payout be funded by
+	// this actual charge rather than by whatever happens to be sitting in the
+	// platform's available balance. Empty until Capture fills it in.
+	StripeChargeID string
 }
 
 // Payment kinds and statuses. These strings are enforced by CHECK constraints
@@ -214,6 +220,13 @@ func CreatePreAuth(ctx context.Context, in PreAuthInput) (*Payment, error) {
 	// naming a card. The smoke test is what caught it, which is the whole
 	// reason that file talks to the real API.
 	params.AddExpand("latest_charge")
+	// The task id, carried on the charge so that the Phase 3 Transfer paying
+	// the supporter out of it can be grouped with it in the Stripe dashboard.
+	// Set HERE, at authorization, rather than at transfer time, because
+	// transfer_group on a transfer with a source_transaction has to agree with
+	// the charge's own — setting both from the same value is how they cannot
+	// disagree. See payments_payouts.go.
+	params.TransferGroup = stripe.String(in.TaskID)
 	params.SetIdempotencyKey("preauth_" + p.ID)
 	if in.StripeCustomerID != "" {
 		params.Customer = stripe.String(in.StripeCustomerID)
@@ -321,10 +334,21 @@ func Capture(ctx context.Context, taskID string, timeCostCents, shoppingReceiptC
 	params := &stripe.PaymentIntentCaptureParams{
 		AmountToCapture: stripe.Int64(int64(total)),
 	}
-	// Zero during beta; Phase 3 turns it on by setting the basis points.
-	if fee := total * Billing.ApplicationFeeBasisPoints / 10000; fee > 0 {
-		params.ApplicationFeeAmount = stripe.Int64(int64(fee))
-	}
+	// NO ApplicationFeeAmount, and this is a correction rather than an
+	// omission. Phase 1 set it here from Billing.ApplicationFeeBasisPoints on
+	// the assumption that Phase 3 would use destination charges. It does not:
+	// the hold is placed at POST, when no supporter has accepted and there is
+	// therefore nobody to name as the destination, so Phase 3 uses separate
+	// charges and transfers. On that model application_fee_amount is invalid —
+	// Stripe only accepts it when the charge itself is attached to a connected
+	// account — and a capture carrying it would have been REJECTED the moment
+	// somebody set the basis points above zero. The platform's cut is now
+	// taken the only way this model allows: by transferring less than was
+	// captured, in platformCutCents (payments_payouts.go). Zero during beta
+	// either way, which is why nothing has noticed until now.
+	//
+	// The charge, because Phase 3's transfer needs it as source_transaction.
+	params.AddExpand("latest_charge")
 	params.SetIdempotencyKey("capture_" + p.ID)
 
 	pi, err := paymentintent.Capture(p.StripePaymentIntentID, params)
@@ -332,7 +356,8 @@ func Capture(ctx context.Context, taskID string, timeCostCents, shoppingReceiptC
 		return nil, fmt.Errorf("payments: capture %s: %w", p.StripePaymentIntentID, err)
 	}
 
-	if err := recordCapture(ctx, p.ID, int(pi.AmountReceived), timeCostCents, shoppingReceiptCents); err != nil {
+	chargeID := chargeIDFromIntent(pi)
+	if err := recordCapture(ctx, p.ID, int(pi.AmountReceived), timeCostCents, shoppingReceiptCents, chargeID); err != nil {
 		// The money moved; only the bookkeeping failed. Surfacing the error
 		// without losing the fact of the capture is the whole point of logging
 		// the intent id here.
@@ -344,6 +369,7 @@ func Capture(ctx context.Context, taskID string, timeCostCents, shoppingReceiptC
 		taskID, p.ID, pi.ID, total, timeCostCents, shoppingReceiptCents)
 
 	p.Status = paymentStatusCaptured
+	p.StripeChargeID = chargeID
 	// What Stripe says moved, not what we asked for — the two differ whenever
 	// the clamp above bit, and a caller splitting a settlement across a second
 	// hold has to know which it was. (Phase 2b: payments_settlement.go.)
@@ -437,17 +463,33 @@ func updatePaymentStatus(ctx context.Context, paymentID, status string, captured
 	return err
 }
 
-func recordCapture(ctx context.Context, paymentID string, capturedCents, timeCostCents, shoppingReceiptCents int) error {
+// recordCapture writes what a capture actually took, plus the charge it took
+// it through — the last of which is what Phase 3's supporter transfer is drawn
+// against. nullif keeps an empty charge id out of the column rather than
+// storing a blank string and making "did we record a charge?" a two-way test.
+func recordCapture(ctx context.Context, paymentID string, capturedCents, timeCostCents, shoppingReceiptCents int, chargeID string) error {
 	_, err := db.Exec(ctx, `
 		update public.payments
 		   set status = $2,
 		       captured_cents = $3,
 		       time_cost_cents = $4,
 		       shopping_receipt_cents = $5,
+		       stripe_charge_id = coalesce(nullif($6,''), stripe_charge_id),
 		       updated_at = now()
 		 where id = $1::uuid
-	`, paymentID, paymentStatusCaptured, capturedCents, timeCostCents, shoppingReceiptCents)
+	`, paymentID, paymentStatusCaptured, capturedCents, timeCostCents, shoppingReceiptCents, chargeID)
 	return err
+}
+
+// chargeIDFromIntent pulls the charge off an intent whose latest_charge was
+// expanded. Empty whenever the shape is not there, which every caller treats
+// as "fund the transfer from the platform balance instead" rather than as an
+// error — a missing charge id costs a slower payout, not a wrong one.
+func chargeIDFromIntent(pi *stripe.PaymentIntent) string {
+	if pi == nil || pi.LatestCharge == nil {
+		return ""
+	}
+	return pi.LatestCharge.ID
 }
 
 // cardFromIntent pulls the display card off an authorized intent.

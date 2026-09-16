@@ -1,0 +1,24 @@
+-- Stripe Phase 3: the one payout event a supporter has to be told about.
+--
+-- Its own migration, and not folded into 20260916120000, for the reason every
+-- notification_type migration in this project is its own file: a new enum
+-- value cannot be USED in the transaction that adds it, so the value has to be
+-- committed separately from anything that writes it. Splitting the file is the
+-- cheapest way to guarantee that.
+--
+-- PAYOUT_SENT is the good news — money is on its way to the supporter's bank —
+-- and it is task-scoped, which is what makes it a notification at all:
+-- notifications.task_id is NOT NULL, and every value in this enum is an event
+-- that happened to a specific task.
+--
+-- What deliberately did NOT get an enum value: "your payouts have been
+-- disabled". That is an account-level event with no task behind it, so it is
+-- emailed directly (payments_connect.go, notifySupporterPayoutsDisabled) for
+-- the same reason disputes and balance-due ops alerts are — see the note in
+-- stripe_webhook.go's notifyOpsOfDispute. Adding a task-shaped notification
+-- type for an account-shaped event would mean inventing a task id to carry it.
+--
+-- Reversible: enum values cannot be dropped in PostgreSQL. Reverting means
+-- leaving the value in place and unused, which is inert.
+
+ALTER TYPE public.notification_type ADD VALUE IF NOT EXISTS 'PAYOUT_SENT';
