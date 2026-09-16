@@ -36,6 +36,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -136,9 +137,16 @@ func TestPhase3SmokeTransferIsFundedByItsCharge(t *testing.T) {
 		t.Fatalf("pre-auth: %v", err)
 	}
 
+	// Settle for MORE than the hold on purpose, so the capture clamps — the
+	// ordinary overrun. What comes back is what the charge is actually worth,
+	// and it is the ceiling on what can be transferred against it.
 	captured, err := Capture(context.Background(), taskID, 2450, 0)
 	if err != nil {
 		t.Fatalf("capture: %v", err)
+	}
+	capturedCents := derefIntOr(captured.CapturedCents, 0)
+	if capturedCents <= 0 {
+		t.Fatalf("capture took nothing")
 	}
 	// Recorded at capture, and the reason the transfer below can be funded.
 	// An empty one here means the latest_charge expand was lost, which fails
@@ -147,27 +155,38 @@ func TestPhase3SmokeTransferIsFundedByItsCharge(t *testing.T) {
 	if captured.StripeChargeID == "" {
 		t.Fatal("capture recorded no charge id — every transfer would fall back to the platform balance")
 	}
-	t.Logf("captured %s via %s", formatCentsUSD(derefIntOr(captured.CapturedCents, 0)), captured.StripeChargeID)
+	t.Logf("captured %s via %s", formatCentsUSD(capturedCents), captured.StripeChargeID)
 
-	// An onboarded supporter. Test-mode accounts created this way are not
-	// payouts_enabled — you cannot complete hosted onboarding from a test — so
-	// the transfer is asserted against an account with the transfers
-	// capability requested. That is enough to prove the funding mechanism,
-	// which is what this test is for.
 	supporterUID := seedSmokeSupporter(t, "supporter.smoke@example.test")
-	acctID, err := connectAccountFor(context.Background(), supporterUID, "supporter.smoke@example.test")
-	requireAccountsV1(t, err)
-	if err != nil {
-		t.Fatalf("supporter account: %v", err)
-	}
-	t.Cleanup(func() { _, _ = account.Del(acctID, nil) })
+	acctID := onboardedSmokeAccount(t, supporterUID)
 	mustExec(t, `update public.tasks set assigned_to_id = $2::uuid where id = $1::uuid`, taskID, supporterUID)
 
+	// THE CONSTRAINT settlementPayouts IS BUILT AROUND, proven rather than
+	// assumed: a transfer tied to a charge may not exceed it. This is why an
+	// overrunning task pays out across TWO transfers — one per funding charge
+	// — instead of one transfer for the whole settlement. Nothing offline can
+	// establish it, and if Stripe ever relaxed it this test would be the only
+	// thing that noticed.
+	if _, err := transfer.New(&stripe.TransferParams{
+		Amount:            stripe.Int64(int64(capturedCents + 100)),
+		Currency:          stripe.String(Billing.Currency),
+		Destination:       stripe.String(acctID),
+		SourceTransaction: stripe.String(captured.StripeChargeID),
+	}); err == nil {
+		t.Error("Stripe allowed a transfer ABOVE its source charge — settlementPayouts' cap is no longer load-bearing")
+	} else if !strings.Contains(err.Error(), "must not exceed the source amount") {
+		t.Logf("over-charge transfer refused for another reason: %v", err)
+	} else {
+		t.Logf("confirmed: a transfer may not exceed its source charge")
+	}
+
+	// And the real thing: transfer exactly what the charge is worth, which is
+	// what settlementPayouts would ask for on this settlement.
 	payout := payoutForTask(context.Background(), payoutInput{
 		TaskID:         taskID,
 		SupporterID:    supporterUID,
 		PaymentID:      captured.ID,
-		OwedCents:      2450,
+		OwedCents:      capturedCents,
 		SourceChargeID: captured.StripeChargeID,
 	})
 	if payout == nil {
@@ -184,9 +203,10 @@ func TestPhase3SmokeTransferIsFundedByItsCharge(t *testing.T) {
 		t.Fatalf("read back transfer: %v", err)
 	}
 
-	// Beta takes nothing, so the supporter gets the whole settlement.
-	if tr.Amount != 2450 {
-		t.Errorf("transferred %s, want the full $24.50 — beta takes no cut", formatCentsUSD(int(tr.Amount)))
+	// Beta takes nothing, so the supporter gets the whole captured amount.
+	if int(tr.Amount) != capturedCents {
+		t.Errorf("transferred %s of a %s charge — beta takes no cut",
+			formatCentsUSD(int(tr.Amount)), formatCentsUSD(capturedCents))
 	}
 	// The grouping, on both sides of the task's money.
 	if tr.TransferGroup != taskID {
@@ -207,7 +227,7 @@ func TestPhase3SmokeTransferIsFundedByItsCharge(t *testing.T) {
 	// path declines rather than just the index.
 	if again := payoutForTask(context.Background(), payoutInput{
 		TaskID: taskID, SupporterID: supporterUID, PaymentID: captured.ID,
-		OwedCents: 2450, SourceChargeID: captured.StripeChargeID,
+		OwedCents: capturedCents, SourceChargeID: captured.StripeChargeID,
 	}); again != nil {
 		t.Errorf("a second settle produced payout %s — the supporter would be paid twice", again.ID)
 	}
@@ -229,14 +249,9 @@ func TestPhase3SmokeBareTransferFailsOnAnEmptyBalance(t *testing.T) {
 	setupStripeWebhookDB(t)
 
 	supporterUID := seedSmokeSupporter(t, "bare.transfer@example.test")
-	acctID, err := connectAccountFor(context.Background(), supporterUID, "bare.transfer@example.test")
-	requireAccountsV1(t, err)
-	if err != nil {
-		t.Fatalf("supporter account: %v", err)
-	}
-	t.Cleanup(func() { _, _ = account.Del(acctID, nil) })
+	acctID := onboardedSmokeAccount(t, supporterUID)
 
-	_, err = transfer.New(&stripe.TransferParams{
+	_, err := transfer.New(&stripe.TransferParams{
 		Amount:      stripe.Int64(2450),
 		Currency:    stripe.String(Billing.Currency),
 		Destination: stripe.String(acctID),
@@ -269,6 +284,92 @@ func requireAccountsV1(t *testing.T, err error) {
 			"(Settings → Features → Accounts v1 support), then re-run. " +
 			"Until then no Express account can be created and none of these tests can run.")
 	}
+}
+
+// smokeConnectAccountEnv names an ALREADY-ONBOARDED test-mode Express account
+// for the transfer tests to pay into.
+//
+// WHY THIS CANNOT BE AUTOMATED. A freshly created Express account has the
+// `transfers` capability REQUESTED but not ACTIVE, and every transfer to it is
+// refused with insufficient_capabilities_for_transfer. The capability only
+// activates once onboarding completes — and onboarding cannot be completed by
+// API, because Stripe refuses ToS acceptance on any account where it collects
+// the requirements itself:
+//
+//	"You cannot accept the Terms of Service on behalf of accounts where
+//	 controller[requirement_collection]=stripe, which includes Standard and
+//	 Express accounts."
+//
+// That is Express working as designed, and it is the same fact the accept gate
+// exists to enforce in production: a supporter must be payouts_enabled BEFORE
+// they work a task, so by settlement time their capability is live.
+//
+// So: onboard ONE test account by hand, once, and pin it here. Every run after
+// that actually proves the transfer path.
+const smokeConnectAccountEnv = "STRIPE_SMOKE_CONNECT_ACCOUNT"
+
+// onboardedSmokeAccount returns a connected account that can actually receive
+// a transfer, or skips with instructions for creating one.
+//
+// A pinned account is REUSED, never deleted — it took a human a few minutes to
+// onboard, and a suite that throws it away would have to be re-onboarded on
+// every run, which is how a smoke test stops being run.
+func onboardedSmokeAccount(t *testing.T, uid string) string {
+	t.Helper()
+
+	if pinned := strings.TrimSpace(os.Getenv(smokeConnectAccountEnv)); pinned != "" {
+		acct, err := account.GetByID(pinned, &stripe.AccountParams{})
+		if err != nil {
+			t.Fatalf("%s=%s could not be read: %v", smokeConnectAccountEnv, pinned, err)
+		}
+		if !transfersActive(acct) {
+			t.Skipf("%s=%s has no ACTIVE transfers capability (payouts_enabled=%v, still due: %v). "+
+				"Finish its onboarding in the Stripe dashboard, then re-run.",
+				smokeConnectAccountEnv, pinned, acct.PayoutsEnabled, requirementsDue(acct))
+		}
+		mustExec(t, `update public.users set stripe_account_id = $2 where id = $1::uuid`, uid, pinned)
+		t.Logf("paying into pinned account %s (payouts_enabled=%v)", pinned, acct.PayoutsEnabled)
+		return pinned
+	}
+
+	// No pinned account: make one and hand back a real onboarding link.
+	//
+	// NOT deleted on cleanup, unlike every other account this suite creates.
+	// The whole point of this branch is that somebody is about to open that
+	// link, and an account torn down when the test process exits would hand
+	// them a URL that 404s by the time they read it. The cost is one stray
+	// test account per unpinned run, which is exactly the nudge to pin it.
+	acctID, err := connectAccountFor(context.Background(), uid, "supporter.smoke@example.test")
+	requireAccountsV1(t, err)
+	if err != nil {
+		t.Fatalf("supporter account: %v", err)
+	}
+	link, linkErr := accountLinkFor(acctID)
+	if linkErr != nil {
+		link = "(could not mint an onboarding link: " + linkErr.Error() + ")"
+	}
+
+	t.Skipf("no %s set, so there is no account that can receive a transfer.\n"+
+		"A fresh Express account has `transfers` requested but NOT active, and Stripe refuses to "+
+		"accept its ToS by API — so one account has to be onboarded by hand, once.\n\n"+
+		"  1. Open: %s\n"+
+		"  2. Test data: phone 000-000-0000, code 000000, SSN 000-00-0000, any DOB 18+,\n"+
+		"     any US address; bank routing 110000000, account 000123456789.\n"+
+		"  3. Re-run with: %s=%s\n\n"+
+		"That account is reused and never deleted, so this is a one-time cost.",
+		smokeConnectAccountEnv, link, smokeConnectAccountEnv, acctID)
+	return ""
+}
+
+// transfersActive reports whether money can actually reach this account.
+//
+// Deliberately NOT payouts_enabled: that is about the account reaching a BANK,
+// while this is about the platform reaching the ACCOUNT, and a transfer is
+// refused on the capability rather than on payouts_enabled. The two come true
+// together in practice and mean different things.
+func transfersActive(acct *stripe.Account) bool {
+	return acct != nil && acct.Capabilities != nil &&
+		acct.Capabilities.Transfers == stripe.AccountCapabilityStatusActive
 }
 
 func seedSmokeSupporter(t *testing.T, email string) string {
