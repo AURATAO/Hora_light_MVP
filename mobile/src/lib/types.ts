@@ -308,7 +308,13 @@ export interface ExtensionRequest {
   requested_cents?: number;
   /** Set on a time request. The ADDITIONAL minutes asked for. */
   requested_minutes?: number;
+  /** What is STORED: a preset slug ("price_higher"), "other: <text>", or free
+   *  text from a request written before the presets existed. */
   reason?: string;
+  /** What is READ: the human sentence for whichever of those it is. Render
+   *  this, never `reason` — a requester approving a charge must not be shown
+   *  "item_unavailable". */
+  reason_label?: string;
   fallback?: ExtensionFallback;
   fallback_note?: string;
   status: ExtensionStatus;
@@ -329,6 +335,11 @@ export interface ExtensionsResponse {
   time_cap: TimeCap;
   /** The minute amounts a requester can grant with one tap. */
   time_choices: number[];
+  /** The ordered budget-reason presets. Server-owned, like time_choices — a
+   *  product vocabulary in two hardcoded client copies drifts the first time a
+   *  fifth option is added. "Other" is not in here: it is a mode the form
+   *  enters, which then stores "other: <text>". */
+  budget_reasons?: { value: string; label: string }[];
   timeout_minutes: number;
   tolerance_cents: number;
 }

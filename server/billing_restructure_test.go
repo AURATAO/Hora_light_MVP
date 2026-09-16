@@ -24,6 +24,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // ── The rate ───────────────────────────────────────────────────────────────
@@ -312,4 +313,82 @@ func containsAll(s string, parts ...string) bool {
 		}
 	}
 	return true
+}
+
+// ── The budget-reason presets ──────────────────────────────────────────────
+
+// A requester approving a charge must read a sentence, never a slug.
+//
+// The third case is the one that matters: every request written before the
+// presets existed holds free text, and it has to keep rendering as the
+// sentence its supporter actually typed rather than as a lookup miss.
+func TestRestructureReasonLabels(t *testing.T) {
+	cases := []struct{ stored, want string }{
+		{"price_higher", "Price higher than listed"},
+		{"item_unavailable", "Item unavailable — alternative costs more"},
+		{"extra_item", "Requester asked for extra item"},
+		// The escape hatch: the supporter's own words, prefix stripped.
+		{"other: the only jar left was the 1kg", "the only jar left was the 1kg"},
+		{"other:   padded  ", "padded"},
+		// Legacy free text, from before the presets. Passed through whole.
+		{"Only the larger size was in stock", "Only the larger size was in stock"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := reasonLabel(tc.stored); got != tc.want {
+			t.Errorf("reasonLabel(%q) = %q, want %q", tc.stored, got, tc.want)
+		}
+	}
+
+	// No slug may render as itself — that is the whole failure mode.
+	for slug := range budgetReasonLabels {
+		if reasonLabel(slug) == slug {
+			t.Errorf("slug %q rendered as itself", slug)
+		}
+	}
+}
+
+// A reason is bounded by runes, not bytes. Byte-slicing a multi-byte character
+// stores invalid UTF-8 and renders as a replacement glyph on the screen where
+// somebody decides whether to spend money.
+func TestRestructureReasonTruncationIsRuneSafe(t *testing.T) {
+	long := "other: " + strings.Repeat("é", 400)
+	got := truncateRunes(long, maxReasonLength)
+	if len([]rune(got)) != maxReasonLength {
+		t.Errorf("truncated to %d runes, want %d", len([]rune(got)), maxReasonLength)
+	}
+	if !utf8.ValidString(got) {
+		t.Error("truncation produced invalid UTF-8")
+	}
+	// Short strings are untouched — no ellipsis, no surprises.
+	if got := truncateRunes("price_higher", maxReasonLength); got != "price_higher" {
+		t.Errorf("a short reason was altered: %q", got)
+	}
+}
+
+// The label reaches the wire, because that is what the clients render.
+func TestRestructureReasonLabelIsOnTheWire(t *testing.T) {
+	setupStripeWebhookDB(t)
+	w := seedOpsWorld(t, "open")
+	setTaskBudget(t, w.taskID, 2000)
+
+	code, body := requestBudgetAs(t, w.taskID, w.supporterID,
+		`{"requested_cents": 800, "reason": "item_unavailable", "fallback": "skip_item"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("request: %d (%v)", code, body)
+	}
+	if body["reason"] != "item_unavailable" {
+		t.Errorf("stored reason = %v, want the slug", body["reason"])
+	}
+	if body["reason_label"] != "Item unavailable — alternative costs more" {
+		t.Errorf("reason_label = %v", body["reason_label"])
+	}
+
+	// And on the list the requester's approval card reads from.
+	list := listExtensionsAs(t, w.taskID, w.requesterID, requesterEmail)
+	items := list["items"].([]any)
+	first := items[0].(map[string]any)
+	if first["reason_label"] != "Item unavailable — alternative costs more" {
+		t.Errorf("list reason_label = %v", first["reason_label"])
+	}
 }

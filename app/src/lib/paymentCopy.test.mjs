@@ -9,6 +9,7 @@ import {
   holdWillBeReleasedMessage,
   outstandingBalanceMessage,
   surgeRateNote,
+  timeBasisNote,
 } from './paymentCopy.js'
 
 /**
@@ -138,6 +139,34 @@ test('an outstanding balance names the amount and where it came from', () => {
 
   for (const none of [null, undefined, {}, { total_cents: 0 }]) {
     assert.equal(outstandingBalanceMessage(none), null)
+  }
+})
+
+test('the estimate and the ceiling read as one line, not two numbers', () => {
+  // Consent given at post: the ceiling is the estimate plus the auto-extend
+  // window, and the line says so rather than leaving 45 unexplained.
+  assert.equal(
+    timeBasisNote({ estimate_minutes: 30, auto_extend_minutes: 15, approved_extra_minutes: 0, cap_minutes: 45 }),
+    'Estimate: 30 min · up to 45 min with auto-extend'
+  )
+  // Consent refused: there is no headroom, so there is no second number.
+  assert.equal(
+    timeBasisNote({ estimate_minutes: 30, auto_extend_minutes: 0, approved_extra_minutes: 0, cap_minutes: 30 }),
+    'Estimate: 30 min'
+  )
+  // An approved extension on top of consent.
+  assert.equal(
+    timeBasisNote({ estimate_minutes: 30, auto_extend_minutes: 15, approved_extra_minutes: 30, cap_minutes: 75 }),
+    'Estimate: 30 min · up to 75 min with auto-extend and approved extensions'
+  )
+  // An approved extension without consent.
+  assert.equal(
+    timeBasisNote({ estimate_minutes: 30, auto_extend_minutes: 0, approved_extra_minutes: 30, cap_minutes: 60 }),
+    'Estimate: 30 min · up to 60 min with approved extensions'
+  )
+  // Nothing to describe.
+  for (const none of [null, undefined, {}, { estimate_minutes: 0, cap_minutes: 45 }]) {
+    assert.equal(timeBasisNote(none), null)
   }
 })
 

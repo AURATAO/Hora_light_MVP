@@ -10,7 +10,7 @@ import PlaceInput from '../components/PlaceInput'
 import { useToast } from '../providers/ToastProvider'
 import { isTractionWindowActive } from '../lib/traction'
 import { useTaskEstimate, formatCents } from '../hooks/useTaskEstimate'
-import { holdSummary } from '../lib/paymentCopy'
+import { holdSummary, timeBasisNote } from '../lib/paymentCopy'
 
 
 /**
@@ -174,7 +174,9 @@ export default function TaskDetail() {
   const [extBusy, setExtBusy] = useState(false)
   const [extError, setExtError] = useState('')
   const [askAmount, setAskAmount] = useState('')
+  // The preset slug, and the free text only when that slug is "other".
   const [askReason, setAskReason] = useState('')
+  const [askReasonOther, setAskReasonOther] = useState('')
   const [askFallback, setAskFallback] = useState('')
   const [askFallbackNote, setAskFallbackNote] = useState('')
 
@@ -599,10 +601,22 @@ export default function TaskDetail() {
       setExtError('Enter how much more you need.')
       return
     }
+    if (!askReason) {
+      setExtError('Pick a reason.')
+      return
+    }
+    if (askReason === 'other' && !askReasonOther.trim()) {
+      setExtError('Say briefly what happened.')
+      return
+    }
     if (!askFallback) {
       setExtError("Choose what to do if there's no answer.")
       return
     }
+    // The stored shape: a preset slug, or "other: <what they typed>". The
+    // server maps it back to a sentence for the requester's approval card.
+    const reason =
+      askReason === 'other' ? `other: ${askReasonOther.trim()}` : askReason
     setExtBusy(true)
     setExtError('')
     try {
@@ -610,12 +624,13 @@ export default function TaskDetail() {
         method: 'POST',
         body: {
           requested_cents: Math.round(dollars * 100),
-          reason: askReason || undefined,
+          reason,
           fallback: askFallback,
           fallback_note: askFallbackNote || undefined,
         },
       })
-      setAskAmount(''); setAskReason(''); setAskFallback(''); setAskFallbackNote('')
+      setAskAmount(''); setAskReason(''); setAskReasonOther('')
+      setAskFallback(''); setAskFallbackNote('')
       await loadExtensions()
     } catch (e) {
       setExtError(e?.body?.message || e.message || "Couldn't send your request.")
@@ -980,7 +995,12 @@ export default function TaskDetail() {
                       : `${pendingAsk.requested_minutes || 0} more minutes`}
                   </b>.
                 </div>
-                {pendingAsk.reason && <div className="text-white/70">{pendingAsk.reason}</div>}
+                {/* reason_label, not reason: the stored value is a slug, and
+                    "item_unavailable" is not something to show somebody who is
+                    deciding whether to spend money. */}
+                {(pendingAsk.reason_label || pendingAsk.reason) && (
+                  <div className="text-white/70">{pendingAsk.reason_label || pendingAsk.reason}</div>
+                )}
                 {pendingAsk.kind === 'budget' && (
                   <div className="flex justify-between text-white/70">
                     <span>New budget if you approve</span>
@@ -1029,11 +1049,19 @@ export default function TaskDetail() {
                   </div>
                 )}
                 {capState?.cap?.cap_minutes > 0 && (
-                  <div className="flex justify-between text-white/70">
-                    <span>Paid time</span>
-                    <span className="text-white">
-                      {capState.logged_minutes} of {capState.cap.cap_minutes} min
-                    </span>
+                  <div className="space-y-0.5">
+                    <div className="flex justify-between text-white/70">
+                      <span>Paid time</span>
+                      <span className="text-white">
+                        {capState.logged_minutes} of {capState.cap.cap_minutes} min
+                      </span>
+                    </div>
+                    {/* Where the ceiling above comes from. Without it, 45 is a
+                        second unexplained number sitting next to the 30 the
+                        requester was quoted. */}
+                    {timeBasisNote(capState.cap) && (
+                      <div className="text-xs text-white/40">{timeBasisNote(capState.cap)}</div>
+                    )}
                   </div>
                 )}
 
@@ -1073,62 +1101,134 @@ export default function TaskDetail() {
                 {extError && <div className="text-xs text-red-300">{extError}</div>}
 
                 {!pendingAsk && (
-                  <div className="border-t border-white/10 pt-2 space-y-2">
+                  <div className="border-t border-white/10 pt-4 space-y-4">
                     {approvedBudgetCents > 0 && (
-                      <div className="space-y-2">
-                        <div className="flex gap-2">
+                      <div className="space-y-4">
+                        {/* Stacked, always. This card is used one-handed, mid
+                            errand, on a phone — the amount and the reason sat
+                            side by side and ran off the viewport under ~480px.
+                            There is no width at which two columns here are
+                            worth the overflow. */}
+                        <div className="space-y-1.5">
+                          <label className="block text-xs text-white/60" htmlFor="ask-amount">
+                            How much more?
+                          </label>
                           <input
-                            className="w-24 rounded-lg bg-white/5 border border-white/15 px-2 py-1 text-sm"
+                            id="ask-amount"
+                            className="w-full rounded-lg bg-white/5 border border-white/15 px-3 py-2.5 text-base focus:outline-none focus:border-white/40"
                             placeholder="0.00"
                             inputMode="decimal"
                             value={askAmount}
                             onChange={e => setAskAmount(e.target.value)}
                           />
-                          <input
-                            className="flex-1 rounded-lg bg-white/5 border border-white/15 px-2 py-1 text-sm"
-                            placeholder="Why? (optional)"
-                            value={askReason}
-                            onChange={e => setAskReason(e.target.value)}
-                          />
                         </div>
-                        <div className="text-xs text-white/60">
-                          If there&apos;s no answer in {extensions?.timeout_minutes ?? 5} minutes:
+
+                        {/* A closed set, not a text box. Free text on a phone
+                            with a five-minute timer running is a field people
+                            leave empty, and an empty reason makes the
+                            requester's one-tap approval a guess. */}
+                        <div className="space-y-1.5">
+                          <div className="text-xs text-white/60">Why?</div>
+                          <div className="space-y-1.5">
+                            {[...(extensions?.budget_reasons || []), { value: 'other', label: 'Other' }].map(opt => {
+                              const selected = askReason === opt.value
+                              return (
+                                <button
+                                  key={opt.value}
+                                  type="button"
+                                  aria-pressed={selected}
+                                  onClick={() => setAskReason(opt.value)}
+                                  className={[
+                                    'w-full flex items-center gap-2.5 text-left rounded-lg border px-3 py-2.5 text-sm transition',
+                                    selected
+                                      ? 'border-white bg-white/10'
+                                      : 'border-white/15 hover:border-white/30',
+                                  ].join(' ')}
+                                >
+                                  <span
+                                    className={[
+                                      'shrink-0 h-4 w-4 rounded-full border grid place-items-center',
+                                      selected ? 'border-white' : 'border-white/40',
+                                    ].join(' ')}
+                                  >
+                                    {selected && <span className="h-2 w-2 rounded-full bg-white" />}
+                                  </span>
+                                  <span>{opt.label}</span>
+                                </button>
+                              )
+                            })}
+                          </div>
+                          {askReason === 'other' && (
+                            <input
+                              className="w-full rounded-lg bg-white/5 border border-white/15 px-3 py-2.5 text-base focus:outline-none focus:border-white/40"
+                              placeholder="What happened?"
+                              maxLength={80}
+                              value={askReasonOther}
+                              onChange={e => setAskReasonOther(e.target.value)}
+                            />
+                          )}
                         </div>
-                        <div className="flex flex-wrap gap-2">
-                          {[
-                            { value: 'buy_alternative', label: 'Buy an alternative' },
-                            { value: 'skip_item', label: 'Skip this item' },
-                          ].map(opt => (
-                            <button
-                              key={opt.value}
-                              type="button"
-                              onClick={() => setAskFallback(opt.value)}
-                              className={[
-                                'px-3 py-1 text-xs rounded-full border transition',
-                                askFallback === opt.value
-                                  ? 'border-white bg-white/10'
-                                  : 'border-white/20 hover:border-white/40',
-                              ].join(' ')}
-                            >
-                              {opt.label}
-                            </button>
-                          ))}
+
+                        {/* FALLBACK, not an action. Grouped under its own label
+                            with radio styling so it reads as one choice with
+                            two options — it used to sit as two buttons beside
+                            the submit, three equal-looking things where only
+                            one of them does anything. */}
+                        <div className="space-y-1.5">
+                          <div className="text-xs text-white/60">
+                            If there&apos;s no answer in {extensions?.timeout_minutes ?? 5} minutes:
+                          </div>
+                          <div className="space-y-1.5">
+                            {[
+                              { value: 'buy_alternative', label: 'Buy an alternative' },
+                              { value: 'skip_item', label: 'Skip this item' },
+                            ].map(opt => {
+                              const selected = askFallback === opt.value
+                              return (
+                                <button
+                                  key={opt.value}
+                                  type="button"
+                                  aria-pressed={selected}
+                                  onClick={() => setAskFallback(opt.value)}
+                                  className={[
+                                    'w-full flex items-center gap-2.5 text-left rounded-lg border px-3 py-2.5 text-sm transition',
+                                    selected
+                                      ? 'border-white bg-white/10'
+                                      : 'border-white/15 hover:border-white/30',
+                                  ].join(' ')}
+                                >
+                                  <span
+                                    className={[
+                                      'shrink-0 h-4 w-4 rounded-full border grid place-items-center',
+                                      selected ? 'border-white' : 'border-white/40',
+                                    ].join(' ')}
+                                  >
+                                    {selected && <span className="h-2 w-2 rounded-full bg-white" />}
+                                  </span>
+                                  <span>{opt.label}</span>
+                                </button>
+                              )
+                            })}
+                          </div>
+                          {askFallback === 'buy_alternative' && (
+                            <input
+                              className="w-full rounded-lg bg-white/5 border border-white/15 px-3 py-2.5 text-base focus:outline-none focus:border-white/40"
+                              placeholder="Which alternative?"
+                              value={askFallbackNote}
+                              onChange={e => setAskFallbackNote(e.target.value)}
+                            />
+                          )}
                         </div>
-                        {askFallback === 'buy_alternative' && (
-                          <input
-                            className="w-full rounded-lg bg-white/5 border border-white/15 px-2 py-1 text-sm"
-                            placeholder="Which alternative?"
-                            value={askFallbackNote}
-                            onChange={e => setAskFallbackNote(e.target.value)}
-                          />
-                        )}
+
+                        {/* THE submit, and visibly the only one: full width,
+                            solid, below everything it acts on. */}
                         <button
                           type="button"
                           disabled={extBusy}
                           onClick={sendBudgetAsk}
-                          className="px-3 py-1.5 text-xs rounded-lg border border-white/20 hover:border-white/40 disabled:opacity-40"
+                          className="w-full rounded-lg bg-white text-black font-medium px-4 py-3 text-sm hover:bg-white/90 disabled:opacity-40"
                         >
-                          Ask for more budget
+                          {extBusy ? 'Sending…' : 'Ask for more budget'}
                         </button>
                       </div>
                     )}
@@ -1136,14 +1236,14 @@ export default function TaskDetail() {
                     {/* Offered only once the ceiling is in sight. Before that it
                         answers a question nobody has asked. */}
                     {(capState?.warning || capState?.reached) && (extensions?.time_choices || []).length > 0 && (
-                      <div className="flex gap-2">
+                      <div className="grid grid-cols-2 gap-2">
                         {extensions.time_choices.map(minutes => (
                           <button
                             key={minutes}
                             type="button"
                             disabled={extBusy}
                             onClick={() => sendTimeAsk(minutes)}
-                            className="px-3 py-1.5 text-xs rounded-lg border border-white/20 hover:border-white/40 disabled:opacity-40"
+                            className="rounded-lg border border-white/20 px-3 py-3 text-sm hover:border-white/40 disabled:opacity-40"
                           >
                             Ask for +{minutes} min
                           </button>
@@ -1260,23 +1360,43 @@ export default function TaskDetail() {
                       </div>
                     )}
                     {task?.assigned_to_id && task?.status === 'open' && (
-                      <div className="text-xs text-white/40 mt-1">
-                        Final cost is based on actual time logged. The base fee covers the first 15 minutes; time beyond that is charged per minute, and time nobody worked is never charged.
+                      <div className="text-xs text-white/40 mt-1 space-y-0.5">
+                        {/* The same line the supporter sees, so both sides are
+                            reading one set of numbers rather than two. */}
+                        {timeBasisNote(capState?.cap) && <div>{timeBasisNote(capState.cap)}</div>}
+                        <div>
+                          Final cost is based on actual time logged. The base fee covers the first 15 minutes; time beyond that is charged per minute, and time nobody worked is never charged.
+                        </div>
                       </div>
                     )}
                   </div>
-                  {isAssignee && task.status === 'open' && (
-                    work.has_open ? (
-                      <button onClick={clockOut} className="text-xs rounded-md border border-white/20 px-2 py-1 hover:border-white/40">
-                        Clock out
-                      </button>
-                    ) : (
-                      <button onClick={clockIn} className="text-xs rounded-md border border-white/20 px-2 py-1 hover:border-white/40">
-                        Clock in
-                      </button>
-                    )
-                  )}
                 </div>
+
+                {/* Clock in/out, full width and below the numbers it belongs
+                    to. It used to be a 12px inline button wedged beside the
+                    cost text — the single most-pressed control on the screen,
+                    and the smallest thing on it, reached one-handed mid-errand.
+                    Clocking OUT is styled solid because forgetting to is the
+                    expensive mistake: it keeps billing somebody. */}
+                {isAssignee && task.status === 'open' && (
+                  work.has_open ? (
+                    <button
+                      type="button"
+                      onClick={clockOut}
+                      className="w-full rounded-lg bg-white text-black font-medium px-4 py-3 text-sm hover:bg-white/90"
+                    >
+                      Clock out
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={clockIn}
+                      className="w-full rounded-lg border border-white/20 px-4 py-3 text-sm hover:border-white/40"
+                    >
+                      Clock in
+                    </button>
+                  )
+                )}
 
                 {/* Assignee: live GPS while clocked in */}
                 {isAssignee && work.has_open && (
