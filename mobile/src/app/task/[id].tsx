@@ -70,7 +70,7 @@ import {
   statusLabel,
 } from "../../lib/task-utils";
 import { SUPPORT_EMAIL } from "../../lib/constants";
-import { holdSummary, holdWillBeReleasedMessage } from "../../lib/payment-copy";
+import { holdSummary, holdWillBeReleasedMessage, timeBasisNote } from "../../lib/payment-copy";
 import type {
   ExtensionRequest,
   ExtensionsResponse,
@@ -1197,11 +1197,20 @@ export default function TaskDetail() {
                 settlement card below owns the number — showing both would be
                 two totals on one screen, and they are the same total. */}
             {task.status === "open" ? (
-              <View className="flex-row justify-between">
-                <Text className="text-caption font-semibold text-ink">Total cost so far</Text>
-                <Text className="text-caption font-semibold text-ink">
-                  {formatCost(worklogs.total_cost_cents)}
-                </Text>
+              <View className="gap-1">
+                <View className="flex-row justify-between">
+                  <Text className="text-caption font-semibold text-ink">Total cost so far</Text>
+                  <Text className="text-caption font-semibold text-ink">
+                    {formatCost(worklogs.total_cost_cents)}
+                  </Text>
+                </View>
+                {/* The requester's copy of the line the supporter sees on their
+                    own card, so both sides read one set of numbers. Requester
+                    only — for the supporter it would be the same sentence
+                    twice on one screen. */}
+                {isRequester && timeBasisNote(capState?.cap) ? (
+                  <Text className="text-caption text-muted">{timeBasisNote(capState?.cap)}</Text>
+                ) : null}
               </View>
             ) : null}
           </View>
@@ -1362,6 +1371,7 @@ export default function TaskDetail() {
         visible={budgetOpen}
         approvedBudgetCents={approvedBudgetCents}
         timeoutMinutes={extensions?.timeout_minutes ?? 0}
+        reasons={extensions?.budget_reasons ?? []}
         onClose={() => setBudgetOpen(false)}
         onSubmit={handleBudgetRequest}
       />
@@ -1421,7 +1431,13 @@ function ApprovalCard({
       <Text className="text-body text-ink">
         {supporterName} is asking for {askPhrase(request)}.
       </Text>
-      {request.reason ? <Text className="text-caption text-ink">{request.reason}</Text> : null}
+      {/* reason_label, not reason: the stored value is a slug, and
+          "item_unavailable" is not something to show somebody deciding whether
+          to spend money. Falls back to `reason` for requests written before
+          the presets existed, which hold free text. */}
+      {request.reason_label || request.reason ? (
+        <Text className="text-caption text-ink">{request.reason_label || request.reason}</Text>
+      ) : null}
       {isBudget ? (
         <View className="flex-row justify-between">
           <Text className="text-caption text-muted">New budget if you approve</Text>
@@ -1495,11 +1511,19 @@ function SupporterAskCard({
       ) : null}
 
       {capState && capState.cap.cap_minutes > 0 ? (
-        <View className="flex-row justify-between">
-          <Text className="text-caption text-muted">Paid time</Text>
-          <Text className="text-caption text-ink">
-            {formatMinutes(capState.logged_minutes)} of {formatMinutes(capState.cap.cap_minutes)}
-          </Text>
+        <View className="gap-1">
+          <View className="flex-row justify-between">
+            <Text className="text-caption text-muted">Paid time</Text>
+            <Text className="text-caption text-ink">
+              {formatMinutes(capState.logged_minutes)} of {formatMinutes(capState.cap.cap_minutes)}
+            </Text>
+          </View>
+          {/* Where the ceiling above comes from. Without it, 45 is a second
+              unexplained number sitting next to the 30 the requester was
+              quoted. Same line the requester sees. */}
+          {timeBasisNote(capState.cap) ? (
+            <Text className="text-caption text-muted">{timeBasisNote(capState.cap)}</Text>
+          ) : null}
         </View>
       ) : null}
 

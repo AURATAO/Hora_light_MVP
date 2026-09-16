@@ -121,6 +121,40 @@ export function outstandingBalanceMessage(outstanding) {
   return `You have an outstanding balance of ${formatCents(outstanding.total_cents)}${from}${more} — settle it to keep posting.`
 }
 
+/**
+ * The time a task is priced against, as one coherent line.
+ *
+ *   "Estimate: 30 min · up to 45 min with auto-extend"
+ *
+ * WHY THIS EXISTS. The supporter's card said "Paid time 41 of 45 min" while
+ * the requester's said "Estimated cost (based on 30 min)" — two numbers,
+ * neither explaining the other, on a screen where one of them is deciding
+ * whether to keep working. 45 is not a second estimate; it is the estimate
+ * plus what the requester already agreed to on top of it.
+ *
+ * Both roles render this, so neither has to infer the relationship. Null when
+ * there is no ceiling to describe.
+ */
+export function timeBasisNote(cap) {
+  const estimate = cap?.estimate_minutes || 0
+  const ceiling = cap?.cap_minutes || 0
+  if (!estimate || !ceiling) return null
+
+  const base = `Estimate: ${estimate} min`
+  if (ceiling <= estimate) return base
+
+  // Why the ceiling is higher than the estimate — the requester consented to
+  // auto-extend at post, approved an extension mid-task, or both.
+  const autoExtend = (cap.auto_extend_minutes || 0) > 0
+  const approved = (cap.approved_extra_minutes || 0) > 0
+  const because = approved
+    ? autoExtend
+      ? 'with auto-extend and approved extensions'
+      : 'with approved extensions'
+    : 'with auto-extend'
+  return `${base} · up to ${ceiling} min ${because}`
+}
+
 /** The short form for a task-detail row: "$76.75 reserved · Visa ••4242". */
 export function holdSummary(payment) {
   if (!payment || !payment.authorized_cents) return null

@@ -1,4 +1,4 @@
-import type { TaskPayment } from "./types";
+import type { TaskPayment, TimeCap } from "./types";
 import { formatCost } from "./task-utils";
 
 /**
@@ -117,6 +117,36 @@ export function outstandingBalanceMessage(
   const from = outstanding.task_title ? ` from \u201C${outstanding.task_title}\u201D` : "";
   const more = (outstanding.task_count ?? 1) > 1 ? ` and ${(outstanding.task_count ?? 1) - 1} more` : "";
   return `You have an outstanding balance of ${formatCost(outstanding.total_cents)}${from}${more} — settle it to keep posting.`;
+}
+
+/**
+ * The time a task is priced against, as one coherent line.
+ *
+ *   "Estimate: 30 min · up to 45 min with auto-extend"
+ *
+ * The supporter's card said "Paid time 41 of 45 min" while the requester's
+ * said "based on 30 min" — two numbers, neither explaining the other, on the
+ * screen where one of them decides whether to keep working. 45 is not a second
+ * estimate; it is the estimate plus what the requester already agreed to.
+ *
+ * Mirrors app/src/lib/paymentCopy.js timeBasisNote word for word.
+ */
+export function timeBasisNote(cap?: TimeCap | null): string | null {
+  const estimate = cap?.estimate_minutes ?? 0;
+  const ceiling = cap?.cap_minutes ?? 0;
+  if (!estimate || !ceiling) return null;
+
+  const base = `Estimate: ${estimate} min`;
+  if (ceiling <= estimate) return base;
+
+  const autoExtend = (cap?.auto_extend_minutes ?? 0) > 0;
+  const approved = (cap?.approved_extra_minutes ?? 0) > 0;
+  const because = approved
+    ? autoExtend
+      ? "with auto-extend and approved extensions"
+      : "with approved extensions"
+    : "with auto-extend";
+  return `${base} · up to ${ceiling} min ${because}`;
 }
 
 /** The short form for a task-detail row: "$76.75 reserved · Visa ••4242". */

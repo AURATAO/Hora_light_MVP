@@ -86,7 +86,13 @@ type ExtensionRequest struct {
 	RequestedCents   *int `json:"requested_cents,omitempty"`
 	RequestedMinutes *int `json:"requested_minutes,omitempty"`
 
-	Reason       string `json:"reason,omitempty"`
+	// What is STORED: a preset slug, "other: <text>", or free text from a
+	// request written before the presets existed.
+	Reason string `json:"reason,omitempty"`
+	// What is READ: the human sentence for whichever of those it is. Clients
+	// render this and never the slug — the requester approving a charge should
+	// not be shown "item_unavailable".
+	ReasonLabel  string `json:"reason_label,omitempty"`
 	Fallback     string `json:"fallback,omitempty"`
 	FallbackNote string `json:"fallback_note,omitempty"`
 
@@ -102,6 +108,71 @@ type ExtensionRequest struct {
 	// The sentence the supporter's screen shows when this expired: their own
 	// fallback, read back to them. Empty for a time request, which has none.
 	FallbackInstruction string `json:"fallback_instruction,omitempty"`
+}
+
+// Why a supporter needs more money, as a closed set.
+//
+// This replaced a free-text "Why?" box. Free text on a phone, one-handed, in a
+// shop queue, with a five-minute timer running, is a field people leave empty —
+// and an empty reason makes the requester's one-tap approval a guess. Four
+// options cover every case the beta actually produced, and the fourth is an
+// escape hatch rather than a shrug.
+//
+// STORED AS THE SLUG in extension_requests.reason ("price_higher"), or
+// "other: <text>" for the free-form one. The column is unchanged: it was always
+// a display string, and rows written before this are free text that
+// reasonLabel passes through untouched.
+// ORDERED, because it is rendered as a list and a Go map is not. Shipped to
+// both clients on GET /tasks/:id/extensions, exactly like time_choices — a
+// product vocabulary belongs in one place, and two hardcoded copies of it
+// drift the first time a fifth option is added.
+type budgetReason struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+var budgetReasons = []budgetReason{
+	{"price_higher", "Price higher than listed"},
+	{"item_unavailable", "Item unavailable — alternative costs more"},
+	{"extra_item", "Requester asked for extra item"},
+	// "Other" is not in this list: it is not a stored slug but a mode the form
+	// enters, which then stores "other: <what they typed>".
+}
+
+var budgetReasonLabels = func() map[string]string {
+	m := make(map[string]string, len(budgetReasons))
+	for _, r := range budgetReasons {
+		m[r.Value] = r.Label
+	}
+	return m
+}()
+
+// otherReasonPrefix marks a reason the supporter typed themselves.
+const otherReasonPrefix = "other: "
+
+// maxReasonLength bounds what is stored. The clients cap the Other field at 80
+// characters; this is the server saying the same thing to anything that is not
+// one of our clients.
+const maxReasonLength = 120
+
+// reasonLabel turns what is stored into what a requester reads.
+//
+// Three cases, and the third is the one that matters: a slug maps to its label,
+// an "other: …" reason yields the supporter's own words, and ANYTHING ELSE is
+// returned unchanged. That last branch is not a fallback for bad data — it is
+// how every request written before the presets existed keeps rendering as the
+// sentence its supporter actually typed.
+func reasonLabel(reason string) string {
+	if reason == "" {
+		return ""
+	}
+	if label, ok := budgetReasonLabels[reason]; ok {
+		return label
+	}
+	if strings.HasPrefix(reason, otherReasonPrefix) {
+		return strings.TrimSpace(strings.TrimPrefix(reason, otherReasonPrefix))
+	}
+	return reason
 }
 
 // fallbackInstruction is what the supporter is told to do now.
@@ -141,6 +212,7 @@ func scanExtension(row interface{ Scan(dest ...any) error }) (ExtensionRequest, 
 		return e, err
 	}
 	e.ExpiresAt = e.CreatedAt.Add(time.Duration(Billing.ApprovalTimeoutMinutes) * time.Minute)
+	e.ReasonLabel = reasonLabel(e.Reason)
 	if e.Status == extensionStatusExpired || e.Status == extensionStatusDenied {
 		e.FallbackInstruction = fallbackInstruction(e.Fallback, e.FallbackNote)
 	}
@@ -301,8 +373,11 @@ func listTaskExtensions(c *gin.Context) {
 		"approved_budget_cents": approvedBudget,
 		"time_cap":              cap,
 		"time_choices":          extensionTimeChoices,
-		"timeout_minutes":       Billing.ApprovalTimeoutMinutes,
-		"tolerance_cents":       Billing.OverageToleranceCents,
+		// The budget-reason presets, ordered, so the supporter's form renders
+		// the same vocabulary the requester's approval card reads back.
+		"budget_reasons":  budgetReasons,
+		"timeout_minutes": Billing.ApprovalTimeoutMinutes,
+		"tolerance_cents": Billing.OverageToleranceCents,
 	})
 }
 
@@ -356,7 +431,7 @@ func requestBudgetIncrease(c *gin.Context) {
 	createExtension(c, ExtensionRequest{
 		Kind:           extensionKindBudget,
 		RequestedCents: &cents,
-		Reason:         strings.TrimSpace(in.Reason),
+		Reason:         truncateRunes(strings.TrimSpace(in.Reason), maxReasonLength),
 		Fallback:       in.Fallback,
 		FallbackNote:   strings.TrimSpace(in.FallbackNote),
 	})
@@ -394,7 +469,7 @@ func requestTimeExtension(c *gin.Context) {
 	createExtension(c, ExtensionRequest{
 		Kind:             extensionKindTime,
 		RequestedMinutes: &minutes,
-		Reason:           strings.TrimSpace(in.Reason),
+		Reason:           truncateRunes(strings.TrimSpace(in.Reason), maxReasonLength),
 	})
 }
 
@@ -655,8 +730,8 @@ func announceExtensionRequest(ctx context.Context, e ExtensionRequest, t adminTa
 		title = "Your supporter needs a bigger budget"
 		body = fmt.Sprintf("%s is asking for %s more for %q.",
 			displayName(t.AssigneeEmail), formatCentsUSD(derefInt(e.RequestedCents)), t.Title)
-		if e.Reason != "" {
-			body += " " + e.Reason
+		if label := reasonLabel(e.Reason); label != "" {
+			body += " " + label
 		}
 		body += fmt.Sprintf(" Approve or decline in the app — after %d minutes it's automatically declined.",
 			Billing.ApprovalTimeoutMinutes)
@@ -665,8 +740,8 @@ func announceExtensionRequest(ctx context.Context, e ExtensionRequest, t adminTa
 		title = "Your supporter needs more time"
 		body = fmt.Sprintf("%s is asking for %d more minutes on %q.",
 			displayName(t.AssigneeEmail), derefInt(e.RequestedMinutes), t.Title)
-		if e.Reason != "" {
-			body += " " + e.Reason
+		if label := reasonLabel(e.Reason); label != "" {
+			body += " " + label
 		}
 		body += fmt.Sprintf(" Approve or decline in the app — after %d minutes it's automatically declined.",
 			Billing.ApprovalTimeoutMinutes)
@@ -748,4 +823,18 @@ func derefInt(p *int) int {
 		return 0
 	}
 	return *p
+}
+
+// truncateRunes bounds a stored string by RUNES, not bytes.
+//
+// Distinct from talkjs_admin.go's byte-slicing truncate, which is fine for the
+// log lines it clips but would cut a multi-byte character in half here — that
+// stores invalid UTF-8 and renders as a replacement glyph in the requester's
+// approval card, on a screen where they are deciding whether to spend money.
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max])
 }
