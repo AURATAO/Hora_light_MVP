@@ -349,15 +349,32 @@ func onboardedSmokeAccount(t *testing.T, uid string) string {
 		link = "(could not mint an onboarding link: " + linkErr.Error() + ")"
 	}
 
-	t.Skipf("no %s set, so there is no account that can receive a transfer.\n"+
+	// AN ACCOUNT LINK IS VALID FOR ABOUT FIVE MINUTES, and that is short enough
+	// to be a trap rather than a detail: a URL printed into test output is
+	// almost always dead by the time a human reads it, and an expired link does
+	// not say so — Stripe redirects it straight to refresh_url, so the person
+	// lands back on our site having been shown no form at all and reasonably
+	// believes they completed something. That is exactly how this account ended
+	// up with details_submitted=false after somebody had "finished" onboarding.
+	//
+	// So the skip below leads with the expiry and tells the reader how to mint
+	// a fresh link on demand, rather than pretending the one above will keep.
+
+	t.Skipf("no %s set, so there is no account that can receive a transfer.\n\n"+
 		"A fresh Express account has `transfers` requested but NOT active, and Stripe refuses to "+
-		"accept its ToS by API — so one account has to be onboarded by hand, once.\n\n"+
+		"accept its ToS by API, so one account must be onboarded by hand — once.\n\n"+
+		"  THE LINK BELOW EXPIRES IN ABOUT 5 MINUTES and is single-use. An expired one does not"+
+		" say so: Stripe bounces it to refresh_url, so you land back on the site having seen no"+
+		" form, and nothing is saved. If it has gone stale, mint another with:\n\n"+
+		"      go test ./ -run TestPhase3SmokeMintOnboardingLink -v -count=1 \\\n"+
+		"        # with %s=%s set\n\n"+
 		"  1. Open: %s\n"+
-		"  2. Test data: phone 000-000-0000, code 000000, SSN 000-00-0000, any DOB 18+,\n"+
-		"     any US address; bank routing 110000000, account 000123456789.\n"+
-		"  3. Re-run with: %s=%s\n\n"+
+		"  2. Phone 000-000-0000 / code 000000, SSN 000-00-0000, any DOB 18+, any US address;\n"+
+		"     bank routing 110000000, account 000123456789.\n"+
+		"  3. Confirm it took — details_submitted must be true — then re-run with"+
+		" %s=%s\n\n"+
 		"That account is reused and never deleted, so this is a one-time cost.",
-		smokeConnectAccountEnv, link, smokeConnectAccountEnv, acctID)
+		smokeConnectAccountEnv, smokeConnectAccountEnv, acctID, link, smokeConnectAccountEnv, acctID)
 	return ""
 }
 
@@ -391,4 +408,57 @@ func mustOnboardingLink(t *testing.T, accountID string) string {
 		t.Fatalf("account link: %v", err)
 	}
 	return link
+}
+
+// TestPhase3SmokeMintOnboardingLink issues a fresh Account Link for the pinned
+// account and prints it. Not a test of anything — a tool, living here because
+// it needs the same real key and the same account the suite uses.
+//
+// It exists because an Account Link is valid for about FIVE MINUTES. Any URL
+// printed into test output is usually dead by the time a human opens it, and a
+// dead one is silent: Stripe redirects it to refresh_url, so the reader lands
+// back on the site having been shown no form and reasonably concludes they
+// finished. This is the supported way to get a live one.
+//
+//	STRIPE_SMOKE=1 STRIPE_SMOKE_CONNECT_ACCOUNT=acct_… \
+//	  go test ./ -run TestPhase3SmokeMintOnboardingLink -v -count=1
+//
+// RETURN URL. Minted from APP_BASE_URL like every other link, so a local .env
+// pointing at localhost produces a localhost redirect — fine when the web app
+// is running, confusing when it is not. Override it for the command if you
+// want to land somewhere real:
+//
+//	APP_BASE_URL=https://mvp.horaapp.co STRIPE_SMOKE=1 … go test …
+func TestPhase3SmokeMintOnboardingLink(t *testing.T) {
+	requireStripeSmoke(t)
+
+	acctID := strings.TrimSpace(os.Getenv(smokeConnectAccountEnv))
+	if acctID == "" {
+		t.Skipf("set %s to the account you want an onboarding link for", smokeConnectAccountEnv)
+	}
+
+	acct, err := account.GetByID(acctID, &stripe.AccountParams{})
+	if err != nil {
+		t.Fatalf("read %s: %v", acctID, err)
+	}
+	if transfersActive(acct) {
+		t.Logf("%s is already onboarded (payouts_enabled=%v) — no link needed", acctID, acct.PayoutsEnabled)
+		return
+	}
+
+	link, err := accountLinkFor(acctID)
+	if err != nil {
+		t.Fatalf("mint account link: %v", err)
+	}
+
+	t.Logf("account          : %s", acctID)
+	t.Logf("details_submitted: %v", acct.DetailsSubmitted)
+	t.Logf("still due        : %v", requirementsDue(acct))
+	t.Logf("returns to       : %s", connectReturnURL())
+	t.Logf("")
+	t.Logf("OPEN WITHIN ~5 MINUTES, single use:")
+	t.Logf("  %s", link)
+	t.Logf("")
+	t.Logf("Phone 000-000-0000 / code 000000, SSN 000-00-0000, any DOB 18+, any US address;")
+	t.Logf("bank routing 110000000, account 000123456789.")
 }
