@@ -1,8 +1,10 @@
 import { useState, type ReactNode } from "react";
 import { View, Text } from "react-native";
+import { ChevronLeft } from "lucide-react-native";
 import {
   Screen,
   Button,
+  PressableScale,
   Pill,
   Card,
   TaskCard,
@@ -185,6 +187,23 @@ function ColorShowcase() {
 export default function DevComponents() {
   return (
     <Screen headline="Components">
+      <Section title="PressableScale — layout rows">
+        {/* Here because its absence is what let a real bug hide for two months:
+            PressableScale used to wrap `children` in a plain Animated.View, so
+            a flex-row className on the Pressable never reached them and every
+            multi-child row in the app stacked vertically. Nothing in this
+            gallery had more than one child, so nothing showed it. Both rows
+            below must read as ONE line each. */}
+        <PressableScale className="min-h-11 flex-row items-center">
+          <ChevronLeft color={color.ink} size={20} />
+          <Text className="text-body text-ink">Back</Text>
+        </PressableScale>
+        <PressableScale className="mt-2 flex-row items-center justify-between rounded-card border border-line bg-surface p-4">
+          <Text className="text-body text-ink">Label</Text>
+          <Text className="text-caption text-muted">Value</Text>
+        </PressableScale>
+      </Section>
+
       <Section title="Button">
         <ButtonShowcase />
       </Section>
