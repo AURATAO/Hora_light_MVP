@@ -99,9 +99,37 @@ const EMPTY_BREADCRUMB: GpsBreadcrumb = {
   note: null,
 };
 
+/**
+ * Which phase of the task this session belongs to, and therefore which
+ * `source` its pings carry.
+ *
+ *   "enroute" — the supporter tapped "On my way" and has not clocked in. The
+ *               server accepts these WITHOUT an open worklog, and only inside
+ *               that window (server/live_tracking.go).
+ *   "working" — the original path: an open worklog, pings sourced by capture
+ *               mechanism rather than by phase.
+ *
+ * Absent on a slot written by build 8 or earlier, which had no enroute window:
+ * every one of those sessions is a clocked-in one, so a missing phase reads as
+ * "working" rather than as an error.
+ */
+export type GpsPhase = "enroute" | "working";
+
 interface ActiveSlot {
   taskId: string;
   startedAt: number;
+  phase?: GpsPhase;
+}
+
+function slotPhase(slot: ActiveSlot): GpsPhase {
+  return slot.phase ?? "working";
+}
+
+// The ping source each phase sends. Background capture during the enroute
+// window still reports "enroute": the server keys its no-worklog exception on
+// that value, so the phase has to win over the mechanism there.
+function sourceForPhase(phase: GpsPhase): "background" | "enroute" {
+  return phase === "enroute" ? "enroute" : "background";
 }
 
 // THE INVARIANT: a read that FAILED is not the same as a read that came back
@@ -227,6 +255,7 @@ TaskManager.defineTask<{ locations: Location.LocationObject[] }>(
         }
 
         const { taskId } = read.slot;
+        const source = sourceForPhase(slotPhase(read.slot));
 
         // Dedupe on the fix's own timestamp, both within this batch and
         // against what earlier runs already posted. `lastPostedAt` is
@@ -249,7 +278,7 @@ TaskManager.defineTask<{ locations: Location.LocationObject[] }>(
               lat: location.coords.latitude,
               lng: location.coords.longitude,
               accuracy: location.coords.accuracy != null ? Math.round(location.coords.accuracy) : undefined,
-              source: "background",
+              source,
             });
             posted += 1;
             lastPostedAt = location.timestamp;
@@ -261,9 +290,12 @@ TaskManager.defineTask<{ locations: Location.LocationObject[] }>(
             });
           } catch (e) {
             if (e instanceof ApiError && e.status === 403) {
-              // "not clocked in" — the worklog was closed somewhere this device
-              // never saw (web, another device, an admin action). The backend
-              // guard is the source of truth, so let it self-heal the orphan.
+              // "not clocked in" — the window this session belongs to has
+              // closed somewhere this device never saw: a worklog closed on web
+              // or another device, an admin action, or (enroute) a clock-in,
+              // cancellation or reassignment. Both windows answer 403, which is
+              // why this branch needs no phase of its own. The backend guard is
+              // the source of truth, so let it self-heal the orphan.
               log("403 from ping, worklog closed — stopping");
               await writeBreadcrumb({ note: "403 not clocked in, stopped" });
               await stopBackgroundGps();
@@ -289,7 +321,7 @@ async function updatesRunning(): Promise<boolean> {
 // other task already owns a running session — the caller falls back to the
 // foreground interval rather than silently relabelling the other task's pings,
 // which is how Thomas's two overlapping worklogs got mixed up on Aug 28.
-async function claimRunningSession(taskId: string): Promise<boolean> {
+async function claimRunningSession(taskId: string, phase: GpsPhase): Promise<boolean> {
   const read = await readActiveSlot();
   if (!read.ok) {
     // Can't tell whose session it is. Don't clobber, don't stop, don't claim.
@@ -299,10 +331,20 @@ async function claimRunningSession(taskId: string): Promise<boolean> {
   }
   if (read.slot === null) {
     // Running with no owner: adopt it rather than restart it.
-    await writeActiveSlot({ taskId, startedAt: Date.now() });
+    await writeActiveSlot({ taskId, startedAt: Date.now(), phase });
     return true;
   }
-  if (read.slot.taskId === taskId) return true;
+  if (read.slot.taskId === taskId) {
+    // Same task, possibly a new phase — the supporter just clocked in, which
+    // turns an enroute session into a working one. Rewrite the phase in place
+    // rather than restarting CoreLocation: a restart would drop fixes across
+    // exactly the moment the requester is watching most closely.
+    if (slotPhase(read.slot) !== phase) {
+      await writeActiveSlot({ ...read.slot, phase });
+      await writeBreadcrumb({ note: `phase ${slotPhase(read.slot)} → ${phase}` });
+    }
+    return true;
+  }
   log("session belongs to task", read.slot.taskId, "— not claiming for", taskId);
   await writeBreadcrumb({ note: `start: busy with ${read.slot.taskId}` });
   return false;
@@ -313,7 +355,7 @@ async function claimRunningSession(taskId: string): Promise<boolean> {
  * Returns true only if this task's fixes will flow from the background
  * session. Never throws.
  */
-export async function startBackgroundGps(taskId: string): Promise<boolean> {
+export async function startBackgroundGps(taskId: string, phase: GpsPhase = "working"): Promise<boolean> {
   try {
     // Foreground first: on iOS "Always" is only offered once When-In-Use is
     // held, and requesting background alone can resolve to denied outright.
@@ -323,7 +365,7 @@ export async function startBackgroundGps(taskId: string): Promise<boolean> {
     const background = await Location.requestBackgroundPermissionsAsync();
     if (background.status !== Location.PermissionStatus.GRANTED) return false;
 
-    return await startUpdatesFor(taskId);
+    return await startUpdatesFor(taskId, phase);
   } catch (e) {
     log("start failed", e instanceof Error ? e.message : e);
     await writeBreadcrumb({ note: `start failed: ${e instanceof Error ? e.message : "unknown"}` });
@@ -340,11 +382,11 @@ export async function startBackgroundGps(taskId: string): Promise<boolean> {
  * runs on a timer and on every foreground — prompting there would be a
  * permission dialog every 30 seconds. Never throws.
  */
-export async function restartBackgroundGps(taskId: string): Promise<boolean> {
+export async function restartBackgroundGps(taskId: string, phase: GpsPhase = "working"): Promise<boolean> {
   try {
     const background = await Location.getBackgroundPermissionsAsync();
     if (background.status !== Location.PermissionStatus.GRANTED) return false;
-    return await startUpdatesFor(taskId);
+    return await startUpdatesFor(taskId, phase);
   } catch (e) {
     log("restart failed", e instanceof Error ? e.message : e);
     await writeBreadcrumb({ note: `restart failed: ${e instanceof Error ? e.message : "unknown"}` });
@@ -352,13 +394,13 @@ export async function restartBackgroundGps(taskId: string): Promise<boolean> {
   }
 }
 
-function startUpdatesFor(taskId: string): Promise<boolean> {
+function startUpdatesFor(taskId: string, phase: GpsPhase): Promise<boolean> {
   return startGate(async () => {
-    if (await updatesRunning()) return claimRunningSession(taskId);
+    if (await updatesRunning()) return claimRunningSession(taskId, phase);
 
     // Persist before starting: the first fix can arrive immediately, and a
     // slot it can't read would drop that fix.
-    await writeActiveSlot({ taskId, startedAt: Date.now() });
+    await writeActiveSlot({ taskId, startedAt: Date.now(), phase });
     await Location.startLocationUpdatesAsync(GPS_TRACKING_TASK, TRACKING_OPTIONS);
     await writeBreadcrumb({ note: `started for ${taskId}` });
     log("started for task", taskId);
@@ -400,11 +442,18 @@ export async function stopBackgroundGpsFor(taskId: string): Promise<void> {
  * health check on the task screen. Optimistic on an unreadable slot so a
  * storage hiccup can't cause a restart loop.
  */
-export async function isBackgroundGpsHealthy(taskId: string): Promise<boolean> {
+export async function isBackgroundGpsHealthy(
+  taskId: string,
+  phase: GpsPhase = "working"
+): Promise<boolean> {
   if (!(await updatesRunning())) return false;
   const read = await readActiveSlot();
   if (!read.ok) return true;
   if (read.slot === null || read.slot.taskId !== taskId) return false;
+  // A session running under the wrong phase is sending the wrong `source`, and
+  // the server will 403 it the moment the window it names has closed. Unhealthy
+  // — the caller's restart rewrites the phase in place.
+  if (slotPhase(read.slot) !== phase) return false;
 
   const breadcrumb = await readBreadcrumb();
   const now = Date.now();
@@ -440,7 +489,20 @@ export async function reconcileBackgroundGps(): Promise<void> {
       return;
     }
     const summary = await getWorklogs(read.slot.taskId);
-    const open = summary?.worklogs?.some((wl) => wl.end_at === null) ?? false;
+    const worklogs = summary?.worklogs ?? [];
+    if (slotPhase(read.slot) === "enroute") {
+      // An enroute session has no worklog BY DEFINITION — that is what makes
+      // it the enroute window. What ends it is a worklog EXISTING: the
+      // supporter clocked in (the task screen restarts the session as
+      // "working") or clocked out somewhere this device never saw. Reusing the
+      // clocked-in check here would kill every enroute session at launch.
+      if (worklogs.length > 0) {
+        log("worklog exists for", read.slot.taskId, "— enroute window closed, stopping");
+        await stopBackgroundGps();
+      }
+      return;
+    }
+    const open = worklogs.some((wl) => wl.end_at === null);
     if (!open) {
       log("no open worklog for", read.slot.taskId, "— stopping");
       await stopBackgroundGps();

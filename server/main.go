@@ -145,6 +145,14 @@ type Task struct {
 	// getTask, so it is absent from list responses rather than false there.
 	AutoExtendConsent *bool `json:"auto_extend_consent,omitempty"`
 
+	// When the assigned supporter tapped "On my way" — the pre-clock-in live
+	// sharing window (server/live_tracking.go). Selected only by getTask, so
+	// like AutoExtendConsent it is absent from list responses rather than null
+	// there. Visible to BOTH parties: the supporter's button reads it to know
+	// it has already been tapped, and the requester's screen reads it to know
+	// there is something live to poll for.
+	EnrouteAt *time.Time `json:"enroute_at,omitempty"`
+
 	// The hold on the requester's card: what is reserved, on which card, and
 	// what became of it. REQUESTER ONLY — set by getTask and createTask behind
 	// an explicit ownership check, and by nothing else. omitempty, so it is
@@ -662,6 +670,12 @@ func main() {
 
 		tasksAPI.POST("/:id/gps-ping", saveGpsPing)
 		tasksAPI.GET("/:id/gps-latest", getLatestGps)
+
+		// Live tracking (server/live_tracking.go). The supporter opens the
+		// pre-clock-in sharing window; the requester — and nobody else — reads
+		// the derived state off it.
+		tasksAPI.POST("/:id/enroute", postEnroute)
+		tasksAPI.GET("/:id/live", getLiveLocation)
 		tasksAPI.POST("/:id/estimate-travel", estimateTravel)
 		tasksAPI.POST("/:id/review", createReview)
 	}
@@ -2103,6 +2117,18 @@ func getTask(c *gin.Context) {
 		t.Payment = taskPaymentView(ctx, id)
 	}
 
+	// The live-sharing window, for the two people it concerns. Read separately
+	// for the same reason as the fields above — the main SELECT has a fallback
+	// twin, and every column added to one has to be added to both.
+	if uid == t.RequesterID || isAssignee {
+		var enrouteAt *time.Time
+		if err := db.QueryRow(ctx,
+			`select enroute_at from public.tasks where id=$1::uuid`, id,
+		).Scan(&enrouteAt); err == nil {
+			t.EnrouteAt = enrouteAt
+		}
+	}
+
 	if t.Status == "removed" {
 		// Read separately instead of widening every task SELECT: only the
 		// detail screen needs the reason, and removal_note stays server-side.
@@ -2900,11 +2926,17 @@ func clockOut(c *gin.Context) {
 const (
 	gpsSourceForeground = "foreground"
 	gpsSourceBackground = "background"
+	// The pre-clock-in "On my way" window (server/live_tracking.go). Unlike the
+	// other two this names a PHASE, not a capture mechanism, because it is the
+	// value the without-a-worklog exception below is keyed on: a client cannot
+	// reach that exception by sending 'background'.
+	gpsSourceEnroute = "enroute"
 )
 
 var validGpsSources = map[string]bool{
 	gpsSourceForeground: true,
 	gpsSourceBackground: true,
+	gpsSourceEnroute:    true,
 }
 
 // POST /tasks/:id/gps-ping — assignee saves current location while clocked in
@@ -2917,19 +2949,6 @@ func saveGpsPing(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-
-	// must have an active clock-in session
-	var exists bool
-	_ = db.QueryRow(ctx, `
-		select exists(
-			select 1 from public.worklogs
-			where task_id=$1 and "user"=$2 and end_at is null
-		)
-	`, taskID, meEmail).Scan(&exists)
-	if !exists {
-		c.JSON(http.StatusForbidden, gin.H{"error": "not clocked in"})
-		return
-	}
 
 	var in struct {
 		Lat      float64 `json:"lat" binding:"required"`
@@ -2955,6 +2974,41 @@ func saveGpsPing(c *gin.Context) {
 		source = *in.Source
 	}
 
+	// WHO MAY POST A POSITION, and when. Two windows, and they do not overlap.
+	//
+	// The original one: an open clock-in session. Anything the supporter's
+	// phone captures while the clock is running belongs to the worklog.
+	//
+	// The new one: source='enroute', inside the window the supporter opened by
+	// tapping "On my way" — assigned, task still open, and NO worklog yet, so
+	// it closes for good at the first clock-in (enrouteWindowOpen). Scoped to
+	// that source value on purpose: a clocked-out phone that keeps sending
+	// 'background' pings is still refused exactly as it is today.
+	//
+	// Both answers are 403 "not clocked in" so the existing clients — which
+	// read that status as "this session is over, stop tracking" — need no new
+	// branch to self-heal when a window closes under them.
+	enroute := source == gpsSourceEnroute
+	allowed := false
+	if enroute {
+		ok, err := enrouteWindowOpen(ctx, taskID, uid)
+		if err != nil {
+			log.Printf("[gps-ping] enroute window check task=%s: %v", taskID, err)
+		}
+		allowed = ok
+	} else {
+		_ = db.QueryRow(ctx, `
+			select exists(
+				select 1 from public.worklogs
+				where task_id=$1 and "user"=$2 and end_at is null
+			)
+		`, taskID, meEmail).Scan(&allowed)
+	}
+	if !allowed {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not clocked in"})
+		return
+	}
+
 	_, err := db.Exec(ctx, `
 		insert into public.task_gps_pings(task_id, user_id, lat, lng, accuracy, source)
 		values ($1::uuid, $2::uuid, $3, $4, $5, $6)
@@ -2962,6 +3016,19 @@ func saveGpsPing(c *gin.Context) {
 	if err != nil {
 		log.Printf("[gps-ping] err=%v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+
+	// "«name» has arrived", once per task. Enroute pings only: after clock-in
+	// the requester has already been told, by the clock-in notification, and
+	// the supporter crossing 100m again on their way to a parked car is not an
+	// arrival. Never fails the ping (server/live_tracking.go).
+	if enroute {
+		maybeNotifyArrival(c, taskID, meEmail, in.Lat, in.Lng)
+		// The time cap's heartbeat below is deliberately NOT run here: there is
+		// no session to cap yet, and evaluateTimeCap reads worklogs that by
+		// definition do not exist inside this window.
+		c.JSON(http.StatusOK, gin.H{"ok": true})
 		return
 	}
 

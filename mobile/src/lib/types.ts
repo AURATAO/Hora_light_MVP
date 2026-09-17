@@ -71,7 +71,11 @@ export type NotificationType =
   // Stripe Phase 3. Deep-links to the task like the rest: the supporter's cut
   // is shown on the settlement card there, and Profile → Earnings is where the
   // running total lives.
-  | "PAYOUT_SENT";
+  | "PAYOUT_SENT"
+  // Live tracking. Fires once per task, the first time a pre-clock-in ping
+  // lands within 100m of the address. Deep-links to the task screen, where the
+  // live card is.
+  | "SUPPORTER_ARRIVED";
 
 // GET /auth/me — discriminated on `auth` so callers narrow before reading fields.
 export type User =
@@ -195,6 +199,12 @@ export interface Task {
   /** The hold on the card. Requester-only and detail-only — absent from every
    *  list response and from the supporter's copy of the same task. */
   payment?: TaskPayment;
+  /** When the assigned supporter tapped "On my way" — the pre-clock-in live
+   * sharing window. Detail-only, and sent to BOTH parties: the supporter's
+   * button reads it to know it has already been tapped, the requester's screen
+   * reads it to know there is something live to watch. Absent (not null) when
+   * they never tapped, which is the privacy default. */
+  enroute_at?: string | null;
   created_at: string;
   /** Legacy email columns (S-60.1) — present on every /tasks response. Only
    * for TalkJS participant identity (matches web's existing id-by-email
@@ -451,6 +461,37 @@ export interface LatestLocation {
   lng: number;
   accuracy: number | null;
   created_at: string;
+}
+
+/**
+ * GET /tasks/:id/live — the requester's view of a supporter on their way.
+ *
+ * REQUESTER-ONLY: the server 404s this for the supporter and for everyone
+ * else, so there is no branch here for a partial payload.
+ *
+ * `state` is derived on the server from `distance_m`, and the client never
+ * re-derives it (S-05, and the same reason every cost figure comes down the
+ * wire finished). `distance_m` is in metres and is NEVER rendered verbatim —
+ * formatDistance in ./live-tracking turns it into "0.8 mi away".
+ */
+export type LiveState = "on_the_way" | "almost_there" | "at_door" | "working" | "unavailable";
+
+export interface LiveLocation {
+  state: LiveState;
+  /** The supporter's last known position. Null until their first ping. */
+  lat: number | null;
+  lng: number | null;
+  updated_at: string | null;
+  /** Metres to the task address. Null when the position is stale (the server
+   * withholds it rather than making a claim about the present) or when the
+   * task has no coordinates. */
+  distance_m: number | null;
+  supporter: { name: string; avatar_url: string };
+  /** Location A — the requester's own address, sent so one poll draws the
+   * whole map. Null on a task posted without coordinates. */
+  destination: { lat: number; lng: number } | null;
+  enroute_at: string | null;
+  clocked_in: boolean;
 }
 
 // POST /tasks/:id/estimate-travel response

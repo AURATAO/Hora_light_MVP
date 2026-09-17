@@ -31,6 +31,7 @@ import (
 // supabase/migrations/20260711094158_remote_schema.sql (and the push-token
 // migration) so the new migration runs against the tables it will meet in prod.
 const removeFixture = `
+DROP TABLE IF EXISTS public.task_gps_pings CASCADE;
 DROP TABLE IF EXISTS public.audit_logs CASCADE;
 DROP TABLE IF EXISTS public.device_push_tokens CASCADE;
 DROP TABLE IF EXISTS public.notifications CASCADE;
@@ -76,6 +77,21 @@ CREATE TABLE public.tasks (
 	travel_time_minutes integer,
 	total_estimate_minutes integer,
 	CONSTRAINT tasks_status_check CHECK ((status = ANY (ARRAY['open'::text, 'completed'::text, 'cancelled'::text])))
+);
+
+-- Live tracking's migration ALTERs this table's source CHECK, so the fixture
+-- has to carry it for that file to apply as written. Copied from
+-- supabase/migrations/20260711094158_remote_schema.sql plus the "source"
+-- column 20260827120000 adds.
+CREATE TABLE public.task_gps_pings (
+	id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+	task_id uuid REFERENCES public.tasks(id) ON DELETE CASCADE,
+	user_id uuid,
+	lat double precision NOT NULL,
+	lng double precision NOT NULL,
+	accuracy integer,
+	source text NOT NULL DEFAULT 'foreground',
+	created_at timestamptz DEFAULT now()
 );
 
 CREATE TABLE public.worklogs (
@@ -129,6 +145,13 @@ var removeMigrationPaths = []string{
 	"../supabase/migrations/20260909120000_notification_type_task_reassigned.sql",
 	"../supabase/migrations/20260914130000_notification_types_phase2b.sql",
 	"../supabase/migrations/20260915140000_notification_type_balance_due.sql",
+	// Live tracking. SUPPORTER_ARRIVED is written by the arrival latch on the
+	// enroute ping path, so the enum value has to exist in the fixture for the
+	// same reason the Phase 2b and Phase 3 ones do. The columns migration is
+	// listed first because the enum file is split off from it precisely so the
+	// value is committed before anything writes it.
+	"../supabase/migrations/20260917120000_task_enroute_live_tracking.sql",
+	"../supabase/migrations/20260917130000_notification_type_supporter_arrived.sql",
 }
 
 const adminEmail = "taoaura.lavoro@gmail.com"

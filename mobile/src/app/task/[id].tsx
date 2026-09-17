@@ -19,6 +19,7 @@ import {
 import { BudgetIncreaseSheet, type BudgetIncreaseSubmit } from "../../components/BudgetIncreaseSheet";
 import { CancelTaskSheet } from "../../components/CancelTaskSheet";
 import { CompleteTaskSheet, type CompleteTaskPayload } from "../../components/CompleteTaskSheet";
+import { LiveTrackingCard } from "../../components/LiveTrackingCard";
 import { ReviewSheet } from "../../components/ReviewSheet";
 import { TractionReviewSheet } from "../../components/TractionReviewSheet";
 import { Avatar, Badge, Button, EmptyState, PressableScale, Screen, Skeleton } from "../../components/ui";
@@ -31,7 +32,6 @@ import {
   clockOut,
   completeTask,
   getExtensions,
-  getLatestLocation,
   getMe,
   getPublicProfile,
   getProfileReviews,
@@ -41,12 +41,14 @@ import {
   requestTimeExtension,
   resolveExtension,
   sendGpsPing,
+  startEnroute,
   submitReview,
   type SubmitReviewPayload,
   uploadCompletionPhoto,
 } from "../../lib/api";
 import { TRACTION_3_CONFIG, isTractionWindowActive } from "../../lib/beta-notice";
 import { getCategoryMeta } from "../../lib/categories";
+import { shouldPollLive } from "../../lib/live-tracking";
 import {
   GPS_DEBUG_ROW,
   isBackgroundGpsHealthy,
@@ -55,15 +57,14 @@ import {
   startBackgroundGps,
   stopBackgroundGpsFor,
   type GpsBreadcrumb,
+  type GpsPhase,
 } from "../../lib/gps-tracking";
-import { openAddressInMaps, openCoordsInMaps, openRouteInMaps } from "../../lib/maps";
+import { openAddressInMaps, openRouteInMaps } from "../../lib/maps";
 import { cancelOvertimeReminders, scheduleOvertimeReminders } from "../../lib/overtime-reminders";
 import {
-  LOCATION_STALE_MS,
   deriveTaskStatus,
   formatCost,
   formatElapsed,
-  formatLastSeen,
   formatMinutes,
   formatRelativeTime,
   formatScheduledAt,
@@ -75,7 +76,6 @@ import { holdSummary, holdWillBeReleasedMessage, timeBasisNote } from "../../lib
 import type {
   ExtensionRequest,
   ExtensionsResponse,
-  LatestLocation,
   PublicProfile,
   Review,
   Settlement,
@@ -92,12 +92,6 @@ const GPS_PING_INTERVAL_MS = 30_000;
 // session is still alive. Half the staleness threshold, so a dead session is
 // noticed within roughly one check of going quiet.
 const GPS_HEALTH_CHECK_MS = 30_000;
-
-// The requester polls the supporter's last-known position at half the ping
-// cadence (30s) — often enough to feel current, gentle enough to skip while the
-// screen is backgrounded. Foreground-only, gated on the supporter being clocked
-// in; see the useFocusEffect below.
-const LOCATION_POLL_INTERVAL_MS = 60_000;
 
 // How long the "Copied" confirmation replaces the section label.
 const COPIED_FEEDBACK_MS = 1500;
@@ -206,6 +200,10 @@ export default function TaskDetail() {
   // route into onboarding rather than the same button again.
   const [payoutsGate, setPayoutsGate] = useState<string | null>(null);
   const [clockLoading, setClockLoading] = useState(false);
+  // In flight on the "On my way" tap. The server is idempotent, but a button
+  // that still looks unpressed after being pressed is its own bug.
+  const [enrouteBusy, setEnrouteBusy] = useState(false);
+  const [enrouteError, setEnrouteError] = useState<string | null>(null);
   const [clockError, setClockError] = useState<string | null>(null);
   // Which capture path is live for this clock-in, and the single source the
   // notice copy and the foreground interval both key off:
@@ -217,7 +215,6 @@ export default function TaskDetail() {
   // AsyncStorage. Lets a field test tell "the task never fired" from "the task
   // fired and the POST failed" with no Xcode attached.
   const [gpsBreadcrumb, setGpsBreadcrumb] = useState<GpsBreadcrumb | null>(null);
-  const [latestLocation, setLatestLocation] = useState<LatestLocation | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [descriptionCopied, setDescriptionCopied] = useState(false);
   // Set when the backend answers "task_removed" instead of a task: the HO:RA
@@ -397,6 +394,22 @@ export default function TaskDetail() {
       }
     } finally {
       setAccepting(false);
+    }
+  }
+
+  async function handleEnroute() {
+    setEnrouteBusy(true);
+    setEnrouteError(null);
+    try {
+      await startEnroute(id);
+      // Reload rather than patching locally: enroute_at comes back on the task,
+      // and it is what the button, the ping phase and the requester's card all
+      // read. Patching one of those three and not the others is how they drift.
+      await load();
+    } catch (e) {
+      setEnrouteError(e instanceof Error ? e.message : "Couldn't start sharing your location.");
+    } finally {
+      setEnrouteBusy(false);
     }
   }
 
@@ -601,14 +614,21 @@ export default function TaskDetail() {
   // null for them without a check here.
   const holdLine = holdSummary(task?.payment);
 
-  // The requester's live-location view mirrors web (app/src/pages/TaskDetail.jsx)
-  // but narrows the gate to "supporter is actually clocked in" (an open worklog)
-  // rather than merely "task is open" — no open worklog means no pings are being
-  // written, so there is nothing live to poll for. Computed before the loading
-  // early-returns so the focus-effect hook below can depend on it. `task` may be
-  // null here (still loading); optional-chaining keeps this false until it loads.
+  // The requester's live view. One predicate, shared with web
+  // (app/src/lib/liveTracking.js ↔ ../../lib/live-tracking), so the two clients
+  // cannot drift into polling different sets of tasks — and matching exactly
+  // what the server will answer, since GET /tasks/:id/live 404s outside it.
+  //
+  // Deliberately NOT narrowed to "clocked in" the way the old last-known row
+  // was: the whole point of this feature is the span BEFORE the clock starts.
+  // `task` may still be null here; the optional chaining keeps it false until
+  // it loads.
   const isRequesterView = meId !== null && task?.requester_id === meId;
-  const canSeeLiveLocation = isRequesterView && hasOpenWorklog;
+  const canWatchLive = shouldPollLive({
+    isRequester: isRequesterView,
+    status: task?.status,
+    assignedToId: task?.assigned_to_id,
+  });
 
   // Is this task ours to track at all? Goes false the moment the task says
   // otherwise — cancelled, removed, completed, or reassigned to someone else.
@@ -617,22 +637,60 @@ export default function TaskDetail() {
   const gpsTaskIsOurs =
     task !== null && meId !== null && task.assigned_to_id === meId && task.status === "open";
 
-  // Whether *this device* should be sending pings for *this* task. Three
-  // states, not two: while the data is still loading we don't know, and
-  // treating "unknown" as "no" would tear down background tracking every time
-  // this screen mounts.
+  // Whether *this device* should be sending pings for *this* task, and under
+  // which phase. Four states, not two:
+  //
+  //   null      — still loading. NOT "no": treating unknown as no would tear
+  //               down background tracking every time this screen mounts.
+  //   "none"    — nothing to send. Not ours, or the window has closed.
+  //   "enroute" — they tapped "On my way" and have not clocked in. Pings flow
+  //               with source='enroute', which is the one value the server
+  //               accepts without an open worklog.
+  //   "working" — the original path: an open worklog.
+  //
+  // The enroute arm requires ZERO worklogs, not merely no open one — the same
+  // rule the server enforces (enrouteWindowOpen). enroute_at is never cleared,
+  // so a window keyed on that column alone would re-open after clock-out and
+  // keep sharing a supporter's position for the rest of the task's life.
+  const gpsPhaseWanted: GpsPhase | "none" | null =
+    task === null
+      ? null
+      : !gpsTaskIsOurs
+        ? "none"
+        : worklogs === null
+          ? null
+          : hasOpenWorklog
+            ? "working"
+            : task.enroute_at && worklogs.worklogs.length === 0
+              ? "enroute"
+              : "none";
+
   const gpsTrackingWanted: boolean | null =
-    task === null ? null : !gpsTaskIsOurs ? false : worklogs === null ? null : hasOpenWorklog;
+    gpsPhaseWanted === null ? null : gpsPhaseWanted !== "none";
+  // The button, and the state it leads to. Both require the window to still be
+  // open — assigned to us, task live, and NOT a single worklog yet, which is
+  // what closes the window at the first clock-in (server: enrouteWindowOpen).
+  const enrouteWindowOpen = Boolean(
+    gpsTaskIsOurs && worklogs !== null && worklogs.worklogs.length === 0
+  );
+  const canGoEnroute = enrouteWindowOpen && !task?.enroute_at;
+  const isEnrouteSharing = enrouteWindowOpen && Boolean(task?.enroute_at);
+  const gpsPhase: GpsPhase = gpsPhaseWanted === "enroute" ? "enroute" : "working";
 
   // One notice, derived from gpsMode, so the copy can't drift out of step with
-  // which capture path is actually running.
+  // which capture path is actually running. The trailing clause changes with
+  // the phase — a supporter walking to an address cares that sharing dies when
+  // the screen locks even more than one already standing in the kitchen does,
+  // and telling them it stops "while you work" would be describing the wrong
+  // half of the trip.
   const gpsNotice =
     gpsTrackingWanted !== true
       ? null
       : gpsMode === "off"
         ? "Location is off, so the requester can't see where you are — turn it on for HO:RA in Settings."
         : gpsMode === "foreground"
-          ? 'Location sharing stops when your phone locks — choose "Always" for HO:RA in Settings to keep it on while you work.'
+          ? 'Location sharing stops when your phone locks — choose "Always" for HO:RA in Settings to keep it on ' +
+            (gpsPhase === "enroute" ? "on your way there." : "while you work.")
           : null;
 
   // Live elapsed timer while clocked in — ticks every second, no server round-trip.
@@ -658,7 +716,7 @@ export default function TaskDetail() {
     }
 
     let cancelled = false;
-    startBackgroundGps(id)
+    startBackgroundGps(id, gpsPhase)
       .then((started) => {
         if (cancelled) return;
         // Falling back is not an error the supporter has to act on — clock-in
@@ -673,7 +731,7 @@ export default function TaskDetail() {
     return () => {
       cancelled = true;
     };
-  }, [gpsTrackingWanted, id]);
+  }, [gpsTrackingWanted, gpsPhase, id]);
 
   // Self-heal. The background session can die under us — iOS can stop feeding
   // it, and before the AsyncStorage fix a screen lock killed it outright. On
@@ -688,7 +746,7 @@ export default function TaskDetail() {
     let cancelled = false;
 
     async function check() {
-      const healthy = await isBackgroundGpsHealthy(id);
+      const healthy = await isBackgroundGpsHealthy(id, gpsPhase);
       if (cancelled) return;
       if (healthy) {
         setGpsMode("background");
@@ -699,7 +757,7 @@ export default function TaskDetail() {
       // already running rather than waiting on the answer.
       setGpsMode((mode) => (mode === "background" ? "foreground" : mode));
       if (cancelled) return;
-      await restartBackgroundGps(id);
+      await restartBackgroundGps(id, gpsPhase);
     }
 
     check();
@@ -713,7 +771,7 @@ export default function TaskDetail() {
       clearInterval(timer);
       sub.remove();
     };
-  }, [gpsTrackingWanted, id]);
+  }, [gpsTrackingWanted, gpsPhase, id]);
 
   // Debug builds only: poll the breadcrumb for the row below.
   useEffect(() => {
@@ -767,7 +825,11 @@ export default function TaskDetail() {
           lat: pos.coords.latitude,
           lng: pos.coords.longitude,
           accuracy: pos.coords.accuracy != null ? Math.round(pos.coords.accuracy) : undefined,
-          source: "foreground",
+          // The phase wins over the capture mechanism during the enroute
+          // window: "enroute" is the value the server's no-worklog exception is
+          // keyed on, so a foreground-captured fix sent as "foreground" there
+          // would be refused.
+          source: gpsPhase === "enroute" ? "enroute" : "foreground",
         });
       } catch {
         // Silent — matches web's swallow-errors behavior for pings.
@@ -783,7 +845,7 @@ export default function TaskDetail() {
         gpsIntervalRef.current = null;
       }
     };
-  }, [gpsMode, id]);
+  }, [gpsMode, gpsPhase, id]);
 
   // Both sides: poll the mid-task asks while the task is live and this screen
   // is focused.
@@ -811,36 +873,9 @@ export default function TaskDetail() {
     }, [isTaskActive, meId, loadExtensions])
   );
 
-  // Requester side: poll the supporter's last-known position every 60s, but only
-  // while this screen is focused AND the supporter is clocked in. useFocusEffect
-  // tears the interval down when the screen blurs, so no timer runs in the
-  // background. A denied permission on the supporter's phone simply means no new
-  // pings arrive — the row stays in its waiting/last-known state, never an error.
-  useFocusEffect(
-    useCallback(() => {
-      if (!canSeeLiveLocation) {
-        // Clear any position carried over from a previous clock-in session so a
-        // stale coordinate can't masquerade as current once they clock out.
-        setLatestLocation(null);
-        return;
-      }
-      let active = true;
-      async function poll() {
-        try {
-          const loc = await getLatestLocation(id);
-          if (active) setLatestLocation(loc);
-        } catch {
-          // Silent — a dropped poll leaves the last-known row untouched.
-        }
-      }
-      poll();
-      const interval = setInterval(poll, LOCATION_POLL_INTERVAL_MS);
-      return () => {
-        active = false;
-        clearInterval(interval);
-      };
-    }, [canSeeLiveLocation, id])
-  );
+  // The requester's poll now lives in LiveTrackingCard, which is mounted only
+  // while there is something live to watch and owns both the 15s cadence and
+  // the "stop when the app is backgrounded" rule.
 
   if (loading) {
     return (
@@ -1129,6 +1164,41 @@ export default function TaskDetail() {
         {isAssignee && task.status === "open" ? (
           <View className="mb-4 gap-3 rounded-card border border-line bg-surface p-4">
             <Text className="text-caption font-semibold text-muted">Work session</Text>
+            {!hasOpenWorklog && canGoEnroute ? (
+              <>
+                {/* The step before the clock, and the first thing a supporter
+                    does after accepting. Nothing is shared with the requester
+                    until this is pressed — that is the privacy default: opt in,
+                    once, deliberately. Primary here rather than beside Clock
+                    in, because while it is on screen it is the only solid CTA
+                    (DESIGN.md §1: one per screen) — Clock out, this screen's
+                    usual one, cannot exist yet. */}
+                <Button
+                  label="On my way"
+                  onPress={handleEnroute}
+                  loading={enrouteBusy}
+                />
+                <Text className="text-caption text-muted">
+                  Lets {firstName(requester?.name)} see you approaching. Sharing stops when you
+                  clock out.
+                </Text>
+                {enrouteError ? (
+                  <Text className="text-caption text-danger">{enrouteError}</Text>
+                ) : null}
+              </>
+            ) : null}
+            {!hasOpenWorklog && isEnrouteSharing ? (
+              <>
+                <Text className="text-caption text-muted">
+                  Sharing your location with {firstName(requester?.name)} until you clock out.
+                </Text>
+                {/* The same permission notice the clocked-in branch shows. A
+                    supporter whose location is off here is sharing NOTHING
+                    while a requester watches an empty card, which is the worst
+                    version of this feature — so it is said in both phases. */}
+                {gpsNotice ? <Text className="text-caption text-muted">{gpsNotice}</Text> : null}
+              </>
+            ) : null}
             {hasOpenWorklog ? (
               <>
                 <Text className={`text-title font-semibold ${isOvertime ? "text-danger" : "text-ink"}`}>
@@ -1149,7 +1219,12 @@ export default function TaskDetail() {
                 ) : null}
               </>
             ) : (
-              <Button label="Clock in" onPress={handleClockIn} loading={clockLoading} />
+              <Button
+                label="Clock in"
+                onPress={handleClockIn}
+                loading={clockLoading}
+                variant={canGoEnroute ? "secondary" : "primary"}
+              />
             )}
             {clockError ? <Text className="text-caption text-danger">{clockError}</Text> : null}
           </View>
@@ -1174,14 +1249,16 @@ export default function TaskDetail() {
           />
         ) : null}
 
+        {/* Requester: where their supporter is, right now. Replaces the
+            last-known-position row that used to live in Progress — which only
+            appeared once the supporter had CLOCKED IN, i.e. once they had
+            already arrived, and which rendered their coordinates as text. */}
+        {canWatchLive ? <LiveTrackingCard taskId={id} /> : null}
+
         {/* Progress */}
         {task.assigned_to_id && worklogs ? (
           <View className="mb-4 gap-3 rounded-card border border-line bg-surface p-4">
             <Text className="text-caption font-semibold text-muted">Progress</Text>
-            {/* Supporter's last-known position — requester-only, and only while
-                they're clocked in (an open worklog). Interim until the v1.1 live
-                map (see skills/decisions/D-09). */}
-            {canSeeLiveLocation ? <LiveLocationRow location={latestLocation} nowMs={now} /> : null}
             {worklogs.worklogs.length === 0 ? (
               <Text className="text-caption text-muted">No time logged yet.</Text>
             ) : (
@@ -1787,36 +1864,6 @@ function SettlementCard({
         </PressableScale>
       ) : null}
     </View>
-  );
-}
-
-// The supporter's last-known GPS position as a single Progress-card row. Three
-// honest states, no error state: no ping yet (also the case when the supporter
-// denied location — nothing arrives) shows a muted "waiting"; a fresh ping is a
-// tappable brand link into the maps app; a ping older than LOCATION_STALE_MS is
-// still shown and still tappable, but muted so it never pretends to be live.
-function LiveLocationRow({ location, nowMs }: { location: LatestLocation | null; nowMs: number }) {
-  if (!location) {
-    return (
-      <View className="min-h-11 flex-row items-center gap-2">
-        <MapPin color={color.muted} size={16} strokeWidth={size.iconStroke} />
-        <Text className="text-caption text-muted">Waiting for location…</Text>
-      </View>
-    );
-  }
-  const stale = nowMs - new Date(location.created_at).getTime() > LOCATION_STALE_MS;
-  return (
-    <PressableScale
-      onPress={() => openCoordsInMaps(location.lat, location.lng)}
-      accessibilityRole="link"
-      accessibilityLabel="Open supporter's last known location in maps"
-      className="min-h-11 flex-row items-center gap-2"
-    >
-      <MapPin color={stale ? color.muted : color.brand} size={16} strokeWidth={size.iconStroke} />
-      <Text className={`text-caption ${stale ? "text-muted" : "text-brand"}`}>
-        Last seen {formatLastSeen(location.created_at, nowMs)}
-      </Text>
-    </PressableScale>
   );
 }
 
