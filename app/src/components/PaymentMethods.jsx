@@ -117,8 +117,31 @@ function AddCardForm({ onSaved, onCancel }) {
       {/* 'tabs', not 'tab' — the union is 'tabs' | 'accordion' | 'auto' and
           Stripe throws an IntegrationError at elements.create() on anything
           else. Nothing type-checks this file (plain JSX, Vite), so the literal
-          has to be right by inspection. */}
-      <PaymentElement options={{ layout: 'tabs' }} />
+          has to be right by inspection.
+
+          WALLETS. 'auto' is already the default for both; they are written out
+          because the interesting fact about them is invisible otherwise — the
+          switch that actually decides whether an Apple Pay button appears is
+          NOT in this file. It is domain registration in the Stripe dashboard
+          (Payment method domains → add mvp.horaapp.co). Until that is done
+          these two lines do nothing at all, and someone hunting for "why is
+          there no Apple Pay button" should find that sentence here rather than
+          conclude the option is missing and add it a second time.
+
+          Stripe performs the Apple merchant validation for web itself — there
+          is no merchant ID or certificate to configure on this side, and the
+          merchant.co.horaapp.hora identifier is the NATIVE app's alone.
+
+          The same off-session caveat as mobile applies: this form saves a
+          method that is charged later without the customer present. See the
+          WALLETS AND OFF-SESSION note in mobile/src/lib/payments.ts — the
+          reasoning is identical and is not repeated here. */}
+      <PaymentElement
+        options={{
+          layout: 'tabs',
+          wallets: { applePay: 'auto', googlePay: 'auto' },
+        }}
+      />
       {error && (
         <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
           {error}

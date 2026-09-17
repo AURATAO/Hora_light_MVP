@@ -1,4 +1,5 @@
 import {
+  PlatformPay,
   handleNextAction,
   initPaymentSheet,
   initStripe,
@@ -32,9 +33,61 @@ import type { TaskPayment } from "./types";
  * it, so rotating it is one Render env change rather than a native rebuild.
  * EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY is the fallback for a build talking to a
  * backend that has not been given one yet.
+ *
+ * WALLETS AND OFF-SESSION — READ THIS BEFORE TRUSTING APPLE PAY HERE.
+ *
+ * This sheet SAVES a payment method; the money is taken later, off-session,
+ * when a task is posted (CreatePreAuth in server/payments.go confirms with
+ * OffSession: true). For a plain card that is exactly what the SetupIntent's
+ * usage=off_session buys.
+ *
+ * Apple Pay is not a plain card. Stripe classifies it as customer-initiated,
+ * and what PaymentSheet saves in setup mode is a device-bound token (a DPAN).
+ * For merchant-initiated charges — anything taken without the customer in front
+ * of the sheet — Stripe's guidance is to use Apple merchant tokens (MPANs),
+ * which this integration cannot request because they require a fixed billing
+ * cycle that HO:RA's variable, deferred charges do not have.
+ *
+ * So the open question is whether a saved Apple Pay method survives the
+ * off-session pre-auth at post, or is declined with authentication_required.
+ * It CANNOT be answered offline or with Stripe test cards: Apple Pay testing
+ * needs a real card in a real Wallet against test keys. Until somebody posts a
+ * task on a device with an Apple Pay method saved and watches what the hold
+ * does, treat this as unproven.
+ *
+ * The blast radius if it is wrong is bounded and known: the requester's post is
+ * refused with a 402 they can retry with a different card, exactly as any
+ * decline is handled today (readPostFailure below). No task is created and no
+ * money moves. It is a bad experience, not a broken ledger — and it is entirely
+ * behind PAYMENTS_ENFORCED, which is off.
  */
 
 const FALLBACK_PUBLISHABLE_KEY = process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? "";
+
+/**
+ * The Apple Pay merchant identifier.
+ *
+ * MUST MATCH `app.json` exactly — the Stripe config plugin writes this same
+ * string into the `com.apple.developer.in-app-payments` entitlement at prebuild,
+ * and Apple Pay fails at runtime if the value the SDK is initialised with is not
+ * in that entitlement. Two copies of one string is unfortunate; the alternative
+ * (reading it back out of `Constants.expoConfig.plugins`) means parsing a plugin
+ * tuple at runtime and getting `undefined` in any build where the shape changed,
+ * which fails the same way but silently.
+ *
+ * BUILD-TIME, NOT RUNTIME. The entitlement is compiled into the binary, so this
+ * cannot be switched by an env var or a server response the way the publishable
+ * key can. Changing it needs a new native build.
+ */
+const APPLE_PAY_MERCHANT_ID = "merchant.co.horaapp.hora";
+
+/**
+ * The country of the BUSINESS, not the customer — Apple Pay wants to know where
+ * the merchant of record is. Matches the platform Stripe account (US) and the
+ * only market this beta operates in. Not the same field as the currency, which
+ * comes from BillingConfig server-side.
+ */
+const APPLE_PAY_MERCHANT_COUNTRY = "US";
 
 // initStripe is a native call and is idempotent per key, but calling it on
 // every sheet present is still a bridge round trip for nothing. Remembering
@@ -49,11 +102,13 @@ async function applyPublishableKey(key: string): Promise<void> {
     throw new Error("Card payments aren't set up yet. Please try again later.");
   }
   if (publishableKey === appliedKey) return;
-  // No merchantIdentifier: that is Apple Pay's, and HO:RA has no Apple Pay
-  // merchant ID registered. Passing one that does not exist makes PaymentSheet
-  // offer a button that fails; omitting it makes the sheet card-only, which is
-  // what this phase actually supports.
-  await initStripe({ publishableKey });
+  // merchantIdentifier is what turns Apple Pay on. It must name a merchant ID
+  // that is BOTH registered at developer.apple.com AND present in this binary's
+  // entitlement — the config plugin handles the second half from app.json. A
+  // merchant ID the entitlement does not carry makes PaymentSheet offer an
+  // Apple Pay button that fails at authorization, which is worse than not
+  // offering one, so these two values are kept in lockstep deliberately.
+  await initStripe({ publishableKey, merchantIdentifier: APPLE_PAY_MERCHANT_ID });
   appliedKey = publishableKey;
 }
 
@@ -105,6 +160,33 @@ export async function presentAddCardSheet(): Promise<PaymentOutcome> {
     // Worth being exact about: someone debugging "why does every post ask for
     // 3DS" will read this line first, and it is the wrong lever.
     allowsDelayedPaymentMethods: false,
+    // Apple Pay, iOS only. Its presence here is what puts the button in the
+    // sheet; the entitlement and the merchantIdentifier above are what make it
+    // work. Android is unaffected — googlePay is a separate key, deliberately
+    // left off (see the wallets note below).
+    applePay: {
+      merchantCountryCode: APPLE_PAY_MERCHANT_COUNTRY,
+      // A SETUP sheet, not a purchase one: this screen saves a card for later,
+      // it does not charge. ButtonType.SetUp makes the sheet say "Set Up" and
+      // not "Pay", which is the difference between a correct affordance and one
+      // that implies money is about to move.
+      buttonType: PlatformPay.ButtonType.SetUp,
+      // NO cartItems, and no `request`. Stripe's docs say to pass cartItems on a
+      // SetupIntent "to display the amount you intend to charge" — but HO:RA has
+      // no such amount at this moment. A card is saved from Profile, often days
+      // before any task exists, and what it will eventually be charged depends
+      // on a task not yet written, a duration not yet worked and a receipt not
+      // yet produced. Inventing a number to fill the field would put a figure in
+      // an Apple sheet that nobody is agreeing to and that will not match the
+      // eventual charge.
+      //
+      // `request` (Apple merchant tokens / MPAN) is the documented route for
+      // merchant-initiated charges, and it does not fit either: every variant
+      // demands a fixed billing cycle — RecurringPaymentRequest wants an
+      // intervalUnit, an intervalCount and an amount. HO:RA is deferred and
+      // variable, not recurring. See the WALLETS AND OFF-SESSION note below for
+      // what this means and what still has to be checked on a device.
+    },
     returnURL: "hora://stripe-redirect",
   });
   if (init.error) {
