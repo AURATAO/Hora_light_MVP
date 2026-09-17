@@ -1,7 +1,7 @@
 # D-09: Mobile requester sees the supporter's last-known location as a single Progress row in v1; the live map is deferred to v1.1
 
 **Date:** 2026-07-26
-**Status:** Accepted
+**Status:** Superseded by D-12 (2026-09-17) — the v1.1 live map below shipped, with the route trail deliberately dropped; see D-12 for why.
 **Trigger:** Mobile task "Requester sees supporter's last known location (parity with web's existing display)" — web already shows a last-known-position chip on the task page; mobile only *wrote* GPS pings and had no read side. The task scoped an interim text row, explicitly leaving the full live map for later, which this record captures so the more valuable version isn't lost.
 
 ## Decision

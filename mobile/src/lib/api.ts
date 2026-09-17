@@ -7,6 +7,7 @@ import type {
   ExtensionsResponse,
   GpsPing,
   LatestLocation,
+  LiveLocation,
   OutstandingBalance,
   ParsedTask,
   Profile,
@@ -613,7 +614,10 @@ export interface GpsPingPayload {
   // Which capture path produced this fix. Optional on the wire — the backend
   // defaults it to "foreground" so the TestFlight build that predates
   // background tracking keeps working unchanged.
-  source?: "foreground" | "background";
+  // "enroute" is the pre-clock-in window (POST /tasks/:id/enroute). It is the
+  // one source the server accepts with NO open worklog, and only inside that
+  // window — see enrouteWindowOpen in server/live_tracking.go.
+  source?: "foreground" | "background" | "enroute";
 }
 
 export function sendGpsPing(id: string, payload: GpsPingPayload): Promise<GpsPing> {
@@ -627,6 +631,28 @@ export function sendGpsPing(id: string, payload: GpsPingPayload): Promise<GpsPin
 // TaskDetail.jsx).
 export function getLatestLocation(id: string): Promise<LatestLocation | null> {
   return apiFetch<LatestLocation | null>(`/tasks/${id}/gps-latest`);
+}
+
+/**
+ * The supporter says they have set off. Opens the pre-clock-in sharing window
+ * and nothing else — until this is called, the requester sees nothing.
+ *
+ * Idempotent on the server: a second call returns the first call's timestamp
+ * rather than restarting the window.
+ */
+export function startEnroute(id: string): Promise<{ enroute_at: string }> {
+  return apiFetch<{ enroute_at: string }>(`/tasks/${id}/enroute`, { method: "POST" });
+}
+
+/**
+ * The requester's live read. Polled every 15s while the screen is focused and
+ * the app is in front (LiveTrackingCard owns that rule).
+ *
+ * 404s for anyone but the requester and for any task that is not open with
+ * somebody on it — so callers gate on shouldPollLive rather than catching.
+ */
+export function getLiveLocation(id: string): Promise<LiveLocation> {
+  return apiFetch<LiveLocation>(`/tasks/${id}/live`);
 }
 
 export interface EstimateTravelPayload {

@@ -4,6 +4,8 @@ import { api, API_BASE } from '../api/client'
 import TaskChatBox from '../components/TaskChatBox'
 import { useAuth } from '../auth/AuthContext'
 import UserPill from '../components/UserPill'
+import LiveTrackingCard from '../components/LiveTrackingCard'
+import { shouldPollLive } from '../lib/liveTracking'
 import { gmapsPlaceUrl, gmapsDirectionsUrl } from '../utils/gmaps'
 import { useLoader } from '../providers/LoaderProvider.jsx'
 import PlaceInput from '../components/PlaceInput'
@@ -182,7 +184,10 @@ export default function TaskDetail() {
   const [work, setWork] = useState({ items: [], total_minutes: 0, total_cost_cents: 0, has_open: false })
   const [gpsPos, setGpsPos] = useState(null)       // { lat, lng, accuracy } — assignee live
   const [gpsError, setGpsError] = useState('')
-  const [latestGps, setLatestGps] = useState(null)  // last saved ping — shown to requester
+  // In flight on the "On my way" tap. Disables the button so a double-tap
+  // cannot fire two requests — the server is idempotent, but a button that
+  // looks unpressed after being pressed is its own bug.
+  const [enrouteBusy, setEnrouteBusy] = useState(false)
   const watchIdRef = useRef(null)
   const pingIntervalRef = useRef(null)
 
@@ -392,13 +397,41 @@ export default function TaskDetail() {
   const isActivelyWorking = Boolean(
     user?.id && task?.assigned_to_id && user.id === task.assigned_to_id && work.has_open
   )
-  const isOwnerWatching = Boolean(
-    user?.id && task?.requester_id && user.id === task.requester_id && task?.assigned_to_id && task.status === 'open'
-  )
+  // Whether the live card should be on screen at all. One predicate, shared
+  // with mobile (app/src/lib/liveTracking.js), so the two clients cannot drift
+  // into polling different sets of tasks — and matching exactly what the
+  // server will answer, since GET /tasks/:id/live 404s outside this set.
+  const canWatchLive = shouldPollLive({
+    isRequester: Boolean(user?.id && task?.requester_id && user.id === task.requester_id),
+    status: task?.status,
+    assignedToId: task?.assigned_to_id,
+  })
 
-  // Assignee: watch GPS + ping backend every 30s while clocked in
+  // Assignee, before the clock starts: has this supporter tapped "On my way"?
+  // The window runs from that tap until the first clock-in, and the server
+  // accepts source='enroute' pings for exactly that span — see
+  // enrouteWindowOpen in server/live_tracking.go.
+  //
+  // The window requires ZERO worklogs, not merely no OPEN one — the same rule
+  // the server enforces. enroute_at is never cleared, so a window keyed on that
+  // column alone would re-open after clock-out and keep sharing the supporter's
+  // position for the rest of the task's life. Counting rows, not minutes: a
+  // session that logged no billable time is still a clock-in.
+  const isAssigneeHere = Boolean(user?.id && task?.assigned_to_id && user.id === task.assigned_to_id)
+  const enrouteWindowOpen = Boolean(
+    isAssigneeHere && task?.status === 'open' && (work.items?.length ?? 0) === 0
+  )
+  const isEnrouteSharing = Boolean(enrouteWindowOpen && task?.enroute_at)
+  const canGoEnroute = Boolean(enrouteWindowOpen && !task?.enroute_at)
+
+  // Assignee: watch GPS + ping backend every 30s while clocked in, and — once
+  // they have said they are on their way — for the trip there too. One effect
+  // rather than two, because the browser only has one geolocation watch worth
+  // holding and the two phases differ in nothing but the `source` they send.
   useEffect(() => {
-    if (!isActivelyWorking) {
+    const sharing = isActivelyWorking || isEnrouteSharing
+    const source = isActivelyWorking ? 'foreground' : 'enroute'
+    if (!sharing) {
       if (watchIdRef.current != null) {
         navigator.geolocation.clearWatch(watchIdRef.current)
         watchIdRef.current = null
@@ -427,7 +460,7 @@ export default function TaskDetail() {
       try {
         await api(`/tasks/${id}/gps-ping`, {
           method: 'POST',
-          body: { lat: lastPos.lat, lng: lastPos.lng, accuracy: lastPos.accuracy },
+          body: { lat: lastPos.lat, lng: lastPos.lng, accuracy: lastPos.accuracy, source },
         })
       } catch { /* silent — don't interrupt UX */ }
     }, 30_000)
@@ -439,22 +472,11 @@ export default function TaskDetail() {
       clearInterval(pingIntervalRef.current)
       pingIntervalRef.current = null
     }
-  }, [isActivelyWorking, id])
+  }, [isActivelyWorking, isEnrouteSharing, id])
 
-  // Requester: poll latest GPS ping every 30s while task is open and assigned
-  useEffect(() => {
-    if (!isOwnerWatching) return
-    let alive = true
-    async function fetchLatest() {
-      try {
-        const data = await api(`/tasks/${id}/gps-latest`)
-        if (alive) setLatestGps(data)
-      } catch { /* ignore */ }
-    }
-    fetchLatest()
-    const interval = setInterval(fetchLatest, 30_000)
-    return () => { alive = false; clearInterval(interval) }
-  }, [isOwnerWatching, id])
+  // The requester's poll now lives in LiveTrackingCard, which owns both the
+  // request and the "stop when the tab is backgrounded" rule the old 30s
+  // interval here never had.
 
   // ✅ 用 UUID 判斷身分
   const isOwner = Boolean(user?.id && task?.requester_id && user.id === task.requester_id)
@@ -479,6 +501,20 @@ export default function TaskDetail() {
   //   setTask(t)
   //   setWork(w)
   // }
+  async function goEnroute() {
+    setEnrouteBusy(true)
+    try {
+      await api(`/tasks/${id}/enroute`, { method: 'POST' })
+      // Reload rather than patching state locally: enroute_at comes back on
+      // the task, and it is what both the button and the ping loop read.
+      await reloadWorkAndTask()
+    } catch (e) {
+      alert(e.message || "Couldn't start sharing your location.")
+    } finally {
+      setEnrouteBusy(false)
+    }
+  }
+
   async function reloadWorkAndTask() {
     await wrap(async () => {
       const [t, w] = await Promise.all([
@@ -1451,6 +1487,27 @@ export default function TaskDetail() {
                   </div>
                 </div>
 
+                {/* "On my way", the step before the clock. Solid, and ABOVE
+                    clock-in, because it is the first thing a supporter does
+                    after accepting — and because nothing is shared with the
+                    requester until it is pressed. That is the privacy default:
+                    opt in, once, deliberately. */}
+                {canGoEnroute && (
+                  <button
+                    type="button"
+                    onClick={goEnroute}
+                    disabled={enrouteBusy}
+                    className="w-full rounded-lg bg-white text-black font-medium px-4 py-3 text-sm hover:bg-white/90 disabled:opacity-60"
+                  >
+                    {enrouteBusy ? 'Starting…' : 'On my way'}
+                  </button>
+                )}
+                {isEnrouteSharing && (
+                  <div className="rounded-lg border border-white/15 bg-white/5 px-4 py-3 text-xs text-white/60">
+                    Sharing your location with the requester until you clock out.
+                  </div>
+                )}
+
                 {/* Clock in/out, full width and below the numbers it belongs
                     to. It used to be a 12px inline button wedged beside the
                     cost text — the single most-pressed control on the screen,
@@ -1502,28 +1559,14 @@ export default function TaskDetail() {
                   </div>
                 )}
 
-                {/* Requester: last known supporter location */}
-                {isOwner && task.assigned_to_id && task.status === 'open' && (
-                  <div className="mt-1">
-                    <div className="text-xs text-white/50 mb-1">Supporter location</div>
-                    {latestGps ? (
-                      <a
-                        href={`https://www.google.com/maps?q=${latestGps.lat},${latestGps.lng}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 rounded-full border border-white/20 bg-white/5 px-2 py-0.5 text-xs hover:border-white/40"
-                      >
-                        📍 {Number(latestGps.lat).toFixed(5)}, {Number(latestGps.lng).toFixed(5)}
-                        {latestGps.accuracy && <span className="text-white/50">±{latestGps.accuracy}m</span>}
-                        <span className="text-white/40 ml-1">
-                          {new Date(latestGps.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                        </span>
-                      </a>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 rounded-full border border-white/15 bg-white/5 px-2 py-0.5 text-xs text-white/50">
-                        No location yet
-                      </span>
-                    )}
+                {/* Requester: the live card replaces what used to be here — a
+                    link labelled with the supporter's coordinates to five
+                    decimal places, which is roughly a one-metre box around a
+                    person. The card says how far away they are and draws the
+                    map; it never prints a coordinate. */}
+                {canWatchLive && (
+                  <div className="mt-2">
+                    <LiveTrackingCard taskId={id} />
                   </div>
                 )}
               </div>

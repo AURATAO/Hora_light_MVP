@@ -152,6 +152,8 @@ func buildEmail(in CreateNotificationInput, taskURL string) string {
 		return newMessageEmail(in, taskURL)
 	case "TASK_REASSIGNED":
 		return taskReassignedEmail(in, taskURL)
+	case "SUPPORTER_ARRIVED":
+		return supporterArrivedEmail(in, taskURL)
 	default:
 		return defaultEmail(in, taskURL)
 	}
@@ -506,6 +508,34 @@ func taskReassignedEmail(in CreateNotificationInput, taskURL string) string {
 </tr></table>`,
 		in.Title, in.Body, taskTitle, taskURL)
 	return wrapEmail(in.Title, card)
+}
+
+// Live tracking: the supporter's phone reported a position inside 100m of the
+// address, before they clocked in. Sent once per task (the latch is
+// tasks.arrival_notified_at — see server/live_tracking.go).
+//
+// Email matters more for this one than for most: push reaches the mobile app,
+// but a requester watching from the web has no push channel at all, and "they
+// are at your door" is the single most time-sensitive thing this system says.
+// Deliberately carries no coordinates — the same rule the live screen follows.
+func supporterArrivedEmail(in CreateNotificationInput, taskURL string) string {
+	supporterName := fallback(in.SupporterName, "Your supporter")
+	taskTitle := fallback(in.TaskTitle, "your task")
+	card := fmt.Sprintf(`
+<table cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
+  <tr><td style="background:#e8f5e9;border-radius:20px;padding:5px 14px;">
+    <span style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;font-weight:600;color:#2e7d32;letter-spacing:0.06em;">&#9679; ARRIVED</span>
+  </td></tr>
+</table>
+<h1 style="margin:0 0 12px;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:400;line-height:1.3;color:#1a1a16;">%s has arrived</h1>
+<p style="margin:0 0 24px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.65;color:#555550;">Your supporter is at the address for &ldquo;%s&rdquo;. They&rsquo;ll start the clock when the work begins.</p>
+<table cellpadding="0" cellspacing="0"><tr>
+  <td style="border-radius:8px;background:#1a1a16;">
+    <a href="%s" style="display:inline-block;padding:14px 28px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;font-weight:500;color:#f4f4f0;text-decoration:none;border-radius:8px;">View task &rarr;</a>
+  </td>
+</tr></table>`,
+		supporterName, taskTitle, taskURL)
+	return wrapEmail("Your supporter has arrived", card)
 }
 
 func defaultEmail(in CreateNotificationInput, taskURL string) string {

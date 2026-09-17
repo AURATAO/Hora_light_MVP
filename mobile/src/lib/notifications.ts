@@ -7,6 +7,7 @@ import {
   HandCoins,
   LogIn,
   LogOut,
+  MapPin,
   MessageCircle,
   Repeat2,
   TimerOff,
@@ -58,6 +59,11 @@ const NOTIFICATION_META: Record<NotificationType, NotificationMeta> = {
   // brand, like the completion events, because it reads the same way to
   // everyone who can see it (its only recipient is the supporter being paid).
   PAYOUT_SENT: { icon: Banknote, tint: "brand" },
+
+  // Live tracking. Brand, like the completion events: its only recipient is
+  // the requester, and "they're here" is unambiguously the news they were
+  // waiting for.
+  SUPPORTER_ARRIVED: { icon: MapPin, tint: "brand" },
 };
 
 // Falls back to a neutral message icon for any type the client doesn't
