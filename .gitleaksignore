@@ -8,11 +8,16 @@
 # this entry acknowledges the dead secret rather than rewriting history.
 bc3fd78f8c822740d6b29bb3eb70167fd335e19f:server/.env:generic-api-key:4
 
-# `sk_test_notarealkey` in withStripeConfigured (server/payments_phase3_test.go).
-# Not a secret and never was one: a 19-character literal that spells out what it
-# is, assigned to stripe.Key so that handler branches running BEFORE any API call
-# can be tested. The helper's own comment says anything that actually talks to
-# Stripe belongs in the smoke file behind a real key from the environment.
+# The Stripe test placeholder in withStripeConfigured
+# (server/payments_phase3_test.go). Not a secret and never was one: a
+# 19-character literal that spells out in words that it is not a real key,
+# assigned to stripe.Key so handler branches running BEFORE any API call can be
+# tested. The helper's own comment says anything that actually talks to Stripe
+# belongs in the smoke file behind a real key from the environment.
+#
+# The value is deliberately NOT quoted here: writing it out put a second
+# "finding" in the scanner's own allowlist, which is a small joke the first time
+# and a broken build every time after.
 #
 # Fingerprinted rather than allowlisted by path or by rule: a REAL sk_live_/
 # sk_test_ key added to this same file, or this same placeholder moving to a
@@ -20,3 +25,9 @@ bc3fd78f8c822740d6b29bb3eb70167fd335e19f:server/.env:generic-api-key:4
 # skipped entirely until gitleaks was installed, and a scanner muted with a
 # broad exclusion is worth no more than one nobody runs.
 6cf473e97a554977bee1773c0f79ba6b2b180520:server/payments_phase3_test.go:stripe-access-token:1072
+
+# The same placeholder, quoted inside THIS file's own comment in cf7f3f0 — the
+# commit that first allowlisted it. gitleaks scans history, so removing the
+# quotation from the working tree (done) does not remove it from that commit.
+# Same non-secret, one commit further back.
+cf7f3f02a1463465ce2f1b6909c6d18f682efca4:.gitleaksignore:stripe-access-token:11

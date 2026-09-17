@@ -170,6 +170,13 @@ function LiveMap({ supporter, destination, stale, avatarUrl }) {
   const supporterOverlayRef = useRef(null)
   const destinationOverlayRef = useRef(null)
   const [failed, setFailed] = useState(false)
+  // The map is created ASYNCHRONOUSLY (loadMapsLib resolves a script load), so
+  // a ref alone is not enough to drive the marker effects below: they would run
+  // once on mount while mapRef.current is still null, bail out, and never be
+  // re-run, because a ref assignment schedules no render. That is exactly what
+  // shipped — Google's own POI pins drew and ours never did. State, so the
+  // effects that need a map re-run the moment there is one.
+  const [mapReady, setMapReady] = useState(false)
 
   useEffect(() => {
     let alive = true
@@ -187,6 +194,7 @@ function LiveMap({ supporter, destination, stale, avatarUrl }) {
         })
         destinationOverlayRef.current = makeOverlay(maps, destinationPinElement())
         destinationOverlayRef.current.setMap(mapRef.current)
+        setMapReady(true)
       })
       .catch(() => {
         // No key, a blocked script, a quota wall. The status card above is the
@@ -208,10 +216,18 @@ function LiveMap({ supporter, destination, stale, avatarUrl }) {
     if (!map) return
     const maps = window.google?.maps
     if (!maps) return
+    // Carry the position across a rebuild, so swapping the pin's appearance
+    // (a loaded avatar, or crossing into stale) does not blank the marker
+    // until the next 15s poll lands.
+    const carried = supporterOverlayRef.current?.position ?? null
     supporterOverlayRef.current?.setMap(null)
     supporterOverlayRef.current = makeOverlay(maps, supporterPinElement({ avatarUrl, stale }))
     supporterOverlayRef.current.setMap(map)
-  }, [avatarUrl, stale, failed])
+    if (carried) {
+      supporterOverlayRef.current.position = carried
+      supporterOverlayRef.current.draw()
+    }
+  }, [avatarUrl, stale, mapReady])
 
   useEffect(() => {
     const map = mapRef.current
@@ -240,7 +256,7 @@ function LiveMap({ supporter, destination, stale, avatarUrl }) {
     } else if (destination) {
       map.setCenter(destination)
     }
-  }, [supporter?.lat, supporter?.lng, destination?.lat, destination?.lng])
+  }, [supporter?.lat, supporter?.lng, destination?.lat, destination?.lng, mapReady])
 
   if (failed) return null
   return (

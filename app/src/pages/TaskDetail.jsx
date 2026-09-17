@@ -1029,7 +1029,15 @@ export default function TaskDetail() {
             <div className="text-sm text-white/80 space-y-1">
               <div><b>When:</b> {whenText}</div>
               <div><b>Estimated:</b> {task.estimated_minutes} min</div>
-              <div><b>Shopping budget:</b> {formatCents(task.prepay_amount_cents)}</div>
+              {/* Only when there IS one. Rendered unconditionally, this line
+                  told every companionship visit and dog walk that its
+                  "Shopping budget" was $0.00 — a real number standing in for
+                  "this task has no shopping in it", which is the one thing
+                  paymentCopy.test.mjs pins us against. Mobile already guards
+                  it this way (task/[id].tsx); web was the odd one out. */}
+              {task.prepay_amount_cents > 0 && (
+                <div><b>Shopping budget:</b> {formatCents(task.prepay_amount_cents)}</div>
+              )}
               <div>
                 <b className="block mb-2">Locations:</b>
                 {locs.length ? (
@@ -1148,6 +1156,22 @@ export default function TaskDetail() {
                 </div>
               </div>
             )}
+
+            {/* Requester: where their supporter is, right now — the #1 ask out
+                of Traction 3, so it sits high, directly under the question with
+                the fuse on it and above the money cards.
+
+                It replaces what used to be here: a link labelled with the
+                supporter's coordinates to five decimal places, roughly a
+                one-metre box around a person. This card says how far away they
+                are and draws the map; it never prints a coordinate.
+
+                Full width, and NOT nested inside the estimated-cost box it was
+                first dropped into — in there the map rendered 232px wide on a
+                390px screen, three containers deep, which is not where you put
+                the thing people asked for most. Mirrors mobile, where it is its
+                own card above Progress. */}
+            {canWatchLive && <LiveTrackingCard taskId={id} />}
 
             {/* The supporter's side: what they're covered for, and the two ways
                 to ask for more of it. The approved budget is shown at all times
@@ -1556,17 +1580,6 @@ export default function TaskDetail() {
                         📡 Acquiring GPS…
                       </span>
                     )}
-                  </div>
-                )}
-
-                {/* Requester: the live card replaces what used to be here — a
-                    link labelled with the supporter's coordinates to five
-                    decimal places, which is roughly a one-metre box around a
-                    person. The card says how far away they are and draws the
-                    map; it never prints a coordinate. */}
-                {canWatchLive && (
-                  <div className="mt-2">
-                    <LiveTrackingCard taskId={id} />
                   </div>
                 )}
               </div>
