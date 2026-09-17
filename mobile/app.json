@@ -90,7 +90,9 @@
           "merchantIdentifier": "merchant.co.horaapp.app",
           "enableGooglePay": false
         }
-      ]
+      ],
+      "expo-status-bar",
+      "expo-font"
     ],
     "extra": {
       "router": {
