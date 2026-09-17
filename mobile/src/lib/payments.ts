@@ -79,7 +79,7 @@ const FALLBACK_PUBLISHABLE_KEY = process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY 
  * cannot be switched by an env var or a server response the way the publishable
  * key can. Changing it needs a new native build.
  */
-const APPLE_PAY_MERCHANT_ID = "merchant.co.horaapp.hora";
+const APPLE_PAY_MERCHANT_ID = "merchant.co.horaapp.app";
 
 /**
  * The country of the BUSINESS, not the customer — Apple Pay wants to know where

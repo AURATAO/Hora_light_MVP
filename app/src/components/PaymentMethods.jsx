@@ -130,7 +130,7 @@ function AddCardForm({ onSaved, onCancel }) {
 
           Stripe performs the Apple merchant validation for web itself — there
           is no merchant ID or certificate to configure on this side, and the
-          merchant.co.horaapp.hora identifier is the NATIVE app's alone.
+          merchant.co.horaapp.app identifier is the NATIVE app's alone.
 
           The same off-session caveat as mobile applies: this form saves a
           method that is charged later without the customer present. See the

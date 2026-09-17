@@ -87,7 +87,7 @@
       [
         "@stripe/stripe-react-native",
         {
-          "merchantIdentifier": "merchant.co.horaapp.hora",
+          "merchantIdentifier": "merchant.co.horaapp.app",
           "enableGooglePay": false
         }
       ]
