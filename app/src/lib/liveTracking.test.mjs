@@ -1,6 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import {
+  broadcastPhase,
   formatDistance,
   formatUpdatedAgo,
   liveStateDetail,
@@ -105,4 +108,71 @@ test('polling is scoped to a live task somebody is actually on', () => {
   for (const status of ['completed', 'cancelled', 'removed']) {
     assert.equal(shouldPollLive({ ...live, status }), false, status)
   }
+})
+
+// ── Broadcasting: the supporter's side, and what a pause does to it ─────────
+//
+// The multi-session guard. A supporter who clocks out mid-task is PAUSED, not
+// finished — the screen stays live and they can clock back in — and the thing
+// that must not stay live with it is their location.
+
+test('broadcasting follows the clock: working while clocked in, nothing while paused', () => {
+  const assignee = { isAssignee: true, status: 'open', enrouteAt: '2026-09-18T09:00:00Z' }
+
+  // Tapped "On my way", not yet started: the pre-clock-in window.
+  assert.equal(broadcastPhase({ ...assignee, hasOpenWorklog: false, sessionCount: 0 }), 'enroute')
+  // Clocked in: everything captured belongs to the worklog.
+  assert.equal(broadcastPhase({ ...assignee, hasOpenWorklog: true, sessionCount: 1 }), 'working')
+
+  // PAUSED — clocked out with the task still live. This is the case the
+  // feature creates and the one that must send nothing: 'working' is gone with
+  // the open worklog, and 'enroute' does NOT come back to fill the hole, even
+  // though enroute_at is still set (it is never cleared).
+  assert.equal(broadcastPhase({ ...assignee, hasOpenWorklog: false, sessionCount: 1 }), 'none')
+
+  // Still nothing after the second, third, fourth pause.
+  assert.equal(broadcastPhase({ ...assignee, hasOpenWorklog: false, sessionCount: 4 }), 'none')
+  // And nothing on a supporter who never tapped "On my way" either.
+  assert.equal(
+    broadcastPhase({ ...assignee, enrouteAt: null, hasOpenWorklog: false, sessionCount: 1 }),
+    'none'
+  )
+})
+
+test('clocking back in resumes broadcasting, scoped to the new session', () => {
+  // The same predicate, before and after: the phase is read from the CURRENT
+  // open worklog, so a new session re-arms tracking with nothing carried over
+  // from the closed one. (The server agrees — it scopes acceptance to the open
+  // worklog, not to the task.)
+  const base = { isAssignee: true, status: 'open', enrouteAt: '2026-09-18T09:00:00Z' }
+  assert.equal(broadcastPhase({ ...base, hasOpenWorklog: false, sessionCount: 2 }), 'none')
+  assert.equal(broadcastPhase({ ...base, hasOpenWorklog: true, sessionCount: 3 }), 'working')
+})
+
+test('nobody else broadcasts, and no finished task does', () => {
+  const working = { isAssignee: true, status: 'open', hasOpenWorklog: true, sessionCount: 1, enrouteAt: null }
+  assert.equal(broadcastPhase(working), 'working')
+  // A requester's device never sends a position for someone else's task.
+  assert.equal(broadcastPhase({ ...working, isAssignee: false }), 'none')
+  // A task that is over has no window, open worklog or not.
+  for (const status of ['completed', 'cancelled', 'removed']) {
+    assert.equal(broadcastPhase({ ...working, status }), 'none', status)
+  }
+})
+
+test('mobile carries the same broadcast rule', t => {
+  const path = fileURLToPath(new URL('../../../mobile/src/lib/live-tracking.ts', import.meta.url))
+  let src
+  try {
+    src = readFileSync(path, 'utf8')
+  } catch {
+    t.skip('mobile/ not present')
+    return
+  }
+  assert.ok(src.includes('export function broadcastPhase'), 'mobile has no broadcastPhase')
+  // The clause that keeps a pause dark: zero worklogs, not merely no open one.
+  assert.ok(
+    src.includes('args.enrouteAt && (args.sessionCount ?? 0) === 0'),
+    'mobile would re-open the enroute window behind a pause'
+  )
 })

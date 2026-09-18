@@ -3,7 +3,8 @@ import { Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import { Button, Screen } from "../../components/ui";
 import { ApiError, updateProfile } from "../../lib/api";
-import { BETA_NOTICE_COPY } from "../../lib/beta-notice";
+import { BETA_NOTICE_COPY, betaSettlementLine } from "../../lib/beta-notice";
+import { usePaymentsEnforced } from "../../lib/use-payments-enforced";
 import { needsProfileCompletion } from "../../lib/onboarding";
 import { useAuthState } from "../_layout";
 
@@ -14,6 +15,10 @@ export default function BetaWelcome() {
   const { refresh } = useAuthState();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The one line here that is not a constant. Absent until the flag is known,
+  // which is the safe direction: the off-platform wording must never be shown
+  // while payments are enforced (betaSettlementLine).
+  const settlementLine = betaSettlementLine(usePaymentsEnforced());
 
   async function handleContinue() {
     setSubmitting(true);
@@ -60,6 +65,12 @@ export default function BetaWelcome() {
             <Text className="flex-1 text-body text-ink">{point}</Text>
           </View>
         ))}
+        {settlementLine ? (
+          <View className="flex-row gap-3">
+            <View className="mt-2 h-1 w-1 rounded-pill bg-muted" />
+            <Text className="flex-1 text-body text-ink">{settlementLine}</Text>
+          </View>
+        ) : null}
       </View>
 
       <Text className="mt-6 text-caption text-muted">{BETA_NOTICE_COPY.finePrint}</Text>

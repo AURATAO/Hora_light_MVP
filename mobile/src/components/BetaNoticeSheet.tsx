@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Modal, Pressable, ScrollView, Text, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Button, Checkbox } from "./ui";
-import { BETA_NOTICE_COPY } from "../lib/beta-notice";
+import { BETA_NOTICE_COPY, betaSettlementLine } from "../lib/beta-notice";
+import { usePaymentsEnforced } from "../lib/use-payments-enforced";
 import { space } from "../theme/tokens";
 
 export interface BetaNoticeSheetProps {
@@ -31,6 +32,14 @@ export function BetaNoticeSheet({ visible, onDismiss, onAccept }: BetaNoticeShee
   const insets = useSafeAreaInsets();
   const [checked, setChecked] = useState(false);
   const [saving, setSaving] = useState(false);
+  // The one line here that is not a constant. Absent until the flag is known,
+  // which is the safe direction: the off-platform wording must never be shown
+  // while payments are enforced (betaSettlementLine).
+  //
+  // Gated on `visible`: this sheet stays mounted behind that prop, so an
+  // ungated fetch would hit Stripe on every Post Task entry to render a line
+  // nobody is looking at (see usePaymentsEnforced).
+  const settlementLine = betaSettlementLine(usePaymentsEnforced(visible));
 
   async function handleAccept() {
     setSaving(true);
@@ -85,6 +94,12 @@ export function BetaNoticeSheet({ visible, onDismiss, onAccept }: BetaNoticeShee
                   <Text className="flex-1 text-body text-ink">{point}</Text>
                 </View>
               ))}
+              {settlementLine ? (
+                <View className="flex-row gap-3">
+                  <View className="mt-2 h-1 w-1 rounded-pill bg-muted" />
+                  <Text className="flex-1 text-body text-ink">{settlementLine}</Text>
+                </View>
+              ) : null}
             </View>
 
             <Text className="mt-6 text-caption text-muted">{BETA_NOTICE_COPY.finePrint}</Text>

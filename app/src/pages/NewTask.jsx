@@ -10,6 +10,7 @@ import { useToast } from '../providers/ToastProvider'
 import { useTaskEstimate, formatCents } from '../hooks/useTaskEstimate'
 import { highBudgetWarning, holdPlacedMessage, surgeRateNote } from '../lib/paymentCopy'
 import { completeCardAuthentication, readPaymentError, usePaymentGate } from '../hooks/usePaymentGate'
+import { betaSettlementLine } from '../lib/traction'
 
 
 const CATEGORY_LABELS = {
@@ -123,12 +124,12 @@ export default function NewTask() {
     if (prepay !== '') {
       const n = Number(prepay)
       if (Number.isNaN(n) || n < 0) e.prepay = 'Invalid advance'
-      // The beta cap the notice has always advertised, now enforced by the
-      // backend too — caught here so the message arrives while typing rather
-      // than as a 400 after pressing Create.
       // No cap. The whole budget is reserved on the card at post, so the
       // requester sees and authorizes the exact number — a limit here only
-      // refused real tasks. A large one warns instead; see the notice below.
+      // refused real tasks. A large one warns instead, from the server's own
+      // threshold (high_budget_warning_cents). The two stale lines that used
+      // to sit here still described a $30 beta cap "now enforced by the
+      // backend too", which had not been true since the hold was introduced.
     }
     if (mode === 'schedule' && (!date || !timeStr)) e.when = 'Pick date & time'
     // companion policy is enforced via its own modal
@@ -176,6 +177,11 @@ export default function NewTask() {
   // and so nothing about payments is shown at all while the flag is off.
   const payments = usePaymentGate()
   const needsCard = payments.enforced && !payments.hasCard
+  // How purchases are settled, in the words the flag makes true. `loading`
+  // stays distinct from `false`: betaSettlementLine returns null for unknown
+  // and the line is simply omitted, so the off-platform wording can never be
+  // shown on a stale or failed read.
+  const settlementLine = betaSettlementLine(payments.loading ? null : payments.enforced)
 
   async function onSubmit(e) {
   e.preventDefault()
@@ -501,16 +507,27 @@ function confirmCompanionPolicy() {
                 </div>
 
                 <div>
-                  <p className="font-semibold text-white mb-1">Beta limits</p>
+                  <p className="font-semibold text-white mb-1">Good to know</p>
                   <ul className="space-y-1">
-                    <li>Maximum shopping budget during beta: $30.00</li>
                     <li>This portion is settled separately after the task is completed</li>
                   </ul>
                 </div>
 
-                <p className="border border-white/20 rounded px-3 py-2 text-white/60 text-xs">
-                  🎉 Shopping budget settlement is coming soon. During beta, please arrange payment directly with your supporter.
-                </p>
+                {/* The settlement sentence, from the same flag-aware source as
+                    the beta notice (lib/traction.js betaSettlementLine).
+                    Hardcoded here until now, and hardcoded to the off-platform
+                    wording — which is the one sentence that must not survive
+                    payments being switched on. Absent while the flag is
+                    unknown, which is the safe direction.
+
+                    The "$30 maximum during beta" line above it is gone: the
+                    backend stopped enforcing a cap when the full budget began
+                    being held on the card at post. */}
+                {settlementLine && (
+                  <p className="border border-white/20 rounded px-3 py-2 text-white/60 text-xs">
+                    {settlementLine}
+                  </p>
+                )}
               </div>
             }
           >

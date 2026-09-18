@@ -48,7 +48,19 @@ import {
 } from "../../lib/api";
 import { TRACTION_3_CONFIG, isTractionWindowActive } from "../../lib/beta-notice";
 import { getCategoryMeta } from "../../lib/categories";
-import { shouldPollLive } from "../../lib/live-tracking";
+import { broadcastPhase, shouldPollLive } from "../../lib/live-tracking";
+import {
+  GAP_LABEL,
+  LAUNDRY_WAIT_HINT,
+  PAUSED_REQUESTER,
+  PAUSED_SUPPORTER,
+  buildSessionTimeline,
+  cumulativeLoggedMinutes,
+  gapsNote,
+  isPaused as isPausedBetweenSessions,
+  showsWaitHint,
+  type TimelineEntry,
+} from "../../lib/work-sessions";
 import {
   GPS_DEBUG_ROW,
   isBackgroundGpsHealthy,
@@ -648,22 +660,26 @@ export default function TaskDetail() {
   //               accepts without an open worklog.
   //   "working" — the original path: an open worklog.
   //
-  // The enroute arm requires ZERO worklogs, not merely no open one — the same
-  // rule the server enforces (enrouteWindowOpen). enroute_at is never cleared,
-  // so a window keyed on that column alone would re-open after clock-out and
-  // keep sharing a supporter's position for the rest of the task's life.
+  // The three known states come from broadcastPhase, shared with web
+  // (app/src/lib/liveTracking.js) and mirroring the server's two accept
+  // windows; the null is this screen's own, because only this screen knows
+  // whether the answer has loaded yet.
+  //
+  // What that predicate settles for multi-session: a PAUSED supporter — clocked
+  // out with the task still live — sends nothing. "working" is gone with the
+  // open worklog, and the enroute arm requires ZERO worklogs rather than merely
+  // no open one, so it cannot re-open behind the pause and keep sharing a
+  // position through every gap.
   const gpsPhaseWanted: GpsPhase | "none" | null =
-    task === null
+    task === null || (gpsTaskIsOurs && worklogs === null)
       ? null
-      : !gpsTaskIsOurs
-        ? "none"
-        : worklogs === null
-          ? null
-          : hasOpenWorklog
-            ? "working"
-            : task.enroute_at && worklogs.worklogs.length === 0
-              ? "enroute"
-              : "none";
+      : broadcastPhase({
+          isAssignee: gpsTaskIsOurs,
+          status: task?.status,
+          hasOpenWorklog,
+          sessionCount: worklogs?.worklogs.length ?? 0,
+          enrouteAt: task?.enroute_at,
+        });
 
   const gpsTrackingWanted: boolean | null =
     gpsPhaseWanted === null ? null : gpsPhaseWanted !== "none";
@@ -947,11 +963,51 @@ export default function TaskDetail() {
   // passes, both revert on their own: the flag is a date check, nothing else.
   const questionnaireActive = isTractionWindowActive();
   const canGiveFeedback = isAssignee && task.status === "completed" && questionnaireActive;
-  const hasClosedWorklog = worklogs ? worklogs.worklogs.some((wl) => wl.end_at !== null) : false;
-  const canComplete = isAssignee && task.status === "open" && !hasOpenWorklog && hasClosedWorklog;
   const elapsedMs = openWorklog ? now - new Date(openWorklog.start_at).getTime() : 0;
   const elapsedLabel = openWorklog ? formatElapsed(elapsedMs) : null;
-  const isOvertime = !!task.estimated_minutes && elapsedMs / 60000 > task.estimated_minutes;
+
+  // ── Multi-session ────────────────────────────────────────────────────────
+  //
+  // The sessions and the free gaps between them, and whether this supporter is
+  // between sessions right now. `now` already ticks every second while the
+  // clock runs, so the running session's row stays live for free.
+  const sessions = (worklogs?.worklogs ?? []).map((wl) => ({
+    id: wl.id,
+    startAt: wl.start_at,
+    endAt: wl.end_at,
+  }));
+  const timeline = buildSessionTimeline(sessions, { nowMs: now });
+  const paused = isPausedBetweenSessions({
+    hasOpenWorklog,
+    sessionCount: sessions.length,
+    status: task.status,
+  });
+
+  // Logged time across EVERY session, running one included — the number the
+  // ceiling is actually measured against.
+  //
+  // This replaced a comparison of the CURRENT session's elapsed time against
+  // the estimate, which multi-session quietly broke: four sessions of twenty
+  // minutes never trip a per-session check against a thirty-minute estimate,
+  // and the task is an hour over. The server's figure wins where there is one
+  // (capState.logged_minutes is what timecap.go warned on); the local sum
+  // covers the seconds before the refetch lands and the tasks with no estimate
+  // to have a cap state at all.
+  const loggedMinutes =
+    capState?.logged_minutes ?? cumulativeLoggedMinutes(sessions, { nowMs: now });
+  const isOvertime = !!task.estimated_minutes && loggedMinutes > task.estimated_minutes;
+
+  // One line, one category. Every category supports clocking out mid-task — a
+  // plain errand simply taps Complete afterwards — but laundry is where the
+  // wait is long enough that staying on the clock is the expensive instinct.
+  const showWaitHint = isAssignee && task.status === "open" && showsWaitHint(task.category);
+
+  // Whether the itemized settlement card is going to render. Progress defers to
+  // it entirely (same rule web has always had for its running-cost card): the
+  // settlement carries the sessions AND the totals once a task is over, and
+  // rendering Progress alongside it put the identical session timeline on the
+  // screen twice, one card apart. Caught on the simulator, not by any check.
+  const showSettlementCard = Boolean(settlement && worklogs?.cost && task.status !== "open");
 
   return (
     <Screen
@@ -1204,8 +1260,20 @@ export default function TaskDetail() {
                 <Text className={`text-title font-semibold ${isOvertime ? "text-danger" : "text-ink"}`}>
                   {elapsedLabel}
                 </Text>
-                {isOvertime ? <Text className="text-caption text-danger">Over the estimated time</Text> : null}
+                {/* The session's own clock is above; this is about the TASK.
+                    Measured on every session's minutes added together, because
+                    that is what the ceiling clamps and what the bill is made
+                    of — a supporter on their fourth short session is just as
+                    far over the estimate as one on a single long one. */}
+                {isOvertime ? (
+                  <Text className="text-caption text-danger">
+                    Over the estimated time — {formatMinutes(loggedMinutes)} logged in total
+                  </Text>
+                ) : null}
                 <Button label="Clock out" onPress={handleClockOut} loading={clockLoading} />
+                {showWaitHint ? (
+                  <Text className="text-caption text-muted">{LAUNDRY_WAIT_HINT}</Text>
+                ) : null}
                 {gpsNotice ? <Text className="text-caption text-muted">{gpsNotice}</Text> : null}
                 {/* Debug builds only — the headless task's own breadcrumb, so a
                     field test can separate "never fired" from "fired, POST
@@ -1218,13 +1286,46 @@ export default function TaskDetail() {
                   </Text>
                 ) : null}
               </>
+            ) : paused ? (
+              <>
+                {/* PAUSED — clocked out, task still live. The screen used to
+                    end here, which is what made the first clock-out feel like
+                    the last one. Both exits now sit together, and the line
+                    above them answers the question a supporter standing
+                    outside a launderette actually has: am I still being paid?
+
+                    Said plainly and calmly (DESIGN.md §6): not billing is the
+                    NORMAL state between sessions, not a fault, so it is muted
+                    text and not a danger colour. */}
+                <Text className="text-body text-ink">{PAUSED_SUPPORTER}</Text>
+                {showWaitHint ? (
+                  <Text className="text-caption text-muted">{LAUNDRY_WAIT_HINT}</Text>
+                ) : null}
+                {/* Complete is the solid one — the single CTA on this screen
+                    (DESIGN.md §1) — because a paused task that is finished is
+                    the common case, and clocking back in is the deliberate
+                    one. Clock out was the solid button a moment ago; the slot
+                    moves rather than multiplying. */}
+                <Button label="Complete task" onPress={() => setCompleteOpen(true)} />
+                <Button
+                  label="Clock back in"
+                  variant="secondary"
+                  onPress={handleClockIn}
+                  loading={clockLoading}
+                />
+              </>
             ) : (
-              <Button
-                label="Clock in"
-                onPress={handleClockIn}
-                loading={clockLoading}
-                variant={canGoEnroute ? "secondary" : "primary"}
-              />
+              <>
+                {showWaitHint ? (
+                  <Text className="text-caption text-muted">{LAUNDRY_WAIT_HINT}</Text>
+                ) : null}
+                <Button
+                  label="Clock in"
+                  onPress={handleClockIn}
+                  loading={clockLoading}
+                  variant={canGoEnroute ? "secondary" : "primary"}
+                />
+              </>
             )}
             {clockError ? <Text className="text-caption text-danger">{clockError}</Text> : null}
           </View>
@@ -1255,35 +1356,45 @@ export default function TaskDetail() {
             already arrived, and which rendered their coordinates as text. */}
         {canWatchLive ? <LiveTrackingCard taskId={id} /> : null}
 
-        {/* Progress */}
-        {task.assigned_to_id && worklogs ? (
+        {/* Progress — the live view, and only while there is something live to
+            view. Hidden once the settlement card can render, which owns the
+            same timeline and the final numbers. */}
+        {task.assigned_to_id && worklogs && !showSettlementCard ? (
           <View className="mb-4 gap-3 rounded-card border border-line bg-surface p-4">
             <Text className="text-caption font-semibold text-muted">Progress</Text>
-            {worklogs.worklogs.length === 0 ? (
+
+            {/* The requester's half of the pause. Their supporter has stepped
+                away from the clock, and the only thing they need told is that
+                it costs them nothing — said before the numbers, so it is read
+                before the total is. */}
+            {isRequester && paused ? (
+              <Text className="text-body text-ink">{PAUSED_REQUESTER}</Text>
+            ) : null}
+
+            {timeline.length === 0 ? (
               <Text className="text-caption text-muted">No time logged yet.</Text>
             ) : (
-              <View className="gap-2">
-                {worklogs.worklogs.map((wl) => {
-                  const minutes = wl.end_at
-                    ? Math.round((new Date(wl.end_at).getTime() - new Date(wl.start_at).getTime()) / 60000)
-                    : null;
-                  return (
-                    <View key={wl.id} className="flex-row justify-between">
-                      <Text className="text-caption text-ink">
-                        {formatClock(wl.start_at)} – {wl.end_at ? formatClock(wl.end_at) : "in progress"}
-                      </Text>
-                      <Text className="text-caption text-muted">
-                        {minutes !== null ? formatMinutes(minutes) : "—"}
-                      </Text>
-                    </View>
-                  );
-                })}
-              </View>
+              <SessionList timeline={timeline} />
             )}
             <View className="flex-row justify-between border-t border-line pt-2">
               <Text className="text-caption text-muted">Total time</Text>
               <Text className="text-caption text-ink">{formatMinutes(worklogs.total_minutes)}</Text>
             </View>
+            {/* Only when there is a gap to explain. On a task worked in one
+                sitting this line would be answering a question nobody asked. */}
+            {gapsNote(timeline) ? (
+              <Text className="-mt-2 text-caption text-muted">{gapsNote(timeline)}</Text>
+            ) : null}
+            {/* Why the rows above can add up to more than the total beside
+                them. The server bills CLOSED sessions only (billing.go
+                totalClosedMinutes), so the session still running is genuinely
+                not in that figure yet — which was invisible when there was one
+                timer and no list, and is not once the rows are on screen. */}
+            {hasOpenWorklog ? (
+              <Text className="-mt-2 text-caption text-muted">
+                The session running now is added when it ends.
+              </Text>
+            ) : null}
             {/* The running total while the task is live. Once it is over, the
                 settlement card below owns the number — showing both would be
                 two totals on one screen, and they are the same total. */}
@@ -1315,6 +1426,7 @@ export default function TaskDetail() {
           <SettlementCard
             cost={worklogs.cost}
             settlement={settlement}
+            timeline={timeline}
             isRequester={isRequester}
             onReportProblem={handleReportProblem}
           />
@@ -1340,15 +1452,15 @@ export default function TaskDetail() {
           </View>
         ) : null}
 
-        {/* Complete action */}
-        {canComplete ? (
-          <Button
-            label="Complete task"
-            variant="secondary"
-            onPress={() => setCompleteOpen(true)}
-            className="mb-4"
-          />
-        ) : null}
+        {/* Completing now lives in the work-session card above, as the solid
+            half of the "Complete task / Clock back in" pair.
+            Nothing is lost by its moving: the standalone button's condition
+            (assignee, task open, no open session, at least one closed one) and
+            the paused branch's are the SAME condition — a supporter with a
+            closed session and no open one is, by definition, between sessions
+            — so a copy down here could only ever render alongside that pair.
+            Two Complete buttons on one screen, one solid and one not, is worse
+            than none. */}
 
         {/* Review */}
         {canReview || canGiveFeedback ? (
@@ -1730,14 +1842,55 @@ function SupporterAskCard({
 // receipt photo is the requester's evidence of what their money bought and the
 // supporter's own upload, so both see it — but only the requester is offered
 // the "something's wrong" route, because they are the one who was charged.
+/**
+ * The sessions, and the free gaps between them, in order.
+ *
+ * ONE component for the running task and the finished settlement — the same
+ * rows in both places, which is the point: a requester who watched the
+ * timeline build up during the task should meet exactly that timeline again on
+ * the receipt, not a different summary of it. Forking this into a
+ * "settlement breakdown" is how the two start disagreeing.
+ *
+ * A gap is visually quieter than a session (muted, no time range emphasis) and
+ * carries the reason on its own row, because "free" is the fact a reader is
+ * scanning for and it should not need to be inferred from two adjacent rows.
+ */
+function SessionList({ timeline }: { timeline: readonly TimelineEntry[] }) {
+  return (
+    <View className="gap-2">
+      {timeline.map((entry) =>
+        entry.kind === "gap" ? (
+          <View key={`gap-${entry.startAt}`} className="flex-row justify-between">
+            <Text className="text-caption text-muted">{GAP_LABEL}</Text>
+            <Text className="text-caption text-muted">{formatMinutes(entry.minutes)} free</Text>
+          </View>
+        ) : (
+          <View key={entry.id} className="flex-row justify-between">
+            <Text className="text-caption text-ink">
+              {formatClock(entry.startAt)} –{" "}
+              {entry.endAt ? formatClock(entry.endAt) : "in progress"}
+            </Text>
+            <Text className="text-caption text-muted">
+              {formatMinutes(entry.minutes)}
+              {entry.running ? " so far" : ""}
+            </Text>
+          </View>
+        )
+      )}
+    </View>
+  );
+}
+
 function SettlementCard({
   cost,
   settlement,
+  timeline,
   isRequester,
   onReportProblem,
 }: {
   cost: TaskCost;
   settlement: Settlement;
+  timeline: readonly TimelineEntry[];
   isRequester: boolean;
   onReportProblem: () => void;
 }) {
@@ -1766,6 +1919,31 @@ function SettlementCard({
         </Text>
         <Text className="text-caption text-ink">{formatCost(cost.time_cost_cents)}</Text>
       </View>
+
+      {/* WHERE THOSE MINUTES CAME FROM. Only when the task was worked in more
+          than one sitting — on a single-session task the timeline restates the
+          line above it and earns nothing.
+
+          The same rows the Progress card showed while the task was running,
+          from the same builder, so the receipt agrees with what both parties
+          watched being assembled. The gaps are the reason a requester might
+          otherwise read "3 hours on site, 40 billable minutes" as an error. */}
+      {timeline.filter((e) => e.kind === "session").length > 1 ? (
+        <View className="gap-2 border-t border-line pt-3">
+          <Text className="text-caption font-semibold text-muted">Sessions</Text>
+          <SessionList timeline={timeline} />
+          {/* Logged, not billable — the two differ by the 15-minute inclusion
+              and by any time past the ceiling, and a reader adding the rows up
+              needs the number their addition should produce. */}
+          <View className="flex-row justify-between">
+            <Text className="text-caption text-muted">Total time</Text>
+            <Text className="text-caption text-ink">{formatMinutes(cost.total_minutes)}</Text>
+          </View>
+          {gapsNote(timeline) ? (
+            <Text className="-mt-1 text-caption text-muted">{gapsNote(timeline)}</Text>
+          ) : null}
+        </View>
+      ) : null}
 
       {/* Said plainly rather than buried: the supporter worked longer than the
           requester agreed to pay for, and both of them should see that in the
