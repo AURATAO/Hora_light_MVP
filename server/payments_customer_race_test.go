@@ -157,7 +157,7 @@ func TestCustomerRaceLockNamespacesDoNotCollide(t *testing.T) {
 		t.Fatalf("begin customer tx: %v", err)
 	}
 	defer func() { _ = txCus.Rollback(ctx) }()
-	if err := lockStripeRefCreation(ctx, txCus, advisoryLockCustomer, uid); err != nil {
+	if err := lockPerUser(ctx, txCus, advisoryLockCustomer, uid); err != nil {
 		t.Fatalf("lock customer: %v", err)
 	}
 

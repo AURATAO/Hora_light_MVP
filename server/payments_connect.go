@@ -133,7 +133,7 @@ func connectAccountFor(ctx context.Context, uid, email string) (string, error) {
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
-	if err := lockStripeRefCreation(ctx, tx, advisoryLockConnectAccount, uid); err != nil {
+	if err := lockPerUser(ctx, tx, advisoryLockConnectAccount, uid); err != nil {
 		return "", err
 	}
 

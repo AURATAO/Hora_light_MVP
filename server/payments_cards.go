@@ -85,15 +85,20 @@ const (
 	// "this user's Connect account is being created right now" — a different
 	// object with the same get-or-create hazard (payments_connect.go).
 	advisoryLockConnectAccount = 0x484f5242
+	// "this requester's balance_due rows are being settled right now".
+	// Not a creation, but the same shape of hazard: read a set of rows, act on
+	// each one against Stripe, write the result back. Two overlapping passes
+	// read the same set (payments_settlement.go).
+	advisoryLockBalanceSettle = 0x484f5243
 )
 
-// lockStripeRefCreation takes the per-user advisory lock for one of the
-// namespaces above, inside the caller's transaction.
+// lockPerUser takes the per-user advisory lock for one of the namespaces
+// above, inside the caller's transaction.
 //
 // Transaction-scoped on purpose: it is released by the commit or the rollback,
 // including the rollback a panic or a context timeout triggers, so there is no
 // unlock to forget and no lock to leak when a Stripe call hangs.
-func lockStripeRefCreation(ctx context.Context, tx pgx.Tx, namespace int, uid string) error {
+func lockPerUser(ctx context.Context, tx pgx.Tx, namespace int, uid string) error {
 	if _, err := tx.Exec(ctx,
 		`select pg_advisory_xact_lock($1, hashtext($2))`, namespace, uid); err != nil {
 		return fmt.Errorf("payments: lock creation for user %s: %w", uid, err)
@@ -203,7 +208,7 @@ func createStripeCustomer(ctx context.Context, uid, email string) (string, error
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
 	// Blocks until whoever else is creating this user's Customer has committed.
-	if err := lockStripeRefCreation(ctx, tx, advisoryLockCustomer, uid); err != nil {
+	if err := lockPerUser(ctx, tx, advisoryLockCustomer, uid); err != nil {
 		return "", err
 	}
 
