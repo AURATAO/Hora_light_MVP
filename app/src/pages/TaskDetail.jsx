@@ -5,7 +5,17 @@ import TaskChatBox from '../components/TaskChatBox'
 import { useAuth } from '../auth/AuthContext'
 import UserPill from '../components/UserPill'
 import LiveTrackingCard from '../components/LiveTrackingCard'
-import { shouldPollLive } from '../lib/liveTracking'
+import { broadcastPhase, shouldPollLive } from '../lib/liveTracking'
+import {
+  GAP_LABEL,
+  LAUNDRY_WAIT_HINT,
+  PAUSED_REQUESTER,
+  PAUSED_SUPPORTER,
+  buildSessionTimeline,
+  gapsNote,
+  isPaused as isPausedBetweenSessions,
+  showsWaitHint,
+} from '../lib/workSessions'
 import { gmapsPlaceUrl, gmapsDirectionsUrl } from '../utils/gmaps'
 import { useLoader } from '../providers/LoaderProvider.jsx'
 import PlaceInput from '../components/PlaceInput'
@@ -42,6 +52,58 @@ function CostLine({ cost }) {
   )
 }
 
+/** A timestamp as the clock on the wall, which is how a session is read back. */
+function clockTime(iso) {
+  const d = new Date(iso)
+  if (!Number.isFinite(d.getTime())) return '—'
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+/** Minutes, said the way a person says them. */
+function minutesLabel(minutes) {
+  if (minutes < 60) return `${minutes} min`
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  return rest === 0 ? `${hours} hr` : `${hours} hr ${rest} min`
+}
+
+/**
+ * The sessions, and the free gaps between them, in order.
+ *
+ * ONE component for the running task and the finished settlement — the same
+ * rows in both places, which is the point: a requester who watched the
+ * timeline build up during the task should meet exactly that timeline again on
+ * the receipt, not a different summary of it. Forking this into a separate
+ * "settlement breakdown" is how the two start disagreeing.
+ *
+ * A gap is quieter than a session and carries its reason on its own row,
+ * because "free" is the fact a reader is scanning for and it should not have to
+ * be inferred from two adjacent timestamps.
+ */
+function SessionList({ timeline }) {
+  return (
+    <div className="space-y-1">
+      {timeline.map(entry =>
+        entry.kind === 'gap' ? (
+          <div key={`gap-${entry.startAt}`} className="flex justify-between text-xs text-white/40">
+            <span>{GAP_LABEL}</span>
+            <span>{minutesLabel(entry.minutes)} free</span>
+          </div>
+        ) : (
+          <div key={entry.id} className="flex justify-between text-xs">
+            <span className="text-white/70">
+              {clockTime(entry.startAt)} – {entry.endAt ? clockTime(entry.endAt) : 'in progress'}
+            </span>
+            <span className="text-white/50">
+              {minutesLabel(entry.minutes)}{entry.running ? ' so far' : ''}
+            </span>
+          </div>
+        )
+      )}
+    </div>
+  )
+}
+
 /**
  * What was charged, itemized, for whichever side of the task is reading it.
  *
@@ -50,8 +112,12 @@ function CostLine({ cost }) {
  * "what was I charged" are one question asked at two moments (S-05). The only
  * thing this component decides is which parts a given reader sees.
  */
-function SettlementPanel({ cost, settlement, isOwner, taskId }) {
+function SettlementPanel({ cost, settlement, timeline, isOwner, taskId }) {
   if (!cost || !settlement) return null
+  // Only when the task was worked in more than one sitting: on a single-session
+  // task the timeline restates the billable-minutes line above it and earns
+  // nothing.
+  const sessionCount = (timeline || []).filter(e => e.kind === 'session').length
 
   const overran =
     typeof cost.cap_minutes === 'number' &&
@@ -72,6 +138,19 @@ function SettlementPanel({ cost, settlement, isOwner, taskId }) {
         <span>{cost.billable_minutes} billable min × {formatCents(cost.per_minute_rate_cents)}</span>
         <span className="text-white">{formatCents(cost.time_cost_cents)}</span>
       </div>
+
+      {/* WHERE THOSE MINUTES CAME FROM. The same rows the running card showed
+          while the task was live, from the same builder, so the receipt agrees
+          with what both parties watched being assembled. The gaps are the
+          reason a requester might otherwise read "three hours on site, forty
+          billable minutes" as a mistake. */}
+      {sessionCount > 1 && (
+        <div className="border-t border-white/10 pt-2 space-y-1">
+          <div className="text-xs text-white/60">Sessions</div>
+          <SessionList timeline={timeline} />
+          {gapsNote(timeline) && <div className="text-xs text-white/40">{gapsNote(timeline)}</div>}
+        </div>
+      )}
 
       {/* Said plainly rather than left to be inferred from two numbers that
           disagree: the supporter worked longer than the requester agreed to
@@ -188,6 +267,12 @@ export default function TaskDetail() {
   // cannot fire two requests — the server is idempotent, but a button that
   // looks unpressed after being pressed is its own bug.
   const [enrouteBusy, setEnrouteBusy] = useState(false)
+  // Ticks only while a session is actually running, so the open session's row
+  // in the timeline counts up. A minute is the resolution of everything on
+  // this screen — the server rounds sessions to whole minutes and the cost is
+  // computed from those — so a second-by-second tick would re-render sixty
+  // times to change a number once.
+  const [nowMs, setNowMs] = useState(() => Date.now())
   const watchIdRef = useRef(null)
   const pingIntervalRef = useRef(null)
 
@@ -394,9 +479,10 @@ export default function TaskDetail() {
     setLocations(prev => prev.filter((_, idx) => idx !== i))
   }
 
-  const isActivelyWorking = Boolean(
-    user?.id && task?.assigned_to_id && user.id === task.assigned_to_id && work.has_open
-  )
+  // (`isActivelyWorking` lived here. It was half of the pair that decided
+  // whether to broadcast, and both halves are now inside broadcastPhase below,
+  // where they are shared with mobile and tested.)
+
   // Whether the live card should be on screen at all. One predicate, shared
   // with mobile (app/src/lib/liveTracking.js), so the two clients cannot drift
   // into polling different sets of tasks — and matching exactly what the
@@ -424,13 +510,32 @@ export default function TaskDetail() {
   const isEnrouteSharing = Boolean(enrouteWindowOpen && task?.enroute_at)
   const canGoEnroute = Boolean(enrouteWindowOpen && !task?.enroute_at)
 
+  // Which phase this device is broadcasting in, if any. One predicate, shared
+  // with mobile and tested (lib/liveTracking.js broadcastPhase), replacing the
+  // pair of inline booleans that used to decide it here and a second pair that
+  // decided it there.
+  //
+  // What it settles for multi-session: a PAUSED supporter broadcasts nothing.
+  // 'working' is gone with the open worklog and 'enroute' does not come back
+  // to fill the hole, because it requires ZERO worklogs rather than merely no
+  // open one — enroute_at is never cleared, so a window keyed on that column
+  // alone would re-open at every clock-out and keep sharing a position through
+  // every gap in the task.
+  const gpsPhase = broadcastPhase({
+    isAssignee: isAssigneeHere,
+    status: task?.status,
+    hasOpenWorklog: Boolean(work.has_open),
+    sessionCount: work.items?.length ?? 0,
+    enrouteAt: task?.enroute_at,
+  })
+
   // Assignee: watch GPS + ping backend every 30s while clocked in, and — once
   // they have said they are on their way — for the trip there too. One effect
   // rather than two, because the browser only has one geolocation watch worth
   // holding and the two phases differ in nothing but the `source` they send.
   useEffect(() => {
-    const sharing = isActivelyWorking || isEnrouteSharing
-    const source = isActivelyWorking ? 'foreground' : 'enroute'
+    const sharing = gpsPhase !== 'none'
+    const source = gpsPhase === 'working' ? 'foreground' : 'enroute'
     if (!sharing) {
       if (watchIdRef.current != null) {
         navigator.geolocation.clearWatch(watchIdRef.current)
@@ -472,7 +577,7 @@ export default function TaskDetail() {
       clearInterval(pingIntervalRef.current)
       pingIntervalRef.current = null
     }
-  }, [isActivelyWorking, isEnrouteSharing, id])
+  }, [gpsPhase, id])
 
   // The requester's poll now lives in LiveTrackingCard, which owns both the
   // request and the "stop when the tab is backgrounded" rule the old 30s
@@ -484,6 +589,28 @@ export default function TaskDetail() {
   const hasLogged = (work.total_minutes || 0) > 0
   const canComplete = Boolean((isOwner || isAssignee) && task?.status === 'open' && !!task?.assigned_to_id && !work.has_open && hasLogged)
   const canAccept = Boolean(!isOwner && !isAssignee && task?.status === 'open' && !task?.assigned_to_id)
+
+  // ── Multi-session ─────────────────────────────────────────────────────────
+  //
+  // The sessions and the free gaps between them. `work.items` is the raw wire
+  // shape, where the columns are spelled `start`/`end` — normalized here, at
+  // the one place the payload meets the timeline builder, so the shared module
+  // (and its tests, and mobile's copy of it) never has to know either spelling.
+  const sessions = (work.items || []).map(w => ({
+    id: w.id,
+    startAt: w.start,
+    endAt: w.end ?? null,
+  }))
+  const timeline = buildSessionTimeline(sessions, { nowMs })
+  // Clocked out with the task still live — a pause, not an ending. The screen
+  // used to treat the first clock-out as terminal for the supporter; this is
+  // what makes it a state rather than a stop.
+  const paused = isPausedBetweenSessions({
+    hasOpenWorklog: Boolean(work.has_open),
+    sessionCount: sessions.length,
+    status: task?.status,
+  })
+  const showWaitHint = Boolean(isAssignee && task?.status === 'open' && showsWaitHint(task?.category))
 
   // For the length of the Traction 3 round the questionnaire replaces the
   // classic review form, and the supporter gets one of their own — the only
@@ -896,6 +1023,16 @@ export default function TaskDetail() {
     return () => clearInterval(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isTaskActive, user?.id, task?.requester_id, task?.assigned_to_id, id])
+
+  // The running session's clock. Declared here, below `work`, for the same
+  // temporal-dead-zone reason as the effect above — and gated on an actually
+  // open session so a finished task's tab is not re-rendering once a minute
+  // forever.
+  useEffect(() => {
+    if (!work.has_open) return
+    const timer = setInterval(() => setNowMs(Date.now()), 30000)
+    return () => clearInterval(timer)
+  }, [work.has_open])
 
   async function saveEdit() {
     await wrap(async () => {
@@ -1399,6 +1536,7 @@ export default function TaskDetail() {
               <SettlementPanel
                 cost={work?.cost}
                 settlement={settlement}
+                timeline={timeline}
                 isOwner={isOwner}
                 taskId={id}
               />
@@ -1473,6 +1611,15 @@ export default function TaskDetail() {
               <div className="border border-white/20 rounded-md p-3 space-y-2">
                 <div className="flex items-center justify-between">
                   <div>
+                    {/* The requester's half of the pause, ABOVE the numbers so
+                        it is read before the total is — matching where the
+                        supporter's own line sits on their copy of this card,
+                        and where mobile puts both. */}
+                    {isOwner && paused && (
+                      <div className="mb-2 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white/70">
+                        {PAUSED_REQUESTER}
+                      </div>
+                    )}
                     {!hasLogged ? (
                       costBreakdown && (
                         <div className="space-y-1">
@@ -1496,6 +1643,26 @@ export default function TaskDetail() {
                           Logged: <b>{totalDuration}</b>
                         </div>
                         {costBreakdown && <CostLine cost={costBreakdown} />}
+                        {/* The sessions behind that total, once there is more
+                            than one of them. The single-session task reads the
+                            same as it always did. */}
+                        {timeline.filter(e => e.kind === 'session').length > 1 && (
+                          <div className="pt-1 space-y-1">
+                            <SessionList timeline={timeline} />
+                            {gapsNote(timeline) && (
+                              <div className="text-xs text-white/40">{gapsNote(timeline)}</div>
+                            )}
+                            {/* Why the rows can add up to more than the total
+                                above them: the server bills CLOSED sessions
+                                only, so the one still running is genuinely not
+                                in that figure yet. */}
+                            {work.has_open && (
+                              <div className="text-xs text-white/40">
+                                The session running now is added when it ends.
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )}
                     {task?.assigned_to_id && task?.status === 'open' && (
@@ -1540,21 +1707,65 @@ export default function TaskDetail() {
                     expensive mistake: it keeps billing somebody. */}
                 {isAssignee && task.status === 'open' && (
                   work.has_open ? (
-                    <button
-                      type="button"
-                      onClick={clockOut}
-                      className="w-full rounded-lg bg-white text-black font-medium px-4 py-3 text-sm hover:bg-white/90"
-                    >
-                      Clock out
-                    </button>
+                    <>
+                      {showWaitHint && (
+                        <div className="text-xs text-white/50">{LAUNDRY_WAIT_HINT}</div>
+                      )}
+                      <button
+                        type="button"
+                        onClick={clockOut}
+                        className="w-full rounded-lg bg-white text-black font-medium px-4 py-3 text-sm hover:bg-white/90"
+                      >
+                        Clock out
+                      </button>
+                    </>
+                  ) : paused ? (
+                    /* PAUSED — clocked out, task still live. This screen used
+                       to offer a bare "Clock in" here and a separate "Mark as
+                       Complete" far below it, with nothing saying what the
+                       state between them was. Both exits now sit together,
+                       under the line that answers the question a paused
+                       supporter actually has: am I still being paid?
+
+                       Complete is the solid one: a paused task that is
+                       finished is the common case, and clocking back in is
+                       the deliberate one. */
+                    <>
+                      <div className="rounded-lg border border-white/15 bg-white/5 px-4 py-3 text-sm text-white/70">
+                        {PAUSED_SUPPORTER}
+                      </div>
+                      {showWaitHint && (
+                        <div className="text-xs text-white/50">{LAUNDRY_WAIT_HINT}</div>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => { setCompletionPhotoURL(''); setCompletionNote(''); setShowCompleteModal(true) }}
+                        style={{ background: '#9aab3a' }}
+                        className="w-full rounded-lg px-4 py-3 text-sm font-medium text-white hover:opacity-90 transition-opacity"
+                      >
+                        Complete task
+                      </button>
+                      <button
+                        type="button"
+                        onClick={clockIn}
+                        className="w-full rounded-lg border border-white/20 px-4 py-3 text-sm hover:border-white/40"
+                      >
+                        Clock back in
+                      </button>
+                    </>
                   ) : (
-                    <button
-                      type="button"
-                      onClick={clockIn}
-                      className="w-full rounded-lg border border-white/20 px-4 py-3 text-sm hover:border-white/40"
-                    >
-                      Clock in
-                    </button>
+                    <>
+                      {showWaitHint && (
+                        <div className="text-xs text-white/50">{LAUNDRY_WAIT_HINT}</div>
+                      )}
+                      <button
+                        type="button"
+                        onClick={clockIn}
+                        className="w-full rounded-lg border border-white/20 px-4 py-3 text-sm hover:border-white/40"
+                      >
+                        Clock in
+                      </button>
+                    </>
                   )
                 )}
 
@@ -1599,7 +1810,12 @@ export default function TaskDetail() {
               </div>
             )}
 
-            {isAssignee && !!task?.assigned_to_id && (
+            {/* The disabled-until-you-have-clocked state. While PAUSED this is
+                suppressed: the work-session card above carries an enabled
+                "Complete task" beside "Clock back in", and showing a second,
+                greyed-looking copy of the same action underneath it is how a
+                supporter ends up pressing the wrong one. */}
+            {isAssignee && !!task?.assigned_to_id && !paused && (
               <button
                 type="button"
                 disabled={!canComplete}

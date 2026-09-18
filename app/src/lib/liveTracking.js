@@ -127,3 +127,34 @@ export function formatUpdatedAgo(updatedAt, nowMs = Date.now()) {
 export function shouldPollLive({ isRequester, status, assignedToId }) {
   return Boolean(isRequester && status === 'open' && assignedToId)
 }
+
+/**
+ * The other half: should this SUPPORTER'S device be sending positions right
+ * now, and under which phase?
+ *
+ *   'working' — an open worklog. Everything the phone captures belongs to it.
+ *   'enroute' — they tapped "On my way" and have not clocked in yet.
+ *   'none'    — neither. Send nothing.
+ *
+ * Mirrors the server's two accept windows exactly (saveGpsPing +
+ * enrouteWindowOpen in server/live_tracking.go), which is the point of having
+ * it in one testable place: both clients used to carry this as a pair of
+ * inline booleans, and the two windows they describe do not overlap and must
+ * not be allowed to drift into overlapping.
+ *
+ * WHAT THIS ANSWERS FOR MULTI-SESSION: a paused supporter — clocked out, task
+ * still live — broadcasts NOTHING. 'working' is gone with the open worklog,
+ * and the enroute arm requires ZERO worklogs rather than merely no open one,
+ * so it does not re-open behind the pause. That second clause is load-bearing:
+ * `enroute_at` is never cleared, so a window keyed on that column alone would
+ * re-open at every clock-out and keep sharing a supporter's position through
+ * every gap — and through the walk home after the last one. The server refuses
+ * those pings with a 403 regardless; this is why a well-behaved client does not
+ * send them in the first place.
+ */
+export function broadcastPhase({ isAssignee, status, hasOpenWorklog, sessionCount, enrouteAt }) {
+  if (!isAssignee || status !== 'open') return 'none'
+  if (hasOpenWorklog) return 'working'
+  if (enrouteAt && (sessionCount ?? 0) === 0) return 'enroute'
+  return 'none'
+}

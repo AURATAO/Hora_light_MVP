@@ -49,10 +49,17 @@ export interface TaskFormErrors {
 
 const QUICK_MINUTES = [30, 60, 90, 120];
 
-// Mirrors BillingConfig.ShoppingBudgetCapCents in the Go backend and
-// purchaseCapDollars in beta-notice.ts. Client-side validation only — the
-// backend rejects an over-cap budget regardless of what any client believes.
-const SHOPPING_BUDGET_CAP_DOLLARS = 30;
+// (SHOPPING_BUDGET_CAP_DOLLARS = 30 lived here, described as mirroring
+// BillingConfig.ShoppingBudgetCapCents. That field no longer exists: the cap
+// was removed from Go AND from its DB CHECK when the whole budget began being
+// reserved on the card at post, because a requester who sees and authorizes
+// the exact figure needs a warning, not a refusal — see the note on
+// OverageToleranceCents in server/billing.go. What replaced it is the advisory
+// HighBudgetWarningCents, which this form already renders from the server's
+// quote (`high_budget_warning_cents`).
+//
+// The constant outlived the rule it mirrored, so this form was refusing $31
+// budgets the backend would have accepted, citing a beta cap nothing enforced.)
 
 const TRANSPORT_OPTIONS: { value: TransportOption; label: string }[] = [
   { value: "none", label: "None" },
@@ -207,13 +214,10 @@ export function validateTaskForm(form: TaskFormState): TaskFormErrors {
   if (form.shoppingBudget !== "") {
     const n = Number(form.shoppingBudget);
     if (Number.isNaN(n) || n < 0) errors.shoppingBudget = "Invalid amount.";
-    // The beta cap the notice has always advertised (beta-notice.ts
-    // purchaseCapDollars) and that the backend now enforces on create and
-    // update. Caught here so the message arrives while typing rather than as a
-    // 400 after pressing Post.
-    else if (n > SHOPPING_BUDGET_CAP_DOLLARS) {
-      errors.shoppingBudget = `Maximum shopping budget during beta is $${SHOPPING_BUDGET_CAP_DOLLARS}.00`;
-    }
+    // No ceiling. A large budget is WARNED about, in red, from the server's
+    // own threshold (high_budget_warning_cents) — nothing refuses it, here or
+    // in Go. The whole amount is reserved on the requester's card at post, so
+    // they have already seen and authorized the exact number.
   }
   return errors;
 }
