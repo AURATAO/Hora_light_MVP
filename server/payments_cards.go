@@ -30,8 +30,10 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 	"github.com/stripe/stripe-go/v86"
 	"github.com/stripe/stripe-go/v86/customer"
 	"github.com/stripe/stripe-go/v86/ephemeralkey"
@@ -69,32 +71,152 @@ func RegisterPaymentRoutes(r *gin.Engine, authMiddleware gin.HandlerFunc) {
 
 // ── The Customer ───────────────────────────────────────────────────────────
 
+// Advisory-lock namespaces. Advisory locks live in ONE global int-keyed space
+// shared by the whole database, so every taker picks a namespace constant and
+// hashes its subject into the second slot; two features that both locked on
+// the bare hash of a user's uuid would block each other for no reason.
+//
+// Arbitrary but FIXED. Changing one silently disables mutual exclusion against
+// any process still running the old value, which during a rolling deploy is
+// precisely the window these exist to protect.
+const (
+	// "this user's Stripe Customer is being created right now"
+	advisoryLockCustomer = 0x484f5241 // "HORA"
+	// "this user's Connect account is being created right now" — a different
+	// object with the same get-or-create hazard (payments_connect.go).
+	advisoryLockConnectAccount = 0x484f5242
+)
+
+// lockStripeRefCreation takes the per-user advisory lock for one of the
+// namespaces above, inside the caller's transaction.
+//
+// Transaction-scoped on purpose: it is released by the commit or the rollback,
+// including the rollback a panic or a context timeout triggers, so there is no
+// unlock to forget and no lock to leak when a Stripe call hangs.
+func lockStripeRefCreation(ctx context.Context, tx pgx.Tx, namespace int, uid string) error {
+	if _, err := tx.Exec(ctx,
+		`select pg_advisory_xact_lock($1, hashtext($2))`, namespace, uid); err != nil {
+		return fmt.Errorf("payments: lock creation for user %s: %w", uid, err)
+	}
+	return nil
+}
+
 // stripeCustomerFor returns the user's Stripe Customer id, creating it on
-// first use.
+// first use. Get-or-create, and safe to call concurrently: N simultaneous
+// first-calls for one user produce ONE Customer and N identical answers.
 //
 // Lazily, and this matters: most beta accounts never add a card, and a
 // Customer minted at signup is a permanent record in Stripe's database for
 // someone who never transacts. The first call that needs one — opening the
 // card sheet — is the first call that creates one.
 //
-// The UPDATE is conditional on the column still being null, so two concurrent
-// first-calls cannot leave one Customer orphaned and unnamed: the loser of the
-// race re-reads the winner's id and abandons its own. The orphan it created is
-// an empty Customer with no cards and no charges, which is inert — the
-// alternative (an advisory lock around a network call) buys nothing.
+// ── WHY THERE IS A LOCK AROUND A NETWORK CALL ──────────────────────────────
+//
+// This function used to rely on two things, and they are both still here and
+// both still correct:
+//
+//	the partial unique index on users.stripe_customer_id, so two users can
+//	never share a wallet (migration 20260914120000); and
+//
+//	the conditional UPDATE below, which coalesces rather than overwrites, so
+//	a loser adopts the winner's id rather than clobbering it.
+//
+// What neither of them covered is the CREATE itself. Stripe's idempotency
+// cache replays a COMPLETED request; it does not serialize an in-flight one.
+// Two concurrent customer.New calls carrying the same key make the second
+// fail with HTTP 409 `idempotency_key_in_use` — not a replay of the first
+// object, an error — and this function turned that into a 500.
+//
+// That is not hypothetical. It was found on 2026-09-18 by a local UI sweep:
+// the beta notice's payment gate and Post Task's own gate both read
+// GET /payments/payment-methods on the same page load, for a user with no
+// Customer yet, and one of the two answered 500.
+//
+// So the create is serialized per user with a transaction-scoped advisory
+// lock. The loser BLOCKS rather than racing, and by the time it is let through
+// the winner has committed, so it takes the fast path out of the re-read below
+// and never calls Stripe at all.
+//
+// The cost is a pool connection held across a Stripe round trip — which is
+// worth naming, because it is normally a thing to avoid. It is bounded here:
+// this path runs at most once in a user's lifetime, every later call returns
+// from the unlocked read at the top, and the locked section carries its own
+// timeout so a hung Stripe call cannot hold the lock (or the connection) for
+// longer than stripeRefCreateTimeout.
 func stripeCustomerFor(ctx context.Context, uid, email string) (string, error) {
 	if !paymentsEnabled() {
 		return "", errPaymentsDisabled
 	}
+	if strings.TrimSpace(uid) == "" {
+		return "", errors.New("payments: customer needs a user id")
+	}
 
-	var existing *string
-	if err := db.QueryRow(ctx,
+	// The fast path, and the one almost every call takes: no lock, no
+	// transaction, one indexed read.
+	existing, err := readStripeCustomer(ctx, db, uid)
+	if err != nil {
+		return "", err
+	}
+	if existing != "" {
+		return existing, nil
+	}
+
+	return createStripeCustomer(ctx, uid, email)
+}
+
+// stripeRefCreateTimeout bounds the locked section — both of them, here and in
+// connectAccountFor. Generous next to Stripe's own latency and short next to a
+// request that is already waiting on it: the point is only that a hung
+// connection releases the advisory lock (and the pool connection behind it)
+// rather than parking every other caller for that user behind it forever.
+const stripeRefCreateTimeout = 30 * time.Second
+
+// readStripeCustomer reads the stored Customer id, or "" when there is none.
+// Takes the querier so it can run on the pool or inside the transaction.
+func readStripeCustomer(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, uid string) (string, error) {
+	var stored *string
+	if err := q.QueryRow(ctx,
 		`select stripe_customer_id from public.users where id = $1::uuid`, uid,
-	).Scan(&existing); err != nil {
+	).Scan(&stored); err != nil {
 		return "", fmt.Errorf("payments: read customer for user %s: %w", uid, err)
 	}
-	if existing != nil && *existing != "" {
-		return *existing, nil
+	if stored == nil {
+		return "", nil
+	}
+	return strings.TrimSpace(*stored), nil
+}
+
+// createStripeCustomer is the slow path: take the per-user lock, look again,
+// and create only if nobody else already did.
+func createStripeCustomer(ctx context.Context, uid, email string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, stripeRefCreateTimeout)
+	defer cancel()
+
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return "", fmt.Errorf("payments: begin customer creation for user %s: %w", uid, err)
+	}
+	// Rollback on every path that is not an explicit Commit. After a
+	// successful commit this is a no-op error we deliberately drop.
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	// Blocks until whoever else is creating this user's Customer has committed.
+	if err := lockStripeRefCreation(ctx, tx, advisoryLockCustomer, uid); err != nil {
+		return "", err
+	}
+
+	// The second half of double-checked locking, and the branch that makes
+	// this whole mechanism work: the winner committed while we were queued, so
+	// there is already a Customer and we must not make another.
+	existing, err := readStripeCustomer(ctx, tx, uid)
+	if err != nil {
+		return "", err
+	}
+	if existing != "" {
+		log.Printf("[payments] customer for user=%s was created by a concurrent request — adopting %s", uid, existing)
+		return existing, nil
 	}
 
 	params := &stripe.CustomerParams{
@@ -103,33 +225,110 @@ func stripeCustomerFor(ctx context.Context, uid, email string) (string, error) {
 	if email != "" {
 		params.Email = stripe.String(email)
 	}
-	// Two requests from one user arriving together would otherwise mint two
-	// Customers; keyed on the uid so the second is answered from Stripe's own
-	// idempotency cache with the first one's object.
+	// Kept even though the lock above already prevents the concurrent case it
+	// was added for. It still covers the sequential one: a create whose
+	// response we never saw (a timeout, a dropped connection, a process
+	// killed mid-flight) is replayed rather than duplicated when the user
+	// retries, because Stripe's cache answers a COMPLETED request with the
+	// object it produced.
 	params.SetIdempotencyKey("customer_" + uid)
 
 	cus, err := customer.New(params)
 	if err != nil {
+		// Reachable despite the lock, in exactly one shape: an earlier attempt
+		// whose HTTP request is still open at Stripe while this process no
+		// longer holds anything (its connection died, its context was
+		// cancelled mid-call). The key is in use by a request we are no longer
+		// waiting on, so there is nothing to adopt and nothing to retry
+		// usefully inside this request.
+		if isIdempotencyKeyInUse(err) {
+			log.Printf("[payments] customer create for user=%s hit an in-flight idempotency key; "+
+				"an earlier attempt is still open at Stripe", uid)
+			return "", fmt.Errorf("payments: customer creation already in flight for user %s: %w", uid, err)
+		}
 		return "", fmt.Errorf("payments: create customer for user %s: %w", uid, err)
 	}
 
 	var stored string
-	err = db.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		update public.users
 		   set stripe_customer_id = coalesce(stripe_customer_id, $2)
 		 where id = $1::uuid
 		returning stripe_customer_id
 	`, uid, cus.ID).Scan(&stored)
 	if err != nil {
+		// The Customer exists at Stripe and we cannot record it. Delete it
+		// rather than leaving it behind: nothing references it, nobody will
+		// ever look for it, and the next call will make another.
+		log.Printf("[payments][ERROR] created customer=%s for user=%s but could not store it: %v", cus.ID, uid, err)
+		discardStripeCustomer(cus.ID, uid, "could not be stored")
 		return "", fmt.Errorf("payments: persist customer %s for user %s: %w", cus.ID, uid, err)
 	}
+
+	// Defensive: under the lock this cannot happen, because nobody else can be
+	// between the re-read and this UPDATE. Kept because it is the branch that
+	// silently leaked Customers before, and if the lock is ever removed or
+	// misconfigured this is the line that says so in the log.
 	if stored != cus.ID {
-		log.Printf("[payments] customer race for user=%s — keeping %s, discarding %s", uid, stored, cus.ID)
+		log.Printf("[payments][WARN] customer race for user=%s DESPITE the advisory lock — keeping %s, discarding %s",
+			uid, stored, cus.ID)
+		if err := tx.Commit(ctx); err != nil {
+			return "", fmt.Errorf("payments: commit customer for user %s: %w", uid, err)
+		}
+		discardStripeCustomer(cus.ID, uid, "lost a race that should not have been possible")
 		return stored, nil
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		// Same reasoning as the failed UPDATE above: the row did not change,
+		// so this Customer belongs to nobody.
+		log.Printf("[payments][ERROR] created customer=%s for user=%s but could not commit: %v", cus.ID, uid, err)
+		discardStripeCustomer(cus.ID, uid, "its transaction did not commit")
+		return "", fmt.Errorf("payments: commit customer for user %s: %w", uid, err)
 	}
 
 	log.Printf("[payments] created customer=%s for user=%s", cus.ID, uid)
 	return stored, nil
+}
+
+// discardStripeCustomer deletes a Customer this server created and then could
+// not claim, so a failed create leaves nothing behind in Stripe.
+//
+// Safe by construction: it is only ever called with an id minted moments
+// earlier inside this function and never written to any row, so it cannot have
+// a card, a charge or a second reference. Best-effort and never fatal — the
+// caller is already returning the outcome that matters, and a Customer that
+// survives this is inert rather than harmful.
+//
+// Deliberately NOT given the request's context: it runs on paths where that
+// context has just been cancelled or timed out, and inheriting it would make
+// the cleanup fail exactly when it is needed.
+func discardStripeCustomer(customerID, uid, why string) {
+	if strings.TrimSpace(customerID) == "" {
+		return
+	}
+	if _, err := customer.Del(customerID, nil); err != nil {
+		log.Printf("[payments][WARN] could not delete orphan customer=%s (user=%s, %s): %v — "+
+			"it holds nothing, but it is worth removing by hand", customerID, uid, why, err)
+		return
+	}
+	log.Printf("[payments] deleted orphan customer=%s (user=%s, %s)", customerID, uid, why)
+}
+
+// isIdempotencyKeyInUse recognises Stripe's refusal to start a request whose
+// key is already open on another in-flight request.
+//
+// Distinct from every other Stripe error in what it means: nothing was
+// declined and nothing is wrong with the input — two calls simply overlapped.
+// Named so the log says that rather than presenting an internal collision as a
+// payment failure.
+func isIdempotencyKeyInUse(err error) bool {
+	var se *stripe.Error
+	if !errors.As(err, &se) {
+		return false
+	}
+	return se.Code == stripe.ErrorCodeIdempotencyKeyInUse ||
+		strings.Contains(strings.ToLower(se.Msg), "idempotency key")
 }
 
 // ── POST /payments/setup-intent ────────────────────────────────────────────

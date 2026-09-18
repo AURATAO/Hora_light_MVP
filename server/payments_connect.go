@@ -48,6 +48,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 	"github.com/stripe/stripe-go/v86"
 	"github.com/stripe/stripe-go/v86/account"
 	"github.com/stripe/stripe-go/v86/accountlink"
@@ -93,10 +94,18 @@ const (
 // platform's Connect dashboard, and it counts against the platform's account
 // review.
 //
-// The UPDATE is conditional on the column still being null, so two concurrent
-// first calls cannot orphan an account: the loser of the race re-reads the
-// winner's id and abandons its own. The orphan is an empty Express account
-// with no bank details and no transfers, which is inert.
+// CONCURRENCY. Same get-or-create hazard, same fix, as stripeCustomerFor —
+// see the long note there for why an idempotency key is not enough on its own.
+// In short: Stripe's cache replays a COMPLETED request and does not serialize
+// an in-flight one, so two overlapping creates with one key make the second
+// fail with 409 `idempotency_key_in_use`. Two taps on "Set up payouts" are all
+// it takes; the supporter got "We couldn't start payout setup just now".
+//
+// The lock makes the loser wait and then find the winner's account in the
+// re-read below, so it never calls Stripe at all. Both halves of the older
+// defence are still here and still correct: the partial unique index on
+// users.stripe_account_id (migration 20260916120000) and the coalescing
+// UPDATE, which means a late writer adopts rather than overwrites.
 func connectAccountFor(ctx context.Context, uid, email string) (string, error) {
 	if !paymentsEnabled() {
 		return "", errPaymentsDisabled
@@ -105,14 +114,36 @@ func connectAccountFor(ctx context.Context, uid, email string) (string, error) {
 		return "", errors.New("payments: connect account needs a user id")
 	}
 
-	var existing *string
-	if err := db.QueryRow(ctx,
-		`select stripe_account_id from public.users where id = $1::uuid`, uid,
-	).Scan(&existing); err != nil {
-		return "", fmt.Errorf("payments: read connect account for user %s: %w", uid, err)
+	// The fast path: no lock, no transaction, one indexed read. Every call
+	// after the first takes it.
+	existing, err := readConnectAccount(ctx, db, uid)
+	if err != nil {
+		return "", err
 	}
-	if existing != nil && *existing != "" {
-		return *existing, nil
+	if existing != "" {
+		return existing, nil
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, stripeRefCreateTimeout)
+	defer cancel()
+
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return "", fmt.Errorf("payments: begin connect account creation for user %s: %w", uid, err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	if err := lockStripeRefCreation(ctx, tx, advisoryLockConnectAccount, uid); err != nil {
+		return "", err
+	}
+
+	// Double-checked: the winner committed while we were queued.
+	if existing, err := readConnectAccount(ctx, tx, uid); err != nil {
+		return "", err
+	} else if existing != "" {
+		log.Printf("[payments][connect] account for user=%s was created by a concurrent request — adopting %s",
+			uid, existing)
+		return existing, nil
 	}
 
 	params := &stripe.AccountParams{
@@ -155,9 +186,12 @@ func connectAccountFor(ctx context.Context, uid, email string) (string, error) {
 	if email != "" {
 		params.Email = stripe.String(email)
 	}
-	// Two taps on "Set up payouts" arriving together would otherwise mint two
-	// Express accounts for one person. Keyed on the uid, so the second is
-	// answered from Stripe's idempotency cache with the first one's object.
+	// Kept even though the lock above already covers the concurrent case this
+	// was added for. It still covers the SEQUENTIAL one: a create whose
+	// response we never saw (a timeout, a dropped connection, a process killed
+	// mid-flight) is replayed rather than duplicated when the supporter tries
+	// again, because Stripe's cache answers a COMPLETED request with the
+	// object it produced.
 	params.SetIdempotencyKey("connect_account_" + uid)
 
 	acct, err := account.New(params)
@@ -176,11 +210,19 @@ func connectAccountFor(ctx context.Context, uid, email string) (string, error) {
 				"(Settings → Features → Accounts v1 support). Nothing else in this deploy needs to change.")
 			return "", errConnectV1Disabled
 		}
+		if isIdempotencyKeyInUse(err) {
+			// Reachable despite the lock in one shape only: an earlier attempt
+			// whose HTTP request is still open at Stripe while this process no
+			// longer holds anything. Nothing to adopt, nothing to usefully
+			// retry inside this request.
+			log.Printf("[payments][connect] account create for user=%s hit an in-flight idempotency key; "+
+				"an earlier attempt is still open at Stripe", uid)
+		}
 		return "", fmt.Errorf("payments: create connect account for user %s: %w", uid, err)
 	}
 
 	var stored string
-	err = db.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		update public.users
 		   set stripe_account_id = coalesce(stripe_account_id, $2)
 		 where id = $1::uuid
@@ -195,14 +237,50 @@ func connectAccountFor(ctx context.Context, uid, email string) (string, error) {
 			acct.ID, uid, err)
 		return "", fmt.Errorf("payments: store connect account: %w", err)
 	}
+	// Defensive: unreachable under the lock, because nobody else can be between
+	// the re-read and this UPDATE. Kept because it is the branch that leaked
+	// accounts before, and if the lock is ever removed this line says so.
+	//
+	// The orphan is NOT deleted, unlike an orphaned Customer. An empty Express
+	// account holds nothing and is inert, but deleting a connected account is a
+	// heavier and less reversible act than deleting an empty Customer — it can
+	// carry KYC state Stripe keeps for its own compliance reasons — and doing
+	// it automatically from an unreachable branch is the wrong trade.
 	if stored != acct.ID {
-		log.Printf("[payments][connect] user=%s raced: keeping %s, abandoning %s", uid, stored, acct.ID)
+		log.Printf("[payments][connect][WARN] user=%s raced DESPITE the advisory lock: keeping %s, abandoning %s",
+			uid, stored, acct.ID)
+		if err := tx.Commit(ctx); err != nil {
+			return "", fmt.Errorf("payments: commit connect account for user %s: %w", uid, err)
+		}
 		return stored, nil
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		log.Printf("[payments][connect][ERROR] created account=%s for user=%s but could not commit: %v",
+			acct.ID, uid, err)
+		return "", fmt.Errorf("payments: commit connect account for user %s: %w", uid, err)
 	}
 
 	log.Printf("[payments][connect] user=%s account=%s created (country=%s)", uid, acct.ID, connectAccountCountry)
 	cacheConnectStatus(ctx, uid, acct)
 	return acct.ID, nil
+}
+
+// readConnectAccount reads the stored Express account id, or "" when there is
+// none. Takes the querier so it can run on the pool or inside the transaction.
+func readConnectAccount(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, uid string) (string, error) {
+	var stored *string
+	if err := q.QueryRow(ctx,
+		`select stripe_account_id from public.users where id = $1::uuid`, uid,
+	).Scan(&stored); err != nil {
+		return "", fmt.Errorf("payments: read connect account for user %s: %w", uid, err)
+	}
+	if stored == nil {
+		return "", nil
+	}
+	return strings.TrimSpace(*stored), nil
 }
 
 // errConnectV1Disabled is the platform-configuration failure, named so the

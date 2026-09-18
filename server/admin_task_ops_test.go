@@ -39,6 +39,7 @@ import (
 // Mirrors reassignFixture, plus worklogs.updated_at — which production has and
 // the older fixtures omit, and which these handlers write.
 const adminOpsFixture = `
+DROP TABLE IF EXISTS public.task_gps_pings CASCADE;
 DROP TABLE IF EXISTS public.extension_requests CASCADE;
 DROP TABLE IF EXISTS public.audit_logs CASCADE;
 DROP TABLE IF EXISTS public.device_push_tokens CASCADE;
@@ -101,6 +102,29 @@ CREATE TABLE public.worklogs (
 	end_at timestamptz,
 	created_at timestamptz NOT NULL DEFAULT now(),
 	updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Not used by any ops assertion, and here anyway: this fixture's own
+-- migration list ends with 20260917120000_task_enroute_live_tracking.sql,
+-- which ALTERs this table's source CHECK. Without the table that migration
+-- errors and every setupAdminOpsDB test fails at setup.
+--
+-- It USED to pass, which is the part worth knowing: the live-tracking fixture
+-- creates this table, so on a container where those tests had already run it
+-- was simply still there — and the DROP tasks CASCADE above takes it out
+-- again, so whether the suite passed depended on what had run against the
+-- container before. Declaring it here makes this family self-contained and
+-- order-independent, which is what let the customer-race tests be run on
+-- their own against a fresh container.
+CREATE TABLE public.task_gps_pings (
+	id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+	task_id uuid REFERENCES public.tasks(id) ON DELETE CASCADE,
+	user_id uuid,
+	lat double precision NOT NULL,
+	lng double precision NOT NULL,
+	accuracy integer,
+	source text NOT NULL DEFAULT 'foreground',
+	created_at timestamptz DEFAULT now()
 );
 
 CREATE TABLE public.notifications (
