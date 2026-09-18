@@ -702,7 +702,75 @@ func settleOutstandingBalance(c *gin.Context) {
 	}
 	ctx := c.Request.Context()
 
-	rows, err := db.Query(ctx, `
+	// Unlocked fast path, and the common one: nothing owed costs no
+	// transaction and no lock. Nothing to settle is success, not an error —
+	// a settle that raced the banner disappearing lands here.
+	owed, err := readBalanceDue(ctx, db, uid)
+	if err != nil {
+		log.Printf("[payments][settle] read requester=%s: %v", uid, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+	if len(owed) == 0 {
+		c.JSON(http.StatusOK, gin.H{"ok": true, "settled_cents": 0, "outstanding": nil})
+		return
+	}
+
+	out, err := runSettlePass(ctx, uid)
+	if err != nil {
+		log.Printf("[payments][settle] requester=%s: %v", uid, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+
+	// The recoverable failure. Hand back what the client needs to put the
+	// cardholder in front of their bank, exactly as the post path does.
+	if out.authErr != nil {
+		log.Printf("[payments][settle] requester=%s needs 3DS on payment=%s", uid, out.stoppedAt)
+		c.JSON(http.StatusPaymentRequired, gin.H{
+			"error":             "payment_authentication_required",
+			"message":           "Your bank needs to confirm this payment.",
+			"client_secret":     out.authErr.ClientSecret,
+			"payment_intent_id": out.authErr.PaymentIntentID,
+			"publishable_key":   stripePublishableKey(),
+			"settled_cents":     out.settledCents,
+			"outstanding":       outstandingBalanceFor(ctx, uid),
+		})
+		return
+	}
+	if out.declineMessage != "" {
+		c.JSON(http.StatusPaymentRequired, gin.H{
+			"error":         "payment_required",
+			"message":       out.declineMessage,
+			"settled_cents": out.settledCents,
+			"outstanding":   outstandingBalanceFor(ctx, uid),
+		})
+		return
+	}
+
+	log.Printf("[payments][settle] requester=%s settled %s across %d task(s)",
+		uid, formatCentsUSD(out.settledCents), out.settledCount)
+	_ = email
+	c.JSON(http.StatusOK, gin.H{
+		"ok":            true,
+		"settled_cents": out.settledCents,
+		"outstanding":   outstandingBalanceFor(ctx, uid),
+	})
+}
+
+// balanceDue is one collectable row: a payments row sitting in 'balance_due'.
+type balanceDue struct {
+	id, taskID, intentID string
+	cents                int
+}
+
+// readBalanceDue lists what a requester still owes, oldest first. Takes the
+// querier so it can run on the pool (the unlocked pre-read) or inside the
+// transaction holding the settle lock (the double-check).
+func readBalanceDue(ctx context.Context, q interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, uid string) ([]balanceDue, error) {
+	rows, err := q.Query(ctx, `
 		select id::text, task_id::text, coalesce(authorized_cents, 0),
 		       coalesce(stripe_payment_intent_id, '')
 		  from public.payments
@@ -710,32 +778,104 @@ func settleOutstandingBalance(c *gin.Context) {
 		 order by created_at asc
 	`, uid, paymentStatusBalanceDue)
 	if err != nil {
-		log.Printf("[payments][settle] read task=%s: %v", uid, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
-		return
+		return nil, fmt.Errorf("payments: read balance due for requester %s: %w", uid, err)
 	}
-	type due struct {
-		id, taskID, intentID string
-		cents                int
-	}
-	var owed []due
+	defer rows.Close()
+
+	var owed []balanceDue
 	for rows.Next() {
-		var d due
+		var d balanceDue
 		if err := rows.Scan(&d.id, &d.taskID, &d.cents, &d.intentID); err != nil {
-			break
+			return nil, fmt.Errorf("payments: scan balance due for requester %s: %w", uid, err)
 		}
 		owed = append(owed, d)
 	}
-	rows.Close()
+	return owed, rows.Err()
+}
 
-	if len(owed) == 0 {
-		// Nothing to settle is success, not an error: two taps on the button,
-		// or a settle that raced the banner disappearing.
-		c.JSON(http.StatusOK, gin.H{"ok": true, "settled_cents": 0, "outstanding": nil})
-		return
+// settleOutcome is what one settlement pass produced. At most one of authErr
+// and declineMessage is set; either means the pass stopped early, with
+// settledCents already collected and committed.
+type settleOutcome struct {
+	settledCents   int
+	settledCount   int
+	authErr        *PreAuthError
+	declineMessage string
+	stoppedAt      string // payment id the pass stopped on, for the log line
+}
+
+// settleBalanceTimeout bounds the locked section. Longer than
+// stripeRefCreateTimeout because a pass is N charges, not one create, and
+// still short enough that a hung Stripe connection releases the lock rather
+// than parking every later settle for that requester behind it.
+const settleBalanceTimeout = 90 * time.Second
+
+// runSettlePass charges every balance_due row for one requester, serialized so
+// that two concurrent passes cannot both charge the same row.
+//
+// ── WHY THERE IS A LOCK, AND WHY IT IS NOT `SELECT … FOR UPDATE` ───────────
+//
+// The hazard is the one that produced the customer-create 500 on 2026-09-18,
+// in a second shape. Double-tapping Settle ran two passes; both read the same
+// balance_due rows, both called paymentintent.New with the same idempotency
+// key `balance_<payment_id>`, and Stripe answered the second with HTTP 409
+// `idempotency_key_in_use` — an error, not a replay, because the cache
+// replays a COMPLETED request and does not serialize an in-flight one. The
+// key still did its real job: the requester was never charged twice. But the
+// loser's 409 was classified as a decline, so a settle that had in fact just
+// succeeded told the cardholder "we couldn't reach your bank just now".
+//
+// The obvious fix is a row lock — `select … from payments … for update` — and
+// it deadlocks. chargeBalanceOffSession writes that same row through the POOL
+// (attachIntent, recordPaymentCard), as does recordCapture afterwards, each on
+// its own connection. A pass holding the row lock would wait on Stripe while
+// its own pool-side UPDATE waited on the row lock: a circular wait across two
+// connections, which Postgres cannot detect and break, so it hangs to the
+// context deadline instead of erroring.
+//
+// So the serialization is a per-requester advisory lock instead. It excludes
+// the other pass without locking the rows the pass itself has to write, and
+// being transaction-scoped it is released by the rollback below — including
+// the rollback a panic or a context timeout triggers.
+func runSettlePass(ctx context.Context, uid string) (settleOutcome, error) {
+	var out settleOutcome
+
+	ctx, cancel := context.WithTimeout(ctx, settleBalanceTimeout)
+	defer cancel()
+
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return out, fmt.Errorf("payments: begin settle for requester %s: %w", uid, err)
+	}
+	// Nothing is written through tx — every write below goes through the pool,
+	// deliberately, for the deadlock reason above. The transaction exists only
+	// to scope the advisory lock, so this rollback IS the unlock.
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	// Blocks until whoever else is settling this requester has finished.
+	if err := lockPerUser(ctx, tx, advisoryLockBalanceSettle, uid); err != nil {
+		return out, err
 	}
 
-	settled := 0
+	// The second half of double-checked locking, and the branch that makes the
+	// whole mechanism work: the winner settled these rows while we were
+	// queued, so they are no longer balance_due and there is nothing left to
+	// charge. The loser of a double-tap returns "settled 0, you owe nothing"
+	// rather than a decline.
+	//
+	// Correct only because the transaction is READ COMMITTED (pgx's default):
+	// this statement takes a fresh snapshot after the lock was granted, so it
+	// sees the winner's committed writes. Under REPEATABLE READ it would read
+	// the pre-lock snapshot and charge everything a second time.
+	owed, err := readBalanceDue(ctx, tx, uid)
+	if err != nil {
+		return out, err
+	}
+	if len(owed) == 0 {
+		log.Printf("[payments][settle] requester=%s has nothing left to charge — already collected, or a concurrent pass got there first", uid)
+		return out, nil
+	}
+
 	for _, d := range owed {
 		p := &Payment{ID: d.id, TaskID: d.taskID, RequesterID: uid, StripePaymentIntentID: d.intentID}
 		pi, err := chargeBalanceOffSession(ctx, p, d.taskID, uid, d.cents)
@@ -748,49 +888,26 @@ func settleOutstandingBalance(c *gin.Context) {
 				"payment_id":   d.id,
 				"amount_cents": d.cents,
 			})
-			settled += d.cents
+			out.settledCents += d.cents
+			out.settledCount++
 			continue
 		}
 
-		// The recoverable failure. Hand back what the client needs to put the
-		// cardholder in front of their bank, exactly as the post path does.
+		out.stoppedAt = d.id
 		var pe *PreAuthError
 		if errors.As(err, &pe) && pe.RequiresAction {
-			log.Printf("[payments][settle] requester=%s needs 3DS on payment=%s", uid, d.id)
-			c.JSON(http.StatusPaymentRequired, gin.H{
-				"error":             "payment_authentication_required",
-				"message":           "Your bank needs to confirm this payment.",
-				"client_secret":     pe.ClientSecret,
-				"payment_intent_id": pe.PaymentIntentID,
-				"publishable_key":   stripePublishableKey(),
-				"settled_cents":     settled,
-				"outstanding":       outstandingBalanceFor(ctx, uid),
-			})
-			return
+			out.authErr = pe
+			return out, nil
 		}
 
-		message := "That card was declined. Try another card."
+		out.declineMessage = "That card was declined. Try another card."
 		if pe != nil && pe.Message != "" {
-			message = pe.Message
+			out.declineMessage = pe.Message
 		}
 		log.Printf("[payments][settle] requester=%s payment=%s still failing: %v", uid, d.id, err)
-		c.JSON(http.StatusPaymentRequired, gin.H{
-			"error":         "payment_required",
-			"message":       message,
-			"settled_cents": settled,
-			"outstanding":   outstandingBalanceFor(ctx, uid),
-		})
-		return
+		return out, nil
 	}
-
-	log.Printf("[payments][settle] requester=%s settled %s across %d task(s)",
-		uid, formatCentsUSD(settled), len(owed))
-	_ = email
-	c.JSON(http.StatusOK, gin.H{
-		"ok":            true,
-		"settled_cents": settled,
-		"outstanding":   outstandingBalanceFor(ctx, uid),
-	})
+	return out, nil
 }
 
 // GET /payments/outstanding-balance
