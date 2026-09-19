@@ -19,6 +19,7 @@ import {
 import { BudgetIncreaseSheet, type BudgetIncreaseSubmit } from "../../components/BudgetIncreaseSheet";
 import { CancelTaskSheet } from "../../components/CancelTaskSheet";
 import { CompleteTaskSheet, type CompleteTaskPayload } from "../../components/CompleteTaskSheet";
+import { approvedBudgetCentsFor } from "../../lib/task-budget";
 import { LiveTrackingCard } from "../../components/LiveTrackingCard";
 import { ReviewSheet } from "../../components/ReviewSheet";
 import { TractionReviewSheet } from "../../components/TractionReviewSheet";
@@ -618,8 +619,10 @@ export default function TaskDetail() {
     : null;
   const settlement: Settlement | null = worklogs?.settlement ?? null;
   const capState = settlement?.time_cap ?? null;
-  const approvedBudgetCents =
-    extensions?.approved_budget_cents ?? settlement?.approved_budget_cents ?? 0;
+  // Freshest source first, always-present source last — see task-budget.ts.
+  // Never the live payments_enforced flag: this task's budget is a fact about
+  // the task, not about what posting requires today.
+  const approvedBudgetCents = approvedBudgetCentsFor({ extensions, settlement, task });
   const isTaskActive = task?.status === "open" && !!task?.assigned_to_id;
   // The hold on the requester's card. Requester-only by construction: the
   // server omits the key from the supporter's copy of the task, so this is

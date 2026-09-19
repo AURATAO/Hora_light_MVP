@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { needsReceipt } from "../lib/task-budget";
 import {
   Image,
   KeyboardAvoidingView,
@@ -73,7 +74,10 @@ export function CompleteTaskSheet({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const needsReceipt = approvedBudgetCents > 0;
+  // The same predicate the web completion form uses (lib/task-budget.ts),
+  // and the same one the server enforces: above zero it REFUSES a completion
+  // that says nothing about the receipt.
+  const showReceipt = needsReceipt(approvedBudgetCents);
   const maxReceiptCents = approvedBudgetCents + toleranceCents;
 
   function reset() {
@@ -146,7 +150,7 @@ export function CompleteTaskSheet({
     // again and is the authority — above all on the budget ceiling, which it
     // may have raised since this screen loaded.
     let receiptCents: number | undefined;
-    if (needsReceipt) {
+    if (showReceipt) {
       if (nothingBought) {
         receiptCents = 0;
       } else {
@@ -257,7 +261,7 @@ export function CompleteTaskSheet({
               {/* Shopping settlement. Only on a task with an approved budget —
                   everywhere else this section does not exist, because there is
                   nothing to account for. */}
-              {needsReceipt ? (
+              {showReceipt ? (
                 <View className="mt-6 border-t border-line pt-6">
                   <Text className="mb-1 text-title font-semibold text-ink">
                     What did it come to?
