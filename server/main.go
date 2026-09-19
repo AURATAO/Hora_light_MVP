@@ -159,6 +159,28 @@ type Task struct {
 	// absent (not null) for the supporter, for a browsing stranger, and for
 	// every task posted with PAYMENTS_ENFORCED off.
 	Payment *TaskPayment `json:"payment,omitempty"`
+
+	// The approved shopping ceiling — tasks.shopping_budget_approved_cents,
+	// the SAME column completeTask validates the receipt against.
+	//
+	// WHY IT IS ON THE TASK. Above zero, the server REFUSES a completion that
+	// says nothing about the receipt, so whether the clients render the receipt
+	// step has to be decided from the same number. They already had two ways to
+	// learn it — GET /tasks/:id/extensions and the worklogs settlement — and
+	// both are side-channel fetches that a client can legitimately not have:
+	// extensions is polled only while the task is active, and either can fail
+	// and be swallowed (both are caught silently, on purpose, because they run
+	// on timers). A supporter holding neither saw no receipt field while the
+	// server demanded one, and completion became unreachable from the app.
+	//
+	// So the decision now has a source that arrives with the task itself and
+	// cannot be absent on a screen that has a task to show at all.
+	//
+	// BOTH PARTIES, unlike Payment: the supporter needs it to know they owe a
+	// receipt, the requester to see the ceiling their money is committed to.
+	// Selected only by getTask, so it is absent from list responses rather
+	// than null there.
+	ShoppingBudgetApprovedCents *int `json:"shopping_budget_approved_cents,omitempty"`
 }
 
 type createTaskInput struct {
@@ -2115,6 +2137,25 @@ func getTask(c *gin.Context) {
 		// else's task through the ops panel does not get it either, because
 		// the ops panel has the ledger and does not need it here.
 		t.Payment = taskPaymentView(ctx, id)
+	}
+
+	// The approved shopping ceiling, for the two people it concerns: the
+	// supporter who must produce a receipt against it and the requester whose
+	// money it commits. Read separately for the same reason as the fields
+	// above — the main SELECT has a fallback twin, and every column added to
+	// one has to be added to both.
+	//
+	// Deliberately NOT derived from prepay_amount_cents, which is the
+	// requester's original ask: an approved mid-task budget increase raises
+	// this column and not that one, and a supporter sent shopping on the
+	// raised ceiling has to be able to claim against it.
+	if uid == t.RequesterID || isAssignee {
+		var approvedBudget int
+		if err := db.QueryRow(ctx,
+			`select coalesce(shopping_budget_approved_cents, 0) from public.tasks where id=$1::uuid`, id,
+		).Scan(&approvedBudget); err == nil {
+			t.ShoppingBudgetApprovedCents = &approvedBudget
+		}
 	}
 
 	// The live-sharing window, for the two people it concerns. Read separately

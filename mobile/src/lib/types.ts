@@ -199,6 +199,13 @@ export interface Task {
   /** The hold on the card. Requester-only and detail-only — absent from every
    *  list response and from the supporter's copy of the same task. */
   payment?: TaskPayment;
+  /** The approved shopping ceiling — the SAME column the server validates the
+   * receipt against at completion, so it is what decides whether the completion
+   * sheet shows the receipt step (see lib/task-budget.ts). Detail-only, and
+   * sent to BOTH parties: the supporter needs it to know they owe a receipt,
+   * the requester to see the ceiling their money is committed to. Absent (not
+   * null) from list responses and to a browsing stranger. */
+  shopping_budget_approved_cents?: number;
   /** When the assigned supporter tapped "On my way" — the pre-clock-in live
    * sharing window. Detail-only, and sent to BOTH parties: the supporter's
    * button reads it to know it has already been tapped, the requester's screen

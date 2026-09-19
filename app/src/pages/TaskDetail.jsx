@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { approvedBudgetCentsFor, needsReceipt } from '../lib/taskBudget'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { api, API_BASE } from '../api/client'
 import TaskChatBox from '../components/TaskChatBox'
@@ -977,8 +978,10 @@ export default function TaskDetail() {
   // ── Stripe Phase 2b, derived once ───────────────────────────────────────
   const settlement = work?.settlement || null
   const capState = settlement?.time_cap || null
-  const approvedBudgetCents =
-    extensions?.approved_budget_cents ?? settlement?.approved_budget_cents ?? 0
+  // Freshest source first, always-present source last — see taskBudget.js.
+  // Never the live payments_enforced flag: this task's budget is a fact about
+  // the task, not about what posting requires today.
+  const approvedBudgetCents = approvedBudgetCentsFor({ extensions, settlement, task })
   const toleranceCents = extensions?.tolerance_cents ?? 0
   const pendingAsk = (extensions?.items || []).find(e => e.status === 'pending') || null
   const latestAsk = (extensions?.items || []).slice(-1)[0] || null
@@ -2090,7 +2093,7 @@ export default function TaskDetail() {
               everywhere else there is nothing to account for, and the server
               wants no receipt field at all. Zero is a real answer here
               ("nothing was bought") and needs no photo. */}
-          {approvedBudgetCents > 0 && (
+          {needsReceipt(approvedBudgetCents) && (
             <div className="space-y-2 border-t border-white/10 pt-4">
               <p className="text-xs text-white/60">
                 Receipt total <span className="text-red-400">*</span>
