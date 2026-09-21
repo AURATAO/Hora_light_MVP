@@ -14,6 +14,9 @@ import {
   cancelChargeLine,
   cancelReleaseLine,
   cancelGraceCountdown,
+  extensionResolutionTitle,
+  extensionResolutionDetail,
+  extensionReaskLabel,
 } from './paymentCopy.js'
 
 /**
@@ -308,6 +311,55 @@ test('the grace countdown runs off the server deadline and stops at zero', () =>
   assert.equal(cancelGraceCountdown(at(-5), now), null)
   assert.equal(cancelGraceCountdown(null, now), null)
   assert.equal(cancelGraceCountdown(undefined, now), null)
+})
+
+test('a resolved request leads with the answer, not with asking again', () => {
+  // THE BUILD 11 FINDING: after a deny or auto-deny the card re-surfaced the
+  // ask options at the same weight as the fallback instruction. Three
+  // equal-looking things, one of them the answer and two of them "ask again",
+  // which read as the system urging a re-ask of somebody who had just said no.
+  //
+  // The verdict is the quiet half; the INSTRUCTION is the loud one, because
+  // what the supporter needs is what to do next.
+  const expiredBudget = {
+    kind: 'budget',
+    status: 'expired',
+    fallback_instruction: 'Buy the alternative you chose: the 500g jar',
+  }
+  assert.equal(extensionResolutionTitle(expiredBudget), 'No response')
+  assert.equal(
+    extensionResolutionDetail(expiredBudget),
+    'Proceed with your fallback: Buy the alternative you chose: the 500g jar'
+  )
+
+  // A denial is the supporter's own fallback too, without the "no response"
+  // framing — somebody DID answer.
+  const deniedBudget = { ...expiredBudget, status: 'denied' }
+  assert.equal(extensionResolutionTitle(deniedBudget), 'Denied')
+  assert.equal(extensionResolutionDetail(deniedBudget), 'Buy the alternative you chose: the 500g jar')
+
+  // A TIME request has no fallback field and never had one, because the
+  // fallback IS the billing. That is a real answer and it belongs here rather
+  // than leaving the primary line blank.
+  const expiredTime = { kind: 'time', status: 'expired' }
+  assert.equal(extensionResolutionTitle(expiredTime), 'No response')
+  assert.match(extensionResolutionDetail(expiredTime), /isn\u2019t billed/)
+  assert.match(extensionResolutionDetail(expiredTime), /complete the task at any point/)
+
+  // Not a resolution: nothing to lead with.
+  for (const live of [{ status: 'pending' }, { status: 'approved' }, null, undefined]) {
+    assert.equal(extensionResolutionTitle(live), null)
+    assert.equal(extensionResolutionDetail(live), null)
+  }
+})
+
+test('the re-ask is labelled for the kind that was just refused', () => {
+  // Obviously the SAME request rather than a new idea — and subdued, which is
+  // the clients' job. Requesting again stays permitted by design: per-kind
+  // pending re-opens the moment a request resolves.
+  assert.equal(extensionReaskLabel({ kind: 'time' }), 'Ask for more time again')
+  assert.equal(extensionReaskLabel({ kind: 'budget' }), 'Ask for more budget again')
+  assert.equal(extensionReaskLabel(null), 'Ask for more budget again')
 })
 
 test('the cancel dialog promises a specific amount back, before anything happens', () => {

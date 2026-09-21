@@ -1,5 +1,6 @@
 import type {
   ExtensionRecord,
+  ExtensionRequest,
   TaskCancellation,
   TaskPayment,
   TimeCap,
@@ -275,6 +276,54 @@ export function extensionDecidedAt(request?: ExtensionRecord | null): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+/**
+ * The RESOLUTION, as the thing that leads the supporter's card.
+ *
+ * After a deny or an auto-deny the card re-surfaced the ask options at the
+ * same weight as the instruction the supporter was supposed to follow — three
+ * equal-looking things, one of them the answer and two of them "ask again",
+ * which read as the system nudging them to re-ask somebody who had just said
+ * no (build 11). Asking again stays allowed by design; it is the WEIGHTING
+ * that was wrong.
+ *
+ * Mirrors app/src/lib/paymentCopy.js extensionResolutionTitle word for word.
+ */
+export function extensionResolutionTitle(request?: ExtensionRequest | null): string | null {
+  if (!request) return null;
+  if (request.status === "expired") return "No response";
+  if (request.status === "denied") return "Denied";
+  return null;
+}
+
+/**
+ * What to actually do now, which is the half that matters.
+ *
+ * For a BUDGET request that is the supporter's own pre-chosen fallback, read
+ * back in their own words — they picked it while they still had the context,
+ * precisely so nobody decides anything under time pressure.
+ *
+ * For a TIME request there is no fallback field and never was one, because the
+ * fallback IS the billing: time past the ceiling is not charged, and the
+ * supporter keeps working or wraps up as they judge safest. That is a real
+ * answer and it belongs here rather than being left blank.
+ */
+export function extensionResolutionDetail(request?: ExtensionRequest | null): string | null {
+  if (!extensionResolutionTitle(request)) return null;
+  if (request?.fallback_instruction) {
+    return request.status === "expired"
+      ? `Proceed with your fallback: ${request.fallback_instruction}`
+      : request.fallback_instruction;
+  }
+  return "Time past the agreed cap isn\u2019t billed. Wrap up whenever you judge it right \u2014 you can still complete the task at any point.";
+}
+
+/** "Ask for more budget again" / "Ask for more time again" — the subdued
+ *  re-ask, labelled for the kind that was just refused so it is obviously the
+ *  same request rather than a new idea. */
+export function extensionReaskLabel(request?: ExtensionRequest | null): string {
+  return request?.kind === "time" ? "Ask for more time again" : "Ask for more budget again";
 }
 
 /** The short form for a task-detail row: "$76.75 reserved · Visa ••4242". */

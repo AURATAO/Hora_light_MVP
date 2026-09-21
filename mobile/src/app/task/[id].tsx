@@ -89,6 +89,9 @@ import { SUPPORT_EMAIL } from "../../lib/constants";
 import {
   capWarningNote,
   extensionAskLabel,
+  extensionReaskLabel,
+  extensionResolutionDetail,
+  extensionResolutionTitle,
   extensionDecidedAt,
   holdSummary,
   timeBasisNote,
@@ -1779,6 +1782,16 @@ function SupporterAskCard({
   const showResolved =
     !pending && latest && (latest.status === "denied" || latest.status === "expired");
 
+  // The OTHER kind of ask, kept behind a disclosure after a resolution. A
+  // denied budget request says nothing about whether the job needs more time,
+  // so the option stays reachable — it simply is not the answer to what was
+  // just asked.
+  const [showOtherKind, setShowOtherKind] = useState(false);
+  const otherKindAvailable =
+    latest?.kind === "time"
+      ? hasBudget
+      : (capState?.warning || capState?.reached) && timeChoices.length > 0;
+
   if (!hasBudget && !capState && !pending && !showResolved) return null;
 
   return (
@@ -1833,25 +1846,75 @@ function SupporterAskCard({
         </View>
       ) : null}
 
+      {/* THE RESOLUTION LEADS. The verdict is the quiet line and the
+          INSTRUCTION is the loud one, because what the supporter needs off
+          this card is what to do next — not a restatement of what they
+          asked. */}
       {showResolved && latest ? (
-        <View className="gap-1 border-t border-line pt-3">
-          <Text className="text-caption text-ink">
-            {latest.status === "expired"
-              ? `No response to your request for ${askPhrase(latest)}.`
-              : `Your request for ${askPhrase(latest)} wasn't approved.`}
+        <View className="gap-1 rounded-card border border-line bg-bg p-3">
+          <Text className="text-caption text-muted">
+            {extensionResolutionTitle(latest)} · {askPhrase(latest)}
           </Text>
-          {latest.fallback_instruction ? (
-            <Text className="text-caption font-semibold text-ink">
-              {latest.fallback_instruction}
-            </Text>
-          ) : null}
+          <Text className="text-body text-ink">{extensionResolutionDetail(latest)}</Text>
         </View>
       ) : null}
 
       {error ? <Text className="text-caption text-danger">{error}</Text> : null}
 
-      {/* Secondary throughout: Clock out is this screen's one solid CTA. */}
-      {!pending ? (
+      {/* Secondary throughout: Clock out is this screen's one solid CTA.
+          AFTER A RESOLUTION the weighting changes again — see below. */}
+      {!pending && showResolved && latest ? (
+        <View className="gap-2 border-t border-line pt-3">
+          {/* The re-ask, SUBDUED and below the instruction. Requesting again
+              is allowed by design — per-kind pending re-opens the moment a
+              request resolves — but it is not what the supporter should do
+              first, and at equal weight it read as the system urging them to
+              re-ask somebody who had just said no. */}
+          <Button
+            label={extensionReaskLabel(latest)}
+            variant="text"
+            onPress={latest.kind === "time" ? () => onAskTime(timeChoices[0]) : onAskBudget}
+            disabled={busy || (latest.kind === "time" && timeChoices.length === 0)}
+          />
+
+          {/* The UNRELATED kind, collapsed. Still reachable — a denied budget
+              ask says nothing about whether the job needs more time — but it
+              is a different question and it does not belong beside the answer
+              to this one. */}
+          {otherKindAvailable ? (
+            <>
+              <PressableScale onPress={() => setShowOtherKind((v) => !v)}>
+                <Text className="text-caption text-brand">
+                  {showOtherKind ? "Fewer options" : "More options"}
+                </Text>
+              </PressableScale>
+              {showOtherKind ? (
+                latest.kind === "time" ? (
+                  <Button
+                    label="Ask for more budget"
+                    variant="secondary"
+                    onPress={onAskBudget}
+                    disabled={busy}
+                  />
+                ) : (
+                  <View className="flex-row gap-2">
+                    {timeChoices.map((minutes) => (
+                      <Button
+                        key={minutes}
+                        label={`Ask for +${minutes} min`}
+                        variant="secondary"
+                        onPress={() => onAskTime(minutes)}
+                        disabled={busy}
+                        className="flex-1"
+                      />
+                    ))}
+                  </View>
+                )
+              ) : null}
+            </>
+          ) : null}
+        </View>
+      ) : !pending ? (
         <View className="gap-2 border-t border-line pt-3">
           {hasBudget ? (
             <Button

@@ -24,6 +24,7 @@ import {
   isPaused,
   sessionMinutes,
   showsWaitHint,
+  SUPPORTER_CANCELLED_NOTE,
 } from './workSessions.js'
 
 const iso = (hh, mm, ss = 0) =>
@@ -253,6 +254,7 @@ test('mobile carries the same session logic and the same words', t => {
     ['PAUSED_REQUESTER', PAUSED_REQUESTER],
     ['GAP_LABEL', GAP_LABEL],
     ['LAUNDRY_WAIT_HINT', LAUNDRY_WAIT_HINT],
+    ['SUPPORTER_CANCELLED_NOTE', SUPPORTER_CANCELLED_NOTE],
   ]) {
     assert.ok(
       src.includes(JSON.stringify(value)),
