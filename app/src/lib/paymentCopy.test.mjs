@@ -10,6 +10,7 @@ import {
   outstandingBalanceMessage,
   surgeRateNote,
   timeBasisNote,
+  capWarningNote,
 } from './paymentCopy.js'
 
 /**
@@ -167,6 +168,56 @@ test('the estimate and the ceiling read as one line, not two numbers', () => {
   // Nothing to describe.
   for (const none of [null, undefined, {}, { estimate_minutes: 0, cap_minutes: 45 }]) {
     assert.equal(timeBasisNote(none), null)
+  }
+})
+
+test('the early warning names the estimate, not the ceiling above it', () => {
+  // THE BUILD 11 FINDING, in copy. With auto-extend on, the warning fires at
+  // 25 minutes on a 30-minute task with 20 minutes of ceiling left. "About 20
+  // min left" is true of the ceiling and useless as a warning.
+  assert.equal(
+    capWarningNote({
+      warning: true,
+      reached: false,
+      remaining_minutes: 20,
+      cap: { estimate_minutes: 30, agreed_minutes: 30, auto_extend_minutes: 15, cap_minutes: 45 },
+    }),
+    'Approaching the 30 min agreed — up to 15 more minutes are covered by auto-extend.'
+  )
+  // Auto-extend off: the ceiling IS the estimate, and the remaining count is
+  // the honest thing to say.
+  assert.equal(
+    capWarningNote({
+      warning: true,
+      reached: false,
+      remaining_minutes: 5,
+      cap: { estimate_minutes: 30, agreed_minutes: 30, auto_extend_minutes: 0, cap_minutes: 30 },
+    }),
+    'About 5 min left on the time that was agreed.'
+  )
+  // An approved extension is a new estimate, so it is the number named.
+  assert.equal(
+    capWarningNote({
+      warning: true,
+      reached: false,
+      remaining_minutes: 20,
+      cap: { estimate_minutes: 30, agreed_minutes: 45, auto_extend_minutes: 15, cap_minutes: 60 },
+    }),
+    'Approaching the 45 min agreed — up to 15 more minutes are covered by auto-extend.'
+  )
+  // Past the ceiling, and before the warning: not this line's business either
+  // way. Billing has stopped in the first case and nothing has happened in the
+  // second.
+  assert.equal(
+    capWarningNote({ warning: false, reached: true, remaining_minutes: 0, cap: { agreed_minutes: 30 } }),
+    null
+  )
+  assert.equal(
+    capWarningNote({ warning: false, reached: false, remaining_minutes: 30, cap: { agreed_minutes: 30 } }),
+    null
+  )
+  for (const none of [null, undefined, {}]) {
+    assert.equal(capWarningNote(none), null)
   }
 })
 

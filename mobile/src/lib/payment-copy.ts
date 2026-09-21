@@ -1,4 +1,4 @@
-import type { TaskPayment, TimeCap } from "./types";
+import type { TaskPayment, TimeCap, TimeCapState } from "./types";
 import { formatCost } from "./task-utils";
 
 /**
@@ -147,6 +147,30 @@ export function timeBasisNote(cap?: TimeCap | null): string | null {
       : "with approved extensions"
     : "with auto-extend";
   return `${base} · up to ${ceiling} min ${because}`;
+}
+
+/**
+ * The supporter-and-requester line for Layer 2, the early warning.
+ *
+ * The warning fires at the ESTIMATE rather than at the ceiling
+ * (server/billing.go timeCapWarningMinutes), so on a 30-minute task with
+ * auto-extend it lands at 25 logged minutes with 20 minutes of ceiling still
+ * above it. "About 20 min left" is true of the ceiling and useless as a
+ * warning: what the supporter needs is that they are at the number the
+ * requester planned around, and that the 15 above it are a fuse rather than a
+ * second estimate.
+ *
+ * Mirrors app/src/lib/paymentCopy.js capWarningNote word for word.
+ */
+export function capWarningNote(capState?: TimeCapState | null): string | null {
+  if (!capState || capState.reached || !capState.warning) return null;
+  const agreed = capState.cap?.agreed_minutes || capState.cap?.estimate_minutes || 0;
+  const autoExtend = capState.cap?.auto_extend_minutes ?? 0;
+  if (agreed > 0 && autoExtend > 0) {
+    return `Approaching the ${agreed} min agreed — up to ${autoExtend} more minutes are covered by auto-extend.`;
+  }
+  const remaining = capState.remaining_minutes ?? 0;
+  return `About ${remaining} min left on the time that was agreed.`;
 }
 
 /** The short form for a task-detail row: "$76.75 reserved · Visa ••4242". */

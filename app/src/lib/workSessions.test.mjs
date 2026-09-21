@@ -165,10 +165,11 @@ test('the ceiling is reached by the sum of sessions, not by any one of them', ()
 })
 
 test('the est−5 warning fires on cumulative time, across a pause', () => {
-  // A 30-minute estimate with consent caps at 45 and warns at 40
-  // (timeCapWarningMinutes = cap − CapWarningLeadMinutes). Two sessions of 21
-  // minutes cross that line; neither session alone comes close.
-  const warnAt = 40
+  // A 30-minute estimate with consent caps at 45 and warns at 25
+  // (timeCapWarningMinutes = AGREED − CapWarningLeadMinutes, where agreed is
+  // the estimate plus approved extensions and NOT the auto-extend fuse). Two
+  // sessions of 21 minutes cross that line; neither session alone comes close.
+  const warnAt = 25
   const first = session('a', iso(9, 0), iso(9, 21))
   const second = session('b', iso(10, 0), iso(10, 21))
   assert.ok(sessionMinutes(first.startAt, first.endAt) < warnAt)

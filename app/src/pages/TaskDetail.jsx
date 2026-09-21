@@ -23,7 +23,7 @@ import PlaceInput from '../components/PlaceInput'
 import { useToast } from '../providers/ToastProvider'
 import { isTractionWindowActive } from '../lib/traction'
 import { useTaskEstimate, formatCents } from '../hooks/useTaskEstimate'
-import { holdSummary, timeBasisNote } from '../lib/paymentCopy'
+import { capWarningNote, holdSummary, timeBasisNote } from '../lib/paymentCopy'
 import { isPayoutsOnboardingRequired } from '../api/payments'
 
 
@@ -1351,10 +1351,8 @@ export default function TaskDetail() {
                     Time cap reached — anything past this isn&apos;t billed. Ask for more time, or wrap
                     up whenever you judge it right. You can still complete the task at any point.
                   </div>
-                ) : capState?.warning ? (
-                  <div className="text-xs text-white/60">
-                    About {capState.remaining_minutes} min left on the time that was agreed.
-                  </div>
+                ) : capWarningNote(capState) ? (
+                  <div className="text-xs text-white/60">{capWarningNote(capState)}</div>
                 ) : null}
 
                 {pendingAsk ? (
