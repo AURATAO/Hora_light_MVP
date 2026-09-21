@@ -1070,7 +1070,13 @@ export default function TaskDetail() {
         </View>
         <Text className="mb-2 text-display text-ink">{task.title}</Text>
         <View className="mb-6 flex-row items-center gap-2">
-          <Badge label={statusLabel(status)} variant="success" />
+          {/* Same rule as the list row (components/TaskListItem.tsx): a
+              cancelled or removed task is over, not achieved, and the success
+              green it used to share with "Completed" read as an achievement. */}
+          <Badge
+            label={statusLabel(status)}
+            variant={status === "cancelled" || status === "removed" ? "neutral" : "success"}
+          />
           <Text className="text-caption text-muted">{formatRelativeTime(task.created_at)}</Text>
         </View>
 
@@ -1462,6 +1468,38 @@ export default function TaskDetail() {
           </View>
         ) : null}
 
+        {/* THE CANCELLATION RECORD. What happened, when, and why — the header
+            of the read-only view a cancelled task opens to.
+
+            ABOVE THE SETTLEMENT CARD, and that ordering is load-bearing: the
+            supporter's line ends "anything you're owed is below", and on the
+            build 12 visual pass this block sat UNDERNEATH the card it was
+            pointing at. Web has always read cancellation-then-settlement; the
+            two platforms now tell the story in the same order.
+
+            WHY THE REASON IS NOT task.cancel_reason FOR EVERYONE. That column
+            is free text written by three different callers, the ops panel
+            among them, and it used to be rendered to whoever opened the task.
+            The supporter gets the PRESET'S LABEL and nothing else
+            (server/cancel_reasons.go); the requester sees their own words
+            back, because they are theirs. */}
+        {task.status === "cancelled" ? (
+          <View className="mb-4 rounded-card border border-line bg-surface p-4">
+            <Text className="text-caption font-semibold text-muted">Task cancelled</Text>
+            {task.cancelled_at ? (
+              <Text className="mt-1 text-caption text-muted">
+                {formatScheduledAt(task.cancelled_at)}
+              </Text>
+            ) : null}
+            {cancellationReason ? (
+              <Text className="mt-2 text-body text-ink">Reason: {cancellationReason}</Text>
+            ) : null}
+            {!isRequester ? (
+              <Text className="mt-2 text-caption text-muted">{SUPPORTER_CANCELLED_NOTE}</Text>
+            ) : null}
+          </View>
+        ) : null}
+
         {/* What was charged, itemized, for both sides. The one settlement
             surface — the same numbers the requester's card was billed for and
             the supporter was paid from, so neither has to take the other's
@@ -1565,36 +1603,6 @@ export default function TaskDetail() {
               <Text className="text-caption font-semibold text-muted">Task removed</Text>
             </View>
             <Text className="mt-1 text-body text-ink">{removalNotice(task.removal_reason)}</Text>
-          </View>
-        ) : null}
-
-        {/* THE CANCELLATION RECORD. What happened, when, and why — the header
-            of the read-only view a cancelled task opens to.
-
-            WHY THE REASON IS NOT task.cancel_reason FOR EVERYONE. That column
-            is free text written by three different callers, the ops panel
-            among them, and it used to be rendered to whoever opened the task.
-            The supporter gets the PRESET'S LABEL and nothing else
-            (server/cancel_reasons.go); the requester sees their own words
-            back, because they are theirs.
-
-            The settlement card below this says what they were paid, and it is
-            attached for the cancelled assignee too now — a supporter can be
-            paid the base fee for a task they never clocked into. */}
-        {task.status === "cancelled" ? (
-          <View className="mb-8 rounded-card border border-line bg-surface p-4">
-            <Text className="text-caption font-semibold text-muted">Task cancelled</Text>
-            {task.cancelled_at ? (
-              <Text className="mt-1 text-caption text-muted">
-                {formatScheduledAt(task.cancelled_at)}
-              </Text>
-            ) : null}
-            {cancellationReason ? (
-              <Text className="mt-2 text-body text-ink">Reason: {cancellationReason}</Text>
-            ) : null}
-            {!isRequester ? (
-              <Text className="mt-2 text-caption text-muted">{SUPPORTER_CANCELLED_NOTE}</Text>
-            ) : null}
           </View>
         ) : null}
 
