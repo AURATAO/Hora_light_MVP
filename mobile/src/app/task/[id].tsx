@@ -286,15 +286,33 @@ export default function TaskDetail() {
       setTask(t);
       const iAmAssignee = t.assigned_to_id === me.id;
 
-      if (t.assigned_to_id) {
+      // WHEN TO FETCH THE SETTLEMENT. An assignee means there is work to
+      // price; a CLOSED task means the getTask that just succeeded is the
+      // authorization — the server refuses a non-open task to anyone who is
+      // not the requester, the assignee, someone who logged time, or the
+      // supporter who was on it when it was cancelled.
+      //
+      // Gating on assigned_to_id alone was wrong in exactly one case, and it
+      // is the case this batch created: a cancel NULLs assigned_to_id, so a
+      // cancelled task fetched no worklogs, the settlement card could not
+      // render, and the supporter was told "anything you're owed is below"
+      // with nothing below it.
+      const closed = t.status !== "open";
+      if (t.assigned_to_id || closed) {
         const [wl, sup] = await Promise.all([
           getWorklogs(id).catch(() => null),
-          getPublicProfile(t.assigned_to_id).catch(() => null),
+          // Needs an id, so it stays gated on the live assignment. A cancelled
+          // task has none, and the cancellation card is what names the
+          // outcome there.
+          t.assigned_to_id ? getPublicProfile(t.assigned_to_id).catch(() => null) : Promise.resolve(null),
         ]);
         setWorklogs(wl);
         setSupporter(sup);
 
-        if (t.status === "completed") {
+        // A completed task always has an assignee; the guard is here because
+        // this branch is now reachable with none (a cancelled task detaches),
+        // and "reviews for nobody" is not a request worth making.
+        if (t.status === "completed" && t.assigned_to_id) {
           try {
             const reviews = await getProfileReviews(t.assigned_to_id);
             setMyReview(reviews.find((r) => r.task_id === id) ?? null);

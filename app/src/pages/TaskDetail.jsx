@@ -495,11 +495,24 @@ export default function TaskDetail() {
           const t = await api(`/tasks/${id}`)
           if (!alive) return
           setTask(t)
-          // Worklogs are visible only to the requester or the assignee. Only
-          // fetch them when the viewer is a party — otherwise the backend 403s
-          // (e.g. a supporter browsing an unaccepted task), which is just
-          // console noise since a non-party has no worklogs to show anyway.
-          const isParty = !!user?.id && (t.requester_id === user.id || t.assigned_to_id === user.id)
+          // Worklogs are visible only to a party. Only fetch them when the
+          // viewer is one — otherwise the backend 403s (e.g. a supporter
+          // browsing an unaccepted task), which is just console noise since a
+          // non-party has no worklogs to show anyway.
+          //
+          // ON A CLOSED TASK, THE getTask THAT JUST SUCCEEDED IS THE
+          // AUTHORIZATION. The server refuses a non-open task to anyone who is
+          // not the requester, the assignee, someone who logged time, or the
+          // supporter who was on it when it was cancelled — so reaching this
+          // line at all means entitled. Checking assigned_to_id instead was
+          // wrong in exactly one case, and it is the case this batch created:
+          // a cancel NULLs assigned_to_id, so the supporter of a cancelled
+          // task failed the test, the fetch never fired, and their own
+          // settlement panel could not render. They were told "anything you're
+          // owed is below" with nothing below it.
+          const isParty = !!user?.id && (
+            t.requester_id === user.id || t.assigned_to_id === user.id || t.status !== 'open'
+          )
           if (isParty) {
             try {
               const w = await api(`/tasks/${id}/worklogs`)
@@ -1267,11 +1280,18 @@ export default function TaskDetail() {
                 <div className="text-white/70 text-sm">Requester:</div>
                 <UserPill userId={task.requester_id} meId={user?.id} label="Requester" />
               </div>
+              {/* "Not assigned yet" is a statement about a task somebody may
+                  still accept. On a CANCELLED task it is false twice over: no
+                  one will, and on the supporter's own copy the person reading
+                  it is the one who was assigned — and was paid — before the
+                  cancel detached them. Say nothing rather than that. */}
               <div className="flex items-center gap-3">
                 <div className="text-white/70 text-sm">Supporter:</div>
                 {task.assigned_to_id
                   ? <UserPill userId={String(task.assigned_to_id)} meId={user?.id} label="Assignee" />
-                  : <span className="text-white/60 text-sm">Not assigned yet</span>}
+                  : task.status === 'open'
+                    ? <span className="text-white/60 text-sm">Not assigned yet</span>
+                    : <span className="text-white/40 text-sm">—</span>}
               </div>
             </div>
 

@@ -805,10 +805,23 @@ type TaskCancellation struct {
 	// it never opened.
 	GraceEndsAt *time.Time `json:"grace_ends_at,omitempty"`
 
-	// What cancelling now would charge, and what it is made of. The base fee
-	// is what the supporter is guaranteed; the time cost is what they have
-	// actually worked, clamped to the consented ceiling.
-	ChargeCents   int `json:"charge_cents"`
+	// What cancelling RIGHT NOW would charge. Zero inside the grace window,
+	// and zero on a task nobody has accepted.
+	ChargeCents int `json:"charge_cents"`
+
+	// What that charge IS MADE OF once the supporter's guarantee applies — the
+	// base fee they are promised, plus time actually worked against the
+	// consented ceiling.
+	//
+	// THESE ARE POPULATED INSIDE THE GRACE WINDOW TOO, where ChargeCents is
+	// zero, and the difference is the point: the countdown has to be able to
+	// say "after that, the $12.00 base fee goes to your supporter". Naming the
+	// amount is the whole sentence — the first cut of this zeroed the
+	// breakdown along with the charge, and the live countdown read "after
+	// that, the base fee goes to your supporter" with no number in it.
+	//
+	// So: ChargeCents answers "what happens if I tap now", and these answer
+	// "what am I avoiding by tapping now".
 	BaseFeeCents  int `json:"base_fee_cents"`
 	TimeCostCents int `json:"time_cost_cents"`
 	BilledMinutes int `json:"billed_minutes"`
@@ -870,11 +883,15 @@ func cancellationPreview(ctx context.Context, taskID string, assignedToID *strin
 	capMinutes, _ := taskTimeCapMinutes(ctx, taskID)
 	out.BilledMinutes = cappedMinutes(totalMin, capMinutes)
 
+	// The committed charge, computed whether or not it applies yet. Inside the
+	// grace window it is what the requester is about to become liable for, and
+	// the countdown names it.
+	category := taskCategory(ctx, taskID)
+	committedCharge := cancelSettlementCents(category, out.BilledMinutes, true, taskRateCentsPerMin(ctx, taskID))
+	out.BaseFeeCents = baseFeeCents(category)
+	out.TimeCostCents = committedCharge - out.BaseFeeCents
 	if !out.WithinGrace {
-		category := taskCategory(ctx, taskID)
-		out.ChargeCents = cancelSettlementCents(category, out.BilledMinutes, true, taskRateCentsPerMin(ctx, taskID))
-		out.BaseFeeCents = baseFeeCents(category)
-		out.TimeCostCents = out.ChargeCents - out.BaseFeeCents
+		out.ChargeCents = committedCharge
 	}
 
 	if release := authorizedCents - out.ChargeCents; release > 0 {
