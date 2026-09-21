@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import { Alert, Text, View } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
-import { ChevronLeft, CreditCard } from "lucide-react-native";
+import { ChevronLeft, ChevronRight, CreditCard } from "lucide-react-native";
 import { Button, Card, EmptyState, PressableScale, Screen, Skeleton } from "../../components/ui";
 import { ApiError, deletePaymentMethod } from "../../lib/api";
 import {
@@ -13,6 +13,19 @@ import {
   type SavedCardRow,
 } from "../../lib/payments";
 import { color, size } from "../../theme/tokens";
+
+// The 409's shape, as server/payments_cards.go writes it.
+interface BlockingTask {
+  id: string;
+  title: string;
+  status: string;
+}
+interface CardInUseBody {
+  error?: string;
+  message?: string;
+  active_task_count?: number;
+  tasks?: BlockingTask[];
+}
 
 /**
  * Profile → Payment methods. The whole card surface in the app: list, add,
@@ -75,6 +88,15 @@ export default function PaymentMethodsScreen() {
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [removingId, setRemovingId] = useState<string | null>(null);
+  // The refusal for the card whose removal was just blocked: the server's
+  // sentence and the tasks behind it, rendered UNDER the card with a row per
+  // task rather than in an Alert — an Alert cannot link, and "which task?" is
+  // the whole question.
+  const [blocked, setBlocked] = useState<{
+    cardId: string;
+    message: string;
+    tasks: BlockingTask[];
+  } | null>(null);
 
   function handleAuthError(e: unknown): boolean {
     if (e instanceof ApiError && e.isAuthError) {
@@ -138,19 +160,27 @@ export default function PaymentMethodsScreen() {
           style: "destructive",
           onPress: async () => {
             setRemovingId(card.id);
+            setBlocked(null);
             try {
               await deletePaymentMethod(card.id);
               setCards((prev) => prev.filter((c) => c.id !== card.id));
             } catch (e) {
               if (handleAuthError(e)) return;
-              // A 409 means the card is holding funds for a task in flight;
-              // the backend names the situation, and its wording is more use
-              // than anything generic written here.
-              const message =
-                e instanceof ApiError && typeof (e.body as { message?: string })?.message === "string"
-                  ? (e.body as { message: string }).message
-                  : "Couldn't remove that card.";
-              Alert.alert("Card still in use", message);
+              // A 409 means the card is holding funds for tasks in flight. The
+              // backend names them — count in the sentence, tasks in the
+              // payload — so they go under the card as tappable rows.
+              const body = e instanceof ApiError ? (e.body as CardInUseBody | undefined) : undefined;
+              if (e instanceof ApiError && e.status === 409 && Array.isArray(body?.tasks)) {
+                setBlocked({
+                  cardId: card.id,
+                  message: body?.message ?? "This card is still in use.",
+                  tasks: body!.tasks!,
+                });
+              } else {
+                const message =
+                  typeof body?.message === "string" ? body.message : "Couldn't remove that card.";
+                Alert.alert("Couldn't remove that card", message);
+              }
             } finally {
               setRemovingId(null);
             }
@@ -210,12 +240,28 @@ export default function PaymentMethodsScreen() {
           ) : (
             <>
               {cards.map((card) => (
-                <CardRow
-                  key={card.id}
-                  card={card}
-                  onRemove={handleRemove}
-                  removing={removingId === card.id}
-                />
+                <View key={card.id}>
+                  <CardRow card={card} onRemove={handleRemove} removing={removingId === card.id} />
+                  {blocked?.cardId === card.id ? (
+                    <Card className="mb-2 gap-2">
+                      <Text className="text-body text-ink">{blocked.message}</Text>
+                      {blocked.tasks.map((t) => (
+                        <PressableScale
+                          key={t.id}
+                          onPress={() => router.push(`/task/${t.id}`)}
+                          accessibilityRole="link"
+                          accessibilityLabel={`Open ${t.title}`}
+                          className="min-h-11 flex-row items-center justify-between border-t border-line pt-2"
+                        >
+                          <Text className="flex-1 text-body text-brand" numberOfLines={1}>
+                            {t.title}
+                          </Text>
+                          <ChevronRight color={color.brand} size={16} strokeWidth={size.iconStroke} />
+                        </PressableScale>
+                      ))}
+                    </Card>
+                  ) : null}
+                </View>
               ))}
               <Button
                 label="Add another card"

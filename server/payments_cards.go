@@ -574,16 +574,25 @@ func deletePaymentMethodHandler(c *gin.Context) {
 	// A card in use by a live hold cannot be removed: detaching it does not
 	// release the hold, it just removes our ability to name what is holding
 	// the requester's money. They cancel the task first, or keep the card.
-	inUse, err := paymentMethodHasLiveHold(ctx, uid, customerID, pmID)
+	//
+	// THE REFUSAL NAMES THE TASKS. It used to say "a task that hasn't finished
+	// yet" — correct, and useless: a requester with three live tasks was left
+	// to guess which one, and the build 11 device run put it plainly: the
+	// message "doesn't say why or what to do". The count is in the sentence
+	// and the tasks are in the payload, so both clients can link straight to
+	// the thing that needs finishing.
+	blocking, err := liveHoldTasksForCard(ctx, uid, customerID, pmID)
 	if err != nil {
 		log.Printf("[payments][cards] live-hold check uid=%s pm=%s: %v", uid, pmID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
 	}
-	if inUse {
+	if len(blocking) > 0 {
 		c.JSON(http.StatusConflict, gin.H{
-			"error":   "payment_method_in_use",
-			"message": "This card is holding funds for a task that hasn't finished yet. Cancel or complete that task first.",
+			"error":             "payment_method_in_use",
+			"message":           cardInUseMessage(len(blocking)),
+			"active_task_count": len(blocking),
+			"tasks":             blocking,
 		})
 		return
 	}
@@ -611,20 +620,82 @@ func deletePaymentMethodHandler(c *gin.Context) {
 // requester one extra tap; erring the other way costs them money they cannot
 // account for.
 func paymentMethodHasLiveHold(ctx context.Context, uid, customerID, pmID string) (bool, error) {
+	tasks, err := liveHoldTasksForCard(ctx, uid, customerID, pmID)
+	return len(tasks) > 0, err
+}
+
+// blockingTask is one task whose live hold stops a card being removed — just
+// enough for a client to say what it is and link to it.
+type blockingTask struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
+}
+
+// liveHoldTasksForCard is the list behind paymentMethodHasLiveHold: the tasks
+// whose holds this card is carrying, newest first. Empty when the card is not
+// the charging card at all (see the note above) or nothing is live.
+func liveHoldTasksForCard(ctx context.Context, uid, customerID, pmID string) ([]blockingTask, error) {
 	defaultID, err := defaultPaymentMethodFor(customerID)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if pmID != defaultID {
-		return false, nil
+		return nil, nil
 	}
-	var live bool
-	err = db.QueryRow(ctx, `
-		select exists (
-			select 1 from public.payments
-			 where requester_id = $1::uuid
-			   and status in ('requires_auth','authorized')
-		)
-	`, uid).Scan(&live)
-	return live, err
+	return liveHoldTasks(ctx, uid)
+}
+
+// liveHoldTasks is the DB half, separable so it can be tested without Stripe:
+// every task of this requester's with a hold still standing on it.
+//
+// One row per TASK, not per payment: a task can carry two payment rows (the
+// hold and a completion balance), and "2 active tasks" for one task is the
+// kind of wrong number that makes a requester stop trusting the count.
+func liveHoldTasks(ctx context.Context, uid string) ([]blockingTask, error) {
+	// DISTINCT ON forces its own leading ORDER BY (t.id), so the newest-first
+	// order the caller is promised has to be applied OUTSIDE it — the first
+	// cut ordered by task id, which is a UUID, which is random. The test that
+	// asserts the order passed on one run in two.
+	rows, err := db.Query(ctx, `
+		select id, title, status, created_at from (
+			select distinct on (t.id) t.id::text as id, coalesce(t.title, '') as title,
+			       t.status, t.created_at
+			  from public.payments p
+			  join public.tasks t on t.id = p.task_id
+			 where p.requester_id = $1::uuid
+			   and p.status in ('requires_auth', 'authorized')
+			 order by t.id
+		) live
+		order by created_at desc
+	`, uid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []blockingTask{}
+	for rows.Next() {
+		var b blockingTask
+		var createdAt time.Time
+		if err := rows.Scan(&b.ID, &b.Title, &b.Status, &createdAt); err != nil {
+			return nil, err
+		}
+		if b.Title == "" {
+			b.Title = "Untitled task"
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// cardInUseMessage is the one sentence the refusal leads with. The count is IN
+// the sentence, because "a task" and "three tasks" are different amounts of
+// work to get through before the card comes free, and the requester deciding
+// whether to bother deserves to know which.
+func cardInUseMessage(n int) string {
+	if n == 1 {
+		return "This card has a hold from 1 active task. Complete or cancel it to remove the card."
+	}
+	return fmt.Sprintf("This card has holds from %d active tasks. Complete or cancel them to remove the card.", n)
 }
