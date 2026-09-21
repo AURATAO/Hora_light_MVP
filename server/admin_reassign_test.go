@@ -186,6 +186,11 @@ var reassignMigrationPaths = []string{
 	// value is committed before anything writes it.
 	"../supabase/migrations/20260917120000_task_enroute_live_tracking.sql",
 	"../supabase/migrations/20260917130000_notification_type_supporter_arrived.sql",
+	// Cancellation billing policy. accepted_at, cancelled_assignee_id,
+	// cancel_bill_cents and cancel_reason_code are all written by the accept
+	// and cancel paths, so the fixture needs the real columns for the same
+	// reason it needs the real extension_requests table.
+	"../supabase/migrations/20260921120000_cancellation_billing_policy.sql",
 }
 
 func setupReassignDB(t *testing.T) {

@@ -199,6 +199,11 @@ export interface Task {
   /** The hold on the card. Requester-only and detail-only — absent from every
    *  list response and from the supporter's copy of the same task. */
   payment?: TaskPayment;
+  /** What cancelling this task right now would cost, and what would go back.
+   *  Requester-only and detail-only, like `payment`, and present only while
+   *  the task is open — a finished task cannot be cancelled. Every figure is
+   *  the server's (S-05); the sheet renders them and derives nothing. */
+  cancellation?: TaskCancellation;
   /** The approved shopping ceiling — the SAME column the server validates the
    * receipt against at completion, so it is what decides whether the completion
    * sheet shows the receipt step (see lib/task-budget.ts). Detail-only, and
@@ -274,6 +279,31 @@ export interface TimeCap {
   cap_minutes: number;
   warn_at_minutes: number;
   auto_extend_consent: boolean;
+}
+
+/**
+ * What cancelling a task right now would do, priced by the server before the
+ * requester commits to it.
+ *
+ * `within_grace` is the one case where `committed` is true and `charge_cents`
+ * is zero: the free window that opens at acceptance so a mis-tap is an undo
+ * rather than a $12 lesson. `grace_ends_at` is a DEADLINE, not a duration, so
+ * a countdown ticking against it drifts by whatever the request took rather
+ * than by however long the screen has been open.
+ */
+export interface TaskCancellation {
+  committed: boolean;
+  within_grace: boolean;
+  grace_ends_at?: string | null;
+  charge_cents: number;
+  base_fee_cents: number;
+  time_cost_cents: number;
+  billed_minutes: number;
+  release_cents: number;
+  /** The reason presets, ordered. Server-owned for the same reason the budget
+   *  ones are: the supporter's notification has to be able to name the option
+   *  the requester picked. */
+  reasons: { value: string; label: string }[];
 }
 
 export interface TimeCapState {

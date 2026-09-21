@@ -11,6 +11,9 @@ import {
   surgeRateNote,
   timeBasisNote,
   capWarningNote,
+  cancelChargeLine,
+  cancelReleaseLine,
+  cancelGraceCountdown,
 } from './paymentCopy.js'
 
 /**
@@ -219,6 +222,92 @@ test('the early warning names the estimate, not the ceiling above it', () => {
   for (const none of [null, undefined, {}]) {
     assert.equal(capWarningNote(none), null)
   }
+})
+
+test('the cancel dialog quotes the amount, not the rule', () => {
+  // THE BUILD 11 FINDING behind this: the dialog described the policy ("if
+  // work has already been recorded, you are billed for that time only") to a
+  // requester who then had to apply it to their own task while deciding
+  // whether to spend money. And on an accepted task there was no dialog at
+  // all, because there was no way to cancel one.
+  assert.equal(
+    cancelChargeLine({
+      committed: true,
+      within_grace: false,
+      charge_cents: 2450,
+      base_fee_cents: 1200,
+      time_cost_cents: 1250,
+      billed_minutes: 40,
+    }),
+    'Your supporter has committed. You\u2019ll be charged $24.50 — $12.00 base fee plus $12.50 for the 40 min worked.'
+  )
+  // Accepted, nothing logged: the base fee alone, and named as a base fee
+  // rather than as an unexplained $12.
+  assert.equal(
+    cancelChargeLine({
+      committed: true,
+      within_grace: false,
+      charge_cents: 1200,
+      base_fee_cents: 1200,
+      time_cost_cents: 0,
+      billed_minutes: 0,
+    }),
+    'Your supporter has committed. You\u2019ll be charged $12.00 (base fee).'
+  )
+  // Inside the grace window.
+  assert.match(
+    cancelChargeLine({ committed: true, within_grace: true, charge_cents: 0 }),
+    /costs nothing/
+  )
+  // THE BOUNDARY CASE THE DIALOG CAN SIT ACROSS. The block was fetched inside
+  // the window; the live countdown has since run out. The caller's verdict
+  // wins, because it is the one that matches what the server will do when the
+  // button is actually pressed.
+  assert.match(
+    cancelChargeLine(
+      { committed: true, within_grace: true, charge_cents: 1200, base_fee_cents: 1200, time_cost_cents: 0 },
+      { withinGrace: false }
+    ),
+    /charged \$12\.00 \(base fee\)/
+  )
+  // Nobody committed: cancelling has never cost anything.
+  assert.equal(cancelChargeLine({ committed: false }), null)
+  for (const none of [null, undefined, {}]) {
+    assert.equal(cancelChargeLine(none), null)
+  }
+})
+
+test('the release is named before they commit, and only when there is one', () => {
+  assert.equal(
+    cancelReleaseLine(
+      { committed: true, within_grace: false, charge_cents: 1200, release_cents: 6475 },
+      { authorized_cents: 7675 }
+    ),
+    '$64.75 of your reserved $76.75 releases immediately.'
+  )
+  // Free cancel: the whole hold goes back, and says so in the simpler words.
+  assert.equal(
+    cancelReleaseLine({ committed: false }, { authorized_cents: 7675 }),
+    'Your reserved $76.75 will be released immediately.'
+  )
+  // No hold — every task posted with PAYMENTS_ENFORCED off. Silence beats
+  // "$0.00 releases".
+  assert.equal(cancelReleaseLine({ committed: true, release_cents: 0 }, null), null)
+  assert.equal(cancelReleaseLine({ committed: true, release_cents: 0 }, { authorized_cents: 0 }), null)
+})
+
+test('the grace countdown runs off the server deadline and stops at zero', () => {
+  const now = Date.parse('2026-09-21T12:00:00Z')
+  const at = (secs) => new Date(now + secs * 1000).toISOString()
+  assert.equal(cancelGraceCountdown(at(83), now), '1:23')
+  assert.equal(cancelGraceCountdown(at(120), now), '2:00')
+  assert.equal(cancelGraceCountdown(at(9), now), '0:09')
+  // Expired, and the instant it expires. Null is what flips the dialog back to
+  // quoting a charge, so it has to be null and not "0:00".
+  assert.equal(cancelGraceCountdown(at(0), now), null)
+  assert.equal(cancelGraceCountdown(at(-5), now), null)
+  assert.equal(cancelGraceCountdown(null, now), null)
+  assert.equal(cancelGraceCountdown(undefined, now), null)
 })
 
 test('the cancel dialog promises a specific amount back, before anything happens', () => {

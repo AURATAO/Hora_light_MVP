@@ -10,6 +10,7 @@ import {
   ApiError,
   cancelTask,
   getAssignedTasks,
+  getTask,
   getDoneTasks,
   getPostedClosedTasks,
   getPostedTasks,
@@ -77,6 +78,25 @@ export default function MyTasks() {
   const [working, setWorking] = useState<Bucket>(EMPTY_BUCKET);
   const [refreshing, setRefreshing] = useState(false);
   const [cancelTarget, setCancelTarget] = useState<Task | null>(null);
+  // The priced cancellation block for whatever row is being cancelled.
+  //
+  // LIST PAYLOADS DO NOT CARRY IT — it is requester-only and attached by the
+  // task-detail handler — so the sheet would otherwise open with nothing to
+  // say about money. That was survivable while only unaccepted tasks could be
+  // cancelled from here (always free, nothing to say); it is not now that an
+  // accepted one can be, and charges the base fee. One GET on a deliberate
+  // swipe is cheap, and it is the same fetch web's dialog makes.
+  const [cancelDetail, setCancelDetail] = useState<Task | null>(null);
+
+  function startCancel(task: Task) {
+    setCancelTarget(task);
+    setCancelDetail(null);
+    // Silent on failure: a cancel must never be blocked by not knowing what it
+    // costs. The sheet falls back to saying nothing about money.
+    getTask(task.id)
+      .then((t) => setCancelDetail(t))
+      .catch(() => {});
+  }
 
   function handleAuthError(e: unknown): boolean {
     if (e instanceof ApiError && e.isAuthError) {
@@ -147,11 +167,11 @@ export default function MyTasks() {
     setRefreshing(false);
   }
 
-  async function confirmCancel(reason: string) {
+  async function confirmCancel(reason: string, reasonCode: string) {
     const task = cancelTarget;
     if (!task) return;
     try {
-      await cancelTask(task.id, reason);
+      await cancelTask(task.id, reason, reasonCode);
     } catch (e) {
       handleAuthError(e);
       throw e;
@@ -178,7 +198,11 @@ export default function MyTasks() {
   }
 
   function renderPostedRow(task: Task) {
-    const cancellable = deriveTaskStatus(task) === "open";
+    // task.status rather than deriveTaskStatus: the derived value is "open"
+    // only while nobody has accepted, and an accepted task is now cancellable
+    // too — it simply costs the supporter's base fee, which the sheet says
+    // before anything happens.
+    const cancellable = task.status === "open";
     return (
       <View key={task.id} className="mb-3">
         <Swipeable
@@ -188,7 +212,7 @@ export default function MyTasks() {
             cancellable
               ? () => (
                   <PressableScale
-                    onPress={() => setCancelTarget(task)}
+                    onPress={() => startCancel(task)}
                     className="ml-2 w-24 items-center justify-center rounded-card bg-danger"
                   >
                     <Text className="text-body font-semibold text-white">Cancel</Text>
@@ -308,7 +332,12 @@ export default function MyTasks() {
 
       <CancelTaskSheet
         visible={cancelTarget !== null}
-        onClose={() => setCancelTarget(null)}
+        cancellation={cancelDetail?.cancellation}
+        payment={cancelDetail?.payment}
+        onClose={() => {
+          setCancelTarget(null);
+          setCancelDetail(null);
+        }}
         onConfirm={confirmCancel}
       />
     </Screen>

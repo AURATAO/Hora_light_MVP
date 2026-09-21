@@ -973,6 +973,9 @@ func TestPhase2bUnresponsiveRequesterReachesOps(t *testing.T) {
 func TestPhase2bCancelWithClosedSessionSettlesAndDetaches(t *testing.T) {
 	setupStripeWebhookDB(t)
 	w := seedOpsWorld(t, "open")
+	// Outside the free-cancellation window: this test is about what a charged
+	// cancel settles, and a task accepted this second would be free.
+	setAcceptedAt(t, w.taskID, time.Hour)
 	seedWorklog(t, w.taskID, 40, false)
 
 	code, body := cancelAs(t, w.taskID, w.requesterID, "plans changed")
@@ -1013,19 +1016,14 @@ func TestPhase2bCancelWithClosedSessionSettlesAndDetaches(t *testing.T) {
 // Cancel before any clock-in is unchanged: $0, a full release, and — because
 // there is nothing to settle and a supporter may already be travelling — an
 // accepted task with nothing logged is still refused.
+// A cancel before anyone clocked in, in the ONE state where it is still free:
+// nobody accepted.
+//
+// The other half of this test used to assert that an accepted task with
+// nothing logged was refused with a 400. That refusal is gone — see
+// cancellation_policy_test.go, where the accepted case now charges the base
+// fee the supporter was guaranteed.
 func TestPhase2bCancelBeforeAnyClockInIsUnchanged(t *testing.T) {
-	t.Run("accepted, nothing logged", func(t *testing.T) {
-		setupStripeWebhookDB(t)
-		w := seedOpsWorld(t, "open")
-		code, body := cancelAs(t, w.taskID, w.requesterID, "changed my mind")
-		if code != http.StatusBadRequest {
-			t.Fatalf("cancel: %d (%v), want 400", code, body)
-		}
-		if got := taskStatus(t, w.taskID); got != "open" {
-			t.Errorf("status = %q", got)
-		}
-	})
-
 	t.Run("unaccepted", func(t *testing.T) {
 		setupStripeWebhookDB(t)
 		w := seedOpsWorld(t, "open")

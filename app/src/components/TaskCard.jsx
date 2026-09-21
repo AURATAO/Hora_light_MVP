@@ -79,6 +79,10 @@ export default function TaskCard({ task, variant, onAccept, className = '', onAf
               Manage
             </button>
 
+            {/* Offered for the whole life of a live task, accepted or not.
+                It used to be open-and-unaccepted only, which left the
+                requester of a job somebody had taken with no exit at all. The
+                dialog fetches what it would cost before anything happens. */}
             {task.status === 'open' && (
               <div onClick={(e) => e.stopPropagation()}>
                 <CancelTaskButton taskId={task.id} onDone={onAfterChange} />

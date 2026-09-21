@@ -3,6 +3,7 @@ import { approvedBudgetCentsFor, needsReceipt } from '../lib/taskBudget'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { api, API_BASE } from '../api/client'
 import TaskChatBox from '../components/TaskChatBox'
+import CancelTaskButton from '../components/CancelTaskButton'
 import { useAuth } from '../auth/AuthContext'
 import UserPill from '../components/UserPill'
 import LiveTrackingCard from '../components/LiveTrackingCard'
@@ -1116,7 +1117,10 @@ export default function TaskDetail() {
                   Accept
                 </button>
               )}
-              {isOwner && task.status === 'open' && (
+              {/* Editing stays open-and-unaccepted: changing the terms of a
+                  job somebody has already taken is a renegotiation, and that
+                  belongs in chat. */}
+              {isOwner && task.status === 'open' && !task.assigned_to_id && (
                 <button onClick={startEdit} className="ml-2 rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40">
                   Edit
                 </button>
@@ -1541,6 +1545,26 @@ export default function TaskDetail() {
                 isOwner={isOwner}
                 taskId={id}
               />
+            )}
+
+            {/* THE REQUESTER'S WAY OUT, at every stage of a live task.
+                There was none for an accepted task before this: the list card
+                offered a cancel only while the task was unaccepted, the
+                detail page offered none at all, and the server refused the
+                call anyway — so ops were the only exit (build 11).
+
+                Secondary and last in the stack. It is an exit, never this
+                screen's primary action, and the dialog behind it does the
+                work of saying what it will cost. */}
+            {isOwner && task?.status === 'open' && (
+              <div className="pt-1">
+                <CancelTaskButton
+                  taskId={id}
+                  variant="button"
+                  label="Cancel task"
+                  onDone={() => reloadWorkAndTask()}
+                />
+              </div>
             )}
 
             {/* What is reserved, for the requester of a live task. The whole
