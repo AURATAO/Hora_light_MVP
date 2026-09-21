@@ -3390,6 +3390,27 @@ func getWorklogs(c *gin.Context) {
 		"total_cents":           cost.TotalCents,
 		"time_cap":              capState,
 	}
+	// THE DECISION TRAIL BESIDE THE MONEY TRAIL, once the task is over.
+	//
+	// Both parties used to lose every record of the mid-task asks the moment a
+	// task completed: the requests live in extension_requests, this payload
+	// never rendered them, and the only surviving trace was a dismissible
+	// notification (build 11). The settlement already REFLECTS an approved
+	// budget increase in what was charged and an approved time extension in
+	// the ceiling it billed against — what it could not show was that anything
+	// had been asked, or who agreed to it.
+	//
+	// Only on a finished task. While one is running, the live
+	// GET /tasks/:id/extensions is the surface for this and carries the
+	// countdown and the fallback a supporter is actually waiting on; a second
+	// copy here would be two things to keep in step. Omitted entirely when
+	// nothing was ever asked, which is most tasks.
+	if taskStatus == "completed" || taskStatus == "cancelled" {
+		if records := taskExtensionRecords(ctx, taskID); len(records) > 0 {
+			settlement["requests"] = records
+		}
+	}
+
 	// The receipt photo is the requester's evidence of what their money bought,
 	// and the supporter's own upload — both parties see it. Nobody else reaches
 	// this handler.

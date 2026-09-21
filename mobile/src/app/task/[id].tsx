@@ -88,6 +88,8 @@ import {
 import { SUPPORT_EMAIL } from "../../lib/constants";
 import {
   capWarningNote,
+  extensionAskLabel,
+  extensionDecidedAt,
   holdSummary,
   timeBasisNote,
 } from "../../lib/payment-copy";
@@ -2034,6 +2036,48 @@ function SettlementCard({
           We couldn't complete the payment for this task. The HO:RA team has been notified and will
           sort it out — there's nothing you need to do.
         </Text>
+      ) : null}
+
+      {/* THE DECISION TRAIL, beside the money trail. One line per mid-task
+          ask: what was wanted, what was decided, and when.
+
+          Both parties used to lose all of this the moment a task completed —
+          the only record was a notification, dismissible and then gone (build
+          11). The settlement already reflects an approved increase in what was
+          charged; this is what makes the decision behind that number visible.
+
+          Absent entirely when nothing was ever asked, which is most tasks. */}
+      {(settlement.requests ?? []).length > 0 ? (
+        <View className="gap-2 border-t border-line pt-3">
+          <Text className="text-caption font-semibold text-muted">Requests</Text>
+          {settlement.requests?.map((r) => (
+            <View key={r.id} className="gap-1">
+              <View className="flex-row justify-between gap-3">
+                <Text className="flex-1 text-caption text-ink">{extensionAskLabel(r)}</Text>
+                <Text
+                  className={
+                    r.status === "approved" ? "text-caption text-ink" : "text-caption text-muted"
+                  }
+                >
+                  {r.outcome}
+                </Text>
+              </View>
+              <View className="flex-row justify-between gap-3">
+                {/* Why they asked, where they said. Never the slug. */}
+                <Text className="flex-1 text-caption text-muted" numberOfLines={2}>
+                  {r.reason_label ?? ""}
+                </Text>
+                <Text className="text-caption text-muted">{extensionDecidedAt(r)}</Text>
+              </View>
+              {/* What actually happened when nobody answered. "No response"
+                  alone is half the sentence — the useful half is that the
+                  supporter's own pre-chosen fallback ran. */}
+              {r.fallback ? (
+                <Text className="text-caption text-muted">{r.fallback}</Text>
+              ) : null}
+            </View>
+          ))}
+        </View>
       ) : null}
 
       {/* What the SUPPORTER earned, and only ever on their own copy: the

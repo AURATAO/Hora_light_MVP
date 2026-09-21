@@ -332,6 +332,32 @@ export interface TimeCapState {
  *   capture_failed  finished, and the charge did not go through. Ops have been
  *                   emailed; there is nothing for either party to do in-app.
  */
+/**
+ * One line of a finished task's decision trail: what was asked mid-task, what
+ * was decided, and when.
+ *
+ * NOT an ExtensionRequest. That type carries an expiry countdown and a
+ * supporter id — all of it about a live request somebody is waiting on, none
+ * of it meaningful once the task is over.
+ *
+ * `status` is the raw value; `outcome` is the word to render ("No response"
+ * for an expiry, because expiry is our mechanism and not their experience).
+ * `fallback` is what actually ran when nobody answered, which is the useful
+ * half of that sentence.
+ */
+export interface ExtensionRecord {
+  id: string;
+  kind: "budget" | "time";
+  requested_cents?: number | null;
+  requested_minutes?: number | null;
+  reason_label?: string;
+  status: "approved" | "denied" | "expired" | "pending";
+  outcome: string;
+  fallback?: string;
+  requested_at: string;
+  resolved_at?: string | null;
+}
+
 export interface Settlement {
   state: "not_charged" | "estimated" | "captured" | "capture_failed";
   approved_budget_cents: number;
@@ -345,6 +371,16 @@ export interface Settlement {
   receipt_photo_url?: string;
   captured_cents?: number;
   settled_at?: string | null;
+  /**
+   * The mid-task asks and how they were decided, oldest first. Finished tasks
+   * only, and absent entirely when nothing was ever asked — which is most
+   * tasks, so the section is not rendered rather than rendered empty.
+   *
+   * While a task is RUNNING this is not the surface: GET /tasks/:id/extensions
+   * is, and it carries the countdown and the fallback a supporter is actually
+   * waiting on.
+   */
+  requests?: ExtensionRecord[];
   /**
    * What the SUPPORTER earned. Present ONLY on the supporter's own copy of
    * this payload — the server attaches it behind an assignment check, so a

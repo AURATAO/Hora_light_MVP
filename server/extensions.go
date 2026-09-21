@@ -838,3 +838,117 @@ func truncateRunes(s string, max int) string {
 	}
 	return string(r[:max])
 }
+
+// ── The record, after the task is over ─────────────────────────────────────
+
+// ExtensionRecord is one line of the audit trail on a finished task's view:
+// what was asked for, what was decided, and when.
+//
+// WHY THIS EXISTS. Once a task completed, both parties lost every trace of the
+// mid-task asks. The requests live in extension_requests and the settlement
+// view never rendered them, so the only surviving record was a notification —
+// dismissible, and gone the moment either of them cleared it (build 11).
+//
+// That is a gap between the money and the decisions behind it. The settlement
+// already reflects an approved budget increase in what was charged and an
+// approved time extension in the ceiling it billed against; what it could not
+// show was WHO AGREED TO THAT, or that anything had been asked at all. A
+// requester looking at $8.40 more than they budgeted could see the number and
+// not the approval they gave for it.
+//
+// Notifications stay the doorbell. The task view becomes the record.
+//
+// Deliberately NOT ExtensionRequest. That type carries an expiry countdown, a
+// fallback instruction and a supporter id — all of it about a live request
+// somebody is waiting on, none of it meaningful afterwards. A record of a
+// resolved decision is a different, smaller thing.
+type ExtensionRecord struct {
+	ID   string `json:"id"`
+	Kind string `json:"kind"` // budget | time
+
+	// Exactly one is set, by kind. Both are the ADDITIONAL amount asked for.
+	RequestedCents   *int `json:"requested_cents,omitempty"`
+	RequestedMinutes *int `json:"requested_minutes,omitempty"`
+
+	// What the supporter said when they asked. The label, never the slug —
+	// nobody should be shown "item_unavailable".
+	ReasonLabel string `json:"reason_label,omitempty"`
+
+	// approved | denied | expired. `expired` is rendered as "no response", and
+	// it carries the fallback that actually ran — that is the whole point of
+	// the line: not "nobody answered" but "nobody answered, so this happened".
+	Status   string `json:"status"`
+	Outcome  string `json:"outcome"`
+	Fallback string `json:"fallback,omitempty"`
+
+	RequestedAt time.Time  `json:"requested_at"`
+	ResolvedAt  *time.Time `json:"resolved_at,omitempty"`
+}
+
+// extensionOutcome is the decision in the words the record renders.
+//
+// "No response" rather than "expired", because expiry is our mechanism and not
+// their experience: from either side of it, the requester did not answer. The
+// fallback that ran is appended by the caller, not baked in here, so the
+// clients can style the two halves differently.
+func extensionOutcome(status string) string {
+	switch status {
+	case extensionStatusApproved:
+		return "Approved"
+	case extensionStatusDenied:
+		return "Denied"
+	case extensionStatusExpired:
+		return "No response"
+	case extensionStatusPending:
+		// Reachable on a task that completed while a request was outstanding.
+		// Nothing resolved it, and saying "denied" would be inventing a
+		// decision nobody made.
+		return "Unanswered"
+	}
+	return status
+}
+
+// taskExtensionRecords is the audit trail for a task, oldest first.
+//
+// Empty (never nil) for the overwhelming majority of tasks, where nothing was
+// ever asked — the clients render no section at all rather than an empty one.
+//
+// Best-effort: a failed read returns no rows rather than an error. This hangs
+// off the settlement payload, and a task's receipt must not fail to render
+// because the history beside it could not be read.
+func taskExtensionRecords(ctx context.Context, taskID string) []ExtensionRecord {
+	out := []ExtensionRecord{}
+	rows, err := db.Query(ctx, `
+		select id::text, kind, requested_cents, requested_minutes,
+		       coalesce(reason,''), coalesce(fallback,''), coalesce(fallback_note,''),
+		       status, created_at, resolved_at
+		  from public.extension_requests
+		 where task_id = $1::uuid
+		 order by created_at asc
+	`, taskID)
+	if err != nil {
+		log.Printf("[extensions][records] task=%s: %v", taskID, err)
+		return out
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var r ExtensionRecord
+		var reason, fallback, fallbackNote string
+		if err := rows.Scan(&r.ID, &r.Kind, &r.RequestedCents, &r.RequestedMinutes,
+			&reason, &fallback, &fallbackNote,
+			&r.Status, &r.RequestedAt, &r.ResolvedAt); err != nil {
+			log.Printf("[extensions][records] task=%s scan: %v", taskID, err)
+			return out
+		}
+		r.ReasonLabel = reasonLabel(reason)
+		r.Outcome = extensionOutcome(r.Status)
+		// The fallback is the half of an unanswered request that actually
+		// happened, so it is carried on exactly the statuses where it ran.
+		if r.Status == extensionStatusExpired || r.Status == extensionStatusDenied {
+			r.Fallback = fallbackInstruction(fallback, fallbackNote)
+		}
+		out = append(out, r)
+	}
+	return out
+}
