@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { loadStripe } from '@stripe/stripe-js'
 import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js'
 import { CreditCard, Plus, Trash2 } from 'lucide-react'
@@ -177,6 +178,10 @@ export default function PaymentMethods() {
   // section hides rather than showing an error a user cannot act on.
   const [unavailable, setUnavailable] = useState(false)
   const [removingId, setRemovingId] = useState('')
+  // The refusal for the card whose removal was just blocked: the server's
+  // sentence and the tasks behind it. One at a time — it is an answer to the
+  // tap that just happened, and it clears on the next attempt.
+  const [blocked, setBlocked] = useState(null)
   const [setup, setSetup] = useState(null) // { clientSecret, publishableKey }
   const [starting, setStarting] = useState(false)
 
@@ -225,13 +230,20 @@ export default function PaymentMethods() {
   async function handleRemove(card) {
     if (!window.confirm(`Remove your ${brandLabel(card.brand)} ending ${card.last4}?`)) return
     setRemovingId(card.id)
+    setBlocked(null)
     try {
       await deletePaymentMethod(card.id)
       setCards(prev => prev.filter(c => c.id !== card.id))
     } catch (e) {
-      // 409 means the card is holding funds for a task in flight; the backend
-      // explains which, and that message is more useful than a generic one.
-      toast(e?.body?.message || "Couldn't remove that card")
+      // 409 means the card is holding funds for tasks in flight. The backend
+      // names them — count in the sentence, tasks in the payload — and that
+      // belongs UNDER THE CARD with links, not in a toast that is gone before
+      // the requester has read which task it meant.
+      if (e?.status === 409 && Array.isArray(e?.body?.tasks)) {
+        setBlocked({ cardId: card.id, message: e.body.message, tasks: e.body.tasks })
+      } else {
+        toast(e?.body?.message || "Couldn't remove that card")
+      }
     } finally {
       setRemovingId('')
     }
@@ -253,12 +265,37 @@ export default function PaymentMethods() {
       ) : (
         <div className="space-y-2">
           {cards.map(card => (
-            <CardRow
-              key={card.id}
-              card={card}
-              onRemove={handleRemove}
-              removing={removingId === card.id}
-            />
+            <div key={card.id} className="space-y-2">
+              <CardRow
+                card={card}
+                onRemove={handleRemove}
+                removing={removingId === card.id}
+              />
+              {blocked?.cardId === card.id && (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 space-y-2">
+                  <p className="text-sm text-white">{blocked.message}</p>
+                  <ul className="space-y-1">
+                    {blocked.tasks.map(t => (
+                      <li key={t.id}>
+                        <Link
+                          to={`/tasks/${t.id}`}
+                          className="text-sm text-secondary underline underline-offset-2 hover:text-white"
+                        >
+                          {t.title}
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                  <button
+                    type="button"
+                    onClick={() => setBlocked(null)}
+                    className="text-xs text-white/50 underline hover:text-white/80"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
+            </div>
           ))}
           {cards.length === 0 && !setup && (
             <p className="py-2 text-sm text-white/40">No card saved yet.</p>
