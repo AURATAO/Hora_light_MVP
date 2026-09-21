@@ -460,6 +460,7 @@ export default function My() {
                 <TaskList
                   items={postedHistoryShown}
                   next={postedHistoryExpanded ? lists.postedClosed.next : null}
+                  truncated={!postedHistoryExpanded && postedHistoryTotal > postedHistoryShown.length}
                   loading={lists.postedClosed.loading}
                   variant="posted"
                   onAfterChange={refreshLists}
@@ -506,7 +507,10 @@ const EMPTY_STATES = {
   },
 }
 
-function TaskList({ items, next, loading, variant, onAccept, onAfterChange, onLoadMore }) {
+// `truncated` says this list is a deliberate PREVIEW of a longer one, so the
+// footer stays quiet: "You've reached the end." under three rows that sit
+// below a "See all (12)" link contradicts the link directly above them.
+function TaskList({ items, next, loading, variant, onAccept, onAfterChange, onLoadMore, truncated = false }) {
   const empty = EMPTY_STATES[variant] || { message: 'Nothing here yet.', cta: null }
   return (
     <div className="min-w-0">
@@ -551,7 +555,7 @@ function TaskList({ items, next, loading, variant, onAccept, onAfterChange, onLo
               </>
             ) : 'Load more'}
           </button>
-        ) : items?.length > 0 ? (
+        ) : items?.length > 0 && !truncated ? (
           <p className="text-xs text-white/40">You've reached the end.</p>
         ) : null}
       </div>
