@@ -55,6 +55,7 @@ import {
   LAUNDRY_WAIT_HINT,
   PAUSED_REQUESTER,
   PAUSED_SUPPORTER,
+  SUPPORTER_CANCELLED_NOTE,
   buildSessionTimeline,
   cumulativeLoggedMinutes,
   gapsNote,
@@ -971,6 +972,12 @@ export default function TaskDetail() {
   // My Tasks' swipe action (isRepostable there): never on a `removed` task, and
   // never for a supporter, who sees this screen for tasks they only worked on.
   const canRepost = isRequester && (task.status === "completed" || task.status === "cancelled");
+  // The requester sees their own words; everyone else sees the preset's label
+  // or nothing at all. cancel_reason is free text and may have been typed by
+  // an ops admin about the person reading it.
+  const cancellationReason = isRequester
+    ? task.cancel_reason_label ?? task.cancel_reason
+    : task.cancel_reason_label ?? null;
   // For the length of the Traction 3 round the questionnaire replaces the
   // classic review sheet, and the supporter gets one of their own — the only
   // time either side of a completed task is asked anything. When the window
@@ -1538,10 +1545,33 @@ export default function TaskDetail() {
           </View>
         ) : null}
 
-        {task.status === "cancelled" && task.cancel_reason ? (
+        {/* THE CANCELLATION RECORD. What happened, when, and why — the header
+            of the read-only view a cancelled task opens to.
+
+            WHY THE REASON IS NOT task.cancel_reason FOR EVERYONE. That column
+            is free text written by three different callers, the ops panel
+            among them, and it used to be rendered to whoever opened the task.
+            The supporter gets the PRESET'S LABEL and nothing else
+            (server/cancel_reasons.go); the requester sees their own words
+            back, because they are theirs.
+
+            The settlement card below this says what they were paid, and it is
+            attached for the cancelled assignee too now — a supporter can be
+            paid the base fee for a task they never clocked into. */}
+        {task.status === "cancelled" ? (
           <View className="mb-8 rounded-card border border-line bg-surface p-4">
-            <Text className="text-caption font-semibold text-muted">Cancellation reason</Text>
-            <Text className="mt-1 text-body text-ink">{task.cancel_reason}</Text>
+            <Text className="text-caption font-semibold text-muted">Task cancelled</Text>
+            {task.cancelled_at ? (
+              <Text className="mt-1 text-caption text-muted">
+                {formatScheduledAt(task.cancelled_at)}
+              </Text>
+            ) : null}
+            {cancellationReason ? (
+              <Text className="mt-2 text-body text-ink">Reason: {cancellationReason}</Text>
+            ) : null}
+            {!isRequester ? (
+              <Text className="mt-2 text-caption text-muted">{SUPPORTER_CANCELLED_NOTE}</Text>
+            ) : null}
           </View>
         ) : null}
 

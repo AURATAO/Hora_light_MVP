@@ -140,6 +140,27 @@ type Task struct {
 	RemovedAt     *time.Time `json:"removed_at,omitempty"`
 	RemovalReason *string    `json:"removal_reason,omitempty"`
 
+	// The cancellation record, set only on status='cancelled' and only by
+	// getTask, for the two parties and ops.
+	//
+	// CancelReasonLabel is the PRESET'S label and never tasks.cancel_reason,
+	// which is free text from three different writers including the ops panel.
+	// Absent when the task carries no code — "Other", an ops cancel, or a row
+	// cancelled before codes existed — because no reason is better than
+	// somebody else's typing.
+	CancelledAt       *time.Time `json:"cancelled_at,omitempty"`
+	CancelReasonLabel *string    `json:"cancel_reason_label,omitempty"`
+
+	// The requester's own free text, REQUESTER ONLY.
+	//
+	// It has never been on the wire at all — both clients typed a
+	// `cancel_reason` field and rendered a card from it that could not ever
+	// have appeared, because no handler set it. It is here now, and it is
+	// behind an ownership check: these are the requester's own words coming
+	// back to them, and the supporter's version of the same fact is
+	// CancelReasonLabel above.
+	CancelReason *string `json:"cancel_reason,omitempty"`
+
 	// Whether the requester consented at post to the supporter running up to
 	// BillingConfig.AutoExtendMinutes past the estimate. Selected only by
 	// getTask, so it is absent from list responses rather than false there.
@@ -2119,7 +2140,21 @@ func getTask(c *gin.Context) {
 		`, id, meEmail).Scan(&workedOnIt)
 	}
 
-	if t.Status != "open" && uid != t.RequesterID && !isAssignee && !isAdmin && !workedOnIt {
+	// And whoever was ON the task when it was cancelled, worklog or not.
+	//
+	// A worklog is no longer sufficient proof of involvement: under the
+	// cancellation billing policy a supporter can be paid the base fee for a
+	// task they accepted and never clocked into. Locking them out of the task
+	// they were just paid for, so they cannot see what for, is not a security
+	// boundary — it is an accident of which column was checked.
+	cancelledAssignee := false
+	if uid != "" {
+		_ = db.QueryRow(ctx, `
+			select cancelled_assignee_id = $2::uuid from public.tasks where id = $1::uuid
+		`, id, uid).Scan(&cancelledAssignee)
+	}
+
+	if t.Status != "open" && uid != t.RequesterID && !isAssignee && !isAdmin && !workedOnIt && !cancelledAssignee {
 		if t.Status == "removed" {
 			// Distinct from a plain "forbidden" so a client holding a stale
 			// screen can say what happened. Removal clears assigned_to_id, so
@@ -2190,6 +2225,39 @@ func getTask(c *gin.Context) {
 			`select enroute_at from public.tasks where id=$1::uuid`, id,
 		).Scan(&enrouteAt); err == nil {
 			t.EnrouteAt = enrouteAt
+		}
+	}
+
+	// WHAT WAS CANCELLED, WHEN, AND WHY — for both parties.
+	//
+	// The reason is the PRESET'S LABEL, never tasks.cancel_reason. That column
+	// is free text written by three different callers including the ops panel,
+	// and relaying it to the counterparty forwards whatever somebody typed
+	// (server/cancel_reasons.go). The label is a sentence a person wrote on
+	// purpose; a task with no code — "Other", an ops cancel, or anything
+	// cancelled before codes existed — carries no reason at all, which is the
+	// honest answer rather than a leak.
+	//
+	// Both parties, because the supporter's read-only view of a cancelled task
+	// is the whole point of this: they rearranged their afternoon and "task
+	// cancelled, thanks for your time" told them nothing.
+	if t.Status == "cancelled" && (uid == t.RequesterID || isAssignee || cancelledAssignee || isAdmin) {
+		var cancelledAt *time.Time
+		var code, freeText *string
+		if err := db.QueryRow(ctx,
+			`select cancelled_at, cancel_reason_code, nullif(cancel_reason, '')
+			   from public.tasks where id=$1::uuid`, id,
+		).Scan(&cancelledAt, &code, &freeText); err == nil {
+			t.CancelledAt = cancelledAt
+			if code != nil {
+				if label := cancelReasonPublicLabel(*code); label != "" {
+					t.CancelReasonLabel = &label
+				}
+			}
+			// The free text, to its author and to ops, and to nobody else.
+			if freeText != nil && (uid == t.RequesterID || isAdmin) {
+				t.CancelReason = freeText
+			}
 		}
 	}
 
@@ -2604,7 +2672,23 @@ func listDoneTasks(c *gin.Context) {
 		beforeID = &s
 	}
 
-	where := []string{"assigned_to_id = $1::uuid", "status='completed'"}
+	// A SUPPORTER'S HISTORY IS COMPLETED **AND** CANCELLED.
+	//
+	// It used to be completed-only, matched on assigned_to_id — and the cancel
+	// path nulls assigned_to_id. So a cancelled task disappeared from the
+	// supporter's world the moment it was cancelled, on both clients, and the
+	// only way back to it was the notification deep link, which is dismissible
+	// (build 11). A requester has always kept their cancelled tasks; this is
+	// the same completeness for the other side.
+	//
+	// cancelled_assignee_id is what makes it reachable: it preserves who was
+	// on the task across the detach. Under the cancellation billing policy a
+	// supporter can be PAID for a task they never clocked into, where no
+	// worklog exists to find it by either.
+	where := []string{
+		"(assigned_to_id = $1::uuid or cancelled_assignee_id = $1::uuid)",
+		"status in ('completed','cancelled')",
+	}
 	args := []any{meUID}
 	arg := 2
 	if beforeCreatedAt != nil && beforeID != nil {
@@ -3193,7 +3277,16 @@ func getWorklogs(c *gin.Context) {
 				select exists (select 1 from public.worklogs where task_id=$1::uuid and "user"=$2)
 			`, taskID, meEmail).Scan(&workedOnIt)
 		}
-		if !workedOnIt {
+		// And whoever was on the task when it was cancelled. A worklog is no
+		// longer proof of involvement: a supporter paid the base fee for a
+		// task they accepted and never clocked into has no worklog, and this
+		// is the endpoint that tells them what they were paid.
+		cancelledAssignee := false
+		_ = db.QueryRow(ctx, `
+			select cancelled_assignee_id = $2::uuid from public.tasks where id = $1::uuid
+		`, taskID, meUID).Scan(&cancelledAssignee)
+
+		if !workedOnIt && !cancelledAssignee {
 			c.JSON(http.StatusForbidden, gin.H{"error": "not allowed"})
 			return
 		}
@@ -3317,7 +3410,13 @@ func getWorklogs(c *gin.Context) {
 	// Absent, not zeroed, for the requester — same reasoning as `payment`'s
 	// omitempty. A requester who saw `earned: {}` would be shown a supporter's
 	// pay packet reading $0.00, which is both untrue and none of their business.
-	if assignedToID != nil && *assignedToID == meUID {
+	//
+	// Keyed on the CANCELLED assignee as well as the live one, for the same
+	// reason the authorization above is: the cancel path detaches, and a
+	// supporter reading a cancelled task they were paid for would otherwise
+	// see the requester's shape of this card — no `earned` block at all —
+	// which is the one number they actually came for.
+	if (assignedToID != nil && *assignedToID == meUID) || isCancelledAssignee(ctx, taskID, meUID) {
 		settlement["earned"] = supporterEarningsView(ctx, taskID, meUID, cost)
 	}
 	// What actually moved, when anything did. Absent on every task posted with

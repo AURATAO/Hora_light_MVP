@@ -13,6 +13,7 @@ import {
   LAUNDRY_WAIT_HINT,
   PAUSED_REQUESTER,
   PAUSED_SUPPORTER,
+  SUPPORTER_CANCELLED_NOTE,
   buildSessionTimeline,
   gapsNote,
   isPaused as isPausedBetweenSessions,
@@ -587,6 +588,12 @@ export default function TaskDetail() {
 
   // ✅ 用 UUID 判斷身分
   const isOwner = Boolean(user?.id && task?.requester_id && user.id === task.requester_id)
+  // The requester sees their own words; everyone else sees the preset's label
+  // or nothing at all. cancel_reason is free text and may have been typed by
+  // an ops admin about the person reading it.
+  const cancellationReason = isOwner
+    ? (task?.cancel_reason_label ?? task?.cancel_reason ?? null)
+    : (task?.cancel_reason_label ?? null)
   const isAssignee = Boolean(user?.id && task?.assigned_to_id && user.id === task.assigned_to_id)
   const hasLogged = (work.total_minutes || 0) > 0
   const canComplete = Boolean((isOwner || isAssignee) && task?.status === 'open' && !!task?.assigned_to_id && !work.has_open && hasLogged)
@@ -990,8 +997,16 @@ export default function TaskDetail() {
   // Whether the itemized settlement card below is going to render. The cost
   // card's one-line "Final cost" is redundant next to it — the two sat
   // adjacent showing the same number — so that line defers to this.
-  const showSettlementPanel =
-    (isOwner || isAssignee) && task?.status !== 'open' && Boolean(work?.cost && settlement)
+  // THE SERVER DECIDES WHO SEES A SETTLEMENT, not this line.
+  //
+  // It used to also require (isOwner || isAssignee) — and a cancel NULLs
+  // assigned_to_id, so the supporter of a cancelled task failed both halves
+  // and saw no payment record for a task they had just been paid for. The
+  // settlement endpoint authorizes the requester, the assignee, anyone who
+  // logged time, and (since the cancellation billing policy) whoever was on
+  // the task when it was cancelled. A second, weaker copy of that rule here
+  // could only ever hide something the server had already agreed to send.
+  const showSettlementPanel = task?.status !== 'open' && Boolean(work?.cost && settlement)
 
   // The hold on the requester's card. Server-attached and requester-only — the
   // key is absent from the supporter's copy of this task, so this is null for
@@ -1532,6 +1547,37 @@ export default function TaskDetail() {
                       </div>
                     )}
                   </div>
+                )}
+              </div>
+            )}
+
+            {/* THE CANCELLATION RECORD. What happened, when, and why — the
+                header of the read-only view a cancelled task opens to, and
+                the mirror of mobile's.
+
+                WHY THE REASON IS NOT task.cancel_reason FOR EVERYONE. That
+                column is free text written by three different callers, the
+                ops panel among them. The supporter gets the PRESET'S LABEL
+                and nothing else (server/cancel_reasons.go); the requester
+                sees their own words back, because they are theirs. */}
+            {task?.status === 'cancelled' && (
+              <div className="border border-white/20 rounded-md p-3 space-y-1 text-sm">
+                <div className="text-xs text-white/60">Task cancelled</div>
+                {task.cancelled_at && (
+                  <div className="text-xs text-white/40">
+                    {new Date(task.cancelled_at).toLocaleString()}
+                  </div>
+                )}
+                {cancellationReason && (
+                  <div className="text-white">Reason: {cancellationReason}</div>
+                )}
+                {/* The supporter's half. A cancelled task used to vanish from
+                    their lists entirely, and the notification behind it said
+                    "thanks for your time" with no number — which reads as
+                    "and you are getting nothing". The settlement panel below
+                    says what they are actually paid. */}
+                {!isOwner && (
+                  <p className="text-xs text-white/40">{SUPPORTER_CANCELLED_NOTE}</p>
                 )}
               </div>
             )}
