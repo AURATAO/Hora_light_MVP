@@ -30,20 +30,15 @@ import {
   buildHeroLines,
 } from "../../lib/home-content";
 import type { HomeCard } from "../../lib/home-content";
+import { POST_CATEGORY_ORDER } from "../../lib/categories";
 import { deriveTaskStatus, formatRelativeTime } from "../../lib/task-utils";
 import type { Task, TaskCategory } from "../../lib/types";
 import { color, opacity, size, space } from "../../theme/tokens";
 
 // "For you" quick-access categories — a fast lane into post-task with the
-// category pre-selected. The full set lives behind "What do you need?".
-const HOME_CATEGORIES: TaskCategory[] = [
-  "quick_errand",
-  "delivery",
-  "laundry",
-  "grocery",
-  "queue",
-  "companionship",
-];
+// category pre-selected. THE SAME LIST, IN THE SAME ORDER, as the post form's
+// picker: both read lib/categories.ts POST_CATEGORY_ORDER.
+const HOME_CATEGORIES = POST_CATEGORY_ORDER;
 
 const STATUS_LABEL: Record<ReturnType<typeof deriveTaskStatus>, string> = {
   open: "Open",

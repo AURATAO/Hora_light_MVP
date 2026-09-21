@@ -40,6 +40,31 @@ export const CATEGORIES: readonly CategoryMeta[] = [
   { value: "companionship", label: "Companion", icon: HeartHandshake },
 ];
 
+/**
+ * THE ORDER, in one place. Home's "For you" strip and the post form's category
+ * picker both render exactly these, in exactly this order.
+ *
+ * They used to be two lists in two files — Home had one order, the picker
+ * another, and the picker also carried "Anything else" while Home did not —
+ * so the same person saw the categories in one order on the way in and
+ * another once they got there (build 11). Any surface that lists categories
+ * reads this; a test in app/src/lib/categoryOrder.test.mjs pins web's copy to
+ * it byte for byte, so the two clients cannot drift again either.
+ *
+ * "companionship" is the display value; post-task normalizes it to the
+ * submitted "companion" (see post-task.tsx). Companionship is disabled this
+ * round (beta-notice.ts) and still LISTED, dimmed — an option that vanishes is
+ * a question, an option that says "Coming soon" is an answer.
+ */
+export const POST_CATEGORY_ORDER: readonly TaskCategory[] = [
+  "quick_errand",
+  "delivery",
+  "laundry",
+  "grocery",
+  "queue",
+  "companionship",
+];
+
 const CATEGORY_BY_VALUE: Record<TaskCategory, CategoryMeta> = Object.fromEntries(
   CATEGORIES.map((c) => [c.value, c])
 ) as Record<TaskCategory, CategoryMeta>;
