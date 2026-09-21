@@ -44,6 +44,56 @@ import { isPayoutsOnboardingRequired } from '../api/payments'
  * or from GET /tasks/:id/worklogs (after). Every number on it was computed in
  * Go; this component does no arithmetic, which is the point.
  */
+/**
+ * A collapsible section: the mirror of mobile's ui/Disclosure.
+ *
+ * WHY THIS EXISTS. Once a task is assigned, the requester's screen led with
+ * what they had WRITTEN — description, addresses, timing — and buried what was
+ * HAPPENING below it. Their own words are the one thing on that screen they
+ * already know; the supporter, the live position and the money are what they
+ * opened it for.
+ *
+ * Native <details>, so the open/closed state needs no React state, the whole
+ * header is a real button for a screen reader, and it survives a re-render
+ * without a controlled prop. `summary` is the one line that stays visible
+ * while collapsed — the number a reader might still want at a glance.
+ */
+function Disclosure({ title, summary, children, defaultOpen = false }) {
+  return (
+    <details open={defaultOpen} className="group border border-white/20 rounded-md">
+      <summary className="flex cursor-pointer list-none items-center gap-2 p-3 text-sm [&::-webkit-details-marker]:hidden">
+        <span className="text-white/70">{title}</span>
+        {summary ? (
+          <span className="flex-1 truncate text-right font-medium text-white">{summary}</span>
+        ) : (
+          <span className="flex-1" />
+        )}
+        <span className="text-white/40 transition-transform group-open:rotate-90">&rsaquo;</span>
+      </summary>
+      <div className="space-y-2 border-t border-white/10 p-3">{children}</div>
+    </details>
+  )
+}
+
+/**
+ * The task's own details — timing, estimate, budget, locations, notes.
+ *
+ * A plain block, or a collapsed "Your request" section, depending on whether
+ * anything is happening yet. The rows inside are identical either way: this
+ * exists so there is one copy of them rather than two that drift. Mirrors
+ * mobile's InfoShell.
+ */
+function InfoShell({ led, children }) {
+  if (led) {
+    return (
+      <Disclosure title="Your request">
+        <div className="space-y-1 text-sm text-white/80">{children}</div>
+      </Disclosure>
+    )
+  }
+  return <div className="text-sm text-white/80 space-y-1">{children}</div>
+}
+
 function CostLine({ cost }) {
   // The verified receipt, once there is one. Distinct from
   // shopping_budget_cents, which is a ceiling and was never a charge — this is
@@ -699,6 +749,19 @@ export default function TaskDetail() {
   // passes both revert on their own: the flag is a date check, nothing else.
   const questionnaireActive = isTractionWindowActive()
   const canReview = Boolean(isOwner && task?.status === 'completed' && task?.assigned_to_id)
+
+  // STATE-DRIVEN HIERARCHY, requester side.
+  //
+  // Once somebody has accepted, this screen leads with what is HAPPENING — who
+  // has it, where they are — and not with what the requester WROTE. Their own
+  // description and addresses are the one thing here they already know; they
+  // stay one tap away in "Your request".
+  //
+  // An OPEN, unaccepted task keeps the original order: nothing is happening
+  // yet, so what they wrote is genuinely the subject. Same for a finished one,
+  // where the settlement panel already leads. Mirrors mobile's
+  // requesterLedByState.
+  const requesterLedByState = Boolean(isOwner && task?.status === 'open' && task?.assigned_to_id)
   const canGiveFeedback = Boolean(isAssignee && task?.status === 'completed' && questionnaireActive)
 
   // async function reloadWorkAndTask() {
@@ -1275,6 +1338,33 @@ export default function TaskDetail() {
             )}
 
             <h2 className="text-2xl font-semibold flex-1">{task.title}</h2>
+
+            {/* WHAT IS HAPPENING, FIRST — who has this task and how to reach
+                them, then where they are. Only once somebody has accepted: an
+                open task has nothing to lead with, so it keeps the original
+                order and this renders as the usual pill row below.
+
+                Mirrors mobile's supporter card. The pill is the same
+                component the row below uses, so a name and avatar are
+                rendered by one thing in both places. */}
+            {requesterLedByState && (
+              <div className="mt-3 space-y-3">
+                <div className="border border-white/20 rounded-md p-3 space-y-3">
+                  <div className="flex items-center gap-3">
+                    <UserPill userId={String(task.assigned_to_id)} meId={user?.id} label="Assignee" />
+                    <span className="text-xs text-white/50">Supporter</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setChatOpen(true)}
+                    className="w-full rounded-md border border-white/20 py-2 text-sm text-accent hover:border-white/40"
+                  >
+                    💬  Message
+                  </button>
+                </div>
+                {canWatchLive && <LiveTrackingCard taskId={id} />}
+              </div>
+            )}
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
               <div className="flex items-center gap-3">
                 <div className="text-white/70 text-sm">Requester:</div>
@@ -1295,7 +1385,10 @@ export default function TaskDetail() {
               </div>
             </div>
 
-            <div className="text-sm text-white/80 space-y-1">
+            {/* WHAT THEY WROTE. The subject of an open task, and merely
+                reference once somebody is actually doing it — so it collapses
+                behind "Your request" the moment the task goes live. */}
+            <InfoShell led={requesterLedByState}>
               <div><b>When:</b> {whenText}</div>
               <div><b>Estimated:</b> {task.estimated_minutes} min</div>
               {/* Only when there IS one. Rendered unconditionally, this line
@@ -1361,14 +1454,16 @@ export default function TaskDetail() {
                   </div>
                 )}
               </div>
-            </div>
-
-            <div className="border border-white/20 rounded-md p-4 space-y-1 overflow-hidden">
-              <div className="text-xs font-semibold uppercase tracking-wide text-white/50">Notes</div>
-              <p className="text-sm leading-relaxed whitespace-pre-wrap break-words overflow-wrap-anywhere text-white/90 select-text">
-                {task.description || <span className="text-white/40 italic">No notes provided.</span>}
-              </p>
-            </div>
+              {/* Notes moved INSIDE the shell. It is the longest thing the
+                  requester wrote, so leaving it outside would have collapsed
+                  the summary and left the essay — which is the wrong half. */}
+              <div className="space-y-1 border-t border-white/10 pt-2">
+                <div className="text-xs font-semibold uppercase tracking-wide text-white/50">Notes</div>
+                <p className="text-sm leading-relaxed whitespace-pre-wrap break-words overflow-wrap-anywhere text-white/90 select-text">
+                  {task.description || <span className="text-white/40 italic">No notes provided.</span>}
+                </p>
+              </div>
+            </InfoShell>
             <DebugMe />
 
             {/* A question with a five-minute fuse on it, so it sits above the
@@ -1426,6 +1521,11 @@ export default function TaskDetail() {
               </div>
             )}
 
+            {/* Below the approval card on a live task, because the card above
+                has a five-minute fuse on it; already rendered at the top in
+                that case — see the block after the title. */}
+            {requesterLedByState ? null : (canWatchLive && <LiveTrackingCard taskId={id} />)}
+
             {/* Requester: where their supporter is, right now — the #1 ask out
                 of Traction 3, so it sits high, directly under the question with
                 the fuse on it and above the money cards.
@@ -1440,7 +1540,6 @@ export default function TaskDetail() {
                 390px screen, three containers deep, which is not where you put
                 the thing people asked for most. Mirrors mobile, where it is its
                 own card above Progress. */}
-            {canWatchLive && <LiveTrackingCard taskId={id} />}
 
             {/* The supporter's side: what they're covered for, and the two ways
                 to ask for more of it. The approved budget is shown at all times
@@ -1791,7 +1890,28 @@ export default function TaskDetail() {
                 a requester who cannot see that money was held assumes the post
                 failed and cancels it. Gone once the task closes — the
                 settlement card then says what became of it. */}
-            {isOwner && holdLine && task?.status === 'open' && (
+            {/* Collapsed to the one line that matters once the task is live —
+                "$42.00 reserved · Visa ••4242" — with the explanation one
+                click behind it. The full copy earns its space on an OPEN task,
+                where the silent off-session pre-auth is the thing being
+                explained; on a live one the requester has read it already and
+                wants the number, not the paragraph. */}
+            {isOwner && holdLine && task?.status === 'open' && requesterLedByState && (
+              <Disclosure title="On hold" summary={holdLine}>
+                <p className="text-xs text-white/40">
+                  Not a charge. You&apos;re billed for actual time and purchases when the task
+                  completes, and anything unused is released automatically.
+                </p>
+                {task?.prepay_amount_cents > 0 && (
+                  <p className="text-xs text-white/40">
+                    The hold also covers up to {formatCents(task.prepay_amount_cents)} of shopping,
+                    reimbursed against the receipt.
+                  </p>
+                )}
+              </Disclosure>
+            )}
+
+            {isOwner && holdLine && task?.status === 'open' && !requesterLedByState && (
               <div className="border border-white/20 rounded-md p-3 space-y-1 text-sm">
                 <div className="flex justify-between">
                   <span className="text-white/70">On hold</span>
@@ -2040,7 +2160,10 @@ export default function TaskDetail() {
               </div>
             )}
 
-            {task.assigned_to ? (
+            {/* Suppressed in the led state: the supporter card at the top of
+                the screen already carries this exact action, and the same CTA
+                twice on one screen is how a reader stops trusting either. */}
+            {requesterLedByState ? null : task.assigned_to ? (
               <button
                 type="button"
                 onClick={() => setChatOpen(true)}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Alert, AppState, Image, Linking, RefreshControl, ScrollView, Text, View } from "react-native";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import * as Clipboard from "expo-clipboard";
@@ -23,7 +23,16 @@ import { approvedBudgetCentsFor } from "../../lib/task-budget";
 import { LiveTrackingCard } from "../../components/LiveTrackingCard";
 import { ReviewSheet } from "../../components/ReviewSheet";
 import { TractionReviewSheet } from "../../components/TractionReviewSheet";
-import { Avatar, Badge, Button, EmptyState, PressableScale, Screen, Skeleton } from "../../components/ui";
+import {
+  Avatar,
+  Badge,
+  Button,
+  Disclosure,
+  EmptyState,
+  PressableScale,
+  Screen,
+  Skeleton,
+} from "../../components/ui";
 import {
   ApiError,
   acceptTask,
@@ -652,6 +661,7 @@ export default function TaskDetail() {
   // the task, not about what posting requires today.
   const approvedBudgetCents = approvedBudgetCentsFor({ extensions, settlement, task });
   const isTaskActive = task?.status === "open" && !!task?.assigned_to_id;
+
   // The hold on the requester's card. Requester-only by construction: the
   // server omits the key from the supporter's copy of the task, so this is
   // null for them without a check here.
@@ -667,6 +677,19 @@ export default function TaskDetail() {
   // `task` may still be null here; the optional chaining keeps it false until
   // it loads.
   const isRequesterView = meId !== null && task?.requester_id === meId;
+// STATE-DRIVEN HIERARCHY, requester side.
+  //
+  // Once somebody has accepted, this screen must lead with what is HAPPENING —
+  // who has it, where they are, how it is going — and not with what the
+  // requester WROTE. Their own description and addresses are the one thing on
+  // the screen they already know; they are still reachable, one tap down, in a
+  // "Your request" section.
+  //
+  // An OPEN, unaccepted task keeps the current order: nothing is happening
+  // yet, so what they wrote is genuinely the subject. Same for a finished one,
+  // where the settlement card already leads.
+  const requesterLedByState = isRequesterView && isTaskActive;
+
   const canWatchLive = shouldPollLive({
     isRequester: isRequesterView,
     status: task?.status,
@@ -1053,6 +1076,41 @@ export default function TaskDetail() {
   // screen twice, one card apart. Caught on the simulator, not by any check.
   const showSettlementCard = Boolean(settlement && worklogs?.cost && task.status !== "open");
 
+  // ── The two cards the live state leads with ──────────────────────────────
+  //
+  // Held as values rather than inlined twice, so "who has this task" and
+  // "where are they" are rendered by ONE piece of JSX that moves, not by two
+  // copies that can drift apart.
+  const supporterCard =
+    isRequester && task.assigned_to_id ? (
+      <View className="mb-4 rounded-card border border-line bg-surface">
+        <PressableScale
+          onPress={() => router.push(`/profile/${task.assigned_to_id}`)}
+          className="flex-row items-center gap-3 p-4"
+        >
+          <Avatar uri={supporter?.avatar_url} name={supporter?.name} size={44} />
+          <View>
+            <Text className="text-body font-semibold text-ink">{supporter?.name ?? "Your supporter"}</Text>
+            <Text className="text-caption text-muted">Supporter</Text>
+          </View>
+        </PressableScale>
+        <PressableScale
+          onPress={() => router.push(`/task/${id}/chat`)}
+          className="min-h-11 justify-center border-t border-line p-4"
+        >
+          <View className="flex-row items-center gap-2">
+            <MessageCircle color={color.muted} size={18} strokeWidth={size.iconStroke} />
+            <Text className="text-body text-ink">Message {firstName(supporter?.name)}</Text>
+          </View>
+        </PressableScale>
+      </View>
+    ) : null;
+
+  // Replaces the last-known-position row that used to live in Progress — which
+  // only appeared once the supporter had CLOCKED IN, i.e. once they had
+  // already arrived, and which rendered their coordinates as text.
+  const liveCard = canWatchLive ? <LiveTrackingCard taskId={id} /> : null;
+
   return (
     <Screen
       scroll={false}
@@ -1096,8 +1154,23 @@ export default function TaskDetail() {
           />
         ) : null}
 
-        {/* Info */}
-        <View className="mb-4 gap-3 rounded-card border border-line bg-surface p-4">
+        {/* WHAT IS HAPPENING, FIRST — under the approval card, which keeps
+            the very top because it has a five-minute fuse on it, and above
+            everything the requester wrote themselves.
+
+            Only once somebody has accepted: an open task has nothing to lead
+            with, so it keeps the original order. */}
+        {requesterLedByState ? (
+          <>
+            {supporterCard}
+            {liveCard}
+          </>
+        ) : null}
+
+        {/* WHAT THEY WROTE. The subject of an open task, and merely reference
+            once somebody is actually doing it — so it collapses behind "Your
+            request" the moment the task goes live. One tap, never gone. */}
+        <InfoShell led={requesterLedByState}>
           {/* Description is selectable (long-press) AND has an explicit copy
               button — addresses and shopping lists get pasted into other apps
               constantly, and long-press alone isn't discoverable. */}
@@ -1190,7 +1263,7 @@ export default function TaskDetail() {
               <Text className="text-caption text-ink">{formatCost(task.prepay_amount_cents)}</Text>
             </View>
           ) : null}
-        </View>
+        </InfoShell>
 
         {/* What is reserved, for the requester of a live task. The whole
             failure this addresses is an off-session pre-auth being silent: a
@@ -1198,48 +1271,49 @@ export default function TaskDetail() {
             failed and cancels it. Gone once the task closes — the settlement
             card then says what became of it. */}
         {isRequester && holdLine && task.status === "open" ? (
-          <View className="mb-4 gap-2 rounded-card border border-line bg-surface p-4">
-            <View className="flex-row items-center justify-between">
-              <Text className="text-caption font-semibold text-muted">On hold</Text>
-              <Text className="text-caption text-ink">{holdLine}</Text>
-            </View>
-            <Text className="text-caption text-muted">
-              Not a charge. You're billed for actual time and purchases when the task completes,
-              and anything unused is released automatically.
-            </Text>
-            {task.prepay_amount_cents && task.prepay_amount_cents > 0 ? (
+          requesterLedByState ? (
+            // Collapsed to the one line that matters — "$42.00 reserved · Visa
+            // ••4242" — with the explanation one tap behind it. The full copy
+            // earns its space on an OPEN task, where the silent off-session
+            // pre-auth is the thing being explained; on a live one the
+            // requester has already read it and needs the number, not the
+            // paragraph.
+            <Disclosure title="On hold" summary={holdLine} className="mb-4">
               <Text className="text-caption text-muted">
-                The hold also covers up to {formatCost(task.prepay_amount_cents)} of shopping,
-                reimbursed against the receipt.
+                Not a charge. You're billed for actual time and purchases when the task completes,
+                and anything unused is released automatically.
               </Text>
-            ) : null}
-          </View>
+              {task.prepay_amount_cents && task.prepay_amount_cents > 0 ? (
+                <Text className="text-caption text-muted">
+                  The hold also covers up to {formatCost(task.prepay_amount_cents)} of shopping,
+                  reimbursed against the receipt.
+                </Text>
+              ) : null}
+            </Disclosure>
+          ) : (
+            <View className="mb-4 gap-2 rounded-card border border-line bg-surface p-4">
+              <View className="flex-row items-center justify-between">
+                <Text className="text-caption font-semibold text-muted">On hold</Text>
+                <Text className="text-caption text-ink">{holdLine}</Text>
+              </View>
+              <Text className="text-caption text-muted">
+                Not a charge. You're billed for actual time and purchases when the task completes,
+                and anything unused is released automatically.
+              </Text>
+              {task.prepay_amount_cents && task.prepay_amount_cents > 0 ? (
+                <Text className="text-caption text-muted">
+                  The hold also covers up to {formatCost(task.prepay_amount_cents)} of shopping,
+                  reimbursed against the receipt.
+                </Text>
+              ) : null}
+            </View>
+          )
         ) : null}
 
-        {/* Supporter */}
-        {isRequester && task.assigned_to_id ? (
-          <View className="mb-4 rounded-card border border-line bg-surface">
-            <PressableScale
-              onPress={() => router.push(`/profile/${task.assigned_to_id}`)}
-              className="flex-row items-center gap-3 p-4"
-            >
-              <Avatar uri={supporter?.avatar_url} name={supporter?.name} size={44} />
-              <View>
-                <Text className="text-body font-semibold text-ink">{supporter?.name ?? "Your supporter"}</Text>
-                <Text className="text-caption text-muted">Supporter</Text>
-              </View>
-            </PressableScale>
-            <PressableScale
-              onPress={() => router.push(`/task/${id}/chat`)}
-              className="min-h-11 justify-center border-t border-line p-4"
-            >
-              <View className="flex-row items-center gap-2">
-                <MessageCircle color={color.muted} size={18} strokeWidth={size.iconStroke} />
-                <Text className="text-body text-ink">Message {firstName(supporter?.name)}</Text>
-              </View>
-            </PressableScale>
-          </View>
-        ) : null}
+        {/* Supporter — at the TOP once the task is live (see
+            requesterLedByState). Below the info card on an open or finished
+            one, where it is context rather than the subject. */}
+        {requesterLedByState ? null : supporterCard}
 
         {/* Requester (assignee's view) */}
         {isAssignee ? (
@@ -1400,11 +1474,9 @@ export default function TaskDetail() {
           />
         ) : null}
 
-        {/* Requester: where their supporter is, right now. Replaces the
-            last-known-position row that used to live in Progress — which only
-            appeared once the supporter had CLOCKED IN, i.e. once they had
-            already arrived, and which rendered their coordinates as text. */}
-        {canWatchLive ? <LiveTrackingCard taskId={id} /> : null}
+        {/* Where their supporter is, right now — directly under the
+            supporter card once the task is live. */}
+        {requesterLedByState ? null : liveCard}
 
         {/* Progress — the live view, and only while there is something live to
             view. Hidden once the settlement card can render, which owns the
@@ -1970,6 +2042,27 @@ function SupporterAskCard({
       ) : null}
     </View>
   );
+}
+
+/**
+ * The task's own details — description, addresses, timing, budget.
+ *
+ * A PLAIN CARD, or a collapsed "Your request" section, depending on whether
+ * anything is happening yet. The rows inside are identical either way: this
+ * exists so there is one copy of them rather than two that drift.
+ *
+ * `led` is requesterLedByState — true only on the requester's view of a task
+ * somebody has accepted.
+ */
+function InfoShell({ led, children }: { led: boolean; children: ReactNode }) {
+  if (led) {
+    return (
+      <Disclosure title="Your request" className="mb-4">
+        {children}
+      </Disclosure>
+    );
+  }
+  return <View className="mb-4 gap-3 rounded-card border border-line bg-surface p-4">{children}</View>;
 }
 
 // The settlement, itemized, for both roles.
