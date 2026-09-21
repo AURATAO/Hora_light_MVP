@@ -407,6 +407,14 @@ func TestCancellationPreviewCarriesTheGraceDeadline(t *testing.T) {
 		if preview.ChargeCents != 0 {
 			t.Errorf("a free cancel previews a %s charge", formatCentsUSD(preview.ChargeCents))
 		}
+		// AND IT STILL NAMES THE FEE AT STAKE. Found on the build 12 visual
+		// pass: zeroing the breakdown along with the charge left the live
+		// countdown reading "after that, the base fee goes to your supporter"
+		// with no number in it — and the number is the whole sentence.
+		if preview.BaseFeeCents != 1200 {
+			t.Errorf("base_fee_cents = %s inside the grace window, want the $12.00 the countdown has to name",
+				formatCentsUSD(preview.BaseFeeCents))
+		}
 		if preview.ReleaseCents != 5000 {
 			t.Errorf("release = %s, want the whole $50.00 hold", formatCentsUSD(preview.ReleaseCents))
 		}
