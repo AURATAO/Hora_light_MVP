@@ -1,13 +1,24 @@
 import { Tabs } from "expo-router";
 import { StyleSheet } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Briefcase, House, List, User } from "lucide-react-native";
+import { House, List, User, Wallet } from "lucide-react-native";
+import { useSupporterStatus } from "../../lib/use-supporter-status";
 import { color, layout, radius, size, space, type as typeScale } from "../../theme/tokens";
 
 const TAB_ICON_SIZE = 22;
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
+  // THE EARN TAB IS SUPPORTER-ONLY. A requester-only user was being shown a
+  // whole tab of somebody else's job — available tasks, an application banner,
+  // earnings — which is the single loudest way the app told them they were in
+  // the wrong place.
+  //
+  // `null` (not yet known) hides it, and the tab appears once the profile
+  // lands. That direction is deliberate: showing a tab and taking it away is
+  // worse than showing it a beat late, and for an approved supporter the read
+  // resolves before the bar is ever interacted with.
+  const { isApproved } = useSupporterStatus();
 
   return (
     <Tabs
@@ -69,12 +80,19 @@ export default function TabsLayout() {
           ),
         }}
       />
+      {/* "Earn", not "Work": the tab is about being paid, and to the one
+          audience it is now shown to that is the whole point of it. Hidden
+          entirely for everyone else — `href: null` removes the button AND
+          blocks navigation to the route, so a deep link cannot land a
+          requester on a screen of other people's jobs (see the route guard in
+          work.tsx for what happens if one tries). */}
       <Tabs.Screen
         name="work"
         options={{
-          title: "Work",
+          title: "Earn",
+          href: isApproved ? undefined : null,
           tabBarIcon: ({ color: tintColor }) => (
-            <Briefcase color={tintColor} size={TAB_ICON_SIZE} strokeWidth={size.iconStroke} />
+            <Wallet color={tintColor} size={TAB_ICON_SIZE} strokeWidth={size.iconStroke} />
           ),
         }}
       />

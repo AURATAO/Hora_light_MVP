@@ -276,13 +276,18 @@ export default function Profile() {
           // approved/applied/rejected: same states as the Work tab banner, at row scale.
           <SupporterStatusRow status={profile.supporter_status} />
         ) : (
+          // THE ONLY WAY IN, now that the Earn tab is supporter-only. This
+          // used to route to /(tabs)/work, which for a non-supporter is a tab
+          // that no longer exists and a route that redirects Home — so the
+          // row would have quietly become a no-op. It goes straight to the
+          // application instead, which is where it was always heading.
           <PressableScale
-            onPress={() => router.push("/(tabs)/work")}
+            onPress={() => router.push("/supporter-apply")}
             className="flex-row items-center justify-between rounded-card border border-line bg-surface p-4"
           >
             <View className="flex-1 pr-2">
-              <Text className="text-body font-semibold text-ink">Want to earn?</Text>
-              <Text className="mt-0.5 text-caption text-muted">Become a supporter and help people nearby.</Text>
+              <Text className="text-body font-semibold text-ink">Become a supporter</Text>
+              <Text className="mt-0.5 text-caption text-muted">Earn by helping people nearby.</Text>
             </View>
             <ChevronRight color={color.muted} size={18} strokeWidth={size.iconStroke} />
           </PressableScale>

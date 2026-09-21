@@ -31,6 +31,34 @@ export default function My() {
   const [saving, setSaving] = useState(false)
   const { user, loading: authLoading } = useAuth()
 
+  // EVERY TAB BUT "POSTED" IS A SUPPORTER SURFACE. Available is other people's
+  // jobs, Assigned is what you are working on, Done is what you were paid for —
+  // none of it exists for a requester-only account, and offering all three as
+  // permanently-empty tabs is the single loudest way the app told them they
+  // were in the wrong place.
+  //
+  // A LONE TAB IS NOISE for the same reason: "Posted" over a list of posted
+  // tasks says nothing the heading above it does not. So the strip disappears
+  // entirely rather than shrinking to one.
+  //
+  // Read from /auth/me, which now derives supporter_status from the same
+  // function the profile endpoint uses. is_verified_supporter is the fallback
+  // for a client running against a server that predates that field — it is
+  // what the derivation's first case reads anyway, so the two agree today and
+  // the fallback simply keeps an older pairing working.
+  const isApprovedSupporter =
+    user?.supporter_status === 'approved' ||
+    (user?.supporter_status === undefined && Boolean(user?.is_verified_supporter))
+  const tabs = isApprovedSupporter
+    ? [
+      { key:'posted',    label:'Posted' },
+      { key:'available', label:'Available' },
+      { key:'assigned',  label:'Assigned' },
+      { key:'done',      label:'Done' },
+    ]
+    : [{ key:'posted', label:'Posted' }]
+
+
   const loc = useLocation()          
   const nav = useNavigate()          
 
@@ -83,11 +111,14 @@ export default function My() {
       await wrap(async () => {
         const p = await api('/profile')
         setProfile(p)
+        // Posted always; the supporter lists only for a supporter. The
+        // endpoints would answer with empty arrays, but three round trips on
+        // every dashboard load for lists that cannot render is three too many.
         await Promise.all([
-          fetchPage('available', null),
-          fetchPage('assigned', null),
           fetchPage('posted', null),
-          fetchPage('done', null),
+          ...(isApprovedSupporter
+            ? [fetchPage('available', null), fetchPage('assigned', null), fetchPage('done', null)]
+            : []),
         ])
       })
     })()
@@ -104,7 +135,10 @@ export default function My() {
   useEffect(() => {
     const u = new URL(window.location.href)
     const qTab = u.searchParams.get('tab')
-    if (qTab) setTab(qTab) // 'available' | 'assigned' | 'posted' | 'done'
+    // Only a tab this account actually has. A stale bookmark or a link from
+    // before approval was revoked would otherwise select a tab with no button
+    // to leave it by.
+    if (qTab && tabs.some(t => t.key === qTab)) setTab(qTab)
   }, [])
 
   // ✅ 新增：處理建立任務後導來的 refresh 旗標（/my?refresh=1）
@@ -166,13 +200,6 @@ export default function My() {
 }
 
 
-
-  const tabs = [
-    { key:'posted',    label:'Posted' },
-    { key:'available', label:'Available' },
-    { key:'assigned',  label:'Assigned' },
-    { key:'done',      label:'Done' },
-  ]
 
   async function fetchPage(which, cursor=null) {
   setLists(prev => ({ ...prev, [which]: { ...prev[which], loading: true }}))
@@ -259,19 +286,28 @@ export default function My() {
         </div>
 
         {/* Stat pills */}
+        {/* Active and Completed count the SUPPORTER's work — tasks assigned to
+            them and tasks they were paid for. Both read zero forever on a
+            requester-only account, and a zero is a statement: it says "you
+            have done none of this", which is not true of somebody the feature
+            does not apply to. Posted is theirs and stays. */}
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/5 border border-white/15 text-xs">
-            <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
-            Active&nbsp;<span className="font-semibold">{lists.assigned.items.length}{lists.assigned.next ? '+' : ''}</span>
-          </span>
+          {isApprovedSupporter && (
+            <span className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/5 border border-white/15 text-xs">
+              <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
+              Active&nbsp;<span className="font-semibold">{lists.assigned.items.length}{lists.assigned.next ? '+' : ''}</span>
+            </span>
+          )}
           <span className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/5 border border-white/15 text-xs">
             <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: '#9aab3a' }} />
             Posted&nbsp;<span className="font-semibold">{lists.posted.items.length}{lists.posted.next ? '+' : ''}</span>
           </span>
-          <span className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/5 border border-white/15 text-xs">
-            <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: '#5dcaa5' }} />
-            Completed&nbsp;<span className="font-semibold">{lists.done.items.length}{lists.done.next ? '+' : ''}</span>
-          </span>
+          {isApprovedSupporter && (
+            <span className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/5 border border-white/15 text-xs">
+              <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: '#5dcaa5' }} />
+              Completed&nbsp;<span className="font-semibold">{lists.done.items.length}{lists.done.next ? '+' : ''}</span>
+            </span>
+          )}
         </div>
       </div>
 
@@ -279,12 +315,14 @@ export default function My() {
 
       <ThinCard>
         {/* Tabs：手機可滑動、桌機正常；Loading 位置做 RWD */}
-        <div className="border-b border-white/10 pb-2 mb-3">
+        <div className={`${tabs.length > 1 ? 'border-b border-white/10 pb-2 mb-3' : 'mb-1'}`}>
           <div className="flex items-center gap-2">
             {/* 可水平滑動的容器（mobile） */}
             <div className="flex-1 overflow-x-auto md:overflow-visible whitespace-nowrap md:whitespace-normal -mx-1 px-1">
               <div className="inline-flex gap-2">
-                {tabs.map(t => (
+                {/* A single tab renders nothing: the heading above already
+                    says these are their tasks. */}
+                {tabs.length > 1 && tabs.map(t => (
                   <button
                     key={t.key}
                     className={`shrink-0 px-3 py-1.5 rounded-full border text-sm font-secondary tracking-wide transition-colors ${

@@ -3,7 +3,9 @@ import { Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import { CircleCheck, ChevronLeft } from "lucide-react-native";
 import { Button, Input, PressableScale, Screen, Skeleton } from "../components/ui";
+import { SupporterStatusBanner } from "../components/SupporterStatusBanner";
 import { ApiError, applySupporter, getProfile, updateProfile } from "../lib/api";
+import type { SupporterStatus } from "../lib/types";
 import { color, size } from "../theme/tokens";
 
 interface FieldErrors {
@@ -27,6 +29,9 @@ export default function SupporterApply() {
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Where they already stand. Read on the same fetch the prefill uses, so the
+  // guard below costs no extra round trip.
+  const [status, setStatus] = useState<SupporterStatus>("none");
 
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -56,6 +61,7 @@ export default function SupporterApply() {
       setPhone(p.phone ?? "");
       setCity(p.city ?? "");
       setEmail(p.email ?? "");
+      setStatus(p.supporter_status);
       setLoadError(null);
     } catch (e) {
       if (handleAuthError(e)) return;
@@ -102,6 +108,36 @@ export default function SupporterApply() {
     }
   }
 
+  // ALREADY IN THE PIPELINE. This screen is now the ONLY way into the
+  // supporter flow — the Earn tab is hidden for everyone who is not approved,
+  // so the Profile row and the Home card both land here rather than on a tab
+  // that would bounce them Home.
+  //
+  // That makes a repeat visit a real case, and a blank application form is the
+  // wrong answer to it: somebody who applied on Tuesday wants to know where it
+  // stands, not to fill it in again. The same banner the Earn tab shows, so
+  // the status is worded identically wherever it is read.
+  //
+  // REJECTED is deliberately NOT guarded: re-applying clears the rejection
+  // (see deriveSupporterStatus), and a second chance is a form, not a notice.
+  if (!loading && (status === "applied" || status === "approved")) {
+    return (
+      <Screen>
+        <View className="mb-6 mt-4 flex-row items-center">
+          <PressableScale
+            onPress={() => router.back()}
+            className="h-11 w-11 items-center justify-center rounded-pill"
+            hitSlop={8}
+          >
+            <ChevronLeft color={color.ink} size={22} strokeWidth={size.iconStroke} />
+          </PressableScale>
+          <Text className="ml-1 text-title font-semibold text-ink">Becoming a supporter</Text>
+        </View>
+        <SupporterStatusBanner status={status} onApply={() => {}} />
+      </Screen>
+    );
+  }
+
   if (submitted) {
     return (
       <Screen>
@@ -113,7 +149,7 @@ export default function SupporterApply() {
               We&apos;ll review it and send you a background check link within 1–2 business days.
             </Text>
           </View>
-          <Button label="Back to work" onPress={() => router.back()} />
+          <Button label="Done" onPress={() => router.back()} />
         </View>
       </Screen>
     );

@@ -16,6 +16,7 @@ import {
   getPostedTasks,
 } from "../../lib/api";
 import { deriveTaskStatus } from "../../lib/task-utils";
+import { useSupporterStatus } from "../../lib/use-supporter-status";
 import type { Task } from "../../lib/types";
 import { color } from "../../theme/tokens";
 
@@ -77,6 +78,7 @@ export default function MyTasks() {
   const [posted, setPosted] = useState<Bucket>(EMPTY_BUCKET);
   const [working, setWorking] = useState<Bucket>(EMPTY_BUCKET);
   const [refreshing, setRefreshing] = useState(false);
+  const { isApproved } = useSupporterStatus();
   const [cancelTarget, setCancelTarget] = useState<Task | null>(null);
   // The priced cancellation block for whatever row is being cancelled.
   //
@@ -157,13 +159,16 @@ export default function MyTasks() {
   useFocusEffect(
     useCallback(() => {
       loadPosted();
-      loadWorking();
-    }, [loadPosted, loadWorking])
+      // No supporter side, no request. The endpoint would answer with an empty
+      // list, but asking for it at all is a round trip on every focus for
+      // something that cannot render.
+      if (isApproved) loadWorking();
+    }, [loadPosted, loadWorking, isApproved])
   );
 
   async function onRefresh() {
     setRefreshing(true);
-    await Promise.all([loadPosted(), loadWorking()]);
+    await Promise.all([loadPosted(), ...(isApproved ? [loadWorking()] : [])]);
     setRefreshing(false);
   }
 
@@ -265,8 +270,20 @@ export default function MyTasks() {
     );
   }
 
-  const bucket = segment === "posted" ? posted : working;
-  const isPosted = segment === "posted";
+  // THE SEGMENT CONTROL IS SUPPORTER-ONLY, and so is the segment behind it.
+  //
+  // A requester-only user was being offered a "Working" tab that could never
+  // hold anything — and a two-segment control where one of them is
+  // permanently empty is not a choice, it is a question the app cannot
+  // answer. A LONE segment is noise for the same reason: "Posted" over a list
+  // of posted tasks says nothing the headline does not.
+  //
+  // Forced back to "posted" rather than merely hidden, so a non-supporter who
+  // was left on the working segment by a stale param, or whose approval was
+  // revoked while the screen was mounted, cannot end up staring at an empty
+  // list with no way back to their own tasks.
+  const isPosted = !isApproved || segment === "posted";
+  const bucket = isPosted ? posted : working;
 
   return (
     <Screen
@@ -276,10 +293,12 @@ export default function MyTasks() {
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={color.muted} />
       }
     >
-      <View className="mb-6 flex-row gap-2">
-        <Pill label="Posted" selected={isPosted} onPress={() => setSegment("posted")} />
-        <Pill label="Working" selected={!isPosted} onPress={() => setSegment("working")} />
-      </View>
+      {isApproved ? (
+        <View className="mb-6 flex-row gap-2">
+          <Pill label="Posted" selected={isPosted} onPress={() => setSegment("posted")} />
+          <Pill label="Working" selected={!isPosted} onPress={() => setSegment("working")} />
+        </View>
+      ) : null}
 
       {bucket.loading ? (
         renderSkeletons()
