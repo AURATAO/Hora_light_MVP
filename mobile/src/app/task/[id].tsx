@@ -2325,6 +2325,13 @@ function HeaderRow({ onBack, onEdit }: { onBack: () => void; onEdit?: () => void
       <View className="flex-row items-center">
         <PressableScale
           onPress={onBack}
+          // Labelled like every other back control in the app (tasks/history,
+          // profile/earnings-history) and like the Edit button beside it. It
+          // was the one unlabeled chevron on the most-used screen: a screen
+          // reader landed on it and said nothing, and the build 12 simulator
+          // driver could not find it by name for the same reason.
+          accessibilityRole="button"
+          accessibilityLabel="Back"
           className="h-11 w-11 items-center justify-center rounded-pill"
           hitSlop={8}
         >
