@@ -181,6 +181,71 @@ export function capWarningNote(capState) {
   return `About ${remaining} min left on the time that was agreed.`
 }
 
+/**
+ * "You'll be charged $12.00 (base fee); …" — what cancelling right now costs,
+ * in the server's own numbers.
+ *
+ * ALL THREE FIGURES COME OFF THE `cancellation` BLOCK (S-05). The dialog this
+ * feeds used to describe the RULE instead ("if work has already been recorded,
+ * you are billed for that time only"), which is a sentence a requester has to
+ * apply to their own situation while deciding whether to spend money.
+ *
+ * `withinGrace` is passed in rather than read off the block because the dialog
+ * can sit open across the boundary: the block says what was true when it was
+ * fetched, and the live countdown says what is true now. A requester who reads
+ * "free" and taps twenty seconds later must not be surprised by a charge.
+ *
+ * Null when nobody has committed — cancelling an unaccepted task has never
+ * cost anything and never will.
+ */
+export function cancelChargeLine(cancellation, { withinGrace } = {}) {
+  if (!cancellation?.committed) return null
+  if (withinGrace ?? cancellation.within_grace) {
+    return 'Your supporter has committed, but you\u2019re still inside the free window — cancelling now costs nothing.'
+  }
+  const base = formatCents(cancellation.base_fee_cents || 0)
+  const minutes = cancellation.billed_minutes || 0
+  if (cancellation.time_cost_cents > 0) {
+    return `Your supporter has committed. You\u2019ll be charged ${formatCents(cancellation.charge_cents)} — ${base} base fee plus ${formatCents(cancellation.time_cost_cents)} for the ${minutes} min worked.`
+  }
+  return `Your supporter has committed. You\u2019ll be charged ${base} (base fee).`
+}
+
+/**
+ * "$64.75 releases." — the rest of the hold, named before they commit.
+ *
+ * Falls back to the task's own payment block when the cancellation block is
+ * missing, so a requester on a task that could not be priced still learns what
+ * is reserved. Null when there is no hold at all, which is every task posted
+ * with PAYMENTS_ENFORCED off — the dialog then says nothing about a release
+ * rather than "$0.00 releases".
+ */
+export function cancelReleaseLine(cancellation, payment, { withinGrace } = {}) {
+  const authorized = payment?.authorized_cents || 0
+  if (!authorized) return null
+  if (!cancellation?.committed || (withinGrace ?? cancellation.within_grace)) {
+    return `Your reserved ${formatCents(authorized)} will be released immediately.`
+  }
+  const release = cancellation.release_cents || 0
+  if (release <= 0) return null
+  return `${formatCents(release)} of your reserved ${formatCents(authorized)} releases immediately.`
+}
+
+/**
+ * "1:23" — the free window, counted down against the SERVER's deadline.
+ *
+ * A deadline rather than a duration, so the clock drifts by however long one
+ * request took instead of by however long the dialog has been open. Null once
+ * it has run out, which is what flips the dialog back to quoting a charge.
+ */
+export function cancelGraceCountdown(graceEndsAt, nowMs = Date.now()) {
+  if (!graceEndsAt) return null
+  const left = Date.parse(graceEndsAt) - nowMs
+  if (!Number.isFinite(left) || left <= 0) return null
+  const total = Math.ceil(left / 1000)
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
+}
+
 /** The short form for a task-detail row: "$76.75 reserved · Visa ••4242". */
 export function holdSummary(payment) {
   if (!payment || !payment.authorized_cents) return null

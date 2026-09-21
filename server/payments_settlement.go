@@ -391,8 +391,14 @@ func settleTaskPayment(ctx context.Context, taskID string, timeCostCents, receip
 // thing all three can agree to look up the same way.
 func taskSupporterID(ctx context.Context, taskID string) string {
 	var supporterID *string
+	// cancelled_assignee_id is the fallback, not the primary: the cancel path
+	// settles BEFORE it detaches, so assigned_to_id is still there when this
+	// runs. It is read anyway because "who gets paid" must not depend on the
+	// order of two statements in a handler three files away — a cancel that
+	// charged somebody and then paid nobody is the failure this whole change
+	// exists to stop.
 	if err := db.QueryRow(ctx,
-		`select assigned_to_id from public.tasks where id = $1::uuid`, taskID,
+		`select coalesce(assigned_to_id, cancelled_assignee_id) from public.tasks where id = $1::uuid`, taskID,
 	).Scan(&supporterID); err != nil || supporterID == nil {
 		return ""
 	}

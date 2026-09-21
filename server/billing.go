@@ -97,6 +97,20 @@ type BillingConfig struct {
 	AutoExtendMinutes  int
 	GracePeriodMinutes int
 
+	// How long after ACCEPTANCE a requester can still cancel for free.
+	//
+	// The base fee is the supporter's guarantee: once they have committed,
+	// cancelling pays it. That is right, and it is harsh in the first thirty
+	// seconds — a requester who watches the wrong person accept, or realises
+	// immediately that they posted the wrong thing, should not owe $12 for a
+	// commitment nobody has acted on yet. Two minutes is long enough to undo a
+	// mistake and far too short to be a free option on somebody's travel time.
+	//
+	// PENDING FINAL CONFIRMATION with Dani — which is exactly why it is a
+	// constant here rather than a literal in cancelTask. Moving it is one
+	// edit, and both clients read the countdown off the server.
+	CancelGraceMinutes int
+
 	// How long a requester has to one-tap approve a budget or time increase
 	// before it auto-DENIES and the supporter's pre-selected fallback runs.
 	ApprovalTimeoutMinutes int
@@ -139,6 +153,8 @@ var Billing = BillingConfig{
 
 	AutoExtendMinutes:  15,
 	GracePeriodMinutes: 30,
+
+	CancelGraceMinutes: 2, // free cancellation window after acceptance
 
 	ApprovalTimeoutMinutes: 5,
 	CapWarningLeadMinutes:  5,
@@ -595,20 +611,78 @@ func quoteSettlement(category string, totalMinutes, capMinutes, approvedBudgetCe
 
 // cancelSettlementCents is what a cancelled task owes.
 //
-// Nothing, unless a supporter actually started: a task cancelled before any
-// clock-in cost nobody anything, so charging its base fee would be billing for
-// a service that was never begun. Once there is a closed session the base fee
-// is earned (the supporter travelled and showed up) and time past the included
-// block bills normally.
+// THE RULE, in one line: the base fee is the supporter's guarantee, and once
+// they have committed, cancelling still pays it.
+//
+//	committed == false   nothing at all. An open, unaccepted task that is
+//	                     called off cost nobody anything — no one travelled, no
+//	                     one rearranged an afternoon — so there is nothing to
+//	                     charge for. Unchanged.
+//
+//	committed == true    max(base fee, base fee + time cost), which is just
+//	                     base fee + time cost, since the time cost is never
+//	                     negative. Written as the max because that is the
+//	                     PROMISE — "at least the base fee" — and a future
+//	                     schedule where time cost could undercut it must not
+//	                     quietly break it.
+//
+// WHAT THIS REPLACED, and the incident behind it. The old signature took
+// `hadSession`: a cancel paid the supporter only once a worklog had been
+// CLOSED. On the build 11 device run a task was cancelled with a 7-minute
+// session still open — the session was discarded, the $12 was released in
+// full, and the supporter was paid nothing for work they were in the middle
+// of. The accepted-but-never-clocked-in case never even got that far: the
+// server refused the cancel with a 400 and the only way out was ops.
+//
+// Both were the same mistake, which is measuring commitment by a worklog row.
+// A supporter commits when they ACCEPT. That is when they start travelling,
+// and it is the only moment either party agreed on.
+//
+// The grace window is not expressed here. It is a question about WHEN the
+// cancel happened rather than what it owes, so cancelTask answers it by not
+// calling this at all — see cancelIsWithinGrace.
 //
 // The shopping budget is not an input here and never should be. It is an
 // authorization ceiling, not money anyone has been charged, so a cancel has
 // nothing to net against it.
-func cancelSettlementCents(category string, totalMinutes int, hadSession bool, rateCents int) int {
-	if !hadSession {
+func cancelSettlementCents(category string, totalMinutes int, committed bool, rateCents int) int {
+	if !committed {
 		return 0
 	}
-	return baseFeeCents(category) + timeCostCents(totalMinutes, rateCents)
+	base := baseFeeCents(category)
+	if withTime := base + timeCostCents(totalMinutes, rateCents); withTime > base {
+		return withTime
+	}
+	return base
+}
+
+// cancelIsWithinGrace reports whether a cancel lands inside the free window
+// that opens at acceptance.
+//
+// A nil acceptedAt is NOT inside the window. Two things produce one: a task
+// nobody has accepted, which never reaches this question because it is a free
+// release anyway, and a task accepted before the accepted_at column existed.
+// For the second, "no grace" is the conservative answer — the alternative
+// hands a free cancel to a task accepted three weeks ago and leaves its
+// supporter unpaid, which is the exact failure this whole change is about.
+func cancelIsWithinGrace(acceptedAt *time.Time, now time.Time) bool {
+	if acceptedAt == nil {
+		return false
+	}
+	return now.Sub(*acceptedAt) < time.Duration(Billing.CancelGraceMinutes)*time.Minute
+}
+
+// cancelGraceRemaining is how long the free window has left, floored at zero,
+// so a client can render a live countdown against the SERVER's clock rather
+// than the phone's.
+func cancelGraceRemaining(acceptedAt *time.Time, now time.Time) time.Duration {
+	if acceptedAt == nil {
+		return 0
+	}
+	if left := time.Duration(Billing.CancelGraceMinutes)*time.Minute - now.Sub(*acceptedAt); left > 0 {
+		return left
+	}
+	return 0
 }
 
 // ── POST /tasks/estimate ───────────────────────────────────────────────────
@@ -698,4 +772,154 @@ func estimateStartAt(isImmediate bool, scheduledAt string) time.Time {
 // step before a string — there is no arithmetic downstream of this call.
 func formatCentsUSD(cents int) string {
 	return fmt.Sprintf("$%.2f", float64(cents)/100.0)
+}
+
+// ── What a cancel would cost, before it happens ────────────────────────────
+
+// TaskCancellation is the answer to "what happens if I cancel this now",
+// computed on the server and rendered verbatim.
+//
+// REQUESTER ONLY, attached by getTask behind an ownership check, the same way
+// TaskPayment is. A supporter has no use for it and it names money the
+// requester would be charged.
+//
+// WHY IT IS A SERVER BLOCK AND NOT CLIENT ARITHMETIC. The confirmation dialog
+// has to say "you'll be charged $12.00 (base fee); $64.75 releases" BEFORE the
+// requester commits, and every one of those numbers is billing (S-05). A
+// client deriving them would be a fourth copy of the fee schedule, and the one
+// that shows up in a dialog people read while deciding to spend money.
+//
+// The countdown is sent as a DEADLINE rather than as seconds remaining, so a
+// client ticking a clock against it drifts against the server by whatever the
+// request took, once, instead of by however long the screen has been open.
+type TaskCancellation struct {
+	// Whether a supporter has committed. False means the whole thing is free
+	// and the rest of these are zero.
+	Committed bool `json:"committed"`
+
+	// Whether a cancel RIGHT NOW would still be free. True only inside the
+	// grace window, which is the one case where Committed is true and
+	// ChargeCents is zero.
+	WithinGrace bool `json:"within_grace"`
+	// When the free window shuts. Absent once it has, and on every task where
+	// it never opened.
+	GraceEndsAt *time.Time `json:"grace_ends_at,omitempty"`
+
+	// What cancelling now would charge, and what it is made of. The base fee
+	// is what the supporter is guaranteed; the time cost is what they have
+	// actually worked, clamped to the consented ceiling.
+	ChargeCents   int `json:"charge_cents"`
+	BaseFeeCents  int `json:"base_fee_cents"`
+	TimeCostCents int `json:"time_cost_cents"`
+	BilledMinutes int `json:"billed_minutes"`
+
+	// What goes back to the card, when there is a hold to go back from. Zero
+	// on every task posted with PAYMENTS_ENFORCED off, which is all of them in
+	// the running beta — the clients then say nothing about a release rather
+	// than "$0.00 released".
+	ReleaseCents int `json:"release_cents"`
+
+	// The reason presets, ordered, exactly as GET /tasks/:id/extensions ships
+	// budget_reasons. Server-owned for the same reason: a product vocabulary
+	// kept in two hardcoded client copies drifts, and the supporter's
+	// notification has to be able to name the option the requester picked
+	// (server/cancel_reasons.go).
+	Reasons []cancelReason `json:"reasons"`
+}
+
+// cancellationPreview prices a cancel that has not happened yet.
+//
+// Deliberately built from the same primitives the cancel handler itself uses —
+// cancelSettlementCents, cancelIsWithinGrace, cappedMinutes — rather than from
+// a parallel formula. A preview that can disagree with the thing it previews
+// is worse than no preview: it is a number somebody decided on that turns out
+// to be wrong afterwards.
+func cancellationPreview(ctx context.Context, taskID string, assignedToID *string, authorizedCents int) *TaskCancellation {
+	var acceptedAt *time.Time
+	if err := db.QueryRow(ctx,
+		`select accepted_at from public.tasks where id = $1::uuid`, taskID).Scan(&acceptedAt); err != nil {
+		return nil
+	}
+
+	out := &TaskCancellation{Committed: assignedToID != nil, Reasons: cancelReasons}
+	if !out.Committed {
+		// Nothing committed, nothing charged, the whole hold goes back.
+		out.ReleaseCents = authorizedCents
+		return out
+	}
+
+	now := time.Now()
+	out.WithinGrace = cancelIsWithinGrace(acceptedAt, now)
+	if out.WithinGrace && acceptedAt != nil {
+		ends := acceptedAt.Add(time.Duration(Billing.CancelGraceMinutes) * time.Minute)
+		out.GraceEndsAt = &ends
+	}
+
+	totalMin, err := totalClosedMinutes(ctx, taskID)
+	if err != nil {
+		totalMin = 0
+	}
+	// The session still running counts. A requester looking at this dialog
+	// while their supporter works must not be quoted a number that ignores the
+	// last forty minutes because nobody has clocked out yet — the cancel
+	// itself force-closes that session and bills it.
+	if live := liveLoggedMinutes(ctx, taskID); live > totalMin {
+		totalMin = live
+	}
+
+	capMinutes, _ := taskTimeCapMinutes(ctx, taskID)
+	out.BilledMinutes = cappedMinutes(totalMin, capMinutes)
+
+	if !out.WithinGrace {
+		category := taskCategory(ctx, taskID)
+		out.ChargeCents = cancelSettlementCents(category, out.BilledMinutes, true, taskRateCentsPerMin(ctx, taskID))
+		out.BaseFeeCents = baseFeeCents(category)
+		out.TimeCostCents = out.ChargeCents - out.BaseFeeCents
+	}
+
+	if release := authorizedCents - out.ChargeCents; release > 0 {
+		out.ReleaseCents = release
+	}
+	return out
+}
+
+// recordedCancelBillCents is what a cancel actually billed, as recorded at the
+// moment it was decided. Nil for a task that is not cancelled and for a row
+// cancelled before the column existed.
+func recordedCancelBillCents(ctx context.Context, taskID string) *int {
+	var cents *int
+	if err := db.QueryRow(ctx,
+		`select cancel_bill_cents from public.tasks where id = $1::uuid`, taskID).Scan(&cents); err != nil {
+		return nil
+	}
+	return cents
+}
+
+// withCancelBill bends a settlement quote to the number a cancel recorded,
+// keeping the itemization legible rather than overwriting the total alone.
+//
+// The receipt is untouched and stays outside the cancel bill: a cancel
+// verifies no receipt, so on the overwhelming majority of cancelled tasks it
+// is zero — but a task force-completed with a receipt and then cancelled by
+// ops is not a shape to silently drop money from.
+func withCancelBill(cost TaskQuote, billCents int) TaskQuote {
+	switch {
+	case billCents <= 0:
+		// Free: nothing was begun, or the grace window covered it.
+		cost.BaseFeeCents = 0
+		cost.TimeCostCents = 0
+	case billCents >= cost.BaseFeeCents:
+		// The usual shape — base fee plus whatever time was worked. The base
+		// fee is the guarantee, so it is the part that stays whole and the
+		// time cost absorbs the difference.
+		cost.TimeCostCents = billCents - cost.BaseFeeCents
+	default:
+		// A recorded bill BELOW this task's current base fee. Only reachable
+		// if the fee schedule moved after the cancel, and the recorded number
+		// is the one somebody was actually charged.
+		cost.BaseFeeCents = billCents
+		cost.TimeCostCents = 0
+	}
+	cost.TotalCents = cost.BaseFeeCents + cost.TimeCostCents + cost.ShoppingReceiptCents
+	return cost
 }

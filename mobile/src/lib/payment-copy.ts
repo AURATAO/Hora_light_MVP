@@ -1,4 +1,4 @@
-import type { TaskPayment, TimeCap, TimeCapState } from "./types";
+import type { TaskCancellation, TaskPayment, TimeCap, TimeCapState } from "./types";
 import { formatCost } from "./task-utils";
 
 /**
@@ -171,6 +171,70 @@ export function capWarningNote(capState?: TimeCapState | null): string | null {
   }
   const remaining = capState.remaining_minutes ?? 0;
   return `About ${remaining} min left on the time that was agreed.`;
+}
+
+/**
+ * "You'll be charged $12.00 (base fee); …" — what cancelling right now costs.
+ *
+ * All three figures come off the server's `cancellation` block (S-05). The
+ * sheet this feeds used to say nothing at all about money on an accepted task,
+ * because an accepted task could not be cancelled from the app.
+ *
+ * `withinGrace` is passed in rather than read off the block because the sheet
+ * can sit open across the boundary: the block says what was true when it was
+ * fetched, the live countdown says what is true now.
+ *
+ * Mirrors app/src/lib/paymentCopy.js cancelChargeLine word for word.
+ */
+export function cancelChargeLine(
+  cancellation?: TaskCancellation | null,
+  opts?: { withinGrace?: boolean }
+): string | null {
+  if (!cancellation?.committed) return null;
+  if (opts?.withinGrace ?? cancellation.within_grace) {
+    return "Your supporter has committed, but you\u2019re still inside the free window — cancelling now costs nothing.";
+  }
+  const base = formatCost(cancellation.base_fee_cents ?? 0);
+  const minutes = cancellation.billed_minutes ?? 0;
+  if ((cancellation.time_cost_cents ?? 0) > 0) {
+    return `Your supporter has committed. You\u2019ll be charged ${formatCost(cancellation.charge_cents)} — ${base} base fee plus ${formatCost(cancellation.time_cost_cents)} for the ${minutes} min worked.`;
+  }
+  return `Your supporter has committed. You\u2019ll be charged ${base} (base fee).`;
+}
+
+/** "$64.75 of your reserved $76.75 releases immediately." Null when there is
+ *  no hold — the sheet then says nothing rather than "$0.00 releases". */
+export function cancelReleaseLine(
+  cancellation?: TaskCancellation | null,
+  payment?: TaskPayment | null,
+  opts?: { withinGrace?: boolean }
+): string | null {
+  const authorized = payment?.authorized_cents ?? 0;
+  if (!authorized) return null;
+  if (!cancellation?.committed || (opts?.withinGrace ?? cancellation.within_grace)) {
+    return `Your reserved ${formatCost(authorized)} will be released immediately.`;
+  }
+  const release = cancellation.release_cents ?? 0;
+  if (release <= 0) return null;
+  return `${formatCost(release)} of your reserved ${formatCost(authorized)} releases immediately.`;
+}
+
+/**
+ * "1:23" — the free window, counted down against the SERVER's deadline.
+ *
+ * A deadline rather than a duration, so the clock drifts by however long one
+ * request took instead of by however long the sheet has been open — which on a
+ * phone that has been asleep is an unbounded amount. Null once it has run out.
+ */
+export function cancelGraceCountdown(
+  graceEndsAt?: string | null,
+  nowMs: number = Date.now()
+): string | null {
+  if (!graceEndsAt) return null;
+  const left = Date.parse(graceEndsAt) - nowMs;
+  if (!Number.isFinite(left) || left <= 0) return null;
+  const total = Math.ceil(left / 1000);
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
 
 /** The short form for a task-detail row: "$76.75 reserved · Visa ••4242". */

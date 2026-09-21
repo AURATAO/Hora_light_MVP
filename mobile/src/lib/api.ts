@@ -484,12 +484,27 @@ export function updateTask(id: string, payload: UpdateTaskPayload): Promise<Task
 }
 
 // server/main.go's cancelTask does NOT return the updated Task — it returns
-// the billing summary for the (necessarily unworked, since cancellation
-// requires assigned_to_id IS NULL) cancellation.
+// the billing summary for the cancellation.
+//
+// The old comment here said the task was "necessarily unworked, since
+// cancellation requires assigned_to_id IS NULL". That has not been true since
+// the cancellation billing policy landed: a requester can cancel an accepted
+// or in-progress task, an open session is force-closed and billed, and the
+// base fee is paid to the supporter as their guarantee.
 export interface CancelTaskResult {
   total_minutes: number;
   bill_cents: number;
   refund_cents: number;
+  /** Which rule ran. `committed` is false only on a task nobody accepted;
+   *  `within_grace` is the free window that makes a committed cancel cost
+   *  nothing. Neither can be inferred from bill_cents — a charged cancel of a
+   *  $0-base-fee task would be indistinguishable from a free one. */
+  committed?: boolean;
+  within_grace?: boolean;
+  /** How the bill is made up, so the confirmation never re-derives it (S-05). */
+  base_fee_cents?: number;
+  time_cost_cents?: number;
+  billed_minutes?: number;
   /** What the hold was, what was taken from it, and what went back. All three
    *  are 0 on a task that never had one — the confirmation then says nothing
    *  about money rather than "$0.00 released". */
@@ -501,8 +516,21 @@ export interface CancelTaskResult {
   card_last4?: string;
 }
 
-export function cancelTask(id: string, reason: string): Promise<CancelTaskResult> {
-  return apiFetch<CancelTaskResult>(`/tasks/${id}/cancel`, { method: "POST", body: { reason } });
+/**
+ * `reason` is the free text, which stays on the row for ops and the audit log.
+ * `reasonCode` is the preset slug, and it is the ONLY part of the reason ever
+ * relayed to the supporter — see server/cancel_reasons.go for why the two are
+ * separate.
+ */
+export function cancelTask(
+  id: string,
+  reason: string,
+  reasonCode?: string
+): Promise<CancelTaskResult> {
+  return apiFetch<CancelTaskResult>(`/tasks/${id}/cancel`, {
+    method: "POST",
+    body: { reason, reason_code: reasonCode },
+  });
 }
 
 export interface CompleteTaskPayload {

@@ -249,10 +249,15 @@ func adminReassignTask(c *gin.Context) {
 // Split out from the handler so the race can be tested against the real
 // statement instead of a copy of it.
 func applyReassign(ctx context.Context, taskID string, target reassignTarget, expectedOldID *string) (int64, error) {
+	// accepted_at moves with the assignment: the new supporter's commitment
+	// starts now, and the free-cancellation window (billing.go
+	// cancelIsWithinGrace) is measured from when the person who is actually on
+	// the task took it — not from when somebody else did, possibly days ago.
 	tag, err := db.Exec(ctx, `
 		update public.tasks
 		set assigned_to_id = $2::uuid,
-		    assigned_to    = $3
+		    assigned_to    = $3,
+		    accepted_at    = now()
 		where id = $1::uuid
 		  and status = 'open'
 		  and assigned_to_id is not distinct from $4::uuid

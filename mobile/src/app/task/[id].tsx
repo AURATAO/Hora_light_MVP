@@ -88,7 +88,6 @@ import { SUPPORT_EMAIL } from "../../lib/constants";
 import {
   capWarningNote,
   holdSummary,
-  holdWillBeReleasedMessage,
   timeBasisNote,
 } from "../../lib/payment-copy";
 import type {
@@ -344,10 +343,10 @@ export default function TaskDetail() {
     setRefreshing(false);
   }
 
-  async function handleCancelConfirm(reason: string) {
+  async function handleCancelConfirm(reason: string, reasonCode: string) {
     let result;
     try {
-      result = await cancelTask(id, reason);
+      result = await cancelTask(id, reason, reasonCode);
     } catch (e) {
       handleAuthError(e);
       throw e;
@@ -948,12 +947,19 @@ export default function TaskDetail() {
   const isRequester = meId !== null && task.requester_id === meId;
   const isAssignee = meId !== null && task.assigned_to_id === meId;
   const isAvailableToAccept = meId !== null && !isRequester && !isAssignee && task.status === "open" && !task.assigned_to_id;
-  // Editing and cancelling answer to one rule: my task, still open, nobody on
-  // it yet — deriveTaskStatus only returns "open" while assigned_to_id is null.
-  // Once accepted, both are off the table and coordination moves to chat; the
-  // server enforces the same rule (main.go updateTask, cancelTask).
+  // Editing stays open-only: changing the terms of a job somebody has already
+  // accepted is a renegotiation, and that belongs in chat. deriveTaskStatus
+  // only returns "open" while assigned_to_id is null, and the server enforces
+  // the same rule (main.go updateTask).
   const editable = isRequester && status === "open";
-  const cancellable = editable;
+
+  // CANCELLING DOES NOT. It used to share `editable`, which meant that the
+  // moment a supporter accepted, the requester had no way out of their own
+  // task from the app at all — ops were the only exit (build 11). A requester
+  // can now cancel at any point before the task closes; what it COSTS depends
+  // on the state, and the sheet shows them the number before they commit
+  // (server/billing.go cancellationPreview).
+  const cancellable = isRequester && task.status === "open";
   const locations = locationParts(task.location_text);
   const TransportIcon = task.transport_required ? TRANSPORT_ICON[task.transport_required] : undefined;
   // Supporter-only, and only once this task is actually theirs: the route action
@@ -1509,7 +1515,10 @@ export default function TaskDetail() {
           />
         ) : null}
 
-        {/* Cancel action */}
+        {/* Cancel. Secondary throughout — it is an exit, never this screen's
+            CTA — and now offered on an accepted or in-progress task too, not
+            only on one nobody has taken. The sheet behind it does the work of
+            saying what that will cost. */}
         {cancellable ? (
           <Button
             label="Cancel task"
@@ -1586,7 +1595,8 @@ export default function TaskDetail() {
 
       <CancelTaskSheet
         visible={cancelOpen}
-        willReleaseMessage={holdWillBeReleasedMessage(task.payment)}
+        cancellation={task.cancellation}
+        payment={task.payment}
         onClose={() => setCancelOpen(false)}
         onConfirm={handleCancelConfirm}
       />

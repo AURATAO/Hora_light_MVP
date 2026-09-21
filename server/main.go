@@ -160,6 +160,18 @@ type Task struct {
 	// every task posted with PAYMENTS_ENFORCED off.
 	Payment *TaskPayment `json:"payment,omitempty"`
 
+	// What cancelling this task right now would cost, and what would go back.
+	// REQUESTER ONLY, same ownership check and same omitempty reasoning as
+	// Payment above. Present only on an open task — a finished one cannot be
+	// cancelled, and a preview of an impossible action is noise.
+	//
+	// It exists because the confirmation dialog has to show real numbers
+	// BEFORE the requester commits (build 11: there was no requester-side
+	// cancel entry point at all for an accepted task, and the one on an open
+	// task said "if work has already been recorded, you are billed for that
+	// time" — a description of a rule rather than the amount).
+	Cancellation *TaskCancellation `json:"cancellation,omitempty"`
+
 	// The approved shopping ceiling — tasks.shopping_budget_approved_cents,
 	// the SAME column completeTask validates the receipt against.
 	//
@@ -2137,6 +2149,17 @@ func getTask(c *gin.Context) {
 		// else's task through the ops panel does not get it either, because
 		// the ops panel has the ledger and does not need it here.
 		t.Payment = taskPaymentView(ctx, id)
+
+		// What a cancel would do, priced now. Open tasks only: a completed or
+		// cancelled task cannot be cancelled again, and the settlement card
+		// already says what happened to the money.
+		if t.Status == "open" {
+			authorized := 0
+			if t.Payment != nil {
+				authorized = t.Payment.AuthorizedCents
+			}
+			t.Cancellation = cancellationPreview(ctx, id, t.AssignedToID, authorized)
+		}
 	}
 
 	// The approved shopping ceiling, for the two people it concerns: the
@@ -2773,10 +2796,18 @@ func acceptTask(c *gin.Context) {
 	// The real guard is here: the WHERE clause re-tests availability inside the
 	// UPDATE, so two concurrent accepts serialize on the row lock and only the
 	// first one matches. The loser updates 0 rows and gets "not available".
+	//
+	// accepted_at is stamped in the SAME statement, not afterwards. It is what
+	// the free-cancellation grace window is measured from (billing.go
+	// cancelIsWithinGrace), so a second UPDATE that could fail on its own
+	// would leave a committed supporter with no window at all — or, worse, a
+	// requester able to cancel for free forever because the column stayed
+	// null.
 	tag, err := db.Exec(ctx, `
     update public.tasks
     set assigned_to_id = $1::uuid,
-        assigned_to    = $2
+        assigned_to    = $2,
+        accepted_at    = now()
     where id = $3
       and status = 'open'
       and assigned_to_id is null
@@ -3222,19 +3253,31 @@ func getWorklogs(c *gin.Context) {
 
 	var cost TaskQuote
 	switch {
-	case taskStatus == "cancelled" && len(items) == 0:
-		// A task cancelled before anyone clocked in owes NOTHING — not even
-		// the base fee, because nothing was begun (cancelSettlementCents).
-		// quoteSettlement would answer with the base fee here, which is the
-		// right answer for a task that was worked and the wrong one for a task
-		// that was not; the distinction is whether a session ever existed, so
-		// it is made here where that is known rather than pushed into the
-		// pricing primitive.
-		cost = quoteTask(inputs.Category, 0, 0, inputs.RateCents)
-		cost.BaseFeeCents = 0
-		cost.TimeCostCents = 0
-		cost.TotalCents = 0
-	case taskStatus == "completed" || taskStatus == "cancelled":
+	case taskStatus == "cancelled":
+		// A CANCEL IS PRICED BY cancelSettlementCents, NOT BY quoteSettlement,
+		// and the two disagree in both directions: a free cancel owes nothing
+		// at all (base fee included), while a committed one owes the base fee
+		// even with no session behind it.
+		//
+		// So the view renders the number the cancel RECORDED rather than
+		// re-deriving the policy from what is left on the row. It used to
+		// re-derive it — "cancelled with no worklogs owes nothing" — which was
+		// a second copy of the rule, and a second copy is a second thing to
+		// forget to update. It is now wrong twice over: it would zero an
+		// accepted task that owes $12, and it would bill a grace-window cancel
+		// that owes nothing.
+		cost = inputs.quote()
+		if billed := recordedCancelBillCents(ctx, taskID); billed != nil {
+			cost = withCancelBill(cost, *billed)
+		} else if len(items) == 0 {
+			// Pre-migration row: no recorded bill, so fall back to the rule
+			// that WAS in force when it was cancelled. Correct for those rows
+			// and for no others.
+			cost.BaseFeeCents = 0
+			cost.TimeCostCents = 0
+			cost.TotalCents = cost.ShoppingReceiptCents
+		}
+	case taskStatus == "completed":
 		cost = inputs.quote()
 	default:
 		cost = quoteTask(inputs.Category, cappedMinutes(totalMin, inputs.CapMinutes), 0, inputs.RateCents)
@@ -3733,12 +3776,46 @@ func completeTask(c *gin.Context) {
 
 // POST /tasks/:id/cancel
 //
-// Requester-only, task must still be open, and a supporter currently on the
-// clock blocks it (they have to clock out first). Settlement is
-// cancelSettlementCents: nothing at all if nobody ever clocked in, otherwise
-// base fee plus time past the included block.
+// Requester-only, task must still be open. FOUR STATES, and the rule that
+// picks between them is one sentence: the base fee is the supporter's
+// guarantee, so once they have committed, cancelling still pays it.
 //
-// The shopping budget is deliberately absent from that calculation. This
+//	open, unaccepted        free. Nobody committed, nobody travelled, the hold
+//	                        is released in full. Unchanged, and the only state
+//	                        where a cancel costs nothing.
+//
+//	accepted, inside the    free. The grace window (BillingConfig
+//	grace window            .CancelGraceMinutes, 2 minutes from accepted_at) is
+//	                        there so that watching the wrong person take your
+//	                        task, or realising you posted the wrong thing, is
+//	                        an undo rather than a $12 lesson.
+//
+//	accepted, past it       max(base fee, base fee + time worked), captured and
+//	                        paid out to the supporter in full. Whether they
+//	                        ever clocked in makes no difference to the base
+//	                        fee: they accepted, and by then they are on their
+//	                        way.
+//
+//	accepted, session open  the session is FORCE-CLOSED at the cancellation
+//	                        timestamp and then billed, exactly as if the
+//	                        supporter had clocked out at that moment. Anything
+//	                        else discards the work they were in the middle of.
+//
+// WHAT THIS REPLACED, and the two incidents on the build 11 device run:
+//
+//  1. A cancel with a 7-minute session still open was refused with "clock out
+//     first" — except the ops cancel behind it went through, the open session
+//     was discarded, $12 was released in full, and the supporter was unpaid
+//     for work they were doing at the time.
+//
+//  2. A cancel on an accepted task with no session was refused outright with
+//     "cannot cancel after it has been accepted". There was no requester-side
+//     way out of an accepted task at all; ops had to do it by hand.
+//
+// Both came from measuring commitment by a worklog row rather than by the
+// acceptance. Neither refusal exists any more.
+//
+// The shopping budget is deliberately absent from the calculation. This
 // handler used to compute `refund = max(prepay_amount_cents - bill, 0)`,
 // paying the service bill out of the requester's shopping budget — two
 // unrelated pots, one of which nobody had been charged from. prepay_amount_cents
@@ -3756,8 +3833,13 @@ func cancelTask(c *gin.Context) {
 	}
 
 	// 讀取 reason
+	//
+	// ReasonCode is the preset slug; Reason is the free text that has always
+	// been required. Only the code ever reaches the supporter — see
+	// server/cancel_reasons.go for why the free text stops here.
 	var in struct {
-		Reason string `json:"reason"`
+		Reason     string `json:"reason"`
+		ReasonCode string `json:"reason_code"`
 	}
 	if err := c.BindJSON(&in); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
@@ -3774,11 +3856,13 @@ func cancelTask(c *gin.Context) {
 	// 讀任務狀態與擁有者
 	var requesterID, status, cancelTaskTitle, assigneeEmail string
 	var assignedToID *string
+	var acceptedAt *time.Time
 	err := db.QueryRow(ctx, `
-		select requester_id, status, assigned_to_id, COALESCE(title,''), COALESCE(assigned_to,'')
+		select requester_id, status, assigned_to_id, COALESCE(title,''), COALESCE(assigned_to,''),
+		       accepted_at
 		from public.tasks
 		WHERE id = $1::uuid
-	`, taskID).Scan(&requesterID, &status, &assignedToID, &cancelTaskTitle, &assigneeEmail)
+	`, taskID).Scan(&requesterID, &status, &assignedToID, &cancelTaskTitle, &assigneeEmail, &acceptedAt)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
@@ -3800,50 +3884,47 @@ func cancelTask(c *gin.Context) {
 		return
 	}
 
-	// 是否有未結束工時
-	var hasOpen bool
-	_ = db.QueryRow(ctx, `
-		select exists (
-			select 1 from public.worklogs
-			where task_id=$1 and end_at is null
-		)
-	`, taskID).Scan(&hasOpen)
-	if hasOpen {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot cancel with an active work session (clock out first)"})
-		return
-	}
-
-	// Any worklog row at all means someone clocked in — the open-session check
-	// above already guarantees every one of them is closed by now.
-	var hadSession bool
-	if err := db.QueryRow(ctx, `
-		select exists (select 1 from public.worklogs where task_id=$1)
-	`, taskID).Scan(&hadSession); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
-		return
-	}
-
-	// An accepted task used to be flatly uncancellable, which left the
-	// requester of a half-done job with no way out but the ops panel. Phase 2b
-	// opens the branch Phase 1 built the settlement for: once there is a
-	// CLOSED work session, the supporter has been paid for what they did and
-	// the cancel is a settlement rather than a walk-out, so it is allowed.
+	// AN OPEN SESSION IS FORCE-CLOSED, NOT A REFUSAL.
 	//
-	// Accepted with nothing logged is still refused, deliberately. There is
-	// nothing to settle there and the supporter may already be travelling —
-	// cancelling out from under them with no notice and no payment is exactly
-	// the thing the original guard was protecting against.
-	if assignedToID != nil && !hadSession {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "cannot cancel after it has been accepted",
-			"message": "A supporter has accepted this task. Message them to sort it out — once they've logged any time you can cancel and settle what they worked.",
-		})
-		return
+	// This used to be a 400 telling the requester to make their supporter
+	// clock out first — which is not a thing a requester can do, and which on
+	// the build 11 run left the only working exit as an ops cancel that threw
+	// the open session away and paid the supporter nothing for it.
+	//
+	// The session ends at the cancellation timestamp, exactly as if the
+	// supporter had clocked out at the moment the task was called off, and
+	// then bills normally. Everything downstream — totalClosedMinutes, the
+	// cap, the settlement — is unchanged, because by the time it runs there is
+	// no open session left to reason about.
+	forceClosed := 0
+	if tag, err := db.Exec(ctx, `
+		update public.worklogs
+		   set end_at = now(), updated_at = now()
+		 where task_id = $1::uuid and end_at is null
+	`, taskID); err != nil {
+		// Not fatal to the cancel, and deliberately so: a requester must
+		// always be able to end their own task. But it IS logged loudly,
+		// because the settlement below will now under-bill by the length of
+		// that session and a supporter is the one who loses by it.
+		log.Printf("[cancelTask][ERROR] could not force-close open session task=%s: %v", taskID, err)
+	} else {
+		forceClosed = int(tag.RowsAffected())
 	}
 
-	// Settlement: time actually logged, clamped to what the requester consented
-	// to. A task cancelled before anyone clocked in owes nothing at all — not
-	// even the base fee, because nothing was begun.
+	// WHAT COMMITMENT MEANS. Not "a worklog exists" — a supporter who accepted
+	// ten minutes ago is on a bus, has logged nothing, and has committed. The
+	// acceptance is the commitment, and it is the only moment both parties
+	// agreed on.
+	committed := assignedToID != nil
+
+	// The grace window: an undo, not an option. Inside it a cancel is a full
+	// release even though a supporter has accepted, because two minutes is not
+	// long enough for anyone to have acted on it and a mis-tap should not cost
+	// $12. Measured from accepted_at against the SERVER's clock.
+	withinGrace := committed && cancelIsWithinGrace(acceptedAt, time.Now())
+
+	// Settlement: the base fee the supporter was guaranteed, plus time actually
+	// logged, clamped to what the requester consented to.
 	//
 	// The shopping budget is not an input and never should be: it is an
 	// authorization ceiling, not money anyone has been charged, so a cancel has
@@ -3855,17 +3936,42 @@ func cancelTask(c *gin.Context) {
 		return
 	}
 	capMinutes, _ := taskTimeCapMinutes(ctx, taskID)
-	billCents := cancelSettlementCents(taskCategory(ctx, taskID), cappedMinutes(totalMin, capMinutes),
-		hadSession, taskRateCentsPerMin(ctx, taskID))
+	billedMin := cappedMinutes(totalMin, capMinutes)
+	charged := committed && !withinGrace
+	billCents := cancelSettlementCents(taskCategory(ctx, taskID), billedMin, charged,
+		taskRateCentsPerMin(ctx, taskID))
 
-	// 寫入取消狀態 + 理由（建議你在 tasks 加欄位：cancel_reason text, cancelled_at timestamptz）
+	// The two halves of that number, for the confirmation. Derived here rather
+	// than in the clients (S-05) so "$12.00 base fee + $3.50 for 22 min" and
+	// the total can never disagree.
+	baseFeeOnCancel, timeCostOnCancel := 0, 0
+	if charged {
+		baseFeeOnCancel = baseFeeCents(taskCategory(ctx, taskID))
+		timeCostOnCancel = billCents - baseFeeOnCancel
+	}
+
+	// The preset behind the free text, and the ONLY part of the reason that
+	// will reach the supporter. Resolved before the write so the row carries
+	// both.
+	reasonCode := normalizeCancelReasonCode(in.ReasonCode, in.Reason)
+
+	// 寫入取消狀態 + 理由
+	//
+	// cancelled_assignee_id preserves who was on the task, because the detach
+	// below clears assigned_to_id and a cancelled task would otherwise vanish
+	// from the supporter's world completely — including, under the rule above,
+	// a task they were just PAID for and never clocked into, where no worklog
+	// exists to reach it through either.
 	_, err = db.Exec(ctx, `
 		update public.tasks
 		set status='cancelled',
 		    cancel_reason = $2,
+		    cancel_reason_code = nullif($3, ''),
+		    cancelled_assignee_id = $4::uuid,
+		    cancel_bill_cents = $5,
 		    cancelled_at = now()
 		where id=$1
-	`, taskID, in.Reason)
+	`, taskID, in.Reason, reasonCode, assignedToID, billCents)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
@@ -3899,10 +4005,10 @@ func cancelTask(c *gin.Context) {
 	}
 
 	// The supporter is detached: the task is over, and leaving them assigned to
-	// a cancelled job means it keeps showing up as theirs. Their access to it
-	// is preserved through the worklog they logged (see getTask), so a
-	// supporter who was paid for a cancelled task can still open it and see
-	// what they were paid.
+	// a cancelled job means it keeps showing up in their ACTIVE list. Their
+	// access to it, and its place in their history, are preserved through
+	// cancelled_assignee_id written above — a worklog row is no longer enough,
+	// because a supporter can now be paid for a task they never clocked into.
 	detached := false
 	if assignedToID != nil {
 		if tag, err := db.Exec(ctx, `
@@ -3915,9 +4021,14 @@ func cancelTask(c *gin.Context) {
 		}
 	}
 
+	// The free text goes in the AUDIT row, which is an ops surface, and the
+	// code goes on the task, which is what the other party reads.
 	writeAudit(ctx, taskID, meUID, "CANCELLED", in.Reason, map[string]any{
 		"total_minutes":      totalMin,
-		"had_session":        hadSession,
+		"committed":          committed,
+		"within_grace":       withinGrace,
+		"sessions_closed":    forceClosed,
+		"reason_code":        reasonCode,
 		"bill_cents":         billCents,
 		"hold_released":      released,
 		"captured_cents":     settled.CapturedCents,
@@ -3936,20 +4047,26 @@ func cancelTask(c *gin.Context) {
 
 	// Email supporter, by the id read BEFORE the detach above — notifyAssignee
 	// re-reads the task to find its recipient, which finds nobody once
-	// assigned_to_id is null. Told what they earned, not just that it ended:
-	// "cancelled" with no number reads as "and you are getting nothing".
+	// assigned_to_id is null.
+	//
+	// TWO THINGS THE OLD COPY LEFT OUT, both found on the build 11 run:
+	//
+	//   the reason    "task cancelled, thanks for your time" is opaque. The
+	//                 supporter rearranged their afternoon and is owed the
+	//                 WHY. The preset's relay phrase only — never the free
+	//                 text, which may have been typed by an ops admin about
+	//                 this person (server/cancel_reasons.go).
+	//
+	//   the money     "cancelled" with no number reads as "and you are getting
+	//                 nothing", which under the new rule is usually false. The
+	//                 base fee is named as what it is: their guarantee, paid
+	//                 because they committed, whether or not a clock ever ran.
 	if assignedToID != nil && *assignedToID != "" {
-		supporterBody := fmt.Sprintf("The requester cancelled the task. Reason: %s", in.Reason)
-		if billCents > 0 {
-			supporterBody = fmt.Sprintf(
-				"The requester cancelled the task. Reason: %s — you're paid %s for the %s you logged.",
-				in.Reason, formatCentsUSD(billCents), formatMinutes(totalMin))
-		}
 		notifyUser(ctx, *assignedToID, assigneeEmail, notify.CreateNotificationInput{
 			TaskID:    taskID,
 			Type:      "CANCELLED",
 			Title:     "A task you accepted has been cancelled",
-			Body:      supporterBody,
+			Body:      supporterCancelBody(reasonCode, billCents, totalMin),
 			TaskTitle: cancelTaskTitle,
 		})
 	}
@@ -3976,6 +4093,17 @@ func cancelTask(c *gin.Context) {
 	body := gin.H{
 		"total_minutes": totalMin,
 		"bill_cents":    billCents,
+		// WHICH RULE RAN. The clients say very different things for a free
+		// release and a charged cancel, and neither should have to infer it
+		// from bill_cents == 0 — a charged cancel of a task with a $0 base fee
+		// would be indistinguishable.
+		"committed":    committed,
+		"within_grace": withinGrace,
+		// How the bill is made up, so the confirmation can say "$12.00 base
+		// fee + $3.50 for 22 min" without re-deriving either half (S-05).
+		"base_fee_cents":  baseFeeOnCancel,
+		"time_cost_cents": timeCostOnCancel,
+		"billed_minutes":  billedMin,
 		// What actually moved, when a hold was there to move it from. Zero on
 		// every task posted with PAYMENTS_ENFORCED off, which is all of them
 		// in the running beta.
