@@ -185,6 +185,21 @@ export const GAP_LABEL = 'Paused — not billed'
 export const LAUNDRY_WAIT_HINT =
   'Waiting for a wash or pickup? Clock out while you wait — waiting time is free.'
 
+/**
+ * The line under the cancellation record on the SUPPORTER's copy of a
+ * cancelled task.
+ *
+ * Calm, and specific about the one thing they actually want to know. A
+ * cancelled task used to disappear from their lists entirely, and the
+ * notification behind it said "task cancelled, thanks for your time" — which
+ * reads as "and you are getting nothing". Under the cancellation billing
+ * policy that is usually false: the base fee is theirs because they
+ * committed. The settlement panel directly below this says the number, so
+ * this line's job is only to say that there IS one.
+ */
+export const SUPPORTER_CANCELLED_NOTE =
+  "This task ended here. Anything you're owed is below — there's nothing more to do."
+
 /** Categories that get LAUNDRY_WAIT_HINT. */
 export function showsWaitHint(category) {
   return category === 'laundry'

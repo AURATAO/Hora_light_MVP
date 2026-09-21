@@ -60,6 +60,25 @@ func cancelReasonLabel(code string) string {
 	return ""
 }
 
+// cancelReasonPublicLabel is the preset's label when the preset actually says
+// something, and empty when it does not.
+//
+// The difference from cancelReasonLabel is "Other", which has a label (it is a
+// radio option) and no meaning (it stands for free text nobody else may read).
+// Rendering "Reason: Other" to a supporter whose afternoon was just rearranged
+// is worse than rendering no reason: it looks like an answer.
+func cancelReasonPublicLabel(code string) string {
+	for _, r := range cancelReasons {
+		if r.Value == code {
+			if r.Relay == "" {
+				return ""
+			}
+			return r.Label
+		}
+	}
+	return ""
+}
+
 // cancelReasonForCounterparty is the sentence fragment the OTHER party is
 // shown: "Reason: plans changed".
 //

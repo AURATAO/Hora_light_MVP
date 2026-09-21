@@ -37,7 +37,14 @@ export function TaskListItem({ task, onPress, className }: TaskListItemProps) {
         <Text className="text-caption text-muted">
           {meta.label} · {formatRelativeTime(task.created_at)}
         </Text>
-        <Badge label={statusLabel(status)} variant="success" />
+        {/* A cancelled or removed task is over, not achieved. Green beside
+            "Completed" read as a success on the supporter's history — which
+            is a list they now see cancelled tasks in at all (build 11: they
+            vanished entirely). */}
+        <Badge
+          label={statusLabel(status)}
+          variant={status === "cancelled" || status === "removed" ? "neutral" : "success"}
+        />
       </View>
     </Card>
   );

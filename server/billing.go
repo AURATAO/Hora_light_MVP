@@ -923,3 +923,22 @@ func withCancelBill(cost TaskQuote, billCents int) TaskQuote {
 	cost.TotalCents = cost.BaseFeeCents + cost.TimeCostCents + cost.ShoppingReceiptCents
 	return cost
 }
+
+// isCancelledAssignee reports whether a uid was the supporter on a task at the
+// moment it was cancelled.
+//
+// The cancel path detaches (assigned_to_id is nulled so a dead task leaves
+// their active list) and records this instead. Every "is this person a party
+// to this task" check has to consider both, because a supporter can be paid
+// the base fee for a task they accepted and never clocked into — no
+// assignment, no worklog, and money owed.
+func isCancelledAssignee(ctx context.Context, taskID, uid string) bool {
+	if uid == "" {
+		return false
+	}
+	var match bool
+	_ = db.QueryRow(ctx,
+		`select cancelled_assignee_id = $2::uuid from public.tasks where id = $1::uuid`,
+		taskID, uid).Scan(&match)
+	return match
+}

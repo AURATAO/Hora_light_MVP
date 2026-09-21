@@ -180,8 +180,15 @@ export interface Task {
   completion_photo_url: string | null;
   completion_note: string | null;
   completed_at: string | null;
+  /** FREE TEXT, written by whoever cancelled — the requester, or an ops
+   *  admin. Never render it to the counterparty: use cancel_reason_label. */
   cancel_reason: string | null;
   cancelled_at: string | null;
+  /** The preset's label behind cancel_reason, and the ONLY cancellation reason
+   *  safe to show the other party. Detail-only, and absent when the task
+   *  carries no preset — "Other", an ops cancel, or a row cancelled before
+   *  codes existed. No reason beats somebody else's typing. */
+  cancel_reason_label?: string | null;
   /** Takedown state. Only ever present on a removed task, and only on the
    * task-detail response — the admin's internal note is never sent. */
   removed_at?: string | null;
