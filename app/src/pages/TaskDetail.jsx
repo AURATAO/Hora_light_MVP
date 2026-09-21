@@ -25,7 +25,13 @@ import PlaceInput from '../components/PlaceInput'
 import { useToast } from '../providers/ToastProvider'
 import { isTractionWindowActive } from '../lib/traction'
 import { useTaskEstimate, formatCents } from '../hooks/useTaskEstimate'
-import { capWarningNote, holdSummary, timeBasisNote } from '../lib/paymentCopy'
+import {
+  capWarningNote,
+  extensionAskLabel,
+  extensionDecidedAt,
+  holdSummary,
+  timeBasisNote,
+} from '../lib/paymentCopy'
 import { isPayoutsOnboardingRequired } from '../api/payments'
 
 
@@ -188,6 +194,40 @@ function SettlementPanel({ cost, settlement, timeline, isOwner, taskId }) {
         <div className="text-xs text-white/40">
           We couldn&apos;t complete the payment for this task. The HO:RA team has been notified and
           will sort it out — there&apos;s nothing you need to do.
+        </div>
+      )}
+
+      {/* THE DECISION TRAIL, beside the money trail. One line per mid-task
+          ask: what was wanted, what was decided, and when.
+
+          Both parties used to lose all of this the moment a task completed —
+          the only record was a notification, dismissible and then gone. The
+          settlement already reflects an approved increase in what was charged;
+          this is what makes the decision behind that number visible.
+
+          Absent entirely when nothing was ever asked, which is most tasks. */}
+      {(settlement.requests || []).length > 0 && (
+        <div className="border-t border-white/10 pt-2 space-y-1.5">
+          <div className="text-xs text-white/60">Requests</div>
+          {settlement.requests.map((r) => (
+            <div key={r.id} className="space-y-0.5">
+              <div className="flex justify-between gap-3">
+                <span className="text-white/70">{extensionAskLabel(r)}</span>
+                <span className={r.status === 'approved' ? 'text-white' : 'text-white/50'}>
+                  {r.outcome}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3 text-xs text-white/40">
+                {/* Why they asked, where they said. Never the slug. */}
+                <span>{r.reason_label || '\u00a0'}</span>
+                <span>{extensionDecidedAt(r)}</span>
+              </div>
+              {/* What actually happened when nobody answered. "No response"
+                  alone is half the sentence — the useful half is that the
+                  supporter's own pre-chosen fallback ran. */}
+              {r.fallback && <div className="text-xs text-white/40">{r.fallback}</div>}
+            </div>
+          ))}
         </div>
       )}
 

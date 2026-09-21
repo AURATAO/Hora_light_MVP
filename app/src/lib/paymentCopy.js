@@ -246,6 +246,41 @@ export function cancelGraceCountdown(graceEndsAt, nowMs = Date.now()) {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
 }
 
+
+/**
+ * "$8.00 more budget" / "+30 min" — what a mid-task request asked for.
+ *
+ * Reads the server's own fields and formats nothing it was not given. The
+ * amount is the ADDITIONAL sum, which is what both parties were asked to
+ * approve; the running total is the settlement's job, two lines up.
+ */
+export function extensionAskLabel(request) {
+  if (!request) return ''
+  if (request.kind === 'budget') {
+    return `${formatCents(request.requested_cents || 0)} more budget`
+  }
+  return `+${request.requested_minutes || 0} min`
+}
+
+/**
+ * When it was settled, or when it was asked if it never was.
+ *
+ * A request that outlived its task has no resolved_at, and dating the row by
+ * the ask is the only honest thing left to show.
+ */
+export function extensionDecidedAt(request) {
+  const when = request?.resolved_at || request?.requested_at
+  if (!when) return ''
+  const parsed = Date.parse(when)
+  if (!Number.isFinite(parsed)) return ''
+  return new Date(parsed).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 /** The short form for a task-detail row: "$76.75 reserved · Visa ••4242". */
 export function holdSummary(payment) {
   if (!payment || !payment.authorized_cents) return null
