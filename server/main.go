@@ -549,20 +549,31 @@ func main() {
 			return
 		}
 		var name string
-		var isVerified bool
+		var p Profile
 		_ = db.QueryRow(c.Request.Context(),
-			`select coalesce(name,''), coalesce(is_verified_supporter, false) from public.profiles where email = $1`,
+			`select coalesce(name,''), coalesce(is_verified_supporter, false),
+			        supporter_applied_at, supporter_rejected_at
+			   from public.profiles where email = $1`,
 			email,
-		).Scan(&name, &isVerified)
+		).Scan(&name, &p.IsVerifiedSupporter, &p.SupporterAppliedAt, &p.SupporterRejectedAt)
 		if name == "" {
 			name = deriveName(email)
 		}
+		// THE SAME STATUS THE PROFILE ENDPOINT DERIVES, from the same function.
+		//
+		// Both clients gate every supporter surface on supporter_status ==
+		// "approved", and web only ever had is_verified_supporter here — which
+		// happens to agree today (the derivation's first case reads that exact
+		// column) and would stop agreeing the moment approval grows a second
+		// condition. One derivation, one answer (S-05).
+		p.deriveSupporterStatus()
 		c.JSON(http.StatusOK, gin.H{
 			"auth":                  true,
 			"id":                    uid,
 			"email":                 email,
 			"name":                  name,
-			"is_verified_supporter": isVerified,
+			"is_verified_supporter": p.IsVerifiedSupporter,
+			"supporter_status":      p.SupporterStatus,
 		})
 	})
 

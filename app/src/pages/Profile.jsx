@@ -174,6 +174,26 @@ export default function Profile() {
             supporter. */}
         <Earnings isSupporter={supporterStatus === 'approved'} />
 
+        {/* THE WAY IN, for everyone who is not already in the pipeline. Web's
+            mirror of mobile's Profile row: a requester who wants to earn had
+            no entry point on this page at all, and the supporter surfaces are
+            now hidden everywhere else — so without this the application is
+            reachable only by knowing the URL.
+            Absent for applied/approved/rejected, each of which has its own
+            state elsewhere and none of which wants a second form. */}
+        {supporterStatus === 'none' && (
+          <Link
+            to="/become-supporter"
+            className="flex items-center justify-between rounded-md border border-white/20 p-4 hover:border-white/40 transition-colors"
+          >
+            <span>
+              <span className="block text-sm font-medium">Become a supporter</span>
+              <span className="block text-xs text-white/60">Earn by helping people nearby.</span>
+            </span>
+            <span className="text-white/40">&rsaquo;</span>
+          </Link>
+        )}
+
       </div>
     </div>
   )

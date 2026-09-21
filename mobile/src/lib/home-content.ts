@@ -95,10 +95,15 @@ export const HOME_CARD_DETAILS: Record<string, HomeCardDetail> = {
         "US-based with a valid government ID required.",
     ],
     primaryLabel: "Apply now",
-    // The Work tab owns the supporter application banner in all of its states,
-    // so the CTA lands there rather than deep-linking /supporter-apply — an
-    // already-applied user should see their status, not a second form.
-    primaryAction: "/(tabs)/work",
+    // Straight to the application. This used to route to the Work tab, which
+    // owned the status banner in all of its states — but that tab is now
+    // supporter-only ((tabs)/_layout), so for the one audience that reads this
+    // card it is hidden and the route redirects Home.
+    //
+    // The "already applied should see status, not a second form" requirement
+    // did not go away; it moved into supporter-apply itself, which guards on
+    // supporter_status and shows the same banner.
+    primaryAction: "/supporter-apply",
     dismissLabel: "Maybe later",
   },
 };

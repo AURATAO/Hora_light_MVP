@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { RefreshControl, Text, View } from "react-native";
-import { useFocusEffect, useRouter } from "expo-router";
+import { Redirect, useFocusEffect, useRouter } from "expo-router";
 import { Briefcase, MapPin } from "lucide-react-native";
 import { SupporterStatusBanner } from "../../components/SupporterStatusBanner";
 import { Card, EmptyState, Screen, Skeleton } from "../../components/ui";
@@ -117,7 +117,7 @@ export default function Work() {
 
   if (profileLoading) {
     return (
-      <Screen insetForTabBar headline="Work">
+      <Screen insetForTabBar headline="Earn">
         <View className="gap-3">
           <Skeleton className="h-[84px]" />
           <Skeleton className="h-[84px]" />
@@ -128,7 +128,7 @@ export default function Work() {
 
   if (profileError && !profile) {
     return (
-      <Screen insetForTabBar headline="Work">
+      <Screen insetForTabBar headline="Earn">
         <EmptyState
           icon={Briefcase}
           title="Couldn't load this page"
@@ -142,13 +142,29 @@ export default function Work() {
 
   const status = profile?.supporter_status ?? "none";
 
+  // THE ROUTE GUARD. The tab is hidden for non-supporters (see (tabs)/_layout),
+  // but a push notification deep link, a saved URL or a stale navigation stack
+  // can still aim at this route — and landing a requester on a screen of other
+  // people's jobs is the confusion the gating exists to remove.
+  //
+  // Redirect Home rather than render a refusal: there is nothing here for
+  // them, and a dead end they have to back out of is worse than simply being
+  // somewhere that makes sense.
+  //
+  // An APPLIED or REJECTED supporter is NOT redirected — they have a live
+  // application and the banner is how they learn where it stands, which is
+  // exactly what this screen is for while they wait.
+  if (status === "none") {
+    return <Redirect href="/(tabs)/home" />;
+  }
+
   // Every non-approved state is one banner (web parity — see
   // SupporterStatusBanner); the tasks feed below is approved-only.
   if (status !== "approved") {
     return (
       <Screen
         insetForTabBar
-        headline="Work"
+        headline="Earn"
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={color.muted} />}
       >
         <SupporterStatusBanner status={status} onApply={() => router.push("/supporter-apply")} />
