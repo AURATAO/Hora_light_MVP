@@ -42,6 +42,10 @@ export default function Earnings({ isSupporter }) {
   // Hidden rather than errored: an older backend, or one with no Stripe.
   const [unavailable, setUnavailable] = useState(false)
   const [busy, setBusy] = useState(false)
+  // Whether the strip has been expanded past its three-row preview, and
+  // whether the next page is in flight.
+  const [expanded, setExpanded] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -52,6 +56,23 @@ export default function Earnings({ isSupporter }) {
       else toast(e?.body?.message || 'Couldn’t load your earnings')
     } finally {
       setLoading(false)
+    }
+  }, [toast])
+
+  // "See all" fetches the rest IN PLACE rather than routing to a new screen:
+  // this card already lives inside the profile page, the list is short enough
+  // to belong there, and a whole route for it would be a page whose only
+  // content is a list the user was already looking at.
+  const loadAllTransfers = useCallback(async () => {
+    setLoadingMore(true)
+    try {
+      const full = await getEarnings({ limit: 50 })
+      setData(full)
+      setExpanded(true)
+    } catch (e) {
+      toast(e?.body?.message || 'Couldn\u2019t load your payments')
+    } finally {
+      setLoadingMore(false)
     }
   }, [toast])
 
@@ -140,7 +161,13 @@ export default function Earnings({ isSupporter }) {
                   {formatCents(data.lifetime_earned_cents || 0)}
                 </div>
               </div>
-              <TransferList transfers={data.transfers || []} />
+              <TransferList
+                transfers={data.transfers || []}
+                total={data.total ?? (data.transfers || []).length}
+                expanded={expanded}
+                loadingMore={loadingMore}
+                onSeeAll={loadAllTransfers}
+              />
             </>
           )}
         </>
@@ -190,12 +217,24 @@ function OnboardingCard({ state, requirementsDue, busy, onStart, onManage }) {
   )
 }
 
+/** How many transfers the strip shows before deferring to "See all". */
+const PREVIEW_COUNT = 3
+
 /**
- * Recent transfers. A strip, not a ledger — "Manage payouts" goes to Stripe's
- * dashboard, which has the complete record, and paginating here would be
- * building a worse copy of it.
+ * Recent transfers: the three most recent, and a way to the rest.
+ *
+ * WHY IT IS CAPPED NOW. This used to render every transfer the endpoint
+ * returned — twenty of them — which grew with how much somebody had worked, so
+ * the supporters who had earned the most had the longest scroll between them
+ * and the number they came for, which is the lifetime total directly above.
+ *
+ * "Manage payouts" still goes to Stripe's dashboard and always will: that is
+ * the record of what reached their BANK. This is the record of what HO:RA paid
+ * them and which task each payment was for, and sending somebody out to an
+ * external dashboard to answer "what have I earned here" is an export, not a
+ * list. `onSeeAll` loads the next page in place.
  */
-function TransferList({ transfers }) {
+function TransferList({ transfers, total, onSeeAll, expanded, loadingMore }) {
   if (transfers.length === 0) {
     return (
       <p className="text-xs text-white/40">
@@ -204,10 +243,28 @@ function TransferList({ transfers }) {
     )
   }
 
+  const shown = expanded ? transfers : transfers.slice(0, PREVIEW_COUNT)
+  const hasMore = total > shown.length
+
   return (
     <div className="space-y-2">
-      <div className="text-xs text-white/50">Recent</div>
-      {transfers.map(t => (
+      <div className="flex items-center justify-between">
+        <div className="text-xs text-white/50">Recent</div>
+        {/* The NUMBER, on purpose: "See all" alone makes a reader guess
+            whether there are four or four hundred, which is the thing they
+            are actually asking when they look at a truncated list. */}
+        {hasMore && (
+          <button
+            type="button"
+            onClick={onSeeAll}
+            disabled={loadingMore}
+            className="text-xs text-white/60 underline hover:text-white disabled:opacity-50"
+          >
+            {loadingMore ? 'Loading…' : `See all (${total})`}
+          </button>
+        )}
+      </div>
+      {shown.map(t => (
         <div key={`${t.task_id}-${t.created_at}`} className="flex justify-between gap-3 text-sm">
           <div className="min-w-0">
             <div className="truncate text-white/80">{t.task_title || 'Task'}</div>

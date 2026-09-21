@@ -134,6 +134,27 @@ async function buildFileFormData(file: FilePart, fieldName: string): Promise<For
 export interface KeysetParams {
   before_created_at?: string;
   before_id?: string;
+  limit?: number;
+}
+
+/** A keyset cursor as the server hands it back, for "load more". */
+export interface KeysetCursor {
+  before_created_at: string;
+  before_id: string;
+}
+
+/**
+ * A page of a list, plus the two things a preview needs that a bare array
+ * cannot carry: where the next page starts, and how many rows exist in total.
+ *
+ * `total` is the whole history, not the page — it is what lets a screen
+ * showing three rows say "See all (47)". Zero from a server that could not
+ * count, which the clients render as no link at all rather than "See all (0)".
+ */
+export interface TaskPage {
+  items: Task[];
+  next: KeysetCursor | null;
+  total: number;
 }
 
 // Every keyset-paginated task list endpoint (/tasks/posted, /posted/closed,
@@ -144,10 +165,21 @@ export interface KeysetParams {
 interface KeysetEnvelope<T> {
   items: T[] | null;
   next?: unknown;
+  total?: number;
 }
 
 function unwrapItems<T>(envelope: KeysetEnvelope<T> | null | undefined): T[] {
   return Array.isArray(envelope?.items) ? envelope.items : [];
+}
+
+/** The same envelope, kept whole — for the callers that need `next`/`total`. */
+function unwrapPage(envelope: KeysetEnvelope<Task> | null | undefined): TaskPage {
+  const next = envelope?.next as KeysetCursor | null | undefined;
+  return {
+    items: Array.isArray(envelope?.items) ? envelope.items : [],
+    next: next?.before_created_at && next?.before_id ? next : null,
+    total: typeof envelope?.total === "number" ? envelope.total : 0,
+  };
 }
 
 export interface UploadResponse {
@@ -457,6 +489,11 @@ export function getPostedClosedTasks(params?: KeysetParams): Promise<Task[]> {
   return apiFetch<KeysetEnvelope<Task>>(`/tasks/posted/closed${toQueryString(params)}`).then(unwrapItems);
 }
 
+/** The requester's closed tasks as a PAGE — items, cursor and total. */
+export function getPostedClosedPage(params?: KeysetParams): Promise<TaskPage> {
+  return apiFetch<KeysetEnvelope<Task>>(`/tasks/posted/closed${toQueryString(params)}`).then(unwrapPage);
+}
+
 export function getTask(id: string): Promise<Task> {
   return apiFetch<Task>(`/tasks/${id}`);
 }
@@ -592,6 +629,11 @@ export function getAssignedTasks(params?: KeysetParams): Promise<Task[]> {
 
 export function getDoneTasks(params?: KeysetParams): Promise<Task[]> {
   return apiFetch<KeysetEnvelope<Task>>(`/tasks/done${toQueryString(params)}`).then(unwrapItems);
+}
+
+/** The supporter's finished tasks as a PAGE — items, cursor and total. */
+export function getDonePage(params?: KeysetParams): Promise<TaskPage> {
+  return apiFetch<KeysetEnvelope<Task>>(`/tasks/done${toQueryString(params)}`).then(unwrapPage);
 }
 
 export function acceptTask(id: string): Promise<Task> {
@@ -903,6 +945,9 @@ export interface Earnings {
   /** Lifetime PAID, not lifetime earned-on-paper — money in flight is excluded. */
   lifetime_earned_cents: number;
   transfers: EarningsTransfer[];
+  /** How many transfers exist in total, so a preview showing three can say
+   *  "See all (47)". Distinct from transfers.length, which is one page. */
+  total?: number;
 }
 
 /**
@@ -925,8 +970,8 @@ export function createLoginLink(): Promise<{ url: string }> {
   return apiFetch<{ url: string }>("/payments/connect/login-link", { method: "POST" });
 }
 
-export function getEarnings(): Promise<Earnings> {
-  return apiFetch<Earnings>("/payments/earnings");
+export function getEarnings(params?: { limit?: number; offset?: number }): Promise<Earnings> {
+  return apiFetch<Earnings>(`/payments/earnings${toQueryString(params)}`);
 }
 
 /**

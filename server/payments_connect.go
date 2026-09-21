@@ -44,6 +44,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -726,13 +727,28 @@ type Earnings struct {
 	// flight.
 	LifetimeEarnedCents int                `json:"lifetime_earned_cents"`
 	Transfers           []EarningsTransfer `json:"transfers"`
+	// How many transfers exist in total, so a screen showing three of them can
+	// say "See all (47)". Distinct from len(Transfers), which is one page.
+	Total int `json:"total"`
 }
 
-// earningsRecentLimit caps the list. The Express dashboard is the complete
-// record — "Manage payouts" goes there — so this is a recent-activity strip,
-// not a ledger, and paginating it would be building a worse copy of something
-// Stripe already hosts.
+// earningsRecentLimit is the DEFAULT page size, not the whole story.
+//
+// This used to be a hard cap of 20, on the reasoning that the Express
+// dashboard is the complete record — "Manage payouts" goes there — so a
+// paginated list here would be a worse copy of something Stripe already
+// hosts. That was right while the screen showed a strip and nothing else.
+//
+// It stopped being right when the profile screen went to "3 most recent + See
+// all": "See all" has to open something, and sending a supporter out to
+// Stripe's dashboard to answer "what have I earned on HO:RA" is an export,
+// not a list. Both are still true — Stripe remains the record of what hit
+// their bank, and this is the record of what HO:RA paid them for — so the
+// "Manage payouts" route stays exactly where it is.
 const earningsRecentLimit = 20
+
+// earningsMaxLimit bounds what a caller can ask for in one page.
+const earningsMaxLimit = 50
 
 // GET /payments/earnings
 func earningsHandler(c *gin.Context) {
@@ -750,9 +766,19 @@ func earningsHandler(c *gin.Context) {
 		return
 	}
 
+	limit := parseLimit(c.Query("limit"), earningsRecentLimit, earningsMaxLimit)
+	offset := parseOffset(c.Query("offset"))
+
 	out := Earnings{Onboarding: st, Transfers: []EarningsTransfer{}}
 	out.LifetimeEarnedCents = lifetimePaidCents(ctx, uid)
+	out.Total = countPayouts(ctx, uid)
 
+	// OFFSET rather than a keyset cursor, deliberately. The ordering key here
+	// is payouts.created_at, which is not unique — two transfers written in
+	// the same settlement share it — so a keyset on it alone can skip or
+	// repeat a row at a page boundary. A supporter's payout history is small
+	// and read rarely; offset is correct, and correct beats clever on a screen
+	// that is telling somebody what they were paid.
 	rows, err := db.Query(ctx, `
 		select po.task_id::text, coalesce(t.title,''), po.amount_cents, po.status, po.created_at,
 		       coalesce(p.time_cost_cents, 0), coalesce(p.shopping_receipt_cents, 0)
@@ -760,9 +786,9 @@ func earningsHandler(c *gin.Context) {
 		  join public.tasks t    on t.id = po.task_id
 		  join public.payments p on p.id = po.payment_id
 		 where po.supporter_id = $1::uuid
-		 order by po.created_at desc
-		 limit $2
-	`, uid, earningsRecentLimit)
+		 order by po.created_at desc, po.id desc
+		 limit $2 offset $3
+	`, uid, limit, offset)
 	if err != nil {
 		log.Printf("[payments][earnings] list for uid=%s: %v", uid, err)
 		c.JSON(http.StatusOK, out) // the status half is still worth rendering
@@ -899,4 +925,26 @@ func notifySupporterPayoutsDisabled(email string, due []string) {
 			log.Printf("[payments][connect] payouts-disabled email failed to=%s: %v", email, err)
 		}
 	}()
+}
+
+// parseOffset reads a non-negative row offset, defaulting to zero. Anything
+// unparseable or negative is zero — the first page is the safe answer to a
+// malformed request about somebody's money.
+func parseOffset(raw string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// countPayouts is how many transfers this supporter has, ever.
+func countPayouts(ctx context.Context, uid string) int {
+	var n int
+	if err := db.QueryRow(ctx,
+		`select count(*) from public.payouts where supporter_id = $1::uuid`, uid).Scan(&n); err != nil {
+		log.Printf("[payments][earnings] count for uid=%s: %v", uid, err)
+		return 0
+	}
+	return n
 }
