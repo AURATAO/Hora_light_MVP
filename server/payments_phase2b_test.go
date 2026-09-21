@@ -169,30 +169,142 @@ func TestPhase2bTimeCapIsPerTaskNotPerSession(t *testing.T) {
 // Where Layer 2 fires, including the degenerate short task where the lead time
 // is longer than the whole job. A warning that has already fired by the time
 // the supporter clocks in tells them nothing.
+//
+// The argument is the AGREED minutes — estimate plus approved extensions — and
+// not the ceiling. See TestPhase2bWarningAnchorsToTheEstimateNotTheCeiling for
+// why that distinction is the point.
 func TestPhase2bWarningThreshold(t *testing.T) {
 	cases := []struct {
-		capMinutes int
-		want       int
+		agreedMinutes int
+		want          int
 	}{
-		{0, 0},   // no ceiling, no warning
-		{1, 1},   // clamped: cap - 5 would be negative
-		{5, 1},   // clamped: cap - 5 would be 0, i.e. "warn at the start"
-		{6, 1},   // the first cap where the lead fits exactly
-		{30, 25}, // consent off, 30-minute estimate
-		{45, 40}, // consent on, 30-minute estimate
+		{0, 0},   // nothing agreed, no warning
+		{1, 1},   // clamped: agreed - 5 would be negative
+		{5, 1},   // clamped: agreed - 5 would be 0, i.e. "warn at the start"
+		{6, 1},   // the first estimate where the lead fits exactly
+		{30, 25}, // a 30-minute estimate, with or without consent
+		{45, 40}, // a 30-minute estimate plus an approved 15
 		{60, 55},
 	}
 	for _, tc := range cases {
-		if got := timeCapWarningMinutes(tc.capMinutes); got != tc.want {
-			t.Errorf("cap=%d: warn at %d, want %d", tc.capMinutes, got, tc.want)
+		if got := timeCapWarningMinutes(tc.agreedMinutes); got != tc.want {
+			t.Errorf("agreed=%d: warn at %d, want %d", tc.agreedMinutes, got, tc.want)
 		}
 	}
-	// And it is always strictly before the ceiling, which is the whole point
-	// of calling it a warning.
-	for capMinutes := 1; capMinutes <= 600; capMinutes++ {
-		if w := timeCapWarningMinutes(capMinutes); w > capMinutes {
-			t.Fatalf("cap=%d warns at %d — after the ceiling", capMinutes, w)
+	// And it is always strictly before the time it is warning about, which is
+	// the whole point of calling it a warning.
+	for agreed := 1; agreed <= 600; agreed++ {
+		if w := timeCapWarningMinutes(agreed); w > agreed {
+			t.Fatalf("agreed=%d warns at %d — after the moment it warns about", agreed, w)
 		}
+	}
+}
+
+// THE BUILD 11 FINDING. With auto-extend on, the est-5 warning fired at
+// ceiling-5 — 40 minutes into a 30-minute task — which announced the estimate
+// ten minutes after it had gone past, with the fuse already a third burnt.
+//
+// The warning's job is "you are approaching YOUR ESTIMATE". Auto-extend is a
+// fuse, not a new estimate, so it moves the CEILING and nothing else. The
+// ceiling events — billing stop, the approval flow, the ops alert — stay where
+// they were.
+//
+// Read as the spec's two acceptance rows: a 30-minute task warns at 25 either
+// way, and stops at 45 with consent or 30 without.
+func TestPhase2bWarningAnchorsToTheEstimateNotTheCeiling(t *testing.T) {
+	cases := []struct {
+		name string
+		// The requester's estimate, their consent at post, and any minutes
+		// they approved mid-task.
+		estimate      int
+		consent       bool
+		approvedExtra int
+
+		wantAgreed int
+		wantWarnAt int
+		wantCap    int
+	}{
+		{"30-min task, auto-extend ON", 30, true, 0, 30, 25, 45},
+		{"30-min task, auto-extend OFF", 30, false, 0, 30, 25, 30},
+		// An approval IS a new estimate — the requester has looked at the job
+		// and named a bigger number — so it moves the anchor as well as the
+		// ceiling. Without this, resolveExtension's latch reset would re-fire
+		// the warning on the very next ping, since the task is already past
+		// the original estimate.
+		{"30-min task, +15 approved, auto-extend ON", 30, true, 15, 45, 40, 60},
+		{"30-min task, +15 approved, auto-extend OFF", 30, false, 15, 45, 40, 45},
+		// A five-minute task cannot warn at zero. The clamp holds whichever
+		// side of the ceiling the anchor is on.
+		{"5-min task, auto-extend ON", 5, true, 0, 5, 1, 20},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Per subtest, not per test: seedOpsWorld inserts the same fixed
+			// emails every time, so it needs a fresh fixture to insert into.
+			setupStripeWebhookDB(t)
+			w := seedOpsWorld(t, "open")
+			ctx := context.Background()
+			if _, err := db.Exec(ctx, `
+				update public.tasks set estimated_minutes = $2, auto_extend_consent = $3
+				 where id = $1::uuid
+			`, w.taskID, tc.estimate, tc.consent); err != nil {
+				t.Fatalf("set estimate: %v", err)
+			}
+			if tc.approvedExtra > 0 {
+				if _, err := db.Exec(ctx, `
+					insert into public.extension_requests
+						(task_id, supporter_id, kind, requested_minutes, status, resolved_at)
+					values ($1::uuid, $2::uuid, 'time', $3, 'approved', now())
+				`, w.taskID, w.supporterID, tc.approvedExtra); err != nil {
+					t.Fatalf("seed approved extension: %v", err)
+				}
+			}
+
+			capMinutes, detail := taskTimeCapMinutes(ctx, w.taskID)
+			if capMinutes != tc.wantCap {
+				t.Errorf("cap = %d, want %d — the ceiling moved", capMinutes, tc.wantCap)
+			}
+			if detail.AgreedMinutes != tc.wantAgreed {
+				t.Errorf("agreed = %d, want %d", detail.AgreedMinutes, tc.wantAgreed)
+			}
+			if detail.WarnAtMinutes != tc.wantWarnAt {
+				t.Errorf("warn at %d min, want %d — auto-extend moved the warning",
+					detail.WarnAtMinutes, tc.wantWarnAt)
+			}
+
+			// And the state machine agrees: one minute before the anchor is
+			// quiet, the anchor itself warns without stopping billing, and the
+			// ceiling is where billing stops.
+			seedWorklog(t, w.taskID, tc.wantWarnAt-1, false)
+			if st := readTimeCapState(ctx, w.taskID); st.Warning || st.Reached {
+				t.Errorf("at %d min: warning=%v reached=%v — fired early",
+					tc.wantWarnAt-1, st.Warning, st.Reached)
+			}
+			setSingleSessionMinutes(t, w.taskID, tc.wantWarnAt)
+			if st := readTimeCapState(ctx, w.taskID); !st.Warning || st.Reached {
+				t.Errorf("at the %d-min anchor: warning=%v reached=%v, want warning only",
+					tc.wantWarnAt, st.Warning, st.Reached)
+			}
+			setSingleSessionMinutes(t, w.taskID, tc.wantCap)
+			if st := readTimeCapState(ctx, w.taskID); !st.Reached {
+				t.Errorf("at the %d-min ceiling: reached=false — billing did not stop", tc.wantCap)
+			}
+		})
+	}
+}
+
+// setSingleSessionMinutes rewrites the task's one seeded session to be exactly
+// `minutes` long, so a test can walk a task up to a threshold without seeding
+// a second session and changing the rounding.
+func setSingleSessionMinutes(t *testing.T, taskID string, minutes int) {
+	t.Helper()
+	if _, err := db.Exec(context.Background(), `
+		update public.worklogs
+		   set start_at = now() - make_interval(mins => $2), end_at = now()
+		 where task_id = $1::uuid
+	`, taskID, minutes); err != nil {
+		t.Fatalf("set session length: %v", err)
 	}
 }
 

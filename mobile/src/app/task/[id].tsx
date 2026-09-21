@@ -85,7 +85,12 @@ import {
   statusLabel,
 } from "../../lib/task-utils";
 import { SUPPORT_EMAIL } from "../../lib/constants";
-import { holdSummary, holdWillBeReleasedMessage, timeBasisNote } from "../../lib/payment-copy";
+import {
+  capWarningNote,
+  holdSummary,
+  holdWillBeReleasedMessage,
+  timeBasisNote,
+} from "../../lib/payment-copy";
 import type {
   ExtensionRequest,
   ExtensionsResponse,
@@ -1770,10 +1775,8 @@ function SupporterAskCard({
           Time cap reached — anything past this isn't billed. Ask for more time, or wrap up
           whenever you judge it right. The task can still be completed at any point.
         </Text>
-      ) : capState?.warning ? (
-        <Text className="text-caption text-muted">
-          About {formatMinutes(capState.remaining_minutes)} left on the time that was agreed.
-        </Text>
+      ) : capWarningNote(capState) ? (
+        <Text className="text-caption text-muted">{capWarningNote(capState)}</Text>
       ) : null}
 
       {pending ? (

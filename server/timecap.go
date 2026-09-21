@@ -6,10 +6,17 @@ package main
 // thirty, the requester has no idea, and the first either of them learns about
 // it is the bill. Three layers, each answering a different question:
 //
-//	LAYER 2  ~5 min left     both parties told. The supporter can ask for more
-//	         (warning)       time in one tap; the requester can grant it in one.
-//	                         Fires whether or not consent was given, because the
+//	LAYER 2  ~5 min before   both parties told. The supporter can ask for more
+//	         the ESTIMATE    time in one tap; the requester can grant it in one.
+//	         (warning)       Fires whether or not consent was given, because the
 //	                         point is that NOBODY is surprised.
+//
+//	                         ANCHORED TO THE ESTIMATE, NOT THE CEILING. With
+//	                         auto-extend on, a 30-minute task warns at 25 and
+//	                         stops billing at 45. Warning at 40 — which is what
+//	                         ceiling-minus-5 did — announced the estimate ten
+//	                         minutes after it had passed. See
+//	                         timeCapWarningMinutes.
 //
 //	LAYER 1  the ceiling     billing stops accruing. With auto-extend consent
 //	         (auto-extend)   the ceiling is estimate + 15, so those 15 minutes
@@ -181,29 +188,58 @@ func fireTimeCapWarning(ctx context.Context, taskID string, st timeCapState) {
 	}
 	log.Printf("[timecap] warning task=%s logged=%d cap=%d", taskID, st.LoggedMinutes, st.Cap.CapMinutes)
 
+	// THREE SHAPES, and which one is sent is decided by what is actually true
+	// about this task's ceiling — not by one sentence bent to cover all of
+	// them.
+	//
+	// The auto-extend case is the one this exists for. The warning now fires
+	// at the ESTIMATE (billing.go timeCapWarningMinutes), so on a 30-minute
+	// task with consent it lands at 25 logged minutes with 20 minutes of
+	// ceiling still above it. "About 20 minutes left" would be true of the
+	// ceiling and useless as a warning: the supporter needs to know they are
+	// at the number the requester actually planned around, and that the fuse
+	// above it is 15 minutes long and not a fresh estimate.
+	supporterTitle := "About 5 minutes left on this task"
 	supporterBody := fmt.Sprintf(
 		"About %d minutes left on the time %s asked for. Need longer? Ask for more in the app — they can approve it in one tap.",
 		maxInt(st.RemainingMinutes, 0), displayName(t.RequesterEmail))
-	if st.Reached {
+
+	requesterTitle := "Your task is close to its time limit"
+	requesterBody := fmt.Sprintf(
+		"%s is about %d minutes from the %d minutes you asked for on %q. If they need longer they'll ask, and you can approve it in one tap.",
+		displayName(t.AssigneeEmail), maxInt(st.RemainingMinutes, 0), st.Cap.CapMinutes, t.Title)
+
+	switch {
+	case st.Reached:
+		supporterTitle = "Time cap in sight"
 		supporterBody = fmt.Sprintf(
 			"You've reached the time %s asked for. Need longer? Ask for more in the app.",
 			displayName(t.RequesterEmail))
+	case st.Cap.AutoExtendMinutes > 0:
+		supporterTitle = fmt.Sprintf("Approaching the %d-min estimate", st.Cap.AgreedMinutes)
+		supporterBody = fmt.Sprintf(
+			"Approaching the %d-min estimate — up to %d more minutes are covered by auto-extend; request more if you'll need beyond that.",
+			st.Cap.AgreedMinutes, st.Cap.AutoExtendMinutes)
+
+		requesterTitle = "Your task is nearing its estimate"
+		requesterBody = fmt.Sprintf(
+			"%s is nearing your %d-min estimate; the extra %d min you allowed will start counting.",
+			displayName(t.AssigneeEmail), st.Cap.AgreedMinutes, st.Cap.AutoExtendMinutes)
 	}
+
 	notifyUser(ctx, derefOrEmpty(t.AssigneeID), t.AssigneeEmail, notify.CreateNotificationInput{
 		TaskID:    taskID,
 		Type:      "TIME_CAP_WARNING",
-		Title:     "About 5 minutes left on this task",
+		Title:     supporterTitle,
 		Body:      supporterBody,
 		TaskTitle: t.Title,
 	})
 
 	notifyUser(ctx, t.RequesterID, t.RequesterEmail, notify.CreateNotificationInput{
-		TaskID: taskID,
-		Type:   "TIME_CAP_WARNING",
-		Title:  "Your task is close to its time limit",
-		Body: fmt.Sprintf(
-			"%s is about %d minutes from the %d minutes you asked for on %q. If they need longer they'll ask, and you can approve it in one tap.",
-			displayName(t.AssigneeEmail), maxInt(st.RemainingMinutes, 0), st.Cap.CapMinutes, t.Title),
+		TaskID:        taskID,
+		Type:          "TIME_CAP_WARNING",
+		Title:         requesterTitle,
+		Body:          requesterBody,
 		TaskTitle:     t.Title,
 		SupporterName: displayName(t.AssigneeEmail),
 	})

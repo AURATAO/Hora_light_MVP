@@ -155,6 +155,32 @@ export function timeBasisNote(cap) {
   return `${base} · up to ${ceiling} min ${because}`
 }
 
+/**
+ * The supporter-and-requester line for Layer 2, the early warning.
+ *
+ * WHY IT IS NOT JUST "about N minutes left". The warning now fires at the
+ * ESTIMATE rather than at the ceiling (server/billing.go
+ * timeCapWarningMinutes), so on a 30-minute task with auto-extend it lands at
+ * 25 logged minutes with 20 minutes of ceiling still above it. "About 20 min
+ * left" is true of the ceiling and useless as a warning: what the supporter
+ * needs is that they are at the number the requester planned around, and that
+ * the 15 minutes above it are a fuse rather than a second estimate.
+ *
+ * Null when there is nothing to warn about. `reached` is not this function's
+ * business — billing has stopped by then and both clients say so in their own
+ * words.
+ */
+export function capWarningNote(capState) {
+  if (!capState || capState.reached || !capState.warning) return null
+  const agreed = capState.cap?.agreed_minutes || capState.cap?.estimate_minutes || 0
+  const autoExtend = capState.cap?.auto_extend_minutes || 0
+  if (agreed > 0 && autoExtend > 0) {
+    return `Approaching the ${agreed} min agreed — up to ${autoExtend} more minutes are covered by auto-extend.`
+  }
+  const remaining = capState.remaining_minutes || 0
+  return `About ${remaining} min left on the time that was agreed.`
+}
+
 /** The short form for a task-detail row: "$76.75 reserved · Visa ••4242". */
 export function holdSummary(payment) {
   if (!payment || !payment.authorized_cents) return null

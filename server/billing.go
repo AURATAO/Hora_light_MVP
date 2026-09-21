@@ -444,17 +444,33 @@ func timeCostCentsCapped(totalMinutes, capMinutes, rateCents int) int {
 	return timeCostCents(cappedMinutes(totalMinutes, capMinutes), rateCents)
 }
 
-// timeCapWarningMinutes is the logged total at which Layer 2 fires: far enough
-// before the ceiling that the requester can answer and the supporter can act.
+// timeCapWarningMinutes is the logged total at which Layer 2 fires, measured
+// from the time the requester AGREED TO — their estimate plus any extension
+// they approved — and never from the ceiling above it.
+//
+// THE ANCHOR IS THE ESTIMATE, NOT THE CEILING, and the distinction is the
+// whole point of the warning. Auto-extend is a fuse, not a new estimate: a
+// requester who ticks the box at post is saying "if it runs over, don't stop
+// the clock for 15 minutes", not "the job is really 45 minutes". Warning at
+// ceiling-minus-5 fired at 40 minutes on a 30-minute task — ten minutes after
+// the moment the warning exists to announce, and with the fuse already half
+// burnt. Both parties are told when the ESTIMATE is in sight, which is the
+// only number either of them ever agreed on.
+//
+// Approved extensions DO move it, because an approval is the requester saying
+// the estimate was wrong and naming a new one. That also keeps the sequence
+// sane after resolveExtension clears the latches: without it, a task whose
+// requester has just granted +15 would re-warn on the next ping, since it is
+// already past the original estimate.
 //
 // Clamped to at least one minute, because a task estimated at five minutes or
 // less would otherwise warn at or before its own start — a warning that has
 // already fired when the supporter clocks in tells them nothing.
-func timeCapWarningMinutes(capMinutes int) int {
-	if capMinutes <= 0 {
+func timeCapWarningMinutes(agreedMinutes int) int {
+	if agreedMinutes <= 0 {
 		return 0
 	}
-	if w := capMinutes - Billing.CapWarningLeadMinutes; w >= 1 {
+	if w := agreedMinutes - Billing.CapWarningLeadMinutes; w >= 1 {
 		return w
 	}
 	return 1
@@ -470,9 +486,16 @@ type TimeCap struct {
 	AutoExtendMinutes int `json:"auto_extend_minutes"`
 	// Minutes added by extension requests the requester has approved.
 	ApprovedExtraMinutes int `json:"approved_extra_minutes"`
+	// What the requester actually AGREED the job would take: their estimate
+	// plus every minute they later approved. Excludes auto-extend, which is a
+	// fuse nobody planned around. This is the number both the early warning
+	// and the copy that explains it are anchored to.
+	AgreedMinutes int `json:"agreed_minutes"`
 	// The sum, and the number billing actually clamps against.
 	CapMinutes int `json:"cap_minutes"`
-	// Where Layer 2 fires.
+	// Where Layer 2 fires: AgreedMinutes minus the warning lead. Strictly
+	// below CapMinutes whenever auto-extend is on, and equal to the old
+	// behaviour when it is off.
 	WarnAtMinutes int `json:"warn_at_minutes"`
 	// Whether the requester consented at post. Rendered as a reason, not used
 	// as arithmetic — AutoExtendMinutes above already carries the effect.
@@ -515,8 +538,9 @@ func taskTimeCapMinutes(ctx context.Context, taskID string) (int, TimeCap) {
 	if consent {
 		detail.AutoExtendMinutes = Billing.AutoExtendMinutes
 	}
-	detail.CapMinutes = estimate + detail.AutoExtendMinutes + approvedExtra
-	detail.WarnAtMinutes = timeCapWarningMinutes(detail.CapMinutes)
+	detail.AgreedMinutes = estimate + approvedExtra
+	detail.CapMinutes = detail.AgreedMinutes + detail.AutoExtendMinutes
+	detail.WarnAtMinutes = timeCapWarningMinutes(detail.AgreedMinutes)
 	return detail.CapMinutes, detail
 }
 

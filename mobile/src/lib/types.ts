@@ -267,6 +267,10 @@ export interface TimeCap {
   estimate_minutes: number;
   auto_extend_minutes: number;
   approved_extra_minutes: number;
+  /** Estimate + approved extensions: what the requester actually AGREED the
+   *  job would take. Excludes auto-extend, which is a fuse nobody planned
+   *  around, and is what the early warning is anchored to. */
+  agreed_minutes: number;
   cap_minutes: number;
   warn_at_minutes: number;
   auto_extend_consent: boolean;
