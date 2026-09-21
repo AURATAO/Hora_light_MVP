@@ -4,6 +4,7 @@ export * from "./Avatar";
 export * from "./Button";
 export * from "./Pill";
 export * from "./Card";
+export * from "./Disclosure";
 export * from "./Badge";
 export * from "./Input";
 export * from "./Checkbox";
