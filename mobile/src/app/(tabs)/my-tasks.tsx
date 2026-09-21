@@ -4,6 +4,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import Swipeable from "react-native-gesture-handler/ReanimatedSwipeable";
 import { ClipboardList, Hourglass } from "lucide-react-native";
 import { CancelTaskSheet } from "../../components/CancelTaskSheet";
+import { HISTORY_PREVIEW_COUNT, HistorySection } from "../../components/HistorySection";
 import { TaskListItem } from "../../components/TaskListItem";
 import { EmptyState, PressableScale, Pill, Screen, Skeleton } from "../../components/ui";
 import {
@@ -11,8 +12,8 @@ import {
   cancelTask,
   getAssignedTasks,
   getTask,
-  getDoneTasks,
-  getPostedClosedTasks,
+  getDonePage,
+  getPostedClosedPage,
   getPostedTasks,
 } from "../../lib/api";
 import { deriveTaskStatus } from "../../lib/task-utils";
@@ -24,18 +25,26 @@ type Segment = "posted" | "working";
 
 interface Bucket {
   active: Task[];
+  /** The HISTORY_PREVIEW_COUNT most recent, not the whole history. */
   history: Task[];
+  /** How many finished tasks exist in total, server-counted. */
+  historyTotal: number;
   loading: boolean;
   error: string | null;
 }
 
-const EMPTY_BUCKET: Bucket = { active: [], history: [], loading: true, error: null };
+const EMPTY_BUCKET: Bucket = {
+  active: [],
+  history: [],
+  historyTotal: 0,
+  loading: true,
+  error: null,
+};
 
-// getPostedTasks() and getPostedClosedTasks() overlap in practice —
-// server/main.go's listMyTasks (GET /tasks/posted) has no status filter at
-// all, so completed/cancelled tasks already come back from it too, same as
-// from /tasks/posted/closed. Union + dedupe by id, then bucket by derived
-// status client-side rather than trust either endpoint's name.
+// GET /tasks/posted has no status filter at all (server/main.go listMyTasks),
+// so finished tasks come back from it alongside live ones. This splits them,
+// and only the ACTIVE half is used now — the history half is read from
+// /tasks/posted/closed, which is authoritative for it and carries the count.
 function bucketByStatus(tasks: Task[]): { active: Task[]; history: Task[] } {
   const active: Task[] = [];
   const history: Task[] = [];
@@ -114,14 +123,23 @@ export default function MyTasks() {
 
   const loadPosted = useCallback(async () => {
     try {
-      const [open, closed] = await Promise.all([getPostedTasks(), getPostedClosedTasks()]);
-      const byId = new Map<string, Task>();
-      for (const t of open) byId.set(t.id, t);
-      for (const t of closed) byId.set(t.id, t);
-      const { active, history } = bucketByStatus(Array.from(byId.values()));
+      // ACTIVE from the unfiltered list, HISTORY from the closed endpoint.
+      //
+      // Both used to be unioned and bucketed client-side, because
+      // /tasks/posted has no status filter and returns finished tasks too. The
+      // history half is now a three-row PREVIEW with a server count behind it,
+      // and neither of those can be derived from a client-side bucket of
+      // whatever happened to be fetched — so the closed endpoint, which is
+      // authoritative for exactly this, answers it directly.
+      const [open, closedPage] = await Promise.all([
+        getPostedTasks(),
+        getPostedClosedPage({ limit: HISTORY_PREVIEW_COUNT }),
+      ]);
+      const { active } = bucketByStatus(open);
       setPosted({
         active: sortByCreatedDesc(active),
-        history: sortByCreatedDesc(history),
+        history: closedPage.items,
+        historyTotal: closedPage.total,
         loading: false,
         error: null,
       });
@@ -138,10 +156,14 @@ export default function MyTasks() {
 
   const loadWorking = useCallback(async () => {
     try {
-      const [active, done] = await Promise.all([getAssignedTasks(), getDoneTasks()]);
+      const [active, donePage] = await Promise.all([
+        getAssignedTasks(),
+        getDonePage({ limit: HISTORY_PREVIEW_COUNT }),
+      ]);
       setWorking({
         active: sortByCreatedDesc(active),
-        history: sortByCreatedDesc(done),
+        history: donePage.items,
+        historyTotal: donePage.total,
         loading: false,
         error: null,
       });
@@ -334,17 +356,24 @@ export default function MyTasks() {
             </View>
           )}
 
+          {/* THE THREE MOST RECENT, and a way to the rest. Active work above
+              stays whole: it is what the screen is for. Finished work is a
+              reference, and an unbounded reference list pushed the live tasks
+              further down the screen the longer somebody had used the app. */}
           {bucket.history.length > 0 ? (
-            <>
-              <Text className="mb-3 mt-6 text-title font-semibold text-ink">History</Text>
-              <View className="gap-3">
-                {isPosted
-                  ? posted.history.map(renderPostedHistoryRow)
-                  : working.history.map((task) => (
-                      <TaskListItem key={task.id} task={task} onPress={() => goToDetail(task.id)} />
-                    ))}
-              </View>
-            </>
+            <HistorySection
+              title="History"
+              total={bucket.historyTotal}
+              onSeeAll={() =>
+                router.push(`/tasks/history?role=${isPosted ? "posted" : "working"}`)
+              }
+            >
+              {isPosted
+                ? posted.history.map(renderPostedHistoryRow)
+                : working.history.map((task) => (
+                    <TaskListItem key={task.id} task={task} onPress={() => goToDetail(task.id)} />
+                  ))}
+            </HistorySection>
           ) : null}
         </View>
       )}

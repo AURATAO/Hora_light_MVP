@@ -2701,6 +2701,10 @@ func listDoneTasks(c *gin.Context) {
 		"status in ('completed','cancelled')",
 	}
 	args := []any{meUID}
+	// The filter that defines the HISTORY, kept before the keyset clause
+	// narrows it to one page. The count below is of the history, not the page.
+	baseWhere := append([]string(nil), where...)
+	baseArgs := append([]any(nil), args...)
 	arg := 2
 	if beforeCreatedAt != nil && beforeID != nil {
 		where = append(where, fmt.Sprintf("(created_at, id) < ($%d, $%d::uuid)", arg, arg+1))
@@ -2747,7 +2751,11 @@ func listDoneTasks(c *gin.Context) {
 			"before_id":         last.ID,
 		}
 	}
-	c.JSON(200, gin.H{"items": items, "next": next})
+	// The whole-history count, so a screen showing three of these can say
+	// "See all (47)". Counted from the base filter WITHOUT the keyset clause —
+	// a cursor narrows the page, not the history.
+	c.JSON(200, gin.H{"items": items, "next": next,
+		"total": countTasks(ctx, strings.Join(baseWhere, " and "), baseArgs)})
 }
 
 func listMyPostedClosed(c *gin.Context) {
@@ -2775,6 +2783,10 @@ func listMyPostedClosed(c *gin.Context) {
 		"status in ('completed','cancelled','removed')",
 	}
 	args := []any{meUID}
+	// The filter that defines the HISTORY, kept before the keyset clause
+	// narrows it to one page. The count below is of the history, not the page.
+	baseWhere := append([]string(nil), where...)
+	baseArgs := append([]any(nil), args...)
 	arg := 2
 
 	// keyset： (created_at, id) < (cursor)
@@ -2823,7 +2835,10 @@ func listMyPostedClosed(c *gin.Context) {
 			"before_id":         last.ID,
 		}
 	}
-	c.JSON(200, gin.H{"items": items, "next": next})
+	// The whole-history count, so a screen showing three of these can say
+	// "See all (47)".
+	c.JSON(200, gin.H{"items": items, "next": next,
+		"total": countTasks(ctx, strings.Join(baseWhere, " and "), baseArgs)})
 }
 
 // A user cannot accept their own task. Only open & unassigned tasks can be accepted.

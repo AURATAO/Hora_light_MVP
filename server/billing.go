@@ -959,3 +959,28 @@ func isCancelledAssignee(ctx context.Context, taskID, uid string) bool {
 		taskID, uid).Scan(&match)
 	return match
 }
+
+// ── History counts ─────────────────────────────────────────────────────────
+
+// countTasks answers "how many in total", for a history list that is rendering
+// only its three most recent.
+//
+// WHY A SEPARATE COUNT AND NOT len(items). The lists are keyset-paginated —
+// `next` carries the cursor of the last row, which is the right shape for
+// "load more" and carries no notion of how many rows exist. A client showing
+// three of them has to be able to say "See all (47)", and 47 is a fact only
+// the database has.
+//
+// Takes the same WHERE fragment and args the list query was built from, so the
+// count cannot drift from the thing it counts. A failed count returns 0, which
+// the clients render as no "See all" link at all — a missing affordance is
+// better than a wrong number beside one.
+func countTasks(ctx context.Context, where string, args []any) int {
+	var n int
+	if err := db.QueryRow(ctx,
+		"select count(*) from public.tasks where "+where, args...).Scan(&n); err != nil {
+		log.Printf("[tasks][count] %v", err)
+		return 0
+	}
+	return n
+}

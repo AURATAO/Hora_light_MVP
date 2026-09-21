@@ -26,9 +26,15 @@ export default function My() {
    available: { items: [], next: null, loading: false, loaded: false },
    assigned : { items: [], next: null, loading: false, loaded: false },
    posted   : { items: [], next: null, loading: false, loaded: false },
+   // The requester's FINISHED tasks, read from /tasks/posted/closed — which
+   // is authoritative for them and is the only source that carries the count
+   // behind "See all (N)".
+   postedClosed: { items: [], next: null, total: 0, loading: false, loaded: false },
    done     : { items: [], next: null, loading: false, loaded: false },
  })
   const [saving, setSaving] = useState(false)
+  // Whether the posted history has been opened past its three-row preview.
+  const [postedHistoryExpanded, setPostedHistoryExpanded] = useState(false)
   const { user, loading: authLoading } = useAuth()
 
   // EVERY TAB BUT "POSTED" IS A SUPPORTER SURFACE. Available is other people's
@@ -96,7 +102,15 @@ export default function My() {
 // }
  async function refreshLists() {
    // 只刷新當前 tab 第一頁
-   await wrap(() => fetchPage(tab, null)) 
+   //
+   // The Posted tab is two lists now — live tasks and finished ones — and a
+   // cancel or a completion moves a row from the first to the second, so
+   // refreshing only `posted` would leave the row visible in Active and
+   // absent from History until a reload.
+   await wrap(async () => {
+     await fetchPage(tab, null)
+     if (tab === 'posted') await fetchPage('postedClosed', null)
+   })
  }
 
   // 首次載入：等 auth 就緒，再抓 profile + 列表
@@ -116,6 +130,7 @@ export default function My() {
         // every dashboard load for lists that cannot render is three too many.
         await Promise.all([
           fetchPage('posted', null),
+          fetchPage('postedClosed', null),
           ...(isApprovedSupporter
             ? [fetchPage('available', null), fetchPage('assigned', null), fetchPage('done', null)]
             : []),
@@ -212,10 +227,11 @@ export default function My() {
   try {
     await wrap(async () => {
       const endpoint =
-        which === 'posted'   ? 'tasks/posted'   :
-        which === 'assigned' ? 'tasks/assigned' :
-        which === 'done'     ? 'tasks/done'     :
-                               'tasks/available'
+        which === 'posted'       ? 'tasks/posted'        :
+        which === 'postedClosed' ? 'tasks/posted/closed'  :
+        which === 'assigned'     ? 'tasks/assigned'       :
+        which === 'done'         ? 'tasks/done'           :
+                                   'tasks/available'
       const res = await api(`/${endpoint}?${params.toString()}`)
       const items = Array.isArray(res?.items) ? res.items : (Array.isArray(res) ? res : [])
       const next  = res?.next ?? null
@@ -224,6 +240,9 @@ export default function My() {
         [which]: {
           items: cursor ? [...prev[which].items, ...items] : items,
           next,
+          // The whole-history count, where the endpoint sends one. Kept across
+          // pages: it describes the history, not the page just fetched.
+          total: typeof res?.total === 'number' ? res.total : (prev[which].total ?? 0),
           loading: false,
           loaded: true,
         }
@@ -234,6 +253,20 @@ export default function My() {
     setLists(prev => ({ ...prev, [which]: { ...prev[which], loading: false, loaded: true } }))
   }
 }
+
+  // ── The posted split ─────────────────────────────────────────────────────
+  //
+  // Active comes from /tasks/posted with the finished rows filtered out (that
+  // endpoint has no status filter); history comes from /tasks/posted/closed,
+  // which is authoritative for it and carries the count.
+  const POSTED_HISTORY_PREVIEW = 3
+  const CLOSED = new Set(['completed', 'cancelled', 'removed'])
+  const postedActive = (lists.posted.items || []).filter(t => !CLOSED.has(t.status))
+  const postedHistory = lists.postedClosed.items || []
+  const postedHistoryTotal = lists.postedClosed.total || postedHistory.length
+  const postedHistoryShown = postedHistoryExpanded
+    ? postedHistory
+    : postedHistory.slice(0, POSTED_HISTORY_PREVIEW)
 
   return (
   <div className="bg-linear-to-br from-primary to-primary/30 text-accent min-h-screen py-[100px] px-4">
@@ -390,15 +423,51 @@ export default function My() {
           />
         )}
 
+        {/* POSTED SPLITS INTO LIVE AND FINISHED. GET /tasks/posted has no
+            status filter (server/main.go listMyTasks), so this one list held
+            both — and the live tasks, which are the whole reason somebody
+            opens this page, were pushed further down it the longer they had
+            been using HO:RA.
+
+            Active stays whole. Finished shows the three most recent with a
+            way to the rest, which is exactly what mobile does. */}
         {tab === 'posted' && (
-          <TaskList
-            items={lists.posted.items}
-            next={lists.posted.next}
-            loading={lists.posted.loading}
-            variant="posted"
-            onAfterChange={refreshLists}
-            onLoadMore={() => fetchPage('posted', lists.posted.next)}
-          />
+          <>
+            <TaskList
+              items={postedActive}
+              next={lists.posted.next}
+              loading={lists.posted.loading}
+              variant="posted"
+              onAfterChange={refreshLists}
+              onLoadMore={() => fetchPage('posted', lists.posted.next)}
+            />
+            {postedHistory.length > 0 && (
+              <div className="mt-6 border-t border-white/10 pt-4">
+                <div className="mb-3 flex items-center justify-between">
+                  <div className="text-sm text-white/70">History</div>
+                  {/* The NUMBER, on purpose: "See all" alone makes a reader
+                      guess whether there are four or four hundred. */}
+                  {postedHistoryTotal > POSTED_HISTORY_PREVIEW && (
+                    <button
+                      type="button"
+                      onClick={() => setPostedHistoryExpanded(v => !v)}
+                      className="text-xs text-white/60 underline hover:text-white"
+                    >
+                      {postedHistoryExpanded ? 'Show less' : `See all (${postedHistoryTotal})`}
+                    </button>
+                  )}
+                </div>
+                <TaskList
+                  items={postedHistoryShown}
+                  next={postedHistoryExpanded ? lists.postedClosed.next : null}
+                  loading={lists.postedClosed.loading}
+                  variant="posted"
+                  onAfterChange={refreshLists}
+                  onLoadMore={() => fetchPage('postedClosed', lists.postedClosed.next)}
+                />
+              </div>
+            )}
+          </>
         )}
 
         {tab === 'done' && (

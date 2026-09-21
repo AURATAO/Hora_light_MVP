@@ -107,8 +107,17 @@ export function createLoginLink() {
 }
 
 /** Onboarding state + lifetime earned + recent transfers, in one call. */
-export function getEarnings() {
-  return api('/payments/earnings')
+/**
+ * `limit`/`offset` page the transfer list. Omitted, the server answers with
+ * its default page and the total — which is what the earnings strip needs to
+ * render three rows and say how many more there are.
+ */
+export function getEarnings({ limit, offset } = {}) {
+  const params = new URLSearchParams()
+  if (limit !== undefined) params.set('limit', String(limit))
+  if (offset !== undefined) params.set('offset', String(offset))
+  const query = params.toString()
+  return api(`/payments/earnings${query ? `?${query}` : ''}`)
 }
 
 /**

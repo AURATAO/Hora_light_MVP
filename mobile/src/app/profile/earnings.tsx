@@ -13,6 +13,8 @@ import {
   type EarningsTransfer,
   type OnboardingState,
 } from "../../lib/api";
+import { HISTORY_PREVIEW_COUNT, HistorySection } from "../../components/HistorySection";
+import { TransferRow } from "../../components/TransferRow";
 import { color, size } from "../../theme/tokens";
 
 /**
@@ -60,38 +62,6 @@ const COPY: Record<OnboardingState, { title: string; body: string; cta: string }
   },
 };
 
-function TransferRow({ transfer }: { transfer: EarningsTransfer }) {
-  return (
-    <Card className="mb-2">
-      <View className="flex-row items-start justify-between gap-3">
-        <View className="flex-1">
-          <Text className="text-body font-semibold text-ink" numberOfLines={1}>
-            {transfer.task_title || "Task"}
-          </Text>
-          {/* The split, said out loud. A supporter who sees one total for a
-              shopping task cannot tell what they MADE from what they are being
-              handed back, and those are very different numbers. */}
-          <Text className="mt-0.5 text-caption text-muted">
-            {formatCents(transfer.time_cents)} time
-            {transfer.receipt_cents > 0
-              ? ` + ${formatCents(transfer.receipt_cents)} reimbursement`
-              : ""}
-          </Text>
-        </View>
-        <View className="items-end">
-          <Text className="text-body font-semibold text-ink">
-            {formatCents(transfer.amount_cents)}
-          </Text>
-          {transfer.status !== "paid" ? (
-            <Text className="mt-0.5 text-caption text-muted">
-              {transfer.status === "failed" ? "We're sorting this out" : "On its way"}
-            </Text>
-          ) : null}
-        </View>
-      </View>
-    </Card>
-  );
-}
 
 export default function EarningsScreen() {
   const router = useRouter();
@@ -258,17 +228,30 @@ export default function EarningsScreen() {
               </View>
 
               <View className="mb-8">
-                <Text className="mb-2 text-title font-semibold text-ink">Recent</Text>
                 {(data?.transfers ?? []).length === 0 ? (
-                  <EmptyState
-                    icon={Banknote}
-                    title="No payments yet"
-                    caption="Complete a task and your first payment appears here."
-                  />
+                  <>
+                    <Text className="mb-2 text-title font-semibold text-ink">Recent</Text>
+                    <EmptyState
+                      icon={Banknote}
+                      title="No payments yet"
+                      caption="Complete a task and your first payment appears here."
+                    />
+                  </>
                 ) : (
-                  (data?.transfers ?? []).map((t) => (
-                    <TransferRow key={`${t.task_id}-${t.created_at}`} transfer={t} />
-                  ))
+                  /* THREE, then a link. The strip used to render every
+                     transfer the endpoint returned, which grew with how much
+                     somebody had worked — so the supporters who had earned the
+                     most had the longest scroll between them and the number
+                     they came for, which is the total above. */
+                  <HistorySection
+                    title="Recent"
+                    total={data?.total ?? (data?.transfers ?? []).length}
+                    onSeeAll={() => router.push("/profile/earnings-history")}
+                  >
+                    {(data?.transfers ?? []).slice(0, HISTORY_PREVIEW_COUNT).map((t) => (
+                      <TransferRow key={`${t.task_id}-${t.created_at}`} transfer={t} />
+                    ))}
+                  </HistorySection>
                 )}
               </View>
             </>
