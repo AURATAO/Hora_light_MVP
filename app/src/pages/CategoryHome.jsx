@@ -1,49 +1,29 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Zap, ShoppingBasket, WashingMachine, Heart, Clock, Sparkles, Users } from 'lucide-react'
+import { Zap, Truck, WashingMachine, ShoppingBasket, Clock, Users } from 'lucide-react'
 import { api } from '../api/client'
+import { POST_CATEGORY_ORDER, CATEGORY_META } from '../lib/categoryOrder'
 
 const ICON_COLOR = '#9aab3a'
 const ICON_SIZE = 28
 
-const CATEGORIES = [
-  {
-    key: 'delivery',
-    Icon: Zap,
-    title: 'Same-day Delivery',
-    subtitle: 'Packages, pickups, drop-offs',
-  },
-  {
-    key: 'grocery',
-    Icon: ShoppingBasket,
-    title: 'Grocery & Errands',
-    subtitle: 'Shopping, pharmacy, supplies',
-  },
-  {
-    key: 'laundry',
-    Icon: WashingMachine,
-    title: 'Laundry Service',
-    subtitle: 'Wash, fold, dry cleaning',
-  },
-  {
-    key: 'companionship',
-    Icon: Users,
-    title: 'Companionship',
-    subtitle: 'Appointments, walks, company',
-  },
-  {
-    key: 'queue',
-    Icon: Clock,
-    title: 'Queue & Wait',
-    subtitle: 'Lines, reservations, waiting',
-  },
-  {
-    key: 'anything_else',
-    Icon: Sparkles,
-    title: 'Anything Else',
-    subtitle: 'Whatever you need',
-  },
-]
+// Icons only. The ORDER and the copy come from lib/categoryOrder.js, which is
+// pinned to mobile's list by test — a category list written here would be
+// the third copy, and the third copy is the one that drifts.
+const CATEGORY_ICONS = {
+  quick_errand: Zap,
+  delivery: Truck,
+  laundry: WashingMachine,
+  grocery: ShoppingBasket,
+  queue: Clock,
+  companionship: Users,
+}
+
+const CATEGORIES = POST_CATEGORY_ORDER.map((key) => ({
+  key,
+  Icon: CATEGORY_ICONS[key],
+  ...CATEGORY_META[key],
+}))
 
 export default function CategoryHome() {
   const nav = useNavigate()

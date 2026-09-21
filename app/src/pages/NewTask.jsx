@@ -13,7 +13,12 @@ import { completeCardAuthentication, readPaymentError, usePaymentGate } from '..
 import { betaSettlementLine } from '../lib/traction'
 
 
+// Display labels for a category arriving by URL or AI prefill. Order is not
+// expressed here — see lib/categoryOrder.js. anything_else stays as a LABEL:
+// the picker no longer offers it, but the AI parser and older tasks still
+// produce it, and a slug in a pill is worse than a leftover label.
 const CATEGORY_LABELS = {
+  quick_errand: '⚡ Quick Errand',
   delivery:     '🚀 Same-day Delivery',
   grocery:      '🛒 Grocery & Errands',
   laundry:      '👕 Laundry Service',

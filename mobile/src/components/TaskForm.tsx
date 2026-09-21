@@ -6,7 +6,7 @@ import { ScheduledTimeField } from "./ScheduledTimeField";
 import { Button, Checkbox, Input, Pill, PressableScale } from "./ui";
 import { ApiError, estimateTaskCost, type CreateTaskPayload } from "../lib/api";
 import { DISABLED_CATEGORY_NOTICE, isCategoryDisabled } from "../lib/beta-notice";
-import { getCategoryMeta } from "../lib/categories";
+import { POST_CATEGORY_ORDER, getCategoryMeta } from "../lib/categories";
 import { highBudgetWarning, surgeRateNote } from "../lib/payment-copy";
 import { formatCost, formatMinutes, formatScheduledAt, zeroSeconds } from "../lib/task-utils";
 import type { ParsedTask, Task, TaskCategory, TaskCreatedVia } from "../lib/types";
@@ -70,18 +70,18 @@ const TRANSPORT_OPTIONS: { value: TransportOption; label: string }[] = [
 
 const MAX_LOCATIONS = 3;
 
-// Same 6 categories, same order, as web's category picker (app/src/pages/CategoryHome.jsx
-// CATEGORIES) — "companionship" there is a UI-only label that web always normalizes to
-// the submitted category "companion" (app/src/pages/NewTask.jsx onSubmit); mirrored here
-// so both clients ever produce the same category values.
-const CATEGORY_PICKS: TaskCategory[] = [
-  "delivery",
-  "grocery",
-  "laundry",
-  "companion",
-  "queue",
-  "anything_else",
-];
+// The picker's categories: Home's order, from the one constant both read
+// (lib/categories.ts POST_CATEGORY_ORDER). This used to be its own list in a
+// different order, with "Anything else" that Home never showed.
+const CATEGORY_PICKS: readonly TaskCategory[] = POST_CATEGORY_ORDER;
+
+// Whether a stored value is one of the picker's own pills. "companion" is the
+// SUBMITTED form of the picker's "companionship" (post-task normalizes it), so
+// a duplicated or edited companion task must not grow a second, identical
+// "Companion" pill beside the one already there.
+function inPicker(value: TaskCategory): boolean {
+  return CATEGORY_PICKS.includes(value === "companion" ? "companionship" : value);
+}
 
 function defaultScheduledDate(): Date {
   return zeroSeconds(new Date(Date.now() + 60 * 60 * 1000));
@@ -368,7 +368,7 @@ export function TaskForm({ form, onChange, errors }: TaskFormProps) {
   // category list) keeps its own category selectable rather than silently
   // losing it on the next save.
   const pickerCategories =
-    form.category && !CATEGORY_PICKS.includes(form.category)
+    form.category && !inPicker(form.category)
       ? [...CATEGORY_PICKS, form.category]
       : CATEGORY_PICKS;
 
