@@ -29,6 +29,9 @@ import {
   capWarningNote,
   extensionAskLabel,
   extensionDecidedAt,
+  extensionReaskLabel,
+  extensionResolutionDetail,
+  extensionResolutionTitle,
   holdSummary,
   timeBasisNote,
 } from '../lib/paymentCopy'
@@ -121,6 +124,15 @@ function SessionList({ timeline }) {
  * "what was I charged" are one question asked at two moments (S-05). The only
  * thing this component decides is which parts a given reader sees.
  */
+// "$8.00 more" / "30 more minutes" — what an ask was for, in the words both
+// the pending line and the resolution line use. Matches mobile's local
+// askPhrase (mobile/src/app/task/[id].tsx) word for word.
+function askPhrase(request) {
+  if (!request) return ''
+  if (request.kind === 'budget') return `${formatCents(request.requested_cents || 0)} more`
+  return `${request.requested_minutes || 0} more minutes`
+}
+
 function SettlementPanel({ cost, settlement, timeline, isOwner, taskId }) {
   if (!cost || !settlement) return null
   // Only when the task was worked in more than one sitting: on a single-session
@@ -349,6 +361,13 @@ export default function TaskDetail() {
   const [askReasonOther, setAskReasonOther] = useState('')
   const [askFallback, setAskFallback] = useState('')
   const [askFallbackNote, setAskFallbackNote] = useState('')
+  // The re-ask form, after a resolution. Collapsed until the supporter asks
+  // for it: the resolution is what leads that card, and the full budget form
+  // sitting open underneath it is what made the screen read as a nudge to
+  // re-ask somebody who had just said no.
+  const [askReopened, setAskReopened] = useState(false)
+  // The UNRELATED kind of ask, behind a disclosure for the same reason.
+  const [showOtherKind, setShowOtherKind] = useState(false)
 
   // The payouts gate: a supporter tried to accept and has not set up payouts.
   // Holds the backend's own wording so the prompt cannot drift from the
@@ -847,6 +866,24 @@ export default function TaskDetail() {
   // load-bearing rather than cosmetic: the server applies the five-minute
   // expiry on every read of this list, so polling is simultaneously how the
   // answer arrives and how "no answer" becomes an answer at all.
+  // A NEW RESOLUTION SUPERSEDES THE LAST ONE, so both disclosures close with
+  // it. Without this, a supporter who opened the re-ask form, sent it, and was
+  // refused again would meet the form already open under the new answer —
+  // which is the exact weighting this whole change removes.
+  //
+  // Keyed off the raw list rather than off `latestAsk`, which is derived 200
+  // lines below this and would be in its temporal dead zone here. The two
+  // fields are the same ones latestAsk is read for; the derived value is a
+  // convenience for the JSX, not a source of truth.
+  const items = extensions?.items || []
+  const newestAsk = items.length ? items[items.length - 1] : null
+  const newestAskID = newestAsk?.id ?? null
+  const newestAskStatus = newestAsk?.status ?? null
+  useEffect(() => {
+    setAskReopened(false)
+    setShowOtherKind(false)
+  }, [newestAskID, newestAskStatus])
+
   async function loadExtensions() {
     try {
       setExtensions(await api(`/tasks/${id}/extensions`))
@@ -1033,6 +1070,19 @@ export default function TaskDetail() {
   const toleranceCents = extensions?.tolerance_cents ?? 0
   const pendingAsk = (extensions?.items || []).find(e => e.status === 'pending') || null
   const latestAsk = (extensions?.items || []).slice(-1)[0] || null
+  // A resolved ask is worth showing until it is superseded, and above all when
+  // it was DENIED or EXPIRED — that is the moment the supporter's own fallback
+  // becomes the instruction.
+  const askResolved = Boolean(
+    !pendingAsk && latestAsk && (latestAsk.status === 'denied' || latestAsk.status === 'expired')
+  )
+  // The OTHER kind of ask, kept behind a disclosure after a resolution. A
+  // denied budget request says nothing about whether the job needs more time,
+  // so the option stays reachable — it simply is not the answer to what was
+  // just asked.
+  const otherKindAvailable = latestAsk?.kind === 'time'
+    ? approvedBudgetCents > 0
+    : Boolean((capState?.warning || capState?.reached) && (extensions?.time_choices || []).length > 0)
   const isTaskActive = task?.status === 'open' && Boolean(task?.assigned_to_id)
   // Whether the itemized settlement card below is going to render. The cost
   // card's one-line "Final cost" is redundant next to it — the two sat
@@ -1421,22 +1471,85 @@ export default function TaskDetail() {
                       ? `${formatCents(pendingAsk.requested_cents || 0)} more`
                       : `${pendingAsk.requested_minutes || 0} more minutes`}.
                   </div>
-                ) : latestAsk && (latestAsk.status === 'denied' || latestAsk.status === 'expired') ? (
-                  <div className="border-t border-white/10 pt-2 space-y-1">
-                    <div className="text-white/70">
-                      {latestAsk.status === 'expired'
-                        ? 'No response to your last request.'
-                        : "Your last request wasn't approved."}
+                ) : askResolved ? (
+                  /* THE RESOLUTION LEADS. The verdict is the quiet line and
+                     the INSTRUCTION is the loud one, because what the
+                     supporter needs off this card is what to do next — not a
+                     restatement of what they asked. */
+                  <div className="rounded-lg border border-white/15 bg-white/5 px-3 py-2.5 space-y-1">
+                    <div className="text-xs text-white/50">
+                      {extensionResolutionTitle(latestAsk)} · {askPhrase(latestAsk)}
                     </div>
-                    {latestAsk.fallback_instruction && (
-                      <div className="text-white">{latestAsk.fallback_instruction}</div>
-                    )}
+                    <div className="text-white">{extensionResolutionDetail(latestAsk)}</div>
                   </div>
                 ) : null}
 
                 {extError && <div className="text-xs text-red-300">{extError}</div>}
 
-                {!pendingAsk && (
+                {/* AFTER A RESOLUTION, the re-ask is subdued and the
+                    unrelated kind is collapsed. Requesting again is allowed by
+                    design — per-kind pending re-opens the moment a request
+                    resolves — but it is not what the supporter should do
+                    first, and at equal weight with the fallback instruction it
+                    read as the system urging them to re-ask somebody who had
+                    just said no (build 11). Presentation only: nothing here
+                    changes what is permitted. */}
+                {!pendingAsk && askResolved && (
+                  <div className="border-t border-white/10 pt-3 space-y-2">
+                    <button
+                      type="button"
+                      disabled={extBusy || (latestAsk.kind === 'time' && (extensions?.time_choices || []).length === 0)}
+                      onClick={() =>
+                        latestAsk.kind === 'time'
+                          ? sendTimeAsk(extensions.time_choices[0])
+                          : setAskReopened(true)
+                      }
+                      className="text-sm text-white/60 underline hover:text-white disabled:opacity-40"
+                    >
+                      {extensionReaskLabel(latestAsk)}
+                    </button>
+
+                    {otherKindAvailable && (
+                      <div className="space-y-2">
+                        <button
+                          type="button"
+                          onClick={() => setShowOtherKind(v => !v)}
+                          className="block text-xs text-white/50 underline hover:text-white/80"
+                        >
+                          {showOtherKind ? 'Fewer options' : 'More options'}
+                        </button>
+                        {showOtherKind && (
+                          latestAsk.kind === 'time' ? (
+                            <button
+                              type="button"
+                              disabled={extBusy}
+                              onClick={() => setAskReopened(true)}
+                              className="w-full rounded-lg border border-white/20 px-3 py-2.5 text-sm hover:border-white/40 disabled:opacity-40"
+                            >
+                              Ask for more budget
+                            </button>
+                          ) : (
+                            <div className="grid grid-cols-2 gap-2">
+                              {(extensions?.time_choices || []).map(minutes => (
+                                <button
+                                  key={minutes}
+                                  type="button"
+                                  disabled={extBusy}
+                                  onClick={() => sendTimeAsk(minutes)}
+                                  className="rounded-lg border border-white/20 px-3 py-3 text-sm hover:border-white/40 disabled:opacity-40"
+                                >
+                                  Ask for +{minutes} min
+                                </button>
+                              ))}
+                            </div>
+                          )
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {!pendingAsk && (!askResolved || askReopened) && (
                   <div className="border-t border-white/10 pt-4 space-y-4">
                     {approvedBudgetCents > 0 && (
                       <div className="space-y-4">
