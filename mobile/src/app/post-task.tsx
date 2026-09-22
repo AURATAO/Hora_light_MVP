@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { Platform, ScrollView, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Check, ChevronLeft, CreditCard, Sparkles, X } from "lucide-react-native";
 import { BetaNoticeSheet } from "../components/BetaNoticeSheet";
@@ -28,7 +28,7 @@ import { POST_TASK_AI_HINT, POST_TASK_AI_HINT_COPY } from "../lib/home-content";
 import { useBetaNoticeGate } from "../lib/use-beta-notice-gate";
 import { useCompanionshipGate } from "../lib/use-companionship-gate";
 import type { TaskCategory, TaskCreatedVia, TaskPayment } from "../lib/types";
-import { color, size } from "../theme/tokens";
+import { color, size, space } from "../theme/tokens";
 import { useAuthState } from "./_layout";
 
 type Step = "describe" | "review" | "success";
@@ -331,7 +331,7 @@ export default function PostTask() {
   }
 
   return (
-    <Screen scroll={false} avoidKeyboard>
+    <Screen scroll={false} avoidKeyboard={Platform.OS !== "ios"}>
       <View className="mb-6 mt-4 flex-row items-center justify-between">
         <View className="flex-row items-center">
           {/* No back arrow on a duplicate: the form IS the entry point there,
@@ -359,7 +359,21 @@ export default function PostTask() {
         </PressableScale>
       </View>
 
-      <ScrollView className="flex-1" keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+      {/* KEYBOARD AVOIDANCE, BY PLATFORM — see ui/Screen.tsx for the full
+          note. This screen owns its ScrollView (scroll={false}), so the fix
+          lives here: on iOS the ScrollView adjusts its own insets for the
+          keyboard, which is immune to the frame-offset that made
+          KeyboardAvoidingView leave the Post task button two-thirds hidden
+          inside this `presentation: "modal"` sheet (build 11). Android keeps
+          KAV via avoidKeyboard above. */}
+      <ScrollView
+        className="flex-1"
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
+        keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "none"}
+        contentContainerStyle={{ paddingBottom: space[8] }}
+      >
         {prefilling ? (
           /* Blocks in the shape of the form that is about to replace them —
              skeletons, never a spinner (DESIGN.md §4). */
