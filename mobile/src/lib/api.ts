@@ -935,20 +935,32 @@ export interface ConnectStatus {
   payouts_enforced: boolean;
 }
 
+/** The one word a payout row renders. "paid" is reserved for money in the BANK. */
+export type TransferDisplayStatus = "paid" | "on_its_way" | "failed";
+
 export interface EarningsTransfer {
   task_id: string;
   task_title: string;
   amount_cents: number;
   time_cents: number;
   receipt_cents: number;
+  /** Row status: paid means the TRANSFER happened, not that the bank has it. */
   status: "pending" | "paid" | "failed";
   created_at: string;
+  /** When the bank payout carrying this transfer landed; null while on its way. */
+  bank_paid_at?: string | null;
+  /** Decided by the backend so both clients agree (S-05). */
+  display_status?: TransferDisplayStatus;
 }
 
 export interface Earnings {
   onboarding: ConnectStatus;
-  /** Lifetime PAID, not lifetime earned-on-paper — money in flight is excluded. */
+  /** EARNED: the sum of successful transfers, wherever the money sits now.
+   *  Failed transfers never count. */
   lifetime_earned_cents: number;
+  /** The split of lifetime_earned_cents by where it is. They add up. */
+  paid_out_cents?: number;
+  in_transit_cents?: number;
   transfers: EarningsTransfer[];
   /** How many transfers exist in total, so a preview showing three can say
    *  "See all (47)". Distinct from transfers.length, which is one page. */

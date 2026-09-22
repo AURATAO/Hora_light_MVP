@@ -7,6 +7,7 @@ import {
   getEarnings,
 } from '../api/payments'
 import { formatCents } from '../lib/formatCents'
+import { earningsWhereaboutsLine, transferStatusCopy } from '../lib/earningsCopy'
 import { useToast } from '../providers/ToastProvider'
 
 /**
@@ -162,6 +163,12 @@ export default function Earnings({ isSupporter }) {
                 <div className="text-2xl text-white font-semibold">
                   {formatCents(data.lifetime_earned_cents || 0)}
                 </div>
+                {/* Where the money is, as two numbers. "Earned" is every
+                    successful transfer; the bank sees it on Stripe's payout
+                    schedule, and the split says how much has got there. */}
+                {earningsWhereaboutsLine(data) && (
+                  <div className="text-xs text-white/40 mt-1">{earningsWhereaboutsLine(data)}</div>
+                )}
               </div>
               <TransferList
                 transfers={data.transfers || []}
@@ -295,10 +302,13 @@ function TransferList({ transfers, total, onSeeAll, expanded, loadingMore }) {
           </div>
           <div className="text-right shrink-0">
             <div className="text-white">{formatCents(t.amount_cents)}</div>
-            {t.status !== 'paid' && (
-              <div className="text-xs text-white/40">
-                {t.status === 'failed' ? 'We’re sorting this out' : 'On its way'}
-              </div>
+            {/* Always a word — paid / on its way / failed. A failed row used
+                to render exactly like a paid one. */}
+            <div className={`text-xs ${t.display_status === 'failed' ? 'text-amber-300' : 'text-white/40'}`}>
+              {transferStatusCopy(t).label}
+            </div>
+            {transferStatusCopy(t).note && (
+              <div className="text-xs text-white/50 max-w-[14rem]">{transferStatusCopy(t).note}</div>
             )}
           </div>
         </div>

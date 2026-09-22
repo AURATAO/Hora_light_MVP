@@ -69,6 +69,11 @@ const connectPayoutsMigrationPath = "../supabase/migrations/20260916120000_conne
 // after a payouts_enabled=true account had a transfer refused (2026-09-22).
 const transfersActiveMigrationPath = "../supabase/migrations/20260922222707_stripe_transfers_active.sql"
 
+// payouts.stripe_destination_payment / stripe_bank_payout_id / bank_paid_at —
+// the bank leg, so the Earnings screen can split earned into in-transit and
+// paid-out.
+const bankArrivalMigrationPath = "../supabase/migrations/20260922224407_payouts_bank_arrival.sql"
+
 func setupStripeWebhookDB(t *testing.T) {
 	t.Helper()
 	setupAdminOpsDB(t) // users, tasks, worklogs, audit_logs + the pool swap
@@ -107,7 +112,8 @@ func setupStripeWebhookDB(t *testing.T) {
 	}
 
 	for _, path := range []string{paymentsMigrationPath, phase2aMigrationPath, phase2bMigrationPath, cardDisplayMigrationPath,
-		restructureMigrationPath, connectPayoutsMigrationPath, transfersActiveMigrationPath} {
+		restructureMigrationPath, connectPayoutsMigrationPath, transfersActiveMigrationPath,
+		bankArrivalMigrationPath} {
 		migration, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read migration %s: %v", path, err)

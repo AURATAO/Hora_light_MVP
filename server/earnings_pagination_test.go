@@ -25,11 +25,14 @@ import (
 
 type earningsEnvelope struct {
 	LifetimeEarnedCents int `json:"lifetime_earned_cents"`
+	PaidOutCents        int `json:"paid_out_cents"`
+	InTransitCents      int `json:"in_transit_cents"`
 	Total               int `json:"total"`
 	Transfers           []struct {
-		TaskID      string `json:"task_id"`
-		AmountCents int    `json:"amount_cents"`
-		Status      string `json:"status"`
+		TaskID        string `json:"task_id"`
+		AmountCents   int    `json:"amount_cents"`
+		Status        string `json:"status"`
+		DisplayStatus string `json:"display_status"`
 	} `json:"transfers"`
 }
 
