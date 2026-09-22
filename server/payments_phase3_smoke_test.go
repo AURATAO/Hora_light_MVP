@@ -378,16 +378,7 @@ func onboardedSmokeAccount(t *testing.T, uid string) string {
 	return ""
 }
 
-// transfersActive reports whether money can actually reach this account.
-//
-// Deliberately NOT payouts_enabled: that is about the account reaching a BANK,
-// while this is about the platform reaching the ACCOUNT, and a transfer is
-// refused on the capability rather than on payouts_enabled. The two come true
-// together in practice and mean different things.
-func transfersActive(acct *stripe.Account) bool {
-	return acct != nil && acct.Capabilities != nil &&
-		acct.Capabilities.Transfers == stripe.AccountCapabilityStatusActive
-}
+// transfersActive moved to payments_connect.go, where the gate now uses it.
 
 func seedSmokeSupporter(t *testing.T, email string) string {
 	t.Helper()

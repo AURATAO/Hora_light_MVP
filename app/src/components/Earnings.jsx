@@ -16,6 +16,7 @@ import { useToast } from '../providers/ToastProvider'
  * the backend sends:
  *
  *   not_started  no connected account. One button, one sentence.
+ *   verifying    Form in, nothing due, Stripe not yet done. "Check again".
  *   in_progress  Stripe wants more. Same button, different words, plus how
  *                much is left.
  *   complete     lifetime earned, recent transfers, and a way into the Stripe
@@ -151,6 +152,7 @@ export default function Earnings({ isSupporter }) {
             busy={busy}
             onStart={startOnboarding}
             onManage={openDashboard}
+            onCheckAgain={load}
           />
 
           {data.onboarding?.state === 'complete' && (
@@ -176,9 +178,10 @@ export default function Earnings({ isSupporter }) {
   )
 }
 
-function OnboardingCard({ state, requirementsDue, busy, onStart, onManage }) {
+function OnboardingCard({ state, requirementsDue, busy, onStart, onManage, onCheckAgain }) {
   const copy = ONBOARDING_COPY[state] || ONBOARDING_COPY.not_started
   const done = state === 'complete'
+  const verifying = state === 'verifying'
 
   return (
     <div className="space-y-2">
@@ -194,7 +197,7 @@ function OnboardingCard({ state, requirementsDue, busy, onStart, onManage }) {
               "individual.verification.document", which tells a supporter
               nothing and looks like an error. The hosted form is what
               explains them. */}
-          {!done && requirementsDue.length > 0 && (
+          {!done && !verifying && requirementsDue.length > 0 && (
             <p className="text-xs text-white/40 mt-0.5">
               {requirementsDue.length} {requirementsDue.length === 1 ? 'detail' : 'details'} still needed.
             </p>
@@ -203,16 +206,30 @@ function OnboardingCard({ state, requirementsDue, busy, onStart, onManage }) {
       </div>
 
       <button
-        onClick={done ? onManage : onStart}
+        onClick={done ? onManage : verifying ? onCheckAgain : onStart}
         disabled={busy}
         className="w-full rounded-xl py-2.5 text-sm font-secondary font-semibold text-white
                    hover:brightness-110 transition-all disabled:opacity-50"
-        style={{ backgroundColor: done ? 'transparent' : '#3A5A2D' }}
+        style={{ backgroundColor: done || verifying ? 'transparent' : '#3A5A2D' }}
       >
-        <span className={done ? 'underline underline-offset-4 text-white/70' : ''}>
+        <span className={done || verifying ? 'underline underline-offset-4 text-white/70' : ''}>
           {busy ? 'Opening…' : copy.cta}
         </span>
       </button>
+      {/* A way back into Stripe's form while verifying: what Stripe files as
+          "eventually due" (a date of birth, the last four of an SSN) is not
+          in the count above, and is sometimes exactly what unblocks the
+          account. */}
+      {verifying && (
+        <button
+          onClick={onStart}
+          disabled={busy}
+          className="w-full py-1 text-xs text-white/50 underline underline-offset-4
+                     hover:text-white/70 transition-all disabled:opacity-50"
+        >
+          Update details on Stripe
+        </button>
+      )}
     </div>
   )
 }

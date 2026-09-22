@@ -178,23 +178,37 @@ func TestPhase3PlatformCutIsZeroDuringBeta(t *testing.T) {
 // is nearly done to begin again.
 func TestPhase3OnboardingStateMachine(t *testing.T) {
 	cases := []struct {
-		name                             string
-		payoutsEnabled, detailsSubmitted bool
-		hasAccount                       bool
-		want                             string
+		name                                              string
+		payoutsEnabled, transfersActive, detailsSubmitted bool
+		hasAccount                                        bool
+		due                                               int
+		want                                              string
 	}{
-		{"never opened the flow", false, false, false, onboardingNotStarted},
-		{"account created, form abandoned", false, false, true, onboardingInProgress},
-		{"form submitted, Stripe still verifying", false, true, true, onboardingInProgress},
-		{"payable", true, true, true, onboardingComplete},
+		{"never opened the flow", false, false, false, false, 0, onboardingNotStarted},
+		{"account created, form abandoned", false, false, false, true, 3, onboardingInProgress},
+		{"form submitted, Stripe still wants things", false, false, true, true, 2, onboardingInProgress},
+		{"payable", true, true, true, true, 0, onboardingComplete},
 		// A previously-good account that has gone back to needing something.
 		// Still 'in progress' — there is an account and it is not payable,
 		// which is what the supporter needs to act on.
-		{"was payable, now has requirements due", false, true, true, onboardingInProgress},
+		{"was payable, now has requirements due", false, false, true, true, 1, onboardingInProgress},
+
+		// THE GAP. Form in, nothing due, and Stripe has not made the account
+		// transferable: 'verifying', never 'complete'. The 2026-09-22 shape
+		// exactly — payouts_enabled=true, transfers not active, nothing due —
+		// which used to render as "Payouts are set up" and pass the gate.
+		{"form in, nothing due, transfers not yet active", false, false, true, true, 0, onboardingVerifying},
+		{"payouts_enabled but transfers not active", true, false, true, true, 0, onboardingVerifying},
+		// The other half-state — transfers active, payouts not — is equally
+		// not complete: the platform could reach the account but the account
+		// could not reach a bank.
+		{"transfers active but payouts not enabled", false, true, true, true, 0, onboardingVerifying},
+		// Both true is the ONLY complete, whatever else is pending.
+		{"both true with eventually_due items", true, true, true, true, 0, onboardingComplete},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := stateFor(tc.payoutsEnabled, tc.detailsSubmitted, tc.hasAccount); got != tc.want {
+			if got := stateFor(tc.payoutsEnabled, tc.transfersActive, tc.detailsSubmitted, tc.hasAccount, tc.due); got != tc.want {
 				t.Errorf("state = %q, want %q", got, tc.want)
 			}
 		})
@@ -651,7 +665,14 @@ func TestPhase3RetryFailsClosedWithoutStripe(t *testing.T) {
 		t.Fatalf("a fresh payout is at attempt %d, want 1", p.AttemptCount)
 	}
 
+	// A supporter Stripe HAS made payable — otherwise the retry refuses on
+	// the account before it ever asks whether Stripe is configured, which is
+	// the right order (our own data first) but not what this test is about.
 	linkConnectAccount(t, w.supporterID, "acct_phase3_attempts")
+	if err := onAccountUpdated(context.Background(),
+		accountUpdatedEvent(t, "acct_phase3_attempts", true, true, nil)); err != nil {
+		t.Fatalf("account.updated: %v", err)
+	}
 	code, body := callAdminRetry(t, p.ID, w.adminID)
 	if code != http.StatusServiceUnavailable {
 		t.Fatalf("retry with Stripe unconfigured: %d (%v), want 503", code, body)
@@ -886,7 +907,22 @@ func acctWith(currentlyDue, pastDue []string) *stripe.Account {
 // accountUpdatedEvent is a signed-shape account.updated, as Stripe delivers it
 // for a connected account: the account in data.object, the connected account id
 // in the event's top-level `account`.
+//
+// capabilities.transfers follows payouts_enabled here, which is how Stripe's
+// v1 Account behaves in practice — the two flip together. The tests for the
+// case where they DON'T use accountUpdatedEventWithTransfers.
 func accountUpdatedEvent(t *testing.T, accountID string, payoutsEnabled, detailsSubmitted bool, due []string) *stripe.Event {
+	t.Helper()
+	transfers := "inactive"
+	if payoutsEnabled {
+		transfers = "active"
+	}
+	return accountUpdatedEventWithTransfers(t, accountID, payoutsEnabled, transfers, detailsSubmitted, due)
+}
+
+// accountUpdatedEventWithTransfers is accountUpdatedEvent with the transfers
+// capability status spelled out: "active", "pending", "inactive".
+func accountUpdatedEventWithTransfers(t *testing.T, accountID string, payoutsEnabled bool, transfers string, detailsSubmitted bool, due []string) *stripe.Event {
 	t.Helper()
 	if due == nil {
 		due = []string{}
@@ -897,6 +933,7 @@ func accountUpdatedEvent(t *testing.T, accountID string, payoutsEnabled, details
 		"payouts_enabled":   payoutsEnabled,
 		"charges_enabled":   payoutsEnabled,
 		"details_submitted": detailsSubmitted,
+		"capabilities":      map[string]any{"transfers": transfers},
 		"requirements": map[string]any{
 			"currently_due": due,
 			"past_due":      []string{},
@@ -1078,4 +1115,176 @@ func acceptAs(t *testing.T, taskID, uid, email string) (int, map[string]any) {
 	code, w := callTaskHandler(t, acceptTask, http.MethodPost, "/tasks/"+taskID+"/accept",
 		taskID, uid, email, "", nil)
 	return code, decodeFirstJSON(t, w)
+}
+
+// ── 6. The transfers capability, separately from payouts_enabled ───────────
+
+// What 2026-09-22 taught: payouts_enabled=true, details_submitted=true and an
+// empty currently_due are not enough. The Transfer is checked against the
+// transfers CAPABILITY, and the gate has to be too — a supporter whose account
+// Stripe is still making transferable is refused with a message that says to
+// wait, not one that says to set up payouts they have already set up.
+func TestPhase3GateRefusesUntilTransfersCapabilityIsActive(t *testing.T) {
+	setupStripeWebhookDB(t)
+	t.Setenv("PAYMENTS_ENFORCED", "1")
+	w := seedOpsWorld(t, "open")
+	unassign(t, w.taskID)
+	const acctID = "acct_phase3_transfers"
+	linkConnectAccount(t, w.supporterID, acctID)
+
+	// Stripe's snapshot: payable by every measure the old gate read, and the
+	// transfers capability not yet active.
+	if err := onAccountUpdated(context.Background(),
+		accountUpdatedEventWithTransfers(t, acctID, true, "pending", true, nil)); err != nil {
+		t.Fatalf("account.updated: %v", err)
+	}
+	st := cachedStatus(t, w.supporterID)
+	if !st.PayoutsEnabled || st.TransfersActive {
+		t.Fatalf("cache = payouts:%v transfers:%v, want payouts on and transfers off", st.PayoutsEnabled, st.TransfersActive)
+	}
+	if st.State != onboardingVerifying {
+		t.Errorf("state = %q, want verifying — 'complete' is what admitted the unpayable supporter", st.State)
+	}
+
+	code, body := acceptAs(t, w.taskID, w.supporterID, oldSupporterEmail)
+	if code != http.StatusForbidden {
+		t.Fatalf("accept with transfers pending: %d (%v), want 403", code, body)
+	}
+	if body["error"] != "payouts_onboarding_required" {
+		t.Errorf("error = %v, want payouts_onboarding_required", body["error"])
+	}
+	// The copy is the wait, not the instruction: this supporter has nothing
+	// left to set up.
+	if msg, _ := body["message"].(string); !strings.Contains(msg, "Verification in progress") {
+		t.Errorf("message = %q, want the verification-in-progress copy", msg)
+	}
+	if got := assignedTo(t, w.taskID); got != "" {
+		t.Fatalf("a refused accept still claimed the task for %q", got)
+	}
+
+	// The webhook flips it — the capability activates — and the same accept
+	// goes through.
+	if err := onAccountUpdated(context.Background(),
+		accountUpdatedEventWithTransfers(t, acctID, true, "active", true, nil)); err != nil {
+		t.Fatalf("account.updated: %v", err)
+	}
+	if st = cachedStatus(t, w.supporterID); !st.TransfersActive || st.State != onboardingComplete {
+		t.Fatalf("after activation: transfers=%v state=%q, want true/complete", st.TransfersActive, st.State)
+	}
+	code, body = acceptAs(t, w.taskID, w.supporterID, oldSupporterEmail)
+	if code != http.StatusOK {
+		t.Fatalf("accept after the capability activated: %d (%v)", code, body)
+	}
+	if got := assignedTo(t, w.taskID); got != w.supporterID {
+		t.Errorf("task assigned to %q, want the supporter", got)
+	}
+}
+
+// A supporter who has not onboarded at all still gets the instruction, not
+// the wait — the two refusals are different sentences for different people.
+func TestPhase3GateCopyDistinguishesNotStartedFromVerifying(t *testing.T) {
+	setupStripeWebhookDB(t)
+	t.Setenv("PAYMENTS_ENFORCED", "1")
+	w := seedOpsWorld(t, "open")
+	unassign(t, w.taskID)
+
+	_, body := acceptAs(t, w.taskID, w.supporterID, oldSupporterEmail)
+	if msg, _ := body["message"].(string); !strings.Contains(msg, "Set up payouts") {
+		t.Errorf("message for a supporter with no account = %q, want the set-up prompt", msg)
+	}
+}
+
+// Losing the transfers capability while payouts_enabled stays true is the
+// same transition as losing payouts_enabled: the supporter can no longer be
+// paid, and is told so once.
+func TestPhase3LosingTransfersCapabilityIsAudited(t *testing.T) {
+	setupStripeWebhookDB(t)
+	w := seedOpsWorld(t, "open")
+	const acctID = "acct_phase3_transfers_lost"
+	linkConnectAccount(t, w.supporterID, acctID)
+
+	if err := onAccountUpdated(context.Background(),
+		accountUpdatedEventWithTransfers(t, acctID, true, "active", true, nil)); err != nil {
+		t.Fatalf("account.updated: %v", err)
+	}
+	if err := onAccountUpdated(context.Background(),
+		accountUpdatedEventWithTransfers(t, acctID, true, "inactive", true, []string{"individual.verification.document"})); err != nil {
+		t.Fatalf("account.updated: %v", err)
+	}
+	if st := cachedStatus(t, w.supporterID); st.TransfersActive || st.State == onboardingComplete {
+		t.Errorf("still complete after the capability was lost: %+v", st)
+	}
+	if n := auditCount(t, "PAYOUTS_DISABLED"); n != 1 {
+		t.Errorf("PAYOUTS_DISABLED audit rows = %d, want exactly 1", n)
+	}
+	// And a supporter who was never ready does not get a "disabled" audit
+	// when the capability moves between two not-ready states.
+	if err := onAccountUpdated(context.Background(),
+		accountUpdatedEventWithTransfers(t, acctID, true, "pending", true, nil)); err != nil {
+		t.Fatalf("account.updated: %v", err)
+	}
+	if n := auditCount(t, "PAYOUTS_DISABLED"); n != 1 {
+		t.Errorf("PAYOUTS_DISABLED audited %d times for one transition", n)
+	}
+}
+
+// The admin retry refuses, without burning an attempt, while the account is
+// not transferable — and gets past that guard the moment the webhook says it
+// is. The transfer itself needs a real Stripe (the smoke file, and the live
+// retry that closed the 2026-09-22 payout); what is under test here is that
+// the retry no longer reaches Stripe with an account Stripe will refuse.
+func TestPhase3AdminRetryWaitsForTransfersCapability(t *testing.T) {
+	setupStripeWebhookDB(t)
+	w := seedOpsWorld(t, "completed")
+	paymentID := seedCapturedPayment(t, w.taskID, w.requesterID, 1200, "ch_phase3_retry_caps")
+	p, err := insertPayout(context.Background(), payoutInput{
+		TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID, OwedCents: 1200,
+	}, 1200)
+	if err != nil {
+		t.Fatalf("payout: %v", err)
+	}
+	markPayoutFailed(context.Background(), p, payoutInput{
+		TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID, OwedCents: 1200,
+	}, fmt.Errorf("insufficient_capabilities_for_transfer"))
+
+	const acctID = "acct_phase3_retry_caps"
+	linkConnectAccount(t, w.supporterID, acctID)
+	// The 2026-09-22 shape: payouts_enabled, nothing due, transfers not active.
+	if err := onAccountUpdated(context.Background(),
+		accountUpdatedEventWithTransfers(t, acctID, true, "pending", true, nil)); err != nil {
+		t.Fatalf("account.updated: %v", err)
+	}
+
+	code, body := callAdminRetry(t, p.ID, w.adminID)
+	if code != http.StatusConflict {
+		t.Fatalf("retry into a non-transferable account: %d (%v), want 409", code, body)
+	}
+	if body["error"] != "supporter_not_payable" {
+		t.Errorf("error = %v, want supporter_not_payable", body["error"])
+	}
+	if body["onboarding_state"] != onboardingVerifying {
+		t.Errorf("onboarding_state = %v, want verifying", body["onboarding_state"])
+	}
+	if got := payoutAttempts(t, p.ID); got != 1 {
+		t.Errorf("attempt_count = %d after a refused retry, want 1 — the refusal must not burn an attempt", got)
+	}
+	if got := payoutStatusOf(t, p.ID); got != payoutStatusFailed {
+		t.Errorf("payout is %q after a refused retry, want still failed", got)
+	}
+
+	// The capability activates. The retry now gets past the readiness guard
+	// and on to the next one — Stripe is unconfigured in this suite, so that
+	// is the 503, which is exactly the proof: it was the account, and now it
+	// is not.
+	if err := onAccountUpdated(context.Background(),
+		accountUpdatedEventWithTransfers(t, acctID, true, "active", true, nil)); err != nil {
+		t.Fatalf("account.updated: %v", err)
+	}
+	code, body = callAdminRetry(t, p.ID, w.adminID)
+	if code != http.StatusServiceUnavailable {
+		t.Fatalf("retry after activation with Stripe unconfigured: %d (%v), want 503 (past the readiness guard)", code, body)
+	}
+	if got := payoutAttempts(t, p.ID); got != 1 {
+		t.Errorf("attempt_count = %d, want 1 — an unconfigured Stripe must not burn one either", got)
+	}
 }

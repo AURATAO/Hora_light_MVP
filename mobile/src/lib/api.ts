@@ -917,12 +917,17 @@ export { ApiError } from "./api-error";
 // domain, through a URL this backend mints. The app only ever holds that URL
 // and a status word.
 
-/** not_started → in_progress → complete. The Earnings screen is a machine over this. */
-export type OnboardingState = "not_started" | "in_progress" | "complete";
+/** not_started → in_progress → verifying → complete. The Earnings screen is
+ *  a machine over this. "verifying" is the gap between the form being in and
+ *  Stripe making the account transferable — nothing to do but wait. */
+export type OnboardingState = "not_started" | "in_progress" | "verifying" | "complete";
 
 export interface ConnectStatus {
   state: OnboardingState;
+  /** The account can reach a bank. */
   payouts_enabled: boolean;
+  /** The platform can reach the account. Both must be true to accept tasks. */
+  transfers_active: boolean;
   details_submitted: boolean;
   /** Stripe's own field names. Render the COUNT, never the names. */
   requirements_due: string[];

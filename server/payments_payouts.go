@@ -581,6 +581,35 @@ func adminRetryPayout(c *gin.Context) {
 		return
 	}
 
+	// The account has to be TRANSFERABLE, and "the cache says so" is not
+	// enough for an action that moves money. readConnectStatus re-reads
+	// Stripe when it can — the v1 account AND the v2 recipient capability,
+	// see transfersActiveFor — and refreshes the cache on the way, so the
+	// answer here is as current as Stripe's own. Refused without burning an
+	// attempt: an attempt number is the only thing that makes the NEXT retry
+	// a real retry, and spending one on a transfer Stripe is certain to
+	// refuse would waste it.
+	//
+	// This is the guard the 2026-09-22 $12 payout lacked. The cache said
+	// payable, the v1 account agreed, and the Transfer was refused anyway.
+	st, err := readConnectStatus(ctx, p.SupporterID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+	if !(st.PayoutsEnabled && st.TransfersActive) {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "supporter_not_payable",
+			"message": "Stripe cannot yet accept transfers into this supporter's account. " +
+				"Nothing was sent. Retry once the account's transfers capability is active.",
+			"onboarding_state": st.State,
+			"payouts_enabled":  st.PayoutsEnabled,
+			"transfers_active": st.TransfersActive,
+			"requirements_due": st.RequirementsDue,
+		})
+		return
+	}
+
 	// Fail closed, AFTER the refusals above and BEFORE the counter bump. The
 	// ordering is the point: an operator retrying a payout that must not be
 	// resent deserves to be told that, whatever the deployment's Stripe

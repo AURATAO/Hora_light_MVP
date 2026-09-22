@@ -145,6 +145,13 @@ export const ONBOARDING_COPY = {
     body: 'Stripe still needs a few details before we can pay you.',
     cta: 'Continue setup',
   },
+  // Form in, nothing due, Stripe not yet done making the account
+  // transferable. No setup left; the only action is to check again.
+  verifying: {
+    title: 'Verification in progress',
+    body: 'You can accept tasks once Stripe finishes.',
+    cta: 'Check again',
+  },
   complete: {
     title: 'Payouts are set up',
     body: 'Payments land in your bank automatically.',

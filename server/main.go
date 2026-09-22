@@ -2906,17 +2906,21 @@ func acceptTask(c *gin.Context) {
 	// true before reading anything. See supporterPayoutsReady for why it reads
 	// a cached column rather than calling Stripe on a path where supporters
 	// are racing each other for a task.
-	if ready, err := supporterPayoutsReady(ctx, meUID); err != nil || !ready {
+	if ready, gateMsg, err := supporterPayoutGate(ctx, meUID); err != nil || !ready {
 		if err != nil {
 			log.Printf("[accept] task=%s supporter=%s payout readiness unreadable: %v", id, meUID, err)
+			gateMsg = payoutsOnboardingMessage
 		}
 		// 403 rather than 402: nothing is owed and no payment is required —
 		// the supporter is simply not yet set up to receive one. The clients
-		// branch on the error code, not the status, and turn it into the
-		// "Set up payouts to start earning" prompt with the onboarding CTA.
+		// branch on the error code, not the status, and show the message:
+		// "set up payouts" with the onboarding CTA, or — when they already
+		// have and Stripe is still verifying — that there is nothing to do
+		// but wait. One error code for both, because the client's response
+		// (send them to Earnings) is the same; the copy is the server's.
 		c.JSON(http.StatusForbidden, gin.H{
 			"error":   "payouts_onboarding_required",
-			"message": "Set up payouts to start earning. It takes a couple of minutes and you only do it once.",
+			"message": gateMsg,
 		})
 		return
 	}
