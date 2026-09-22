@@ -46,6 +46,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -77,7 +78,13 @@ const (
 	// An account exists but Stripe still wants something — either the
 	// supporter abandoned the form, or a requirement came due later.
 	onboardingInProgress = "in_progress"
-	// payouts_enabled. Money can move.
+	// The form is in and nothing is due, but Stripe has not yet made the
+	// account TRANSFERABLE. Used to be reported as "complete", which on
+	// 2026-09-22 admitted a supporter the platform then could not pay — see
+	// transfersActiveFor.
+	onboardingVerifying = "verifying"
+	// payouts_enabled AND the transfers capability is active on every view
+	// Stripe has of the account. Money can move.
 	onboardingComplete = "complete"
 )
 
@@ -313,8 +320,12 @@ func isAccountsV1Disabled(err error) bool {
 type ConnectStatus struct {
 	// not_started / in_progress / complete.
 	State string `json:"state"`
-	// True once payouts_enabled. The one field the accept gate reads.
+	// Stripe's payouts_enabled: the account can reach a BANK.
 	PayoutsEnabled bool `json:"payouts_enabled"`
+	// The transfers capability is active: the PLATFORM can reach the account.
+	// This is the precondition a Transfer is actually refused on, and the
+	// accept gate requires it AND PayoutsEnabled. See transfersActiveFor.
+	TransfersActive bool `json:"transfers_active"`
 	// True once the supporter finished the hosted form at least once. A
 	// supporter can be details_submitted and still not payouts_enabled while
 	// Stripe verifies — which is a real state the Earnings screen has to be
@@ -331,11 +342,19 @@ type ConnectStatus struct {
 	PayoutsEnforced bool `json:"payouts_enforced"`
 }
 
-// stateFor collapses the two booleans into the one word the clients use.
-func stateFor(payoutsEnabled, detailsSubmitted bool, hasAccount bool) string {
+// stateFor collapses the cached facts into the one word the clients use.
+//
+// "complete" needs BOTH booleans. "verifying" is the honest name for the gap
+// between them: the supporter has done everything asked (form submitted,
+// nothing due) and Stripe has not yet made the account transferable. It is
+// the state the Earnings screen and the accept refusal both have to be able
+// to explain, because the supporter cannot act on it — only wait.
+func stateFor(payoutsEnabled, transfersActive, detailsSubmitted, hasAccount bool, dueCount int) string {
 	switch {
-	case payoutsEnabled:
+	case payoutsEnabled && transfersActive:
 		return onboardingComplete
+	case hasAccount && detailsSubmitted && dueCount == 0:
+		return onboardingVerifying
 	case hasAccount || detailsSubmitted:
 		return onboardingInProgress
 	default:
@@ -343,15 +362,109 @@ func stateFor(payoutsEnabled, detailsSubmitted bool, hasAccount bool) string {
 	}
 }
 
-// cacheConnectStatus writes what Stripe just told us about an account.
+// ── Which "transfers" ──────────────────────────────────────────────────────
+
+// transfersActive is the v1 Account's answer: capabilities.transfers.
+//
+// Deliberately NOT payouts_enabled: that is about the account reaching a
+// BANK, while this is about the platform reaching the ACCOUNT, and a
+// transfer is refused on the capability rather than on payouts_enabled. The
+// two come true together in practice and mean different things.
+func transfersActive(acct *stripe.Account) bool {
+	return acct != nil && acct.Capabilities != nil &&
+		acct.Capabilities.Transfers == stripe.AccountCapabilityStatusActive
+}
+
+var (
+	stripeClientOnce sync.Once
+	stripeClientV    *stripe.Client
+)
+
+// stripeClient is the client-style SDK entry point, which is the only way
+// into the /v2 surface. Built once, from the key initStripe set; nil when
+// there is none, so callers can skip the call rather than send an
+// unauthenticated request.
+func stripeClient() *stripe.Client {
+	if !paymentsEnabled() {
+		return nil
+	}
+	stripeClientOnce.Do(func() { stripeClientV = stripe.NewClient(stripe.Key) })
+	return stripeClientV
+}
+
+// recipientTransfersStatus is the v2 Account's answer:
+// configuration.recipient.capabilities.stripe_balance.stripe_transfers.status.
+//
+// The second return is whether the answer is KNOWN. Unknown means the v2 view
+// could not be read — no key, network, or the platform has no v2 surface —
+// and is different from "known and not active".
+func recipientTransfersStatus(ctx context.Context, accountID string) (string, bool) {
+	sc := stripeClient()
+	if sc == nil || accountID == "" {
+		return "", false
+	}
+	acct, err := sc.V2CoreAccounts.Retrieve(ctx, accountID, &stripe.V2CoreAccountRetrieveParams{
+		Include: []*string{stripe.String("configuration.recipient")},
+	})
+	if err != nil {
+		log.Printf("[payments][connect] account=%s v2 recipient view unreadable (%v) — v1 capability stands alone", accountID, err)
+		return "", false
+	}
+	cfg := acct.Configuration
+	if cfg == nil || cfg.Recipient == nil || cfg.Recipient.Capabilities == nil ||
+		cfg.Recipient.Capabilities.StripeBalance == nil || cfg.Recipient.Capabilities.StripeBalance.StripeTransfers == nil {
+		// v2 knows the account and has no transfers capability on it at all.
+		// That is a known answer, and it is "no".
+		return "", true
+	}
+	return string(cfg.Recipient.Capabilities.StripeBalance.StripeTransfers.Status), true
+}
+
+// transfersActiveFor is the one derivation of "the platform can send this
+// account a Transfer", and it asks BOTH views Stripe has of the account.
+//
+// WHY TWO. On 2026-09-22 (test mode, acct_1UGK5JJfBq5lpcyd) the v1 Account
+// object said payouts_enabled=true, capabilities.transfers=active, nothing
+// due — and a Transfer to it was refused with
+// insufficient_capabilities_for_transfer seven minutes later. The v2 view of
+// the same account had the recipient stripe_transfers capability
+// "restricted" (requirements_past_due) the whole time, and still does. The
+// sibling account that HAS been paid is "active" on both views. This platform
+// has Accounts v2 enabled, and the v2 capability is the one the Transfer was
+// checked against; v1 is a projection that can disagree with it.
+//
+// So: v1 must say active, and if v2 can be read it must say active too. A v2
+// that cannot be read leaves v1's answer standing, logged — the alternative
+// is a transient v2 error flipping every payable supporter to unpayable and
+// emailing them that their payouts are on hold.
+func transfersActiveFor(ctx context.Context, acct *stripe.Account) bool {
+	if !transfersActive(acct) {
+		return false
+	}
+	status, known := recipientTransfersStatus(ctx, acct.ID)
+	if !known {
+		return true
+	}
+	if status != string(stripe.V2CoreAccountConfigurationRecipientCapabilitiesStripeBalanceStripeTransfersStatusActive) {
+		log.Printf("[payments][connect] account=%s v1 says transfers=active but v2 recipient stripe_transfers=%q — NOT payable",
+			acct.ID, status)
+		return false
+	}
+	return true
+}
+
+// cacheConnectStatus writes what Stripe just told us about an account, and
+// returns the transfers_active it derived (transfersActiveFor) so the caller
+// can answer with the same value it cached.
 //
 // Best-effort and never fatal: the caller has a live Account object in hand
 // and is about to answer from it, so a failed cache write costs a stale gate
 // on the NEXT request, not a wrong answer on this one.
-func cacheConnectStatus(ctx context.Context, uid string, acct *stripe.Account) {
+func cacheConnectStatus(ctx context.Context, uid string, acct *stripe.Account) bool {
 	if acct == nil || uid == "" {
-		return
+		return false
 	}
+	transfers := transfersActiveFor(ctx, acct)
 	due := requirementsDue(acct)
 	raw, err := json.Marshal(due)
 	if err != nil {
@@ -360,13 +473,15 @@ func cacheConnectStatus(ctx context.Context, uid string, acct *stripe.Account) {
 	if _, err := db.Exec(ctx, `
 		update public.users
 		   set stripe_payouts_enabled    = $2,
-		       stripe_details_submitted  = $3,
-		       stripe_requirements_due   = $4::jsonb,
+		       stripe_transfers_active   = $3,
+		       stripe_details_submitted  = $4,
+		       stripe_requirements_due   = $5::jsonb,
 		       stripe_account_updated_at = now()
 		 where id = $1::uuid
-	`, uid, acct.PayoutsEnabled, acct.DetailsSubmitted, string(raw)); err != nil {
+	`, uid, acct.PayoutsEnabled, transfers, acct.DetailsSubmitted, string(raw)); err != nil {
 		log.Printf("[payments][connect] could not cache status for user=%s account=%s: %v", uid, acct.ID, err)
 	}
+	return transfers
 }
 
 // requirementsDue is what Stripe still wants, newest state first.
@@ -418,6 +533,13 @@ func readConnectStatus(ctx context.Context, uid string) (ConnectStatus, error) {
 		return st, nil
 	}
 
+	// No key, no call: answer from the cache rather than send Stripe a
+	// request that cannot be authenticated. An unconfigured deployment's
+	// path, and the test suite's.
+	if !paymentsEnabled() {
+		return cachedConnectStatus(ctx, uid)
+	}
+
 	acct, err := account.GetByID(*accountID, &stripe.AccountParams{})
 	if err != nil {
 		// Stripe is unreachable or the account is gone. Fall back to the
@@ -428,11 +550,11 @@ func readConnectStatus(ctx context.Context, uid string) (ConnectStatus, error) {
 		return cachedConnectStatus(ctx, uid)
 	}
 
-	cacheConnectStatus(ctx, uid, acct)
+	st.TransfersActive = cacheConnectStatus(ctx, uid, acct)
 	st.PayoutsEnabled = acct.PayoutsEnabled
 	st.DetailsSubmitted = acct.DetailsSubmitted
 	st.RequirementsDue = requirementsDue(acct)
-	st.State = stateFor(st.PayoutsEnabled, st.DetailsSubmitted, true)
+	st.State = stateFor(st.PayoutsEnabled, st.TransfersActive, st.DetailsSubmitted, true, len(st.RequirementsDue))
 	return st, nil
 }
 
@@ -447,10 +569,10 @@ func cachedConnectStatus(ctx context.Context, uid string) (ConnectStatus, error)
 	var accountID *string
 	var rawDue []byte
 	err := db.QueryRow(ctx, `
-		select stripe_account_id, stripe_payouts_enabled, stripe_details_submitted,
-		       coalesce(stripe_requirements_due, '[]'::jsonb)
+		select stripe_account_id, stripe_payouts_enabled, stripe_transfers_active,
+		       stripe_details_submitted, coalesce(stripe_requirements_due, '[]'::jsonb)
 		  from public.users where id = $1::uuid
-	`, uid).Scan(&accountID, &st.PayoutsEnabled, &st.DetailsSubmitted, &rawDue)
+	`, uid).Scan(&accountID, &st.PayoutsEnabled, &st.TransfersActive, &st.DetailsSubmitted, &rawDue)
 	if err != nil {
 		return st, fmt.Errorf("read cached connect status: %w", err)
 	}
@@ -460,7 +582,8 @@ func cachedConnectStatus(ctx context.Context, uid string) (ConnectStatus, error)
 	if st.RequirementsDue == nil {
 		st.RequirementsDue = []string{}
 	}
-	st.State = stateFor(st.PayoutsEnabled, st.DetailsSubmitted, accountID != nil && *accountID != "")
+	st.State = stateFor(st.PayoutsEnabled, st.TransfersActive, st.DetailsSubmitted,
+		accountID != nil && *accountID != "", len(st.RequirementsDue))
 	return st, nil
 }
 
@@ -469,7 +592,16 @@ func cachedConnectStatus(ctx context.Context, uid string) (ConnectStatus, error)
 // errPayoutsOnboardingRequired is the one refusal this file produces.
 var errPayoutsOnboardingRequired = errors.New("payouts_onboarding_required")
 
-// supporterPayoutsReady reports whether this supporter may accept a task.
+// The two things the accept refusal can say. One is an instruction, the
+// other is a wait — and telling somebody to "set up payouts" when they have
+// already done so is the kind of message that gets an app deleted.
+const (
+	payoutsOnboardingMessage = "Set up payouts to start earning. It takes a couple of minutes and you only do it once."
+	payoutsVerifyingMessage  = "Verification in progress — you can accept tasks once Stripe finishes."
+)
+
+// supporterPayoutGate reports whether this supporter may accept a task, and
+// when they may not, what to tell them.
 //
 // TRUE WHENEVER THE FLAG IS OFF, unconditionally and before any read. That is
 // the running beta, and it must behave exactly as it did before this file
@@ -480,26 +612,40 @@ var errPayoutsOnboardingRequired = errors.New("payouts_onboarding_required")
 // hot, latency-sensitive path where a supporter is racing other supporters for
 // a task, and a Stripe round trip inside the accept would be both slow and a
 // new way for accepting to fail. The cache is refreshed on every Earnings
-// view, on every onboarding return, and by the account.updated webhook — which
-// is the event that fires the moment payouts_enabled changes. The worst stale
-// read is a supporter who finished onboarding seconds ago being asked to
-// finish onboarding, which one refresh of the Earnings screen fixes.
+// view, on every onboarding return, and by the account.updated webhook. The
+// worst stale read is a supporter who finished onboarding seconds ago being
+// asked to wait, which one refresh of the Earnings screen fixes.
+//
+// READY MEANS BOTH COLUMNS. stripe_payouts_enabled alone admitted a supporter
+// on 2026-09-22 whose $12 transfer Stripe then refused; stripe_transfers_active
+// is the precondition the Transfer is actually checked against. See
+// transfersActiveFor for why that column is derived the way it is.
 //
 // FAILING CLOSED. A database error refuses the accept. The alternative is
 // letting somebody work a task the platform may have no way to pay them for,
 // and between "try again in a moment" and "we cannot pay you", the first is
 // the kinder failure.
-func supporterPayoutsReady(ctx context.Context, uid string) (bool, error) {
+func supporterPayoutGate(ctx context.Context, uid string) (ready bool, message string, err error) {
 	if !paymentsEnforced() {
-		return true, nil
+		return true, "", nil
 	}
-	var enabled bool
-	if err := db.QueryRow(ctx,
-		`select stripe_payouts_enabled from public.users where id = $1::uuid`, uid,
-	).Scan(&enabled); err != nil {
-		return false, fmt.Errorf("read payout readiness for %s: %w", uid, err)
+	st, err := cachedConnectStatus(ctx, uid)
+	if err != nil {
+		return false, "", fmt.Errorf("read payout readiness for %s: %w", uid, err)
 	}
-	return enabled, nil
+	if st.PayoutsEnabled && st.TransfersActive {
+		return true, "", nil
+	}
+	if st.State == onboardingVerifying {
+		return false, payoutsVerifyingMessage, nil
+	}
+	return false, payoutsOnboardingMessage, nil
+}
+
+// supporterPayoutsReady is supporterPayoutGate without the copy.
+func supporterPayoutsReady(ctx context.Context, uid string) (bool, error) {
+	ready, _, err := supporterPayoutGate(ctx, uid)
+	return ready, err
 }
 
 // ── Routes ─────────────────────────────────────────────────────────────────
@@ -845,11 +991,11 @@ func onAccountUpdated(ctx context.Context, event *stripe.Event) error {
 	}
 
 	var uid, email string
-	var wasEnabled bool
+	var wasPayouts, wasTransfers bool
 	err := db.QueryRow(ctx, `
-		select id::text, coalesce(email,''), stripe_payouts_enabled
+		select id::text, coalesce(email,''), stripe_payouts_enabled, stripe_transfers_active
 		  from public.users where stripe_account_id = $1
-	`, acct.ID).Scan(&uid, &email, &wasEnabled)
+	`, acct.ID).Scan(&uid, &email, &wasPayouts, &wasTransfers)
 	if err != nil {
 		// An account we have no user for. Almost always a test event fired
 		// from the dashboard, or an account created outside this backend.
@@ -858,16 +1004,21 @@ func onAccountUpdated(ctx context.Context, event *stripe.Event) error {
 		return nil
 	}
 
-	cacheConnectStatus(ctx, uid, &acct)
-	log.Printf("[stripe][webhook] connect account=%s user=%s payouts_enabled=%v details_submitted=%v due=%d",
-		acct.ID, uid, acct.PayoutsEnabled, acct.DetailsSubmitted, len(requirementsDue(&acct)))
+	// The snapshot in the event is the v1 Account; the cache write also reads
+	// the v2 recipient capability for it (transfersActiveFor), which is the
+	// half the event does not carry.
+	wasReady := wasPayouts && wasTransfers
+	nowTransfers := cacheConnectStatus(ctx, uid, &acct)
+	nowReady := acct.PayoutsEnabled && nowTransfers
+	log.Printf("[stripe][webhook] connect account=%s user=%s payouts_enabled=%v transfers_active=%v details_submitted=%v due=%d",
+		acct.ID, uid, acct.PayoutsEnabled, nowTransfers, acct.DetailsSubmitted, len(requirementsDue(&acct)))
 
 	// The transition that costs somebody money. Going from payable to not
 	// payable means their next accept will be refused and any pending transfer
 	// will fail, and they will have no idea why unless they are told.
 	// The reverse transition needs no announcement — they just finished
 	// onboarding and are looking at the screen that says so.
-	if wasEnabled && !acct.PayoutsEnabled {
+	if wasReady && !nowReady {
 		log.Printf("[stripe][webhook][PAYOUTS DISABLED] user=%s account=%s reason=%s",
 			uid, acct.ID, disabledReason(&acct))
 		writeAudit(ctx, systemActorUID, systemActorUID, "PAYOUTS_DISABLED", disabledReason(&acct),

@@ -25,6 +25,8 @@ import { color, size } from "../../theme/tokens";
  *
  *   not_started  no connected account. One CTA, one sentence.
  *   in_progress  Stripe wants more. Same CTA, different words, plus how much.
+ *   verifying    Form in, nothing due, Stripe not yet done. No CTA — the only
+ *                action is to check again, and pull-to-refresh already is one.
  *   complete     lifetime earned, recent transfers, and a way into Stripe's
  *                Express dashboard.
  *
@@ -54,6 +56,11 @@ const COPY: Record<OnboardingState, { title: string; body: string; cta: string }
     title: "Finish setting up payouts",
     body: "Stripe still needs a few details before we can pay you.",
     cta: "Continue setup",
+  },
+  verifying: {
+    title: "Verification in progress",
+    body: "You can accept tasks once Stripe finishes.",
+    cta: "Check again",
   },
   complete: {
     title: "Payouts are set up",
@@ -139,8 +146,9 @@ export default function EarningsScreen() {
   }
 
   const state: OnboardingState = data?.onboarding?.state ?? "not_started";
-  const copy = COPY[state];
+  const copy = COPY[state] ?? COPY.not_started;
   const done = state === "complete";
+  const verifying = state === "verifying";
   const due = data?.onboarding?.requirements_due ?? [];
 
   return (
@@ -184,7 +192,7 @@ export default function EarningsScreen() {
                       "individual.verification.document", which tells a
                       supporter nothing and reads like an error. The hosted
                       form is what explains them. */}
-                  {!done && due.length > 0 ? (
+                  {!done && !verifying && due.length > 0 ? (
                     <Text className="mt-0.5 text-caption text-muted">
                       {due.length} {due.length === 1 ? "detail" : "details"} still needed.
                     </Text>
@@ -207,6 +215,36 @@ export default function EarningsScreen() {
                     {busy ? "Opening…" : copy.cta}
                   </Text>
                 </PressableScale>
+              ) : verifying ? (
+                // Nothing left to set up, so no solid CTA — that belongs to
+                // setting payouts up. Two text actions: ask again, and a way
+                // back into Stripe's form for the case where Stripe is
+                // waiting on something it filed as "eventually due" (a date
+                // of birth, the last four of an SSN) — which is not "due",
+                // so the count above says nothing, and yet is what actually
+                // unblocks the account.
+                <View className="flex-row items-center gap-6">
+                  <PressableScale
+                    onPress={onRefresh}
+                    disabled={refreshing}
+                    hitSlop={8}
+                    className="min-h-11 justify-center"
+                  >
+                    <Text className="text-caption font-semibold text-brand">
+                      {refreshing ? "Checking…" : copy.cta}
+                    </Text>
+                  </PressableScale>
+                  <PressableScale
+                    onPress={startOnboarding}
+                    disabled={busy}
+                    hitSlop={8}
+                    className="min-h-11 justify-center"
+                  >
+                    <Text className="text-caption font-semibold text-muted">
+                      {busy ? "Opening…" : "Update details on Stripe"}
+                    </Text>
+                  </PressableScale>
+                </View>
               ) : (
                 <Button label={copy.cta} onPress={startOnboarding} loading={busy} />
               )}
