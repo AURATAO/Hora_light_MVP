@@ -57,17 +57,39 @@ export function Screen({
     </>
   );
 
+  // KEYBOARD AVOIDANCE, BY PLATFORM.
+  //
+  // On iOS the ScrollView handles the keyboard ITSELF via
+  // automaticallyAdjustKeyboardInsets: UIKit grows the content inset by the
+  // keyboard's height, so scrolling to the bottom puts the last control above
+  // the keyboard, not under it. KeyboardAvoidingView's `padding` was doing
+  // this job before, and it is what the build 11 device run caught leaving
+  // the Post Task button two-thirds hidden: KAV measures the keyboard's
+  // overlap against its own frame, and inside a `presentation: "modal"`
+  // sheet that frame is offset from the window by the sheet's top inset —
+  // so the overlap it computed was short by exactly that much, which on a
+  // 52pt button is most of the button.
+  //
+  // Android keeps KeyboardAvoidingView: automaticallyAdjustKeyboardInsets is
+  // iOS-only, and adjustResize plus `padding` behaves there.
+  const iosScrollInsets = avoidKeyboard && Platform.OS === "ios";
+  const wrapInKAV = avoidKeyboard && Platform.OS !== "ios";
+
   const body = scroll ? (
     <ScrollView
       className={cn("flex-1 px-6", className)}
       contentContainerStyle={{
         flexGrow: 1,
-        paddingBottom: tabBarPad,
+        // One grid step of clearance under the last control when the keyboard
+        // is up, so a focused field's button is not flush against the inset.
+        paddingBottom: tabBarPad + (iosScrollInsets ? space[6] : 0),
         justifyContent: center ? "center" : undefined,
       }}
       // Without this, the first tap while the keyboard is open only dismisses it
       // and the button underneath needs a second tap.
       keyboardShouldPersistTaps="handled"
+      automaticallyAdjustKeyboardInsets={iosScrollInsets}
+      keyboardDismissMode={iosScrollInsets ? "interactive" : "none"}
       refreshControl={refreshControl}
     >
       {content}
@@ -80,15 +102,11 @@ export function Screen({
 
   return (
     <SafeAreaView className="flex-1 bg-page" edges={["top", "left", "right"]}>
-      {avoidKeyboard ? (
-        // No keyboardVerticalOffset: this sits inside a SafeAreaView that omits
-        // the bottom edge, so it already reaches the physical bottom of the
-        // screen. Android is left to the platform's own adjustResize — adding
-        // padding there would double-count the keyboard height.
-        <KeyboardAvoidingView
-          style={{ flex: 1 }}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-        >
+      {wrapInKAV ? (
+        // Android only — see the note above `body`. No keyboardVerticalOffset:
+        // this sits inside a SafeAreaView that omits the bottom edge, so it
+        // already reaches the physical bottom of the screen.
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
           {body}
         </KeyboardAvoidingView>
       ) : (

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { Platform, ScrollView, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { CircleAlert, Lock, X } from "lucide-react-native";
 import { CompanionshipPolicySheet } from "../../../components/CompanionshipPolicySheet";
@@ -17,7 +17,7 @@ import { isCompanionCategory } from "../../../lib/companionship-policy";
 import { deriveTaskStatus } from "../../../lib/task-utils";
 import { useCompanionshipGate } from "../../../lib/use-companionship-gate";
 import type { Task } from "../../../lib/types";
-import { color, size } from "../../../theme/tokens";
+import { color, size, space } from "../../../theme/tokens";
 
 // server/main.go updateTask rejects an accepted task with this exact string,
 // both from its up-front check and from the guarded UPDATE that catches an
@@ -138,7 +138,7 @@ export default function EditTask() {
   }
 
   return (
-    <Screen scroll={false} avoidKeyboard>
+    <Screen scroll={false} avoidKeyboard={Platform.OS !== "ios"}>
       <View className="mb-6 mt-4 flex-row items-center justify-between">
         <Text className="text-title font-semibold text-ink">Edit task</Text>
         <PressableScale
@@ -177,10 +177,15 @@ export default function EditTask() {
           onAction={load}
         />
       ) : form ? (
+        // Same keyboard split as post-task.tsx — same form, same modal
+        // presentation, same two-thirds-hidden button otherwise.
         <ScrollView
           className="flex-1"
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
+          automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
+          keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "none"}
+          contentContainerStyle={{ paddingBottom: space[8] }}
         >
           <View className="gap-4 pb-8">
             <TaskForm
