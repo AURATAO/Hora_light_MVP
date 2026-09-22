@@ -190,7 +190,7 @@ var reassignMigrationPaths = []string{
 	// cancel_bill_cents and cancel_reason_code are all written by the accept
 	// and cancel paths, so the fixture needs the real columns for the same
 	// reason it needs the real extension_requests table.
-	"../supabase/migrations/20260921120000_cancellation_billing_policy.sql",
+	"../supabase/migrations/20260922075557_cancellation_billing_policy.sql",
 }
 
 func setupReassignDB(t *testing.T) {

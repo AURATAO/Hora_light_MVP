@@ -10,7 +10,7 @@ import type { Profile } from "./types";
 // "display name required at signup" — but the gate itself does not key on
 // it, because an existing account can be nameless: until build 12 every
 // profile was seeded with the email's local part, and that seed has been
-// blanked (migration 20260922120000). Sending those accounts back through
+// blanked (migration 20260922075623). Sending those accounts back through
 // onboarding for one field would be wrong; they get NamePromptSheet instead,
 // once, skippable (needsNamePrompt).
 

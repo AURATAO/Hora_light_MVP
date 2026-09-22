@@ -34,7 +34,7 @@ func EmailPrefixName(email string) string {
 
 // HasDisplayName reports whether a stored profile name is one the person
 // chose. Empty is the only "no" — the seeded prefixes are blanked by migration
-// 20260922120000, so this does not have to guess whether "Jane Doe" was typed
+// 20260922075623, so this does not have to guess whether "Jane Doe" was typed
 // or derived, and a person who deliberately types the same name their email
 // carries gets to keep it.
 func HasDisplayName(name string) bool {
