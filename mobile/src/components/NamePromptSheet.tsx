@@ -11,7 +11,7 @@ import { useAuthState } from "../app/_layout";
 //
 // Until build 12 every profile was seeded with the email's local part, so a
 // supporter was announced as "taoaura.lavoro is on the way". The seed is gone
-// (the server never writes it; migration 20260922120000 blanked the old
+// (the server never writes it; migration 20260922075623 blanked the old
 // ones), which leaves existing accounts nameless until asked. New accounts
 // are asked by complete-profile, where the name is required; this is for
 // everyone who finished onboarding before that.

@@ -104,7 +104,7 @@ func TestNamesMigrationBlanksOnlySeededNames(t *testing.T) {
 	if _, err := db.Exec(ctx, `alter table public.profiles add column if not exists updated_at timestamptz not null default now()`); err != nil {
 		t.Fatalf("fixture updated_at: %v", err)
 	}
-	migration, err := os.ReadFile("../supabase/migrations/20260922120000_blank_seeded_profile_names.sql")
+	migration, err := os.ReadFile("../supabase/migrations/20260922075623_blank_seeded_profile_names.sql")
 	if err != nil {
 		t.Fatalf("read migration: %v", err)
 	}

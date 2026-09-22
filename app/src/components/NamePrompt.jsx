@@ -9,7 +9,7 @@ import { useAuth } from '../auth/AuthContext'
  *
  * Until build 12 every profile was seeded with the email's local part, so a
  * supporter was announced to requesters as "taoaura.lavoro is on the way".
- * The seed is gone (migration 20260922120000 blanked it; the server never
+ * The seed is gone (migration 20260922075623 blanked it; the server never
  * writes it now), which leaves existing accounts nameless until asked. New
  * accounts are asked by the profile form itself, where the name is required;
  * this is for everyone who signed up before that.
