@@ -50,6 +50,8 @@ const systemActorUID = "00000000-0000-0000-0000-000000000000"
 
 func RegisterStripeWebhooks(r *gin.Engine) {
 	r.POST("/webhooks/stripe", handleStripeWebhook)
+	// v2 event destination (thin events) — see stripe_webhook_v2.go.
+	r.POST("/webhooks/stripe/v2", handleStripeV2Webhook)
 }
 
 // stripeWebhookSecrets returns every endpoint secret this deployment accepts.
@@ -181,6 +183,13 @@ func handleStripeWebhook(c *gin.Context) {
 	// CONNECTED-ACCOUNT SCOPED.
 	case "payout.failed":
 		err = onConnectedPayoutFailed(ctx, &event)
+
+	// The bank saying yes: the connected-account payout that swept our
+	// transfers to the supporter's bank has landed. Stamps bank_paid_at on
+	// the rows it carried, which is what turns "on its way" into "paid out"
+	// on the Earnings screen. CONNECTED-ACCOUNT SCOPED.
+	case "payout.paid":
+		err = onConnectedPayoutPaid(ctx, &event)
 	default:
 		// Unknown or unsubscribed event types are acknowledged, not errored.
 		// A 4xx/5xx here would make Stripe retry an event we will never care

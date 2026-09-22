@@ -260,7 +260,7 @@ func payoutForTask(ctx context.Context, in payoutInput) *Payout {
 		return p
 	}
 
-	if err := recordPayoutSent(ctx, p.ID, tr.ID); err != nil {
+	if err := recordPayoutSent(ctx, p.ID, tr.ID, destinationPaymentOf(tr)); err != nil {
 		log.Printf("[payments][payout][ERROR] sent transfer=%s but did not record payout=%s: %v",
 			tr.ID, p.ID, err)
 	}
@@ -385,12 +385,22 @@ func insertPayout(ctx context.Context, in payoutInput, amount int) (*Payout, err
 	return &p, nil
 }
 
-func recordPayoutSent(ctx context.Context, payoutID, transferID string) error {
+// destinationPayment is the py_… the Transfer created on the connected
+// account — the join key to the bank payout that will carry it (see
+// payments_bank_arrival.go). Empty when Stripe did not include one; the
+// reconciler fills it from the Transfer later.
+func recordPayoutSent(ctx context.Context, payoutID, transferID, destinationPayment string) error {
+	var py *string
+	if destinationPayment != "" {
+		py = &destinationPayment
+	}
 	_, err := db.Exec(ctx, `
 		update public.payouts
-		   set status = $2, stripe_transfer_id = $3, updated_at = now()
+		   set status = $2, stripe_transfer_id = $3,
+		       stripe_destination_payment = coalesce($4, stripe_destination_payment),
+		       updated_at = now()
 		 where id = $1::uuid
-	`, payoutID, payoutStatusPaid, transferID)
+	`, payoutID, payoutStatusPaid, transferID, py)
 	return err
 }
 
@@ -652,7 +662,7 @@ func adminRetryPayout(c *gin.Context) {
 		return
 	}
 
-	if err := recordPayoutSent(ctx, p.ID, tr.ID); err != nil {
+	if err := recordPayoutSent(ctx, p.ID, tr.ID, destinationPaymentOf(tr)); err != nil {
 		log.Printf("[payments][payout][ERROR] retry sent transfer=%s but did not record payout=%s: %v",
 			tr.ID, p.ID, err)
 	}

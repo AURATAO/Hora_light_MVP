@@ -15,6 +15,7 @@ import {
 } from "../../lib/api";
 import { HISTORY_PREVIEW_COUNT, HistorySection } from "../../components/HistorySection";
 import { TransferRow } from "../../components/TransferRow";
+import { earningsWhereaboutsLine } from "../../lib/earnings-copy";
 import { color, size } from "../../theme/tokens";
 
 /**
@@ -259,9 +260,14 @@ export default function EarningsScreen() {
                   <Text className="text-display text-ink">
                     {formatCents(data?.lifetime_earned_cents ?? 0)}
                   </Text>
-                  <Text className="mt-0.5 text-caption text-muted">
-                    Paid into your bank. Money still on its way isn't counted here.
-                  </Text>
+                  {/* Where the money is, as two numbers. "Earned" is every
+                      successful transfer; the bank sees it on Stripe's payout
+                      schedule, and the split says how much has got there. */}
+                  {earningsWhereaboutsLine(data) ? (
+                    <Text className="mt-0.5 text-caption text-muted">
+                      {earningsWhereaboutsLine(data)}
+                    </Text>
+                  ) : null}
                 </Card>
               </View>
 

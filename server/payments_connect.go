@@ -852,11 +852,41 @@ type EarningsTransfer struct {
 	TaskTitle string `json:"task_title"`
 	// What landed, net. Split so the copy can say "$19.50 (time) + $12.40
 	// (reimbursement)" without the client adding anything up (S-05).
-	AmountCents  int       `json:"amount_cents"`
-	TimeCents    int       `json:"time_cents"`
-	ReceiptCents int       `json:"receipt_cents"`
-	Status       string    `json:"status"`
-	CreatedAt    time.Time `json:"created_at"`
+	AmountCents  int `json:"amount_cents"`
+	TimeCents    int `json:"time_cents"`
+	ReceiptCents int `json:"receipt_cents"`
+	// The payouts row status: pending / paid / failed. "paid" means the
+	// TRANSFER happened — money left the platform — not that the bank has it.
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+	// When the connected-account payout carrying this transfer reached the
+	// bank (payout.paid). Null while still on its way; never set on a failed
+	// row.
+	BankPaidAt *time.Time `json:"bank_paid_at"`
+	// The one word the row renders, decided here so both clients agree
+	// (S-05): paid / on_its_way / failed.
+	DisplayStatus string `json:"display_status"`
+}
+
+// Row display statuses. "paid" is reserved for money in the BANK.
+const (
+	transferDisplayPaid      = "paid"
+	transferDisplayInTransit = "on_its_way"
+	transferDisplayFailed    = "failed"
+)
+
+// displayStatusFor is the whole rule: failed is failed; paid means the bank
+// has it; everything else — a transfer sent and not yet swept, or a row
+// still pending its transfer — is on its way.
+func displayStatusFor(status string, bankPaidAt *time.Time) string {
+	switch {
+	case status == payoutStatusFailed:
+		return transferDisplayFailed
+	case status == payoutStatusPaid && bankPaidAt != nil:
+		return transferDisplayPaid
+	default:
+		return transferDisplayInTransit
+	}
 }
 
 // Earnings is the whole Earnings section in one response: the onboarding state
@@ -867,12 +897,19 @@ type EarningsTransfer struct {
 // "set up payouts" prompt is incoherent.
 type Earnings struct {
 	Onboarding ConnectStatus `json:"onboarding"`
-	// Lifetime PAID, not lifetime earned-on-paper: pending and failed
-	// transfers are excluded. A number a supporter can reconcile against their
-	// own bank statement is worth more than one that includes money still in
-	// flight.
-	LifetimeEarnedCents int                `json:"lifetime_earned_cents"`
-	Transfers           []EarningsTransfer `json:"transfers"`
+	// EARNED: the sum of successful transfers — money that left the platform
+	// for this supporter, whether or not their bank has it yet. Pending rows
+	// (no transfer yet) and failed rows (no transfer, ever) are excluded: a
+	// failed transfer is not earnings, it is an incident.
+	LifetimeEarnedCents int `json:"lifetime_earned_cents"`
+	// The split of LifetimeEarnedCents by where the money is: in the bank
+	// (payout.paid stamped the row) or still in Stripe's hands. The two
+	// always add up to LifetimeEarnedCents, and the screen shows both as
+	// numbers — "$X on its way to your bank · $Y paid out" — rather than a
+	// hedge about what is or is not counted.
+	PaidOutCents   int                `json:"paid_out_cents"`
+	InTransitCents int                `json:"in_transit_cents"`
+	Transfers      []EarningsTransfer `json:"transfers"`
 	// How many transfers exist in total, so a screen showing three of them can
 	// say "See all (47)". Distinct from len(Transfers), which is one page.
 	Total int `json:"total"`
@@ -917,6 +954,8 @@ func earningsHandler(c *gin.Context) {
 
 	out := Earnings{Onboarding: st, Transfers: []EarningsTransfer{}}
 	out.LifetimeEarnedCents = lifetimePaidCents(ctx, uid)
+	out.PaidOutCents = lifetimeBankPaidCents(ctx, uid)
+	out.InTransitCents = out.LifetimeEarnedCents - out.PaidOutCents
 	out.Total = countPayouts(ctx, uid)
 
 	// OFFSET rather than a keyset cursor, deliberately. The ordering key here
@@ -927,7 +966,7 @@ func earningsHandler(c *gin.Context) {
 	// that is telling somebody what they were paid.
 	rows, err := db.Query(ctx, `
 		select po.task_id::text, coalesce(t.title,''), po.amount_cents, po.status, po.created_at,
-		       coalesce(p.time_cost_cents, 0), coalesce(p.shopping_receipt_cents, 0)
+		       coalesce(p.time_cost_cents, 0), coalesce(p.shopping_receipt_cents, 0), po.bank_paid_at
 		  from public.payouts po
 		  join public.tasks t    on t.id = po.task_id
 		  join public.payments p on p.id = po.payment_id
@@ -945,15 +984,30 @@ func earningsHandler(c *gin.Context) {
 	for rows.Next() {
 		var e EarningsTransfer
 		if err := rows.Scan(&e.TaskID, &e.TaskTitle, &e.AmountCents, &e.Status, &e.CreatedAt,
-			&e.TimeCents, &e.ReceiptCents); err != nil {
+			&e.TimeCents, &e.ReceiptCents, &e.BankPaidAt); err != nil {
 			break
 		}
+		e.DisplayStatus = displayStatusFor(e.Status, e.BankPaidAt)
 		out.Transfers = append(out.Transfers, e)
 	}
 	c.JSON(http.StatusOK, out)
 }
 
-// lifetimePaidCents sums what has actually reached this supporter.
+// lifetimeBankPaidCents sums the paid rows whose bank payout has landed.
+func lifetimeBankPaidCents(ctx context.Context, uid string) int {
+	var total int
+	if err := db.QueryRow(ctx, `
+		select coalesce(sum(amount_cents), 0) from public.payouts
+		 where supporter_id = $1::uuid and status = $2 and bank_paid_at is not null
+	`, uid, payoutStatusPaid).Scan(&total); err != nil {
+		log.Printf("[payments][earnings] bank-paid lifetime for uid=%s: %v", uid, err)
+		return 0
+	}
+	return total
+}
+
+// lifetimePaidCents sums the successful transfers: what this supporter has
+// EARNED, wherever the money currently sits.
 func lifetimePaidCents(ctx context.Context, uid string) int {
 	var total int
 	if err := db.QueryRow(ctx, `
