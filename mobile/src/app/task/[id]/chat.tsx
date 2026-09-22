@@ -13,13 +13,6 @@ import { color, size } from "../../../theme/tokens";
 
 const TALKJS_APP_ID = process.env.EXPO_PUBLIC_TALKJS_APP_ID;
 
-// Matches web's TaskChatBox.jsx deriveName — a display-name fallback for the
-// counterpart when their public profile has no name set.
-function deriveName(email: string): string {
-  const at = email.indexOf("@");
-  return (at > 0 ? email.slice(0, at) : email).replace(/\./g, " ");
-}
-
 interface ChatSetup {
   me: User;
   conversationBuilder: ConversationBuilder;
@@ -73,6 +66,12 @@ export default function TaskChat() {
       const otherEmail = isAssigneeSelf ? task.requester : task.assigned_to;
 
       const otherProfile = otherId ? await getPublicProfile(otherId).catch(() => null) : null;
+      // Both are the server's resolution (names.go); the email is a TalkJS id
+      // and is never shown as a name.
+      const otherName =
+        otherProfile?.name?.trim() ||
+        (isAssigneeSelf ? task.requester_name : task.assignee_name)?.trim() ||
+        "Your HO:RA contact";
 
       const me: User = {
         id: profile.email ?? auth.email,
@@ -86,7 +85,7 @@ export default function TaskChat() {
       if (otherEmail) {
         builder.setParticipant({
           id: otherEmail,
-          name: otherProfile?.name ?? deriveName(otherEmail),
+          name: otherName,
           email: otherEmail,
           photoUrl: otherProfile?.avatar_url ?? undefined,
         });
@@ -98,7 +97,7 @@ export default function TaskChat() {
         conversationBuilder: builder,
         signature,
         taskTitle: task.title || "Task",
-        counterpartName: otherProfile?.name ?? (otherEmail ? deriveName(otherEmail) : "Chat"),
+        counterpartName: otherEmail ? otherName : "Chat",
         counterpartAvatar: otherProfile?.avatar_url ?? null,
       });
       setError(null);

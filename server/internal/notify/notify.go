@@ -6,10 +6,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -557,6 +559,7 @@ type AdminNewTaskInput struct {
 	Title            string
 	Category         string
 	RequesterEmail   string
+	RequesterName    string // resolved by the caller (server/names.go); the email stays beside it for ops
 	LocationText     string
 	EstimatedMinutes int
 	IsImmediate      bool
@@ -610,7 +613,7 @@ func NotifyAdminNewTask(in AdminNewTaskInput) {
     <a href="%s" style="display:inline-block;padding:14px 28px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;font-weight:500;color:#f4f4f0;text-decoration:none;border-radius:8px;">View task &rarr;</a>
   </td>
 </tr></table>`,
-		in.Title, in.Category, in.RequesterEmail, loc, in.EstimatedMinutes, when, taskURL)
+		in.Title, in.Category, requesterLabel(in.RequesterName, in.RequesterEmail), loc, in.EstimatedMinutes, when, taskURL)
 
 	html := wrapEmail("New task posted: "+in.Title, card)
 	subject := fmt.Sprintf("New task posted: %s", in.Title)
@@ -684,6 +687,21 @@ func NotifyAdminSupporterApply(in SupporterApplyInput) {
 		if err := SendEmail(EmailPayload{To: email, Subject: subject, Html: html}); err != nil {
 			log.Printf("[notify] admin supporter-apply email failed to=%s err=%v", email, err)
 		}
+	}
+}
+
+// requesterLabel is the ops email's "who posted this": the person's name with
+// the address beside it, since ops act on the address. HTML-escaped — both
+// halves are user-typed.
+func requesterLabel(name, email string) string {
+	name, email = strings.TrimSpace(name), strings.TrimSpace(email)
+	switch {
+	case name != "" && email != "":
+		return fmt.Sprintf("%s &lt;%s&gt;", html.EscapeString(name), html.EscapeString(email))
+	case name != "":
+		return html.EscapeString(name)
+	default:
+		return html.EscapeString(email)
 	}
 }
 

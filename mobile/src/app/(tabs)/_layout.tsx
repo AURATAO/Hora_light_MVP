@@ -3,6 +3,7 @@ import { StyleSheet } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { House, List, User, Wallet } from "lucide-react-native";
 import { useSupporterStatus } from "../../lib/use-supporter-status";
+import { NamePromptSheet } from "../../components/NamePromptSheet";
 import { color, layout, radius, size, space, type as typeScale } from "../../theme/tokens";
 
 const TAB_ICON_SIZE = 22;
@@ -21,6 +22,7 @@ export default function TabsLayout() {
   const { isApproved } = useSupporterStatus();
 
   return (
+    <>
     <Tabs
       screenOptions={{
         headerShown: false,
@@ -115,5 +117,10 @@ export default function TabsLayout() {
         }}
       />
     </Tabs>
+    {/* "What should we call you?" — once, for an account that finished
+        onboarding before a name was required. Lives here rather than on a
+        screen so it meets them wherever they land. */}
+    <NamePromptSheet />
+    </>
   );
 }

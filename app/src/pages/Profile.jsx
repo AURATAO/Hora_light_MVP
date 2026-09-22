@@ -38,9 +38,14 @@ export default function Profile() {
       .finally(() => setLoading(false))
   }, [])
 
+  // A name is required to save, same as phone and photo. New accounts reach
+  // this form through the profile gate, so "required here" is "required at
+  // signup"; an existing account without one is asked by NamePrompt instead.
+  const missing = !name.trim() || !phone.trim() || !avatarUrl
+
   async function handleSave() {
     setSubmitted(true)
-    if (!phone.trim() || !avatarUrl) return
+    if (missing) return
     setSaving(true)
     try {
       await api('/profile', {
@@ -74,9 +79,9 @@ export default function Profile() {
             <div className="text-sm text-white/40 text-center py-4">Loading…</div>
           ) : (
             <>
-              {submitted && (!phone.trim() || !avatarUrl) && (
+              {submitted && missing && (
                 <div className="rounded-lg bg-red-500/10 border border-red-500/30 px-4 py-3 text-sm text-red-400">
-                  Please complete your profile before continuing — photo and phone number are required.
+                  Please complete your profile before continuing — name, photo and phone number are required.
                 </div>
               )}
 
@@ -103,6 +108,9 @@ export default function Profile() {
                   className="w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white
                              placeholder-white/30 outline-none focus:border-secondary/50 transition-colors"
                 />
+                {submitted && !name.trim() && (
+                  <p className="text-xs text-red-400 mt-1">Name is required</p>
+                )}
               </label>
 
               {/* Phone */}

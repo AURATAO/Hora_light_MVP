@@ -292,7 +292,7 @@ export default function My() {
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                 <span className="font-heading text-lg text-white truncate inline-flex items-center gap-1">
-                  Hey, {profile?.name || user?.email?.split('@')[0] || 'there'}
+                  Hey, {profile?.name || user?.name || 'there'}
                   <Hand size={18} className="opacity-80 shrink-0" />
                 </span>
                 {user?.is_verified_supporter && (

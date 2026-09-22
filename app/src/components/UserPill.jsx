@@ -24,13 +24,10 @@ const avatar =
     data?.photo_url ||
     'https://placehold.co/32x32?text=:)'
 
-  const emailLocal = (data?.email && String(data.email).split('@')[0]) || ''
+  // /profiles/:id already applied the name chain server-side; a blank here
+  // means the profile itself could not be read, not that they have no name.
   const shortId = String(userId).slice(0, 8)
-  const displayBase =
-    data?.name?.trim() ||
-    data?.display_name?.trim() ||
-    emailLocal ||
-    `${label} ${shortId}`
+  const displayBase = data?.name?.trim() || `${label} ${shortId}`
   const display = isMe ? 'You' : displayBase
 
   return (

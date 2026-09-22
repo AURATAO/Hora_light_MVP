@@ -83,7 +83,11 @@ export type User =
       auth: true;
       id: string;
       email: string;
+      /** Server-resolved (server/names.go): the chosen display name, or the
+       *  email-prefix stand-in when none is set. Never derived on the client. */
       name: string;
+      /** Whether `name` is theirs. False is what opens NamePromptSheet. */
+      display_name_set: boolean;
       is_verified_supporter: boolean;
     }
   | { auth: false };
@@ -230,6 +234,10 @@ export interface Task {
    * scheme); never for permission checks — those use requester_id/assigned_to_id. */
   requester?: string;
   assigned_to?: string;
+  /** What to PRINT for each party — resolved server-side. The emails above
+   *  are for identity checks only and are never shown as a name. */
+  requester_name?: string;
+  assignee_name?: string;
 }
 
 export interface Worklog {

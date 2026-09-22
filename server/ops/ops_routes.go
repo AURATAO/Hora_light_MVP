@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"hora-auth/helpers"
 )
 
 // RegisterOpsRoutes 由 main 注入：auth 中介層 + admin 檢查函式
@@ -68,10 +70,12 @@ func RegisterOpsRoutes(r *gin.Engine, sqldb *sql.DB, authMW gin.HandlerFunc, isA
 				task_id, title, category, location_text, status, estimated_minutes,
 				prepay_amount, is_immediate, scheduled_at, created_at, cancelled_at, cancel_reason,
 				requester_email, supporter_email,
+				(select coalesce(p.name,'') from public.profiles p where lower(p.email) = lower(v.requester_email) limit 1),
+				(select coalesce(p.name,'') from public.profiles p where lower(p.email) = lower(v.supporter_email) limit 1),
 				first_start_at, last_end_at, total_minutes_done, running_minutes,
 				(COALESCE(total_minutes_done,0)+COALESCE(running_minutes,0)) AS duration_minutes,
 				last_event_at
-			FROM public.view_ops_tasks
+			FROM public.view_ops_tasks v
 			WHERE %s
 			ORDER BY last_event_at DESC
 			LIMIT 500
@@ -100,6 +104,10 @@ func RegisterOpsRoutes(r *gin.Engine, sqldb *sql.DB, authMW gin.HandlerFunc, isA
 			CancelReason     *string    `json:"cancel_reason"`
 			RequesterEmail   *string    `json:"requester_email"`
 			SupporterEmail   *string    `json:"supporter_email"`
+			// The chain (helpers.DisplayName) applied to the row: what ops
+			// read as the person, with the email kept beside it for acting.
+			RequesterName    string     `json:"requester_name"`
+			SupporterName    string     `json:"supporter_name"`
 			FirstStartAt     *time.Time `json:"first_start_at"`
 			LastEndAt        *time.Time `json:"last_end_at"`
 			TotalDone        *int       `json:"total_minutes_done"`
@@ -111,15 +119,19 @@ func RegisterOpsRoutes(r *gin.Engine, sqldb *sql.DB, authMW gin.HandlerFunc, isA
 		out := []Row{}
 		for rows.Next() {
 			var r Row
+			var requesterName, supporterName *string
 			if err := rows.Scan(
 				&r.TaskID, &r.Title, &r.Category, &r.LocationText, &r.Status, &r.EstimatedMinutes,
 				&r.PrepayAmount, &r.IsImmediate, &r.ScheduledAt, &r.CreatedAt, &r.CancelledAt, &r.CancelReason,
 				&r.RequesterEmail, &r.SupporterEmail,
+				&requesterName, &supporterName,
 				&r.FirstStartAt, &r.LastEndAt, &r.TotalDone, &r.Running, &r.Duration, &r.LastEventAt,
 			); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "scan error"})
 				return
 			}
+			r.RequesterName = helpers.DisplayName(deref(requesterName), deref(r.RequesterEmail))
+			r.SupporterName = helpers.DisplayName(deref(supporterName), deref(r.SupporterEmail))
 			out = append(out, r)
 		}
 		c.JSON(http.StatusOK, out)
@@ -274,4 +286,11 @@ func supporterDecision(c *gin.Context, sqldb *sql.DB, isAdmin func(email string)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func deref(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }

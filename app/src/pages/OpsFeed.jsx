@@ -273,8 +273,8 @@ export default function OpsFeed() {
                     <div className="text-xs opacity-70">{r.location_text || '—'}</div>
                   </td>
                   <td className="p-2">
-                    <div className="text-xs">Req: {r.requester_email || '—'}</div>
-                    <div className="text-xs">Sup: {r.supporter_email || '—'}</div>
+                    <div className="text-xs">Req: {r.requester_name || '—'}{r.requester_email ? <span className="opacity-60"> · {r.requester_email}</span> : null}</div>
+                    <div className="text-xs">Sup: {r.supporter_email ? <>{r.supporter_name}<span className="opacity-60"> · {r.supporter_email}</span></> : '—'}</div>
                   </td>
                   <td className="p-2 capitalize">{r.status}</td>
                   <td className="p-2 text-xs">
@@ -407,7 +407,9 @@ export default function OpsFeed() {
         <div className="mb-3 rounded border border-white/10 bg-white/5 px-3 py-2 text-xs">
           <div className="opacity-70">Current supporter</div>
           <div className="text-white">
-            {reassigning?.supporter_email || 'Nobody — this task has not been accepted yet'}
+            {reassigning?.supporter_email
+              ? `${reassigning.supporter_name || ''} · ${reassigning.supporter_email}`.replace(/^ · /, '')
+              : 'Nobody — this task has not been accepted yet'}
           </div>
         </div>
 

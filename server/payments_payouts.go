@@ -487,12 +487,13 @@ the list of people to settle with by hand when it is flipped on.</p>
 // supporterLabel is "Name <email>" for an ops email, or the uid when the row
 // is unreadable — an alert that cannot name anybody is still worth sending.
 func supporterLabel(ctx context.Context, uid string) string {
-	var name, email string
+	var email string
 	if err := db.QueryRow(ctx,
-		`select coalesce(name,''), coalesce(email,'') from public.users where id = $1::uuid`, uid,
-	).Scan(&name, &email); err != nil {
+		`select coalesce(email,'') from public.users where id = $1::uuid`, uid,
+	).Scan(&email); err != nil {
 		return uid
 	}
+	name := resolveDisplayName(ctx, email)
 	switch {
 	case name != "" && email != "":
 		return fmt.Sprintf("%s &lt;%s&gt;", name, email)

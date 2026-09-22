@@ -3,17 +3,13 @@ import Talk from 'talkjs'
 import { Session, Chatbox } from '@talkjs/react'
 import { api } from '../api/client'
 
-function deriveName(email) {
-  if (!email) return 'User'
-  const i = email.indexOf('@')
-  return (i > 0 ? email.slice(0, i) : email).replace(/\./g, ' ')
-}
-
 /**
  * TaskChatBox
  * Renders TalkJS chat only after the task is assigned and TalkJS is ready.
+ * Names are the server's (task.requester_name / assignee_name, me.name from
+ * /auth/me); the emails are TalkJS ids only and are never shown as a name.
  * props:
- *  - task: { id, title, requester, assigned_to }
+ *  - task: { id, title, requester, assigned_to, requester_name, assignee_name }
  *  - me:   { email, name }
  *  - height?: number (default 320)
  *  - className?: string
@@ -51,17 +47,19 @@ export default function TaskChatBox({ task, me, height, fullscreen = false, clas
     if (!ready || !me?.email) return null
     return new Talk.User({
       id: me.email,
-      name: me.name || deriveName(me.email),
+      name: me.name || 'You',
       email: me.email,
       role: 'default',
     })
   }, [ready, me])
 
   // 3) The other participant (author vs assignee)
+  const iAmRequester = !!task && !!me?.email && me.email === task.requester
   const otherEmail = useMemo(() => {
     if (!task || !me?.email) return ''
-    return me.email === task.requester ? task.assigned_to || '' : task.requester || ''
-  }, [task, me])
+    return iAmRequester ? task.assigned_to || '' : task.requester || ''
+  }, [task, me, iAmRequester])
+  const otherName = iAmRequester ? task?.assignee_name : task?.requester_name
 
   // 4) Conversation for this task
   const syncConversation = useCallback(
@@ -72,7 +70,7 @@ export default function TaskChatBox({ task, me, height, fullscreen = false, clas
       if (otherEmail) {
         const other = new Talk.User({
           id: otherEmail,
-          name: deriveName(otherEmail),
+          name: otherName || 'Your HO:RA contact',
           email: otherEmail,
           role: 'default',
         })
@@ -81,7 +79,7 @@ export default function TaskChatBox({ task, me, height, fullscreen = false, clas
       conv.setAttributes({ subject: task.title ?? 'Task', custom: { taskId: task.id } })
       return conv
     },
-    [ready, task?.id, task?.title, otherEmail]
+    [ready, task?.id, task?.title, otherEmail, otherName]
   )
 
   // Guards & placeholders

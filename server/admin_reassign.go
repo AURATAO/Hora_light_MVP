@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 
+	"hora-auth/helpers"
 	notify "hora-auth/internal/notify"
 )
 
@@ -288,7 +289,7 @@ func resolveApprovedSupporter(c *gin.Context, wantID, wantEmail string) (reassig
 	)
 
 	query := `
-		select u.id::text, coalesce(u.email,''), coalesce(p.name, u.name, ''),
+		select u.id::text, coalesce(u.email,''), coalesce(p.name, ''),
 		       coalesce(p.is_verified_supporter, false)
 		from public.users u
 		left join public.profiles p on lower(p.email) = lower(u.email)
@@ -318,10 +319,7 @@ func resolveApprovedSupporter(c *gin.Context, wantID, wantEmail string) (reassig
 			fmt.Sprintf("%s is not an approved supporter. Approve them first, then reassign.", t.Email)
 	}
 
-	t.Name = name
-	if t.Name == "" {
-		t.Name = displayName(t.Email)
-	}
+	t.Name = helpers.DisplayName(name, t.Email)
 	return t, "", ""
 }
 
@@ -337,12 +335,12 @@ func adminListSupporters(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	rows, err := db.Query(ctx, `
-		select u.id::text, coalesce(u.email,''), coalesce(p.name, u.name, ''), coalesce(p.city,'')
+		select u.id::text, coalesce(u.email,''), coalesce(p.name, ''), coalesce(p.city,'')
 		from public.profiles p
 		join public.users u on lower(u.email) = lower(p.email)
 		where coalesce(p.is_verified_supporter, false) = true
 		  and coalesce(u.email,'') <> ''
-		order by lower(coalesce(p.name, u.name, u.email))
+		order by lower(coalesce(nullif(p.name,''), u.email))
 	`)
 	if err != nil {
 		log.Printf("[admin.supporters][query] err=%v", err)
@@ -364,9 +362,7 @@ func adminListSupporters(c *gin.Context) {
 			log.Printf("[admin.supporters][scan] err=%v", err)
 			continue
 		}
-		if s.Name == "" {
-			s.Name = displayName(s.Email)
-		}
+		s.Name = helpers.DisplayName(s.Name, s.Email)
 		items = append(items, s)
 	}
 	if err := rows.Err(); err != nil {

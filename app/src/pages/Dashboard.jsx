@@ -85,7 +85,7 @@ export default function Dashboard() {
     return () => { alive = false }
   }, [])
 
-  const displayName = profile?.name || user?.email?.split('@')[0] || 'there'
+  const displayName = profile?.name || user?.name || 'there'
 
   return (
     <div className="min-h-screen bg-primary text-accent py-10 px-4">

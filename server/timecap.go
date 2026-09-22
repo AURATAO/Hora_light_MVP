@@ -202,19 +202,19 @@ func fireTimeCapWarning(ctx context.Context, taskID string, st timeCapState) {
 	supporterTitle := "About 5 minutes left on this task"
 	supporterBody := fmt.Sprintf(
 		"About %d minutes left on the time %s asked for. Need longer? Ask for more in the app — they can approve it in one tap.",
-		maxInt(st.RemainingMinutes, 0), displayName(t.RequesterEmail))
+		maxInt(st.RemainingMinutes, 0), t.RequesterName)
 
 	requesterTitle := "Your task is close to its time limit"
 	requesterBody := fmt.Sprintf(
 		"%s is about %d minutes from the %d minutes you asked for on %q. If they need longer they'll ask, and you can approve it in one tap.",
-		displayName(t.AssigneeEmail), maxInt(st.RemainingMinutes, 0), st.Cap.CapMinutes, t.Title)
+		t.AssigneeName, maxInt(st.RemainingMinutes, 0), st.Cap.CapMinutes, t.Title)
 
 	switch {
 	case st.Reached:
 		supporterTitle = "Time cap in sight"
 		supporterBody = fmt.Sprintf(
 			"You've reached the time %s asked for. Need longer? Ask for more in the app.",
-			displayName(t.RequesterEmail))
+			t.RequesterName)
 	case st.Cap.AutoExtendMinutes > 0:
 		supporterTitle = fmt.Sprintf("Approaching the %d-min estimate", st.Cap.AgreedMinutes)
 		supporterBody = fmt.Sprintf(
@@ -224,7 +224,7 @@ func fireTimeCapWarning(ctx context.Context, taskID string, st timeCapState) {
 		requesterTitle = "Your task is nearing its estimate"
 		requesterBody = fmt.Sprintf(
 			"%s is nearing your %d-min estimate; the extra %d min you allowed will start counting.",
-			displayName(t.AssigneeEmail), st.Cap.AgreedMinutes, st.Cap.AutoExtendMinutes)
+			t.AssigneeName, st.Cap.AgreedMinutes, st.Cap.AutoExtendMinutes)
 	}
 
 	notifyUser(ctx, derefOrEmpty(t.AssigneeID), t.AssigneeEmail, notify.CreateNotificationInput{
@@ -241,7 +241,7 @@ func fireTimeCapWarning(ctx context.Context, taskID string, st timeCapState) {
 		Title:         requesterTitle,
 		Body:          requesterBody,
 		TaskTitle:     t.Title,
-		SupporterName: displayName(t.AssigneeEmail),
+		SupporterName: t.AssigneeName,
 	})
 }
 
@@ -277,9 +277,9 @@ func fireTimeCapReached(ctx context.Context, taskID string, st timeCapState) {
 		Title:  "Your supporter has reached the time limit",
 		Body: fmt.Sprintf(
 			"%s has worked the %d minutes agreed for %q and isn't being paid for anything beyond it. Approve 15 or 30 more minutes in the app if the job isn't finished.",
-			displayName(t.AssigneeEmail), st.Cap.CapMinutes, t.Title),
+			t.AssigneeName, st.Cap.CapMinutes, t.Title),
 		TaskTitle:     t.Title,
-		SupporterName: displayName(t.AssigneeEmail),
+		SupporterName: t.AssigneeName,
 	})
 }
 
