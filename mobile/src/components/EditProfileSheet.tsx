@@ -36,6 +36,12 @@ export function EditProfileSheet({ visible, profile, onClose, onSaved }: EditPro
   }
 
   async function handleSubmit() {
+    // A name is required to save, same as on complete-profile: it is what
+    // everyone else sees, and the email prefix is no longer a stand-in.
+    if (!name.trim()) {
+      setError("Enter the name you'd like to be called.");
+      return;
+    }
     if (!phone.trim()) {
       setError("Enter a phone number.");
       return;

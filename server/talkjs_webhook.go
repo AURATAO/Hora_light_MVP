@@ -148,7 +148,7 @@ func handleTalkJSWebhook(c *gin.Context, db *sql.DB) {
 
 	taskID := talkjsTaskID(ev.Data.Conversation, ev.Data.Message)
 	recipients := talkjsPushRecipients(&ev)
-	title := talkjsPushTitle(ev.Data.Sender)
+	title := talkjsPushTitle(c.Request.Context(), ev.Data.Sender)
 	body := talkjsPushBody(ev.Data.Message)
 
 	log.Printf("[talkjs][webhook] message.sent conv=%s task=%s sender=%s recipients=%d",
@@ -268,16 +268,13 @@ func talkjsTaskID(conv talkjsConversation, msg talkjsMessage) string {
 	return strings.TrimPrefix(convID, "task_")
 }
 
-func talkjsPushTitle(sender talkjsUser) string {
+func talkjsPushTitle(ctx context.Context, sender talkjsUser) string {
 	if name := strings.TrimSpace(sender.Name); name != "" {
 		return name
 	}
 	if id := strings.TrimSpace(sender.ID); id != "" {
-		// Ids are emails; show the local part rather than a bare blank title.
-		if at := strings.Index(id, "@"); at > 0 {
-			return id[:at]
-		}
-		return id
+		// Ids are emails: the same chain every other push uses (names.go).
+		return resolveDisplayName(ctx, id)
 	}
 	return "New message"
 }

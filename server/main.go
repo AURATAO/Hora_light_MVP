@@ -28,8 +28,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/text/cases"
-	"golang.org/x/text/language"
 
 	"hora-auth/auth"
 
@@ -126,6 +124,13 @@ type Task struct {
 	Status            string     `json:"status"`
 	CreatedAt         time.Time  `json:"created_at"`
 	AssignedTo        string     `json:"assigned_to"`
+
+	// What the clients PRINT for the two parties. Resolved server-side
+	// (names.go) from profiles.name with the email prefix as the last resort;
+	// the emails above stay for identity checks (me.email === task.requester)
+	// and are never rendered as a name by any client.
+	RequesterName string `json:"requester_name,omitempty"`
+	AssigneeName  string `json:"assignee_name,omitempty"`
 
 	// uuid（後端查詢/權限全靠它）
 	RequesterID  string  `json:"requester_id"`
@@ -556,9 +561,11 @@ func main() {
 			   from public.profiles where email = $1`,
 			email,
 		).Scan(&name, &p.IsVerifiedSupporter, &p.SupporterAppliedAt, &p.SupporterRejectedAt)
-		if name == "" {
-			name = deriveName(email)
-		}
+		// `name` is what to greet them by; `display_name_set` is whether it is
+		// theirs or the email-prefix stand-in, which is what decides whether a
+		// client asks "What should we call you?".
+		nameSet := helpers.HasDisplayName(name)
+		name = helpers.DisplayName(name, email)
 		// THE SAME STATUS THE PROFILE ENDPOINT DERIVES, from the same function.
 		//
 		// Both clients gate every supporter surface on supporter_status ==
@@ -572,6 +579,7 @@ func main() {
 			"id":                    uid,
 			"email":                 email,
 			"name":                  name,
+			"display_name_set":      nameSet,
 			"is_verified_supporter": p.IsVerifiedSupporter,
 			"supporter_status":      p.SupporterStatus,
 		})
@@ -651,13 +659,14 @@ func main() {
 			).Scan(&internalID)
 		}
 		if errors.Is(err, sql.ErrNoRows) {
-			// Truly new user — create a fresh row
-			name := deriveName(email)
+			// Truly new user — create a fresh row. No name: the person has not
+			// been asked yet, and an email prefix stored here would read as an
+			// answer (names.go).
 			err = sqldb.QueryRowContext(c.Request.Context(), `
 				insert into public.users (supabase_sub, email, name)
-				values ($1::uuid, $2, $3)
+				values ($1::uuid, $2, '')
 				returning id
-			`, extSub, email, name).Scan(&internalID)
+			`, extSub, email).Scan(&internalID)
 		}
 		if err != nil || internalID == "" {
 			log.Printf("[exchange] upsert user err=%v", err)
@@ -860,15 +869,8 @@ func parseLimit(q string, def, max int) int {
 // }
 
 // -------- Auth handlers (OTP via email) --------
-// deriveName: naive display name from email local-part; replace with real profile later.
-// e.g. "jane.doe@x.com" -> "Jane Doe"
-
-func deriveName(email string) string {
-	if i := strings.IndexByte(email, '@'); i > 0 {
-		return cases.Title(language.Und).String(strings.ReplaceAll(email[:i], ".", " "))
-	}
-	return email
-}
+// (deriveName used to live here. Names are resolved in names.go now, and
+// nothing seeds a profile with the email prefix any more.)
 
 // issueHoraSession signs the internal session JWT for an already-authenticated
 // user and sets the hora_session cookie, returning the JSON body the caller
@@ -879,9 +881,10 @@ func issueHoraSession(c *gin.Context, internalID, email string) (gin.H, error) {
 	isProd := strings.EqualFold(os.Getenv("APP_ENV"), "prod") || strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true")
 	ttl := 24 * time.Hour
 	now := time.Now()
+	name := resolveDisplayName(c.Request.Context(), email)
 	j := jwt.NewWithClaims(jwt.SigningMethodHS256, auth.Claims{
 		Email: email,
-		Name:  deriveName(email),
+		Name:  name,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   internalID,
 			IssuedAt:  jwt.NewNumericDate(now),
@@ -906,7 +909,7 @@ func issueHoraSession(c *gin.Context, internalID, email string) (gin.H, error) {
 		cookie.SameSite = http.SameSiteLaxMode
 	}
 	http.SetCookie(c.Writer, cookie)
-	return gin.H{"auth": true, "id": internalID, "email": email, "name": deriveName(email)}, nil
+	return gin.H{"auth": true, "id": internalID, "email": email, "name": name}, nil
 }
 
 // -------- Profile handlers --------
@@ -1119,14 +1122,16 @@ func getMyProfile(c *gin.Context) {
 		_, err2 := db.Exec(ctx, `
       insert into public.profiles(id,email,name,phone,city,avatar_url,bio,created_at,updated_at)
       values ($1::uuid,$2,$3,'','','','',$4,$4)
-    `, uid, email, deriveName(email), now)
+    `, uid, email, "", now)
 		if err2 != nil {
 			log.Printf("[profile][insert uid] email=%s err=%v", email, err2)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 			return
 		}
+		// Name left empty on purpose: GET /profile reports what the person
+		// chose, and an empty one is what makes a client ask.
 		p = Profile{
-			Email: email, Name: deriveName(email),
+			Email: email, Name: "",
 			CreatedAt: now, UpdatedAt: now,
 		}
 
@@ -1368,11 +1373,17 @@ func getProfileByID(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	var p PublicProfile
+	var profileEmail string
 	err := db.QueryRow(ctx, `
-    select id, name, city, phone, avatar_url, bio, created_at
+    select id, coalesce(name,''), coalesce(email,''), city, phone, avatar_url, bio, created_at
     from public.profiles
     where id = $1::uuid
-  `, id).Scan(&p.ID, &p.Name, &p.City, &p.Phone, &p.AvatarURL, &p.Bio, &p.CreatedAt)
+  `, id).Scan(&p.ID, &p.Name, &profileEmail, &p.City, &p.Phone, &p.AvatarURL, &p.Bio, &p.CreatedAt)
+	if err == nil {
+		// Somebody else's name: the chain, never a blank. (Own name comes from
+		// GET /profile, which reports the raw choice so the client can ask.)
+		p.Name = helpers.DisplayName(p.Name, profileEmail)
+	}
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Fallback: 先從 users 抓 email
@@ -1397,20 +1408,19 @@ func getProfileByID(c *gin.Context) {
 		}
 
 		// 直接回推導的 profile（也可順手 upsert 保存）
-		name := deriveName(email.String)
 		now := time.Now()
 		p = PublicProfile{
-			ID: id, Name: name, AvatarURL: "", City: "", Bio: "", CreatedAt: now,
+			ID: id, Name: resolveDisplayName(ctx, email.String), AvatarURL: "", City: "", Bio: "", CreatedAt: now,
 		}
 
-		// （可選）順手 upsert，避免下次再 fallback
+		// （可選）順手 upsert，避免下次再 fallback. The row is created
+		// NAMELESS: the prefix above is a read-time fallback, not a choice.
 		_, _ = db.Exec(ctx, `
       insert into public.profiles (id,email,name,created_at,updated_at)
-      values ($1::uuid,$2,$3,$4,$4)
+      values ($1::uuid,$2,'',$3,$3)
       on conflict (email) do update set
-        name = coalesce(nullif($3,''), public.profiles.name),
-        updated_at = greatest(public.profiles.updated_at, $4)
-    `, id, email.String, name, now)
+        updated_at = greatest(public.profiles.updated_at, $3)
+    `, id, email.String, now)
 
 	} else if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
@@ -1675,9 +1685,9 @@ func createTask(c *gin.Context) {
 		// 沒有就建（讓 DB 產生 id）
 		if err := tx.QueryRowContext(ctx, `
       INSERT INTO public.users (email, name)
-      VALUES ($1, $2)
+      VALUES ($1, '')
       RETURNING id::text
-    `, email, deriveName(email)).Scan(&uid); err != nil {
+    `, email).Scan(&uid); err != nil {
 			log.Printf("[users.insert] %v", err)
 			c.JSON(500, gin.H{"error": "db error"})
 			return
@@ -1696,8 +1706,8 @@ func createTask(c *gin.Context) {
 		// 沒有 profile → 建一筆，用 users.id
 		if _, err := tx.ExecContext(ctx, `
       INSERT INTO public.profiles (id, email, name, created_at, updated_at)
-      VALUES ($1::uuid, $2, $3, now(), now())
-    `, uid, email, deriveName(email)); err != nil {
+      VALUES ($1::uuid, $2, '', now(), now())
+    `, uid, email); err != nil {
 			log.Printf("[createTask] profiles.insert error: %v", err)
 			c.JSON(500, gin.H{"error": "db error"})
 			return
@@ -1874,7 +1884,7 @@ func createTask(c *gin.Context) {
 		}
 	}
 
-	announceNewTaskInput(taskID, in, email, when)
+	announceNewTaskInput(ctx, taskID, in, email, when)
 
 	// The hold, on the 201 itself. The post-success screen has to be able to
 	// say what was reserved without a second round trip — the whole failure
@@ -1903,12 +1913,14 @@ func createTask(c *gin.Context) {
 // live in a different request (POST /tasks/:id/payment/confirm), and an
 // announcement that only fires on the straight-through path would silently
 // skip every task that needed a card challenge.
-func announceNewTaskInput(taskID string, in createTaskInput, email string, when *time.Time) {
+func announceNewTaskInput(ctx context.Context, taskID string, in createTaskInput, email string, when *time.Time) {
+	requesterName := resolveDisplayName(ctx, email)
 	go notify.NotifyAdminNewTask(notify.AdminNewTaskInput{
 		TaskID:           taskID,
 		Title:            in.Title,
 		Category:         in.Category,
 		RequesterEmail:   email,
+		RequesterName:    requesterName,
 		LocationText:     in.LocationText,
 		EstimatedMinutes: in.EstimatedMinutes,
 		IsImmediate:      in.IsImmediate,
@@ -1933,7 +1945,7 @@ func announceNewTask(ctx context.Context, taskID string) {
 		log.Printf("[createTask] could not announce task=%s: %v", taskID, err)
 		return
 	}
-	announceNewTaskInput(taskID, in, email, when)
+	announceNewTaskInput(ctx, taskID, in, email, when)
 }
 
 func scanTask(rows interface{ Scan(dest ...any) error }) (Task, error) {
@@ -2072,6 +2084,7 @@ func listMyTasks(c *gin.Context) {
 			"before_id":         last.ID,
 		}
 	}
+	attachTaskNames(c.Request.Context(), items)
 	c.JSON(200, gin.H{"items": items, "next": next})
 }
 
@@ -2284,7 +2297,9 @@ func getTask(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, t)
+	one := []Task{t}
+	attachTaskNames(ctx, one)
+	c.JSON(http.StatusOK, one[0])
 }
 
 func updateTask(c *gin.Context) {
@@ -2588,6 +2603,7 @@ func listAvailableTasks(c *gin.Context) {
 			"before_id":         last.ID,
 		}
 	}
+	attachTaskNames(c.Request.Context(), items)
 	c.JSON(200, gin.H{"items": items, "next": next})
 }
 
@@ -2661,6 +2677,7 @@ func listAssignedTasks(c *gin.Context) {
 			"before_id":         last.ID,
 		}
 	}
+	attachTaskNames(c.Request.Context(), items)
 	c.JSON(200, gin.H{"items": items, "next": next})
 }
 
@@ -2754,6 +2771,7 @@ func listDoneTasks(c *gin.Context) {
 	// The whole-history count, so a screen showing three of these can say
 	// "See all (47)". Counted from the base filter WITHOUT the keyset clause —
 	// a cursor narrows the page, not the history.
+	attachTaskNames(c.Request.Context(), items)
 	c.JSON(200, gin.H{"items": items, "next": next,
 		"total": countTasks(ctx, strings.Join(baseWhere, " and "), baseArgs)})
 }
@@ -2837,6 +2855,7 @@ func listMyPostedClosed(c *gin.Context) {
 	}
 	// The whole-history count, so a screen showing three of these can say
 	// "See all (47)".
+	attachTaskNames(c.Request.Context(), items)
 	c.JSON(200, gin.H{"items": items, "next": next,
 		"total": countTasks(ctx, strings.Join(baseWhere, " and "), baseArgs)})
 }
@@ -2932,12 +2951,13 @@ func acceptTask(c *gin.Context) {
 	}
 
 	log.Printf("[debug] about to notify requester for task %s", id)
+	supporterName := resolveDisplayName(ctx, meEmail)
 	notifyRequesterRich(c, notify.CreateNotificationInput{
 		TaskID:        id,
 		Type:          "ORDER_ACCEPTED",
 		Title:         "Your task has been accepted",
-		Body:          fmt.Sprintf("%s has accepted your task.", displayName(meEmail)),
-		SupporterName: displayName(meEmail),
+		Body:          fmt.Sprintf("%s has accepted your task.", supporterName),
+		SupporterName: supporterName,
 		TaskTitle:     acceptTaskTitle,
 	})
 	// TODO: WhatsApp notification here
@@ -3015,7 +3035,7 @@ func clockIn(c *gin.Context) {
 		Type:          "CLOCK_IN",
 		Title:         "Your supporter has clocked in",
 		Body:          "The timer is now running. You can track progress in your dashboard.",
-		SupporterName: displayName(meEmail),
+		SupporterName: resolveDisplayName(ctx, meEmail),
 		TaskTitle:     clockInTaskTitle,
 		ClockInTime:   startAt.Format("15:04"),
 	})
@@ -3088,7 +3108,7 @@ func clockOut(c *gin.Context) {
 		Type:          "CLOCK_OUT",
 		Title:         "Your supporter has clocked out",
 		Body:          fmt.Sprintf("Session ended. Total time logged so far: %s", totalStr),
-		SupporterName: displayName(meEmail),
+		SupporterName: resolveDisplayName(ctx, meEmail),
 		TaskTitle:     clockOutTaskTitle,
 		SessionTime:   sessionStr,
 		TotalLogged:   totalStr,
@@ -3896,7 +3916,7 @@ func completeTask(c *gin.Context) {
 		Type:               "COMPLETED",
 		Title:              "Your task has been completed",
 		Body:               "Everything is done. Please leave a rating when you have a moment.",
-		SupporterName:      displayName(assigneeEmail),
+		SupporterName:      resolveDisplayName(ctx, assigneeEmail),
 		TaskTitle:          completeTaskTitle,
 		TotalLogged:        completeTotalStr,
 		FinalCost:          completeCostStr,
@@ -4776,17 +4796,6 @@ func requesterUIDAndEmail(ctx context.Context, taskID string) (uid string, email
 	return
 }
 
-// displayName derives a human-readable name from an email address.
-// "john.doe@example.com" → "John Doe"
-func displayName(email string) string {
-	if i := strings.Index(email, "@"); i > 0 {
-		return cases.Title(language.English).String(
-			strings.ReplaceAll(email[:i], ".", " "),
-		)
-	}
-	return email
-}
-
 // notifyRequesterRich looks up the requester uid+email for the given task and
 // calls notify.Create with all extra template fields pre-filled in `in`.
 // Callers must set: TaskID, Type, Title, Body, and any SupporterName/TaskTitle/etc.
@@ -4909,12 +4918,11 @@ func dualAuth(db *sql.DB) gin.HandlerFunc {
 							).Scan(&internalID)
 						}
 						if errors.Is(err, sql.ErrNoRows) {
-							name := deriveName(email)
 							err = db.QueryRowContext(c.Request.Context(), `
                 insert into public.users (supabase_sub, email, name)
-                values ($1::uuid, $2, $3)
+                values ($1::uuid, $2, '')
                 returning id
-              `, extSub, email, name).Scan(&internalID)
+              `, extSub, email).Scan(&internalID)
 						}
 						if err == nil && internalID != "" {
 							c.Set("uid", internalID)
@@ -4974,12 +4982,11 @@ func tryAuth(db *sql.DB) gin.HandlerFunc {
 								).Scan(&internalID)
 							}
 							if errors.Is(err, sql.ErrNoRows) {
-								name := deriveName(email)
 								err = db.QueryRowContext(c.Request.Context(), `
                   insert into public.users (supabase_sub, email, name)
-                  values ($1::uuid, $2, $3)
+                  values ($1::uuid, $2, '')
                   returning id
-                `, extSub, email, name).Scan(&internalID)
+                `, extSub, email).Scan(&internalID)
 							}
 							if err == nil && internalID != "" {
 								c.Set("uid", internalID)

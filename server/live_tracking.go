@@ -281,7 +281,7 @@ func maybeNotifyArrival(c *gin.Context, taskID, supporterEmail string, lat, lng 
 		return // Already announced. This is the common case on every later ping.
 	}
 
-	name := displayName(supporterEmail)
+	name := resolveDisplayName(ctx, supporterEmail)
 	log.Printf("[arrival] task=%s supporter=%s within %.0fm", taskID, supporterEmail, arrivalRadiusMeters)
 	notifyRequesterRich(c, notify.CreateNotificationInput{
 		TaskID:        taskID,
@@ -454,13 +454,15 @@ func getLiveLocation(c *gin.Context) {
 	var supporterName, supporterAvatar string
 	if assignedToID != nil {
 		_ = db.QueryRow(ctx, `
-			select coalesce(nullif(p.name,''), coalesce(u.name,'')), coalesce(p.avatar_url,'')
-			from public.users u left join public.profiles p on p.id = u.id
-			where u.id = $1::uuid
-		`, *assignedToID).Scan(&supporterName, &supporterAvatar)
+			select coalesce(p.avatar_url,'')
+			from public.profiles p
+			where p.id = $1::uuid
+		`, *assignedToID).Scan(&supporterAvatar)
 	}
-	if supporterName == "" && assignedTo != nil {
-		supporterName = displayName(*assignedTo)
+	if assignedTo != nil {
+		// The name is the chain (names.go), never users.name — that column is
+		// a login-time artefact, not something the supporter chose.
+		supporterName = resolveDisplayName(ctx, *assignedTo)
 	}
 
 	out := gin.H{

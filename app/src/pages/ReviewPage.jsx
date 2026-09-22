@@ -106,9 +106,7 @@ export default function ReviewPage() {
     )
   }
 
-  const supporterName = task?.assigned_to
-    ? task.assigned_to.split('@')[0].replace(/\./g, ' ').replace(/\b\w/g, c => c.toUpperCase())
-    : 'Your supporter'
+  const supporterName = task?.assignee_name || 'Your supporter'
 
   if (alreadyReviewed) {
     return (

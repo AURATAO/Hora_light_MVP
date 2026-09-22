@@ -68,7 +68,10 @@ export const AuthAPI = {
       ? {
           id: res.id,
           email: res.email,
-          name: res.name || res.email,
+          // Server-resolved (server/names.go): the chosen display name, or
+          // the email-prefix stand-in when none is set — never derived here.
+          name: res.name || '',
+          display_name_set: res.display_name_set === true,
           is_verified_supporter: res.is_verified_supporter ?? false,
         }
       : null;

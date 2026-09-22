@@ -729,7 +729,7 @@ func announceExtensionRequest(ctx context.Context, e ExtensionRequest, t adminTa
 		ntype = "BUDGET_INCREASE_REQUESTED"
 		title = "Your supporter needs a bigger budget"
 		body = fmt.Sprintf("%s is asking for %s more for %q.",
-			displayName(t.AssigneeEmail), formatCentsUSD(derefInt(e.RequestedCents)), t.Title)
+			t.AssigneeName, formatCentsUSD(derefInt(e.RequestedCents)), t.Title)
 		if label := reasonLabel(e.Reason); label != "" {
 			body += " " + label
 		}
@@ -739,7 +739,7 @@ func announceExtensionRequest(ctx context.Context, e ExtensionRequest, t adminTa
 		ntype = "TIME_EXTENSION_REQUESTED"
 		title = "Your supporter needs more time"
 		body = fmt.Sprintf("%s is asking for %d more minutes on %q.",
-			displayName(t.AssigneeEmail), derefInt(e.RequestedMinutes), t.Title)
+			t.AssigneeName, derefInt(e.RequestedMinutes), t.Title)
 		if label := reasonLabel(e.Reason); label != "" {
 			body += " " + label
 		}
@@ -756,7 +756,7 @@ func announceExtensionRequest(ctx context.Context, e ExtensionRequest, t adminTa
 		Title:         title,
 		Body:          body,
 		TaskTitle:     t.Title,
-		SupporterName: displayName(t.AssigneeEmail),
+		SupporterName: t.AssigneeName,
 	})
 }
 
@@ -779,12 +779,12 @@ func announceExtensionResolution(ctx context.Context, e ExtensionRequest) {
 	switch e.Status {
 	case extensionStatusApproved:
 		supporterTitle = "Approved — go ahead"
-		supporterBody = fmt.Sprintf("%s approved %s on %q.", displayName(t.RequesterEmail), ask, t.Title)
+		supporterBody = fmt.Sprintf("%s approved %s on %q.", t.RequesterName, ask, t.Title)
 		requesterTitle = "You approved the request"
 		requesterBody = fmt.Sprintf("You approved %s on %q.", ask, t.Title)
 	case extensionStatusDenied:
 		supporterTitle = "Not approved"
-		supporterBody = fmt.Sprintf("%s declined %s on %q.", displayName(t.RequesterEmail), ask, t.Title)
+		supporterBody = fmt.Sprintf("%s declined %s on %q.", t.RequesterName, ask, t.Title)
 		if inst := fallbackInstruction(e.Fallback, e.FallbackNote); inst != "" {
 			supporterBody += " " + inst
 		}

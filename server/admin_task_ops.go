@@ -45,6 +45,10 @@ type adminTask struct {
 	RequesterEmail string
 	AssigneeID     *string
 	AssigneeEmail  string
+	// What a notification calls each party (names.go). Resolved here, once,
+	// so no announcement composes a sentence from an email.
+	RequesterName string
+	AssigneeName  string
 }
 
 func loadAdminTask(ctx context.Context, taskID string) (adminTask, error) {
@@ -56,7 +60,13 @@ func loadAdminTask(ctx context.Context, taskID string) (adminTask, error) {
 		where id = $1::uuid
 	`, taskID).Scan(&t.Status, &t.Title, &t.RequesterID, &t.RequesterEmail,
 		&t.AssigneeID, &t.AssigneeEmail)
-	return t, err
+	if err != nil {
+		return t, err
+	}
+	names := displayNamesByEmail(ctx, []string{t.RequesterEmail, t.AssigneeEmail})
+	t.RequesterName = names[strings.ToLower(t.RequesterEmail)]
+	t.AssigneeName = names[strings.ToLower(t.AssigneeEmail)]
+	return t, nil
 }
 
 // closeOpenWorklogs stops any running timer. Both force-complete and cancel end
@@ -180,7 +190,7 @@ func adminForceCompleteTask(c *gin.Context) {
 		Type:          "COMPLETED",
 		Title:         "Your task has been completed",
 		Body:          "The HO:RA team marked this task complete. Please leave a rating when you have a moment.",
-		SupporterName: displayName(t.AssigneeEmail),
+		SupporterName: t.AssigneeName,
 		TaskTitle:     t.Title,
 		TotalLogged:   formatMinutes(totalMin),
 		FinalCost:     formatCentsUSD(totalCents),

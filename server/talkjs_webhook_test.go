@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -323,12 +324,14 @@ func TestTalkJSPushTitle(t *testing.T) {
 		want   string
 	}{
 		{"name", talkjsUser{ID: "alice@example.com", Name: "Alice"}, "Alice"},
-		{"email local part", talkjsUser{ID: "alice@example.com"}, "alice"},
+		// The email-prefix last resort (helpers.EmailPrefixName), the same
+		// one every other push uses — not a bare local part.
+		{"email prefix", talkjsUser{ID: "alice.smith@example.com"}, "Alice Smith"},
 		{"neither", talkjsUser{}, "New message"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := talkjsPushTitle(tc.sender); got != tc.want {
+			if got := talkjsPushTitle(context.Background(), tc.sender); got != tc.want {
 				t.Fatalf("title = %q, want %q", got, tc.want)
 			}
 		})
