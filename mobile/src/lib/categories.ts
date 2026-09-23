@@ -52,9 +52,10 @@ export const CATEGORIES: readonly CategoryMeta[] = [
  * it byte for byte, so the two clients cannot drift again either.
  *
  * "companionship" is the display value; post-task normalizes it to the
- * submitted "companion" (see post-task.tsx). Companionship is disabled this
- * round (beta-notice.ts) and still LISTED, dimmed — an option that vanishes is
- * a question, an option that says "Coming soon" is an answer.
+ * submitted "companion" (see post-task.tsx). Companionship is LIVE as of build
+ * 13 (beta-notice.ts DISABLED_CATEGORIES is empty); while it was locked it
+ * stayed listed here, dimmed — an option that vanishes is a question, an
+ * option that says "Coming soon" is an answer.
  */
 export const POST_CATEGORY_ORDER: readonly TaskCategory[] = [
   "quick_errand",

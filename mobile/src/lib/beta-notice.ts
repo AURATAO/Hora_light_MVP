@@ -137,16 +137,18 @@ export const TRACTION_3_CONFIG = {
   pricingSummary: "$12 base (first 15 min included), then $0.50/min",
 } as const;
 
-// Categories switched off for this round: shown everywhere they were before,
-// but greyed out and un-selectable. Companionship is one category wearing two
-// values — "companion" is what the picker and web submit, "companionship" is
-// the label-flavoured value Home's shortcut row and the AI parser still
-// produce (see companionship-policy.ts) — so both have to be listed or the
-// lock leaks through whichever one is missing.
-//
-// Re-enabling next round is deleting the entries: every surface reads this
-// list, so an empty array restores the previous behaviour exactly.
-export const DISABLED_CATEGORIES: readonly TaskCategory[] = ["companion", "companionship"];
+// Categories switched off for the current round: shown everywhere they were
+// before, but greyed out and un-selectable. EMPTY as of build 13 — Companionship
+// is live, at the $25 base BillingConfig has always priced it at (first 15
+// minutes included, same per-minute rate). The mechanism stays so a future
+// round can lock a category again by listing it here: every picker, Home's
+// shortcut row, the AI-parse landing and the post gate all read this list, so
+// one entry locks a category everywhere and an empty array restores it
+// everywhere. Companionship is one category wearing two values — "companion"
+// is what the picker and web submit, "companionship" is the label-flavoured
+// value Home's shortcut row and the AI parser still produce (see
+// companionship-policy.ts) — so locking it again means listing both.
+export const DISABLED_CATEGORIES: readonly TaskCategory[] = [];
 
 export function isCategoryDisabled(category: TaskCategory | undefined): boolean {
   return !!category && DISABLED_CATEGORIES.includes(category);
