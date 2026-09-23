@@ -15,6 +15,33 @@ function storageKey(taskId: string): string {
   return `hora_overtime_reminders_${taskId}`;
 }
 
+// Every reminder carries this in its content.data, so a cancel can find the
+// task's reminders in the OS's own queue rather than trusting the id list
+// persisted at schedule time. The stored list is now an optimisation; the
+// queue is the source of truth. This is what closes the build-12 leak where
+// reminders kept firing after a completed task: whatever the stored ids said,
+// the queue still held reminders for that task, and nothing looked there.
+export const OVERTIME_REMINDER_TAG = "overtime_reminder";
+
+type ReminderData = { hora?: unknown; task_id?: unknown };
+
+function reminderTaskId(request: Notifications.NotificationRequest): string | null {
+  const data = request.content?.data as ReminderData | undefined;
+  if (data?.hora !== OVERTIME_REMINDER_TAG) return null;
+  return typeof data.task_id === "string" && data.task_id !== "" ? data.task_id : null;
+}
+
+// Per task: how many cancels have been asked for. A schedule remembers the
+// count it saw on entry; if a cancel lands while it is still scheduling — a
+// clock-in followed within seconds by a clock-out, or by a cancellation —
+// the ids it just minted would otherwise land in the queue after the cancel
+// has swept it. So the schedule checks on the way out and undoes itself.
+const cancelEpochs = new Map<string, number>();
+
+function cancelEpoch(taskId: string): number {
+  return cancelEpochs.get(taskId) ?? 0;
+}
+
 // DEV ONLY — flip to true to verify end-to-end *delivery* without waiting for
 // the real 45-min-plus cadence. When on (and __DEV__), the reminder delays are
 // compressed to seconds: the four notifications fire at ~10s, 20s, 30s, 40s
@@ -27,6 +54,7 @@ export async function scheduleOvertimeReminders(
   taskTitle: string,
   estimatedMinutes: number
 ): Promise<void> {
+  const requestedAt = cancelEpoch(taskId);
   let perm = await Notifications.getPermissionsAsync();
   if (!perm.granted) {
     perm = await Notifications.requestPermissionsAsync();
@@ -96,6 +124,7 @@ export async function scheduleOvertimeReminders(
           content: {
             title: "Clock-out reminder",
             body: `Still working on "${taskTitle}"? Don't forget to clock out.`,
+            data: { hora: OVERTIME_REMINDER_TAG, task_id: taskId },
           },
           trigger: {
             type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
@@ -114,6 +143,14 @@ export async function scheduleOvertimeReminders(
       console.error("[overtime] scheduleNotificationAsync FAILED:", e);
     }
     throw e;
+  }
+
+  if (cancelEpoch(taskId) !== requestedAt) {
+    // Cancelled out from under us while scheduling. The cancel already swept
+    // the queue; these ids were not in it yet. Remove them now, and do not
+    // record them — there is nothing they should outlive.
+    await Promise.all(ids.map((id) => Notifications.cancelScheduledNotificationAsync(id).catch(() => {})));
+    return;
   }
 
   await SecureStore.setItemAsync(storageKey(taskId), JSON.stringify(ids)).catch(() => {});
@@ -140,18 +177,51 @@ export async function scheduleOvertimeReminders(
   }
 }
 
+/**
+ * Cancel every reminder this device holds for `taskId`: the ids recorded at
+ * schedule time AND anything in the OS queue tagged with the task, whether or
+ * not the record knows about it. Idempotent, and never throws — this runs
+ * inside the task teardown, which must complete no matter what.
+ */
 export async function cancelOvertimeReminders(taskId: string): Promise<void> {
+  cancelEpochs.set(taskId, cancelEpoch(taskId) + 1);
   const key = storageKey(taskId);
+  const ids = new Set<string>();
+
   const raw = await SecureStore.getItemAsync(key).catch(() => null);
   if (raw) {
     try {
-      const ids: string[] = JSON.parse(raw);
-      await Promise.all(ids.map((id) => Notifications.cancelScheduledNotificationAsync(id).catch(() => {})));
+      const stored: unknown = JSON.parse(raw);
+      if (Array.isArray(stored)) for (const id of stored) if (typeof id === "string") ids.add(id);
     } catch {
-      // Malformed storage — nothing to cancel from it.
+      // Malformed storage — the queue sweep below still finds the reminders.
     }
   }
+
+  const queued = await Notifications.getAllScheduledNotificationsAsync().catch(() => []);
+  for (const request of queued) {
+    if (reminderTaskId(request) === taskId) ids.add(request.identifier);
+  }
+
+  await Promise.all(
+    [...ids].map((id) => Notifications.cancelScheduledNotificationAsync(id).catch(() => {}))
+  );
   await SecureStore.deleteItemAsync(key).catch(() => {});
+}
+
+/**
+ * The tasks that still have a reminder waiting in the OS queue. The foreground
+ * re-sync asks the server about each one and cancels the reminders of any
+ * task that no longer has an open worklog. Never throws.
+ */
+export async function taskIdsWithPendingReminders(): Promise<string[]> {
+  const queued = await Notifications.getAllScheduledNotificationsAsync().catch(() => []);
+  const taskIds = new Set<string>();
+  for (const request of queued) {
+    const taskId = reminderTaskId(request);
+    if (taskId) taskIds.add(taskId);
+  }
+  return [...taskIds];
 }
 
 // Overtime reminders are the only local notifications this app schedules, so

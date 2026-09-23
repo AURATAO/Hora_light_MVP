@@ -28,8 +28,7 @@ import {
   uploadAvatar,
   type SupporterReviewsSummary,
 } from "../../lib/api";
-import { stopBackgroundGps } from "../../lib/gps-tracking";
-import { cancelAllOvertimeReminders } from "../../lib/overtime-reminders";
+import { endAllTaskTracking } from "../../lib/task-teardown";
 import { unregisterCurrentPushToken } from "../../lib/push";
 import { HORA_WHATSAPP_NUMBER, LEGAL_URLS } from "../../lib/constants";
 import { supabase } from "../../lib/supabase";
@@ -212,10 +211,10 @@ export default function Profile() {
           await Promise.all([
             supabase.auth.signOut().catch(() => {}),
             logout().catch(() => {}),
-            cancelAllOvertimeReminders().catch(() => {}),
             // A signed-out device must not keep the blue location indicator
-            // running (and pinging an endpoint it can no longer authenticate).
-            stopBackgroundGps().catch(() => {}),
+            // running (and pinging an endpoint it can no longer authenticate),
+            // nor any reminder for a task it can no longer act on.
+            endAllTaskTracking(),
           ]);
           await Promise.all([
             SecureStore.deleteItemAsync("hora_user_id").catch(() => {}),
