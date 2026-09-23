@@ -67,10 +67,28 @@ export function EditProfileSheet({ visible, profile, onClose, onSaved }: EditPro
     <Modal visible={visible} transparent animationType="slide" onRequestClose={handleClose}>
       {/* Lifts the sheet above the keyboard so the note field — and the primary
           button sitting below it — stay visible while typing. */}
+      {/* A full-window RN Modal: KeyboardAvoidingView measures from the window
+          here, so `padding` lifts the sheet above the keyboard and the bio
+          field and the primary button below it stay visible while typing. */}
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-        <Pressable className="flex-1 justify-end bg-ink/40" onPress={handleClose}>
-          <Pressable className="rounded-t-card bg-surface p-6 pb-8" onPress={(e) => e.stopPropagation()}>
-            <Text className="mb-4 text-title font-semibold text-ink">Edit profile</Text>
+        <View className="flex-1 justify-end">
+          {/* The backdrop is its own layer, not a Pressable wrapping the sheet
+              (the NamePromptSheet pattern). A Pressable is `accessible` by
+              default, so wrapping the sheet in one collapsed the heading, all
+              four fields and both buttons into a single VoiceOver element that
+              read as one button — nothing inside it could be focused or
+              edited with a screen reader on. As a sibling it is one focusable
+              "Close" control and the sheet's own controls are each their own. */}
+          <Pressable
+            className="absolute inset-0 bg-ink/40"
+            onPress={handleClose}
+            accessibilityRole="button"
+            accessibilityLabel="Close"
+          />
+          <View className="rounded-t-card bg-surface p-6 pb-8">
+            <Text className="mb-4 text-title font-semibold text-ink" accessibilityRole="header">
+              Edit profile
+            </Text>
             <View className="gap-3">
               <Input label="Name" value={name} onChangeText={setName} placeholder="Jane Doe" />
               <Input
@@ -100,8 +118,8 @@ export function EditProfileSheet({ visible, profile, onClose, onSaved }: EditPro
               <Button label="Save changes" onPress={handleSubmit} loading={submitting} disabled={!phone.trim()} />
               <Button label="Cancel" variant="text" onPress={handleClose} disabled={submitting} />
             </View>
-          </Pressable>
-        </Pressable>
+          </View>
+        </View>
       </KeyboardAvoidingView>
     </Modal>
   );
