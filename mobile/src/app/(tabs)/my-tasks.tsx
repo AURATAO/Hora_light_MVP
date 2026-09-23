@@ -16,6 +16,7 @@ import {
   getPostedClosedPage,
   getPostedTasks,
 } from "../../lib/api";
+import { endTaskTracking } from "../../lib/task-teardown";
 import { deriveTaskStatus } from "../../lib/task-utils";
 import { useSupporterStatus } from "../../lib/use-supporter-status";
 import type { Task } from "../../lib/types";
@@ -203,6 +204,10 @@ export default function MyTasks() {
       handleAuthError(e);
       throw e;
     }
+    // Terminal, from a screen that never started any tracking: the teardown
+    // is ownership-scoped and idempotent, so it costs nothing here and keeps
+    // the rule simple — every transition to a terminal state calls it.
+    await endTaskTracking(task.id, "cancelled");
     setPosted((b) => ({
       ...b,
       active: b.active.filter((t) => t.id !== task.id),

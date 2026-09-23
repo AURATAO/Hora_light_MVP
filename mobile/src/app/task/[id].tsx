@@ -78,12 +78,12 @@ import {
   readBreadcrumb,
   restartBackgroundGps,
   startBackgroundGps,
-  stopBackgroundGpsFor,
   type GpsBreadcrumb,
   type GpsPhase,
 } from "../../lib/gps-tracking";
 import { openAddressInMaps, openRouteInMaps } from "../../lib/maps";
-import { cancelOvertimeReminders, scheduleOvertimeReminders } from "../../lib/overtime-reminders";
+import { scheduleOvertimeReminders } from "../../lib/overtime-reminders";
+import { endTaskTracking, onTaskTeardown } from "../../lib/task-teardown";
 import {
   deriveTaskStatus,
   formatCost,
@@ -349,6 +349,9 @@ export default function TaskDetail() {
         setTask(null);
         setRemovedGone(true);
         setError(null);
+        // Terminal. The render effect below can't see this one — `task` is
+        // null, which it reads as "still loading" — so it is said here.
+        endTaskTracking(id, "removed").catch(() => {});
         return;
       }
       setError(e instanceof Error ? e.message : "Couldn't load this task");
@@ -384,6 +387,9 @@ export default function TaskDetail() {
       handleAuthError(e);
       throw e;
     }
+    // Terminal: whatever this device was still doing for the task ends here,
+    // before the screen re-renders and regardless of who cancelled.
+    await endTaskTracking(id, "cancelled");
     setTask((t) =>
       t ? { ...t, status: "cancelled", cancel_reason: reason, cancelled_at: new Date().toISOString() } : t
     );
@@ -507,7 +513,10 @@ export default function TaskDetail() {
           ? { ...w, worklogs: w.worklogs.map((existing) => (existing.id === wl.id ? wl : existing)) }
           : { worklogs: [wl], total_minutes: 0, total_cost_cents: 0, cost: null, settlement: null }
       );
-      cancelOvertimeReminders(id).catch(() => {});
+      // A pause is not terminal for the task, but it is for this session's
+      // tracking: same teardown, so the two cannot diverge. Awaited, so the
+      // reload below cannot outrun it.
+      await endTaskTracking(id, "paused");
       await load();
     } catch (e) {
       if (handleAuthError(e)) return;
@@ -551,7 +560,10 @@ export default function TaskDetail() {
         receipt_photo_url: receiptURL,
       });
       setTask(updated);
-      cancelOvertimeReminders(id).catch(() => {});
+      // Terminal. Explicit, and awaited, even though the render effect below
+      // will also fire once `updated` lands: the effect is the safety net,
+      // not the teardown.
+      await endTaskTracking(id, "completed");
       // The settlement the requester and supporter are both about to read comes
       // from the worklogs payload, not from the task — refetch so the
       // completed screen shows the real total rather than the running one.
@@ -775,13 +787,20 @@ export default function TaskDetail() {
   // which is exactly the 15-60 min hole the foreground interval left behind.
   // Deliberately NOT stopped on unmount — walking away from this screen must
   // not end tracking; only losing the open worklog does.
+  //
+  // The `false` arm is the catch-all teardown: it fires on every transition
+  // the predicate above can see — a pause, completion, cancellation, and the
+  // one no handler on this screen runs, a reassignment discovered by load().
+  // The handlers call endTaskTracking explicitly as well; this is the net
+  // under them, not the other way round.
   useEffect(() => {
     if (gpsTrackingWanted === null) return;
     if (!gpsTrackingWanted) {
       setGpsMode("off");
-      // Scoped to this task id: opening some other task must not stop the
-      // tracking that belongs to the one they're actually clocked in on.
-      stopBackgroundGpsFor(id).catch(() => {});
+      // Scoped to this task id inside endTaskTracking: opening some other task
+      // must not stop the tracking that belongs to the one they're actually
+      // clocked in on.
+      endTaskTracking(id, "inactive").catch(() => {});
       return;
     }
 
@@ -802,6 +821,16 @@ export default function TaskDetail() {
       cancelled = true;
     };
   }, [gpsTrackingWanted, gpsPhase, id]);
+
+  // A teardown that did not start on this screen — a push saying the task was
+  // cancelled or removed, the foreground re-sync, logout — must clear the
+  // sharing indicator here too, or the notice keeps describing a session
+  // that no longer exists until the next reload.
+  useEffect(() => {
+    return onTaskTeardown((taskId) => {
+      if (taskId === id) setGpsMode("off");
+    });
+  }, [id]);
 
   // Self-heal. The background session can die under us — iOS can stop feeding
   // it, and before the AsyncStorage fix a screen lock killed it outright. On

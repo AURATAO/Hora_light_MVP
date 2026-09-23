@@ -8,9 +8,10 @@ import * as SplashScreen from "expo-splash-screen";
 import * as Notifications from "expo-notifications";
 import { missingEnvVars, supabase } from "../lib/supabase";
 import { getMe, getProfile } from "../lib/api";
-// Importing ./gps-tracking defines the background location task at module
-// scope, before iOS can hand the app a headless location launch.
-import { reconcileBackgroundGps } from "../lib/gps-tracking";
+// Importing ./task-teardown pulls in ./gps-tracking, which defines the
+// background location task at module scope, before iOS can hand the app a
+// headless location launch.
+import { resyncTaskTracking, teardownForNotification } from "../lib/task-teardown";
 // Importing ./push registers the app's single notification handler at boot.
 import { registerForPushNotifications, routeFromNotificationResponse } from "../lib/push";
 import type { Profile } from "../lib/types";
@@ -122,15 +123,28 @@ export default function RootLayout() {
     };
   }, [checkSession]);
 
-  // Stop background location that outlived its worklog — a force-quit
-  // mid-task, or a clock-out that happened on another device. Launch plus
-  // every foreground, and deliberately NOT wired to onAuthStateChange: a
-  // routine token refresh fires that listener mid-task, and reconcile is
-  // allowed to end a live GPS session. Fire-and-forget; it never throws.
+  // Tear down tracking that outlived its task — background location and local
+  // reminders left behind by a force-quit mid-task, a clock-out or completion
+  // on another device, or a teardown this app missed. Launch plus every
+  // foreground, and deliberately NOT wired to onAuthStateChange: a routine
+  // token refresh fires that listener mid-task, and the re-sync is allowed to
+  // end a live GPS session. Fire-and-forget; it never throws.
   useEffect(() => {
-    reconcileBackgroundGps();
+    resyncTaskTracking();
     const sub = AppState.addEventListener("change", (next) => {
-      if (next === "active") reconcileBackgroundGps();
+      if (next === "active") resyncTaskTracking();
+    });
+    return () => sub.remove();
+  }, []);
+
+  // A push received while the app is open that says the task ended — the
+  // requester cancelled or completed it from the web, an admin removed or
+  // reassigned it — tears the task down right then, on whichever screen is
+  // up. The foreground re-sync above covers the same event arriving while the
+  // app was closed.
+  useEffect(() => {
+    const sub = Notifications.addNotificationReceivedListener((notification) => {
+      teardownForNotification(notification.request.content.data);
     });
     return () => sub.remove();
   }, []);

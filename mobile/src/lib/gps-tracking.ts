@@ -2,7 +2,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Location from "expo-location";
 import * as SecureStore from "expo-secure-store";
 import * as TaskManager from "expo-task-manager";
-import { getWorklogs, sendGpsPing } from "./api";
+import { sendGpsPing } from "./api";
 import { ApiError } from "./api-error";
 
 // Background GPS while a supporter is clocked in. The foreground `setInterval`
@@ -218,6 +218,22 @@ const executorGate = makeGate();
 // throws "already started".
 const startGate = makeGate();
 
+// THE SECOND INVARIANT: a stop requested after a start was requested wins,
+// whichever of the two finishes first. Every stop bumps this; every start
+// remembers the value it saw on entry and refuses to touch CoreLocation if it
+// has moved by the time it reaches the gate.
+//
+// This is the build-12 teardown leak. The task screen's health check runs on
+// every foreground and every 30s, and when the session looks stale (a
+// stationary supporter produces no fixes for minutes) it calls
+// restartBackgroundGps. That call awaits a permission read before it reaches
+// the gate. A clock-out in that window stopped the session first and cleared
+// the slot; the restart then arrived, saw "not running", wrote a fresh slot and
+// started updates again — for a task that had just closed its worklog. Nothing
+// on the screen re-ran the stop (the state it keys on had already flipped),
+// so the blue indicator stayed up until the app was killed.
+let stopEpoch = 0;
+
 // Defined at module scope, imported for side effect from the root layout, so
 // the executor is registered before iOS can hand us a headless launch.
 TaskManager.defineTask<{ locations: Location.LocationObject[] }>(
@@ -356,6 +372,7 @@ async function claimRunningSession(taskId: string, phase: GpsPhase): Promise<boo
  * session. Never throws.
  */
 export async function startBackgroundGps(taskId: string, phase: GpsPhase = "working"): Promise<boolean> {
+  const requestedAt = stopEpoch;
   try {
     // Foreground first: on iOS "Always" is only offered once When-In-Use is
     // held, and requesting background alone can resolve to denied outright.
@@ -365,7 +382,7 @@ export async function startBackgroundGps(taskId: string, phase: GpsPhase = "work
     const background = await Location.requestBackgroundPermissionsAsync();
     if (background.status !== Location.PermissionStatus.GRANTED) return false;
 
-    return await startUpdatesFor(taskId, phase);
+    return await startUpdatesFor(taskId, phase, requestedAt);
   } catch (e) {
     log("start failed", e instanceof Error ? e.message : e);
     await writeBreadcrumb({ note: `start failed: ${e instanceof Error ? e.message : "unknown"}` });
@@ -383,10 +400,11 @@ export async function startBackgroundGps(taskId: string, phase: GpsPhase = "work
  * permission dialog every 30 seconds. Never throws.
  */
 export async function restartBackgroundGps(taskId: string, phase: GpsPhase = "working"): Promise<boolean> {
+  const requestedAt = stopEpoch;
   try {
     const background = await Location.getBackgroundPermissionsAsync();
     if (background.status !== Location.PermissionStatus.GRANTED) return false;
-    return await startUpdatesFor(taskId, phase);
+    return await startUpdatesFor(taskId, phase, requestedAt);
   } catch (e) {
     log("restart failed", e instanceof Error ? e.message : e);
     await writeBreadcrumb({ note: `restart failed: ${e instanceof Error ? e.message : "unknown"}` });
@@ -394,8 +412,18 @@ export async function restartBackgroundGps(taskId: string, phase: GpsPhase = "wo
   }
 }
 
-function startUpdatesFor(taskId: string, phase: GpsPhase): Promise<boolean> {
+function startUpdatesFor(taskId: string, phase: GpsPhase, requestedAt: number): Promise<boolean> {
   return startGate(async () => {
+    if (requestedAt !== stopEpoch) {
+      // A stop landed while this start was waiting on permissions or on the
+      // gate. The stop is the newer intent; honouring this start would revive
+      // exactly the session it just ended. The caller falls back to the
+      // foreground interval, and if tracking is still wanted the health check
+      // asks again — with a fresh epoch.
+      log("start for", taskId, "superseded by a stop — not starting");
+      await writeBreadcrumb({ note: `start superseded by stop (${taskId})` });
+      return false;
+    }
     if (await updatesRunning()) return claimRunningSession(taskId, phase);
 
     // Persist before starting: the first fix can arrive immediately, and a
@@ -414,12 +442,17 @@ function startUpdatesFor(taskId: string, phase: GpsPhase): Promise<boolean> {
  * `stopLocationUpdatesAsync` from throwing on an unstarted task. Never throws.
  */
 export async function stopBackgroundGps(): Promise<void> {
-  await clearActiveSlot();
-  if (!(await updatesRunning())) return;
-  await Location.stopLocationUpdatesAsync(GPS_TRACKING_TASK).catch((e) => {
-    log("stop failed", e instanceof Error ? e.message : e);
+  // Bump BEFORE queueing, so a start that is already past its permission read
+  // but not yet through the gate sees the change when it gets there.
+  stopEpoch += 1;
+  await startGate(async () => {
+    await clearActiveSlot();
+    if (!(await updatesRunning())) return;
+    await Location.stopLocationUpdatesAsync(GPS_TRACKING_TASK).catch((e) => {
+      log("stop failed", e instanceof Error ? e.message : e);
+    });
+    log("stopped");
   });
-  log("stopped");
 }
 
 /**
@@ -432,8 +465,16 @@ export async function stopBackgroundGpsFor(taskId: string): Promise<void> {
   const read = await readActiveSlot();
   // Unknown ownership is never grounds for stopping (the invariant).
   if (!read.ok) return;
-  // Explicitly empty: a running session with no owner is an orphan.
-  if (read.slot !== null && read.slot.taskId !== taskId) return;
+  if (read.slot === null) {
+    // Explicitly empty. A RUNNING session with no owner is an orphan and is
+    // stopped. An idle device has nothing to stop, and a stop said anyway
+    // would supersede a start for some other task that is still waiting on
+    // its permission prompt — this runs from every task screen that renders
+    // a task that isn't ours.
+    if (await updatesRunning()) await stopBackgroundGps();
+    return;
+  }
+  if (read.slot.taskId !== taskId) return;
   await stopBackgroundGps();
 }
 
@@ -464,58 +505,34 @@ export async function isBackgroundGpsHealthy(
 }
 
 /**
- * Guard against tracking that outlived its worklog: a crash, a force-quit
- * mid-task, or a clock-out that happened on another device. Asks the backend
- * whether the persisted task still has an open worklog and stops if it does
- * not. Runs at launch and on foreground — deliberately NOT on Supabase auth
- * events, where a routine token refresh used to be able to end a live session.
- * No-op when nothing is running. Never throws.
+ * The task the background session is currently feeding, if there is one.
+ * Read by the foreground re-sync (task-teardown.ts resyncTaskTracking), which
+ * asks the server whether that task is still live and tears everything down
+ * when it is not. Does the housekeeping the old reconcile did on the way:
+ * nothing running means any leftover slot is dropped so a later start is
+ * clean, and a session running with an EXPLICITLY empty slot is an orphan and
+ * is stopped here. An unreadable slot is neither (the invariant) — the session
+ * is left alone and reported as nothing. Never throws.
  */
-export async function reconcileBackgroundGps(): Promise<void> {
+export async function activeBackgroundGpsTask(): Promise<{ taskId: string; phase: GpsPhase } | null> {
   try {
     // Build 5 kept the active task in the keychain. Nothing reads it now; drop
     // it so it doesn't linger on upgraded devices.
     SecureStore.deleteItemAsync(LEGACY_SECURE_SLOT_KEY).catch(() => {});
 
     if (!(await updatesRunning())) {
-      // Nothing running; drop any slot left behind so a later start is clean.
       await clearActiveSlot();
-      return;
+      return null;
     }
     const read = await readActiveSlot();
-    if (!read.ok) return;
+    if (!read.ok) return null;
     if (read.slot === null) {
       await stopBackgroundGps();
-      return;
+      return null;
     }
-    const summary = await getWorklogs(read.slot.taskId);
-    const worklogs = summary?.worklogs ?? [];
-    if (slotPhase(read.slot) === "enroute") {
-      // An enroute session has no worklog BY DEFINITION — that is what makes
-      // it the enroute window. What ends it is a worklog EXISTING: the
-      // supporter clocked in (the task screen restarts the session as
-      // "working") or clocked out somewhere this device never saw. Reusing the
-      // clocked-in check here would kill every enroute session at launch.
-      if (worklogs.length > 0) {
-        log("worklog exists for", read.slot.taskId, "— enroute window closed, stopping");
-        await stopBackgroundGps();
-      }
-      return;
-    }
-    const open = worklogs.some((wl) => wl.end_at === null);
-    if (!open) {
-      log("no open worklog for", read.slot.taskId, "— stopping");
-      await stopBackgroundGps();
-    }
+    return { taskId: read.slot.taskId, phase: slotPhase(read.slot) };
   } catch (e) {
-    // A definite answer from the server (task gone, session invalid) means the
-    // tracking can never be legitimate again — stop. A network failure is not
-    // an answer, so leave it running and reconcile at the next foreground.
-    if (e instanceof ApiError) {
-      log("reconcile got", e.status, "— stopping");
-      await stopBackgroundGps();
-      return;
-    }
-    log("reconcile skipped", e instanceof Error ? e.message : e);
+    log("active task read failed", e instanceof Error ? e.message : e);
+    return null;
   }
 }
