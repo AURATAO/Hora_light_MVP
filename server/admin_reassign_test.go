@@ -191,6 +191,10 @@ var reassignMigrationPaths = []string{
 	// and cancel paths, so the fixture needs the real columns for the same
 	// reason it needs the real extension_requests table.
 	"../supabase/migrations/20260922075557_cancellation_billing_policy.sql",
+	// Build 13. RECEIPT is written by the settlement path the moment a charge
+	// lands and PAYOUT_DEPOSITED by payout.paid, so both enum values have to
+	// exist in the fixture for the same reason every earlier one does.
+	"../supabase/migrations/20260923130000_notification_types_receipt_deposit.sql",
 }
 
 func setupReassignDB(t *testing.T) {

@@ -9,6 +9,7 @@ import {
   LogOut,
   MapPin,
   MessageCircle,
+  Receipt,
   Repeat2,
   TimerOff,
   XCircle,
@@ -64,6 +65,12 @@ const NOTIFICATION_META: Record<NotificationType, NotificationMeta> = {
   // the requester, and "they're here" is unambiguously the news they were
   // waiting for.
   SUPPORTER_ARRIVED: { icon: MapPin, tint: "brand" },
+
+  // Build 13. A receipt is a record, not news — neutral, like a clock-out.
+  // A deposit is the money arriving, the same good news as PAYOUT_SENT, so
+  // the same icon and tint.
+  RECEIPT: { icon: Receipt, tint: "neutral" },
+  PAYOUT_DEPOSITED: { icon: Banknote, tint: "brand" },
 };
 
 // Falls back to a neutral message icon for any type the client doesn't

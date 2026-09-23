@@ -26,12 +26,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/stripe/stripe-go/v86"
 	"github.com/stripe/stripe-go/v86/balancetransaction"
 	"github.com/stripe/stripe-go/v86/payout"
 	"github.com/stripe/stripe-go/v86/transfer"
+
+	"hora-auth/internal/notify"
 )
 
 // payoutDestinationPayments lists the py_… ids a connected-account payout
@@ -229,5 +232,98 @@ func onConnectedPayoutPaid(ctx context.Context, event *stripe.Event) error {
 	}
 	log.Printf("[stripe][webhook] bank payout paid account=%s user=%s payout=%s amount=%d rows_arrived=%d",
 		accountID, uid, po.ID, po.Amount, n)
+	// The deposit push: once per Stripe payout, and only from this path. The
+	// catch-up reconciler (reconcileBankPayouts, from the Earnings screen)
+	// stamps the same rows without saying so — a push about a deposit that
+	// landed weeks ago is noise, and the screen it runs from already shows
+	// the rows as paid. n == 0 means every row this payout carried was
+	// already stamped, which is how a second event for the same payout —
+	// a different event id, so not caught by the dedupe table — stays silent.
+	if n > 0 {
+		notifySupporterDeposited(ctx, uid, po.ID, int(po.Amount))
+	}
 	return nil
+}
+
+// notifySupporterDeposited is the bank saying yes, in the supporter's own
+// notification feed and as a push: "$37.00 has been deposited to your bank.",
+// with the tasks it covered underneath.
+//
+// One row per Stripe payout, filed against the most recent task it carried
+// (notifications.task_id is NOT NULL), so tapping it lands on a task whose
+// settlement card reads "paid". No email: the push is the announcement, the
+// Earnings screen is the record, and the bank statement is the proof.
+//
+// The amount is Stripe's — what the bank actually received — with the sum of
+// our rows as the fallback for a payload without one.
+func notifySupporterDeposited(ctx context.Context, uid, bankPayoutID string, depositCents int) {
+	rows, err := db.Query(ctx, `
+		select po.task_id::text, coalesce(t.title,''), po.amount_cents
+		  from public.payouts po
+		  join public.tasks t on t.id = po.task_id
+		 where po.supporter_id = $1::uuid and po.stripe_bank_payout_id = $2
+		 order by po.bank_paid_at desc, po.created_at desc
+	`, uid, bankPayoutID)
+	if err != nil {
+		log.Printf("[payments][deposit] rows for payout=%s: %v", bankPayoutID, err)
+		return
+	}
+	defer rows.Close()
+	var firstTask string
+	var titles []string
+	seen := map[string]bool{}
+	sum := 0
+	for rows.Next() {
+		var taskID, title string
+		var cents int
+		if err := rows.Scan(&taskID, &title, &cents); err != nil {
+			return
+		}
+		if firstTask == "" {
+			firstTask = taskID
+		}
+		sum += cents
+		if !seen[taskID] {
+			seen[taskID] = true
+			titles = append(titles, fmt.Sprintf("%q", title))
+		}
+	}
+	if firstTask == "" {
+		return
+	}
+	if depositCents <= 0 {
+		depositCents = sum
+	}
+	var email string
+	_ = db.QueryRow(ctx, `select coalesce(email,'') from public.users where id = $1::uuid`, uid).Scan(&email)
+
+	in := notify.CreateNotificationInput{
+		DB:     sqldb,
+		UserID: uid,
+		TaskID: firstTask,
+		Type:   "PAYOUT_DEPOSITED",
+		Title:  fmt.Sprintf("%s has been deposited to your bank.", formatCentsUSD(depositCents)),
+		Body:   "Covers " + joinWithAnd(titles) + ".",
+		// Push and the in-app row only — see above.
+		SendEmail: false,
+		EmailTo:   email,
+	}
+	if err := notify.Create(ctx, in); err != nil {
+		log.Printf("[notify][ERROR] PAYOUT_DEPOSITED user=%s: %v", uid, err)
+	}
+}
+
+// joinWithAnd renders a list the way a sentence does: "a", "a and b",
+// "a, b and c".
+func joinWithAnd(items []string) string {
+	switch len(items) {
+	case 0:
+		return ""
+	case 1:
+		return items[0]
+	case 2:
+		return items[0] + " and " + items[1]
+	default:
+		return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
+	}
 }

@@ -180,6 +180,8 @@ func adminRemoveTask(c *gin.Context) {
 	// best-effort placement and same reasoning as cancelTask — an admin must
 	// be able to take a task down whether or not Stripe is answering.
 	released := releaseTaskHold(ctx, taskID, actorUID, "admin_removed")
+	// And the promo code, if the task was posted under one: nobody was charged.
+	releasePromoRedemption(ctx, taskID, "admin_removed")
 
 	// audit_logs is the existing table for exactly this (job_id is the task id);
 	// it had no writer until now. Best-effort: a failed audit insert must not

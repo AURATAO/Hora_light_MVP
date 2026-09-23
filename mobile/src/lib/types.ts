@@ -75,7 +75,14 @@ export type NotificationType =
   // Live tracking. Fires once per task, the first time a pre-clock-in ping
   // lands within 100m of the address. Deep-links to the task screen, where the
   // live card is.
-  | "SUPPORTER_ARRIVED";
+  | "SUPPORTER_ARRIVED"
+  // Build 13. The requester's itemized receipt, sent from the settlement path
+  // that captures — one per charge. Deep-links to the task, whose settlement
+  // card is the same itemization.
+  | "RECEIPT"
+  // The bank saying yes: one per Stripe payout, to the supporter, naming the
+  // amount and the tasks it covered. Deep-links to the most recent of them.
+  | "PAYOUT_DEPOSITED";
 
 // GET /auth/me — discriminated on `auth` so callers narrow before reading fields.
 export type User =
@@ -153,6 +160,19 @@ export interface TaskPayment {
    *  it is worse than no breakdown, so the server omits it rather than guess. */
   time_cost_cents?: number;
   shopping_budget_cents?: number;
+  /** The two halves of time_cost_cents — the base fee and the minutes past
+   *  the included block — so a confirmation can say "$25.00 base + $7.50
+   *  time" with no subtraction here. Present under the same reconciliation
+   *  rule; absent from a backend that predates them. */
+  base_fee_cents?: number;
+  minutes_cost_cents?: number;
+  /** The promo the task was posted under, when there was one: the code, what
+   *  it took off the hold, and what the hold would have been without it.
+   *  "$19.50 − $10.00 promo = $9.50 reserved" is these in that order. Absent
+   *  on every task posted without a code, which is nearly all of them. */
+  promo_code?: string;
+  promo_discount_cents?: number;
+  pre_discount_cents?: number;
 }
 
 /** What a requester owes from a completion that could not be charged. While
@@ -389,6 +409,16 @@ export interface Settlement {
    * waiting on.
    */
   requests?: ExtensionRecord[];
+  /**
+   * The promo, on the REQUESTER's copy only: the code, what it took off, and
+   * the total after it. `total_cents` above stays the undiscounted figure
+   * (it is what the supporter is paid from); this is what the requester was
+   * charged. Absent on the supporter's copy and on every task posted without
+   * a code.
+   */
+  promo_code?: string;
+  promo_discount_cents?: number;
+  total_after_promo_cents?: number;
   /**
    * What the SUPPORTER earned. Present ONLY on the supporter's own copy of
    * this payload — the server attaches it behind an assignment check, so a

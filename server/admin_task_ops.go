@@ -171,6 +171,10 @@ func adminForceCompleteTask(c *gin.Context) {
 	reimbursedCents := reimbursableReceiptCents(inputs.ReceiptCents, inputs.ApprovedBudgetCents)
 	totalCents := timeCostCents + reimbursedCents
 	settleCompletedTask(ctx, taskID, actorUID, timeCostCents, reimbursedCents)
+	// What the REQUESTER pays: the total less any promo discount. The
+	// supporter's figures stay undiscounted.
+	_, promoDiscount := promoDiscountForTask(ctx, taskID)
+	requesterTotalCents := afterPromo(totalCents, promoDiscount)
 
 	writeAudit(ctx, taskID, actorUID, "FORCE_COMPLETED", "", map[string]any{
 		"admin_email":             actorEmail,
@@ -193,7 +197,7 @@ func adminForceCompleteTask(c *gin.Context) {
 		SupporterName: t.AssigneeName,
 		TaskTitle:     t.Title,
 		TotalLogged:   formatMinutes(totalMin),
-		FinalCost:     formatCentsUSD(totalCents),
+		FinalCost:     formatCentsUSD(requesterTotalCents),
 	})
 	if t.AssigneeID != nil && *t.AssigneeID != "" {
 		notifyUser(ctx, *t.AssigneeID, t.AssigneeEmail, notify.CreateNotificationInput{
@@ -284,6 +288,8 @@ func adminCancelTaskHandler(c *gin.Context) {
 	// Same as the requester's own cancel: nothing was captured, so the hold is
 	// released rather than refunded.
 	released := releaseTaskHold(ctx, taskID, actorUID, "admin_cancelled")
+	// And the promo code, if the task was posted under one: nobody was charged.
+	releasePromoRedemption(ctx, taskID, "admin_cancelled")
 
 	writeAudit(ctx, taskID, actorUID, "CANCELLED", reason, map[string]any{
 		"admin_email":             actorEmail,

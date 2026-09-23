@@ -26,6 +26,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -254,6 +255,13 @@ func taskRateCentsPerMin(ctx context.Context, taskID string) int {
 // must see the same hold.
 func preAuthAmountCents(category string, estimatedMinutes, shoppingBudgetCents, rateCents int) int {
 	return baseFeeCents(category) + timeCostCents(estimatedMinutes, rateCents) + shoppingBudgetCents
+}
+
+// preAuthAfterPromoCents is the hold with a promo code's discount taken off,
+// never below $0. The discount is the requester's alone — what the supporter
+// is paid is computed from the undiscounted figures (see promo.go).
+func preAuthAfterPromoCents(category string, estimatedMinutes, shoppingBudgetCents, rateCents, discountCents int) int {
+	return afterPromo(preAuthAmountCents(category, estimatedMinutes, shoppingBudgetCents, rateCents), discountCents)
 }
 
 // isCompanionship reports whether a category bills at the companionship base
@@ -711,6 +719,10 @@ func estimateTaskCost(c *gin.Context) {
 		// resolves against now.
 		ScheduledAt string `json:"scheduled_at"`
 		IsImmediate bool   `json:"is_immediate"`
+		// A promo code the requester has typed. Checked here exactly as the
+		// post will check it, so the form can show the discount — or the
+		// refusal — before anything is posted. Absent for nearly every quote.
+		PromoCode string `json:"promo_code"`
 	}
 	if err := c.BindJSON(&in); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
@@ -730,7 +742,7 @@ func estimateTaskCost(c *gin.Context) {
 	quote := quoteTask(in.Category, in.EstimatedMinutes, in.PrepayAmountCents,
 		resolveRateCentsPerMin(estimateStartAt(in.IsImmediate, in.ScheduledAt)))
 
-	c.JSON(http.StatusOK, gin.H{
+	out := gin.H{
 		"base_fee_cents":        quote.BaseFeeCents,
 		"included_minutes":      quote.IncludedMinutes,
 		"per_minute_rate_cents": quote.PerMinuteRateCents,
@@ -741,16 +753,43 @@ func estimateTaskCost(c *gin.Context) {
 		"shopping_budget_cents": quote.ShoppingBudgetCents,
 		"shopping_cents":        quote.ShoppingCentsLegacy,
 		"total_cents":           quote.TotalCents,
-		// What posting will actually reserve. Identical to total_cents today —
-		// the hold IS the estimate plus the budget — and sent as its own field
-		// because that identity is a design decision rather than a coincidence,
-		// and a client should not have to know it holds in order to render a
-		// confirmation.
+		// What posting will actually reserve. Identical to total_cents unless a
+		// promo applies — the hold IS the estimate plus the budget, less the
+		// discount — and sent as its own field because that identity is a
+		// design decision rather than a coincidence, and a client should not
+		// have to know it holds in order to render a confirmation.
 		"hold_cents": quote.TotalCents,
 		// The threshold at which the form warns about a large reservation.
 		// Server-owned so both clients warn at the same number (S-05).
 		"high_budget_warning_cents": Billing.HighBudgetWarningCents,
-	})
+	}
+
+	// THE PROMO, quoted the way the post will apply it. total_cents stays the
+	// undiscounted figure (it is what every shipped client renders as the
+	// estimate, and what the supporter is paid from); the discount and the
+	// discounted total are their own fields, and the hold is the discounted
+	// one. A refused code comes back as a message beside the quote rather than
+	// as a failed quote — the estimate is still right, the code is not.
+	if code := normalizePromoCode(in.PromoCode); code != "" {
+		p, err := checkPromoForUser(c.Request.Context(), sqldb, code, c.GetString("uid"), "", time.Now())
+		var pe *PromoError
+		switch {
+		case err == nil:
+			applied := promoApplied(p.AmountCents, quote.TotalCents)
+			out["promo_code"] = p.Code
+			out["promo_discount_cents"] = applied
+			out["total_after_promo_cents"] = quote.TotalCents - applied
+			out["hold_cents"] = quote.TotalCents - applied
+		case errors.As(err, &pe):
+			out["promo_error"] = pe.Message
+			out["promo_error_code"] = pe.Code
+		default:
+			log.Printf("[billing][estimate] promo check failed: %v", err)
+			out["promo_error"] = "We couldn't check that promo code just now. Try again in a moment."
+			out["promo_error_code"] = promoErrInvalid
+		}
+	}
+	c.JSON(http.StatusOK, out)
 }
 
 // estimateStartAt is when the quoted task would begin, for rate resolution.

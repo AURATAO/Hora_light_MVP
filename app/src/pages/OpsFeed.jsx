@@ -5,6 +5,7 @@ import { useToast } from '../providers/ToastProvider'
 import { opsFetch as fetchJSON, removeTask, reassignTask, listApprovedSupporters,
          forceCompleteTask, adminCancelTask, adjustTaskTime, REMOVAL_REASONS } from '../api/ops'
 import OpsSupporters from './OpsSupporters.jsx'
+import OpsPromoCodes from './OpsPromoCodes.jsx'
 import Modal from '../components/Modal.jsx'
 
 // Display gate only — the server re-checks every /ops/* call against its own
@@ -23,6 +24,7 @@ const STATUS_FILTERS = ['all','accepted','completed','cancelled','removed'];
 const TABS = [
   { key: 'tasks', label: 'Task feed' },
   { key: 'supporters', label: 'Supporter applications' },
+  { key: 'promo', label: 'Promo codes' },
 ];
 
 export default function OpsFeed() {
@@ -223,6 +225,8 @@ export default function OpsFeed() {
 
         {tab === 'supporters' ? (
           <div className="py-4"><OpsSupporters /></div>
+        ) : tab === 'promo' ? (
+          <div className="py-4"><OpsPromoCodes /></div>
         ) : (
         <>
         <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 py-4">

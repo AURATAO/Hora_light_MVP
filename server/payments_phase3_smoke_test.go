@@ -140,7 +140,7 @@ func TestPhase3SmokeTransferIsFundedByItsCharge(t *testing.T) {
 	// Settle for MORE than the hold on purpose, so the capture clamps — the
 	// ordinary overrun. What comes back is what the charge is actually worth,
 	// and it is the ceiling on what can be transferred against it.
-	captured, err := Capture(context.Background(), taskID, 2450, 0)
+	captured, err := Capture(context.Background(), taskID, 2450, 0, 0)
 	if err != nil {
 		t.Fatalf("capture: %v", err)
 	}

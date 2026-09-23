@@ -128,3 +128,23 @@ export function reassignTask(taskId, supporterId) {
     body: JSON.stringify({ supporter_id: supporterId }),
   })
 }
+
+// ── Promo codes (server/promo.go) ─────────────────────────────────────────
+//
+// GET /admin/promo-codes — every code, newest first, with its redemption count.
+export function listPromoCodes() {
+  return opsFetch('/admin/promo-codes')
+}
+
+// POST /admin/promo-codes — { code, amount_cents, valid_from?, valid_until?,
+// max_redemptions?, first_task_only?, note? }. 409 when the code exists
+// (case-insensitively).
+export function createPromoCode(body) {
+  return opsFetch('/admin/promo-codes', { method: 'POST', body: JSON.stringify(body) })
+}
+
+// POST /admin/promo-codes/:id/deactivate — no new redemptions; tasks already
+// posted under the code keep their discount.
+export function deactivatePromoCode(id) {
+  return opsFetch(`/admin/promo-codes/${id}/deactivate`, { method: 'POST' })
+}

@@ -74,6 +74,11 @@ const transfersActiveMigrationPath = "../supabase/migrations/20260922222707_stri
 // paid-out.
 const bankArrivalMigrationPath = "../supabase/migrations/20260922224407_payouts_bank_arrival.sql"
 
+// Promo codes: promo_codes, promo_redemptions, and payouts.funding with a
+// nullable payment_id for the platform-funded subsidy transfer. After the
+// payouts table it alters.
+const promoCodesMigrationPath = "../supabase/migrations/20260923120000_promo_codes.sql"
+
 func setupStripeWebhookDB(t *testing.T) {
 	t.Helper()
 	setupAdminOpsDB(t) // users, tasks, worklogs, audit_logs + the pool swap
@@ -84,6 +89,8 @@ func setupStripeWebhookDB(t *testing.T) {
 	// unique constraint. Dropped AFTER setupAdminOpsDB so that tasks and users
 	// exist for the migration's foreign keys.
 	if _, err := db.Exec(context.Background(), `
+		DROP TABLE IF EXISTS public.promo_redemptions CASCADE;
+		DROP TABLE IF EXISTS public.promo_codes CASCADE;
 		DROP TABLE IF EXISTS public.payouts CASCADE;
 		DROP TABLE IF EXISTS public.payments CASCADE;
 		DROP TABLE IF EXISTS public.stripe_webhook_events CASCADE;
@@ -113,7 +120,7 @@ func setupStripeWebhookDB(t *testing.T) {
 
 	for _, path := range []string{paymentsMigrationPath, phase2aMigrationPath, phase2bMigrationPath, cardDisplayMigrationPath,
 		restructureMigrationPath, connectPayoutsMigrationPath, transfersActiveMigrationPath,
-		bankArrivalMigrationPath} {
+		bankArrivalMigrationPath, promoCodesMigrationPath} {
 		migration, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read migration %s: %v", path, err)
