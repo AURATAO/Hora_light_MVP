@@ -59,7 +59,7 @@ Six things are now true that weren't:
   `promo_codes` and `promo_redemptions` (both money tables: a client-direct
   INSERT on redemptions is a self-granted discount).
 - Invariants added/changed: none. The four Rule 3 queries still return three
-  rows, none, none, none after `20260923120000_promo_codes.sql` — both new
+  rows, none, none, none after `20260923104026_promo_codes.sql` — both new
   tables ship RLS-enabled with the explicit REVOKE, no policy, no grant.
 - `payouts.payment_id` is now nullable with `payouts_funding_shape` tying
   it to `funding`. "One payout per payment" (`uq_payouts_payment_id`) is

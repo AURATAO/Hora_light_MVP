@@ -77,7 +77,7 @@ const bankArrivalMigrationPath = "../supabase/migrations/20260922224407_payouts_
 // Promo codes: promo_codes, promo_redemptions, and payouts.funding with a
 // nullable payment_id for the platform-funded subsidy transfer. After the
 // payouts table it alters.
-const promoCodesMigrationPath = "../supabase/migrations/20260923120000_promo_codes.sql"
+const promoCodesMigrationPath = "../supabase/migrations/20260923104026_promo_codes.sql"
 
 func setupStripeWebhookDB(t *testing.T) {
 	t.Helper()

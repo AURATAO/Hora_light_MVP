@@ -194,7 +194,7 @@ var reassignMigrationPaths = []string{
 	// Build 13. RECEIPT is written by the settlement path the moment a charge
 	// lands and PAYOUT_DEPOSITED by payout.paid, so both enum values have to
 	// exist in the fixture for the same reason every earlier one does.
-	"../supabase/migrations/20260923130000_notification_types_receipt_deposit.sql",
+	"../supabase/migrations/20260923104029_notification_types_receipt_deposit.sql",
 }
 
 func setupReassignDB(t *testing.T) {
