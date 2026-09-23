@@ -53,6 +53,24 @@ import (
 	"hora-auth/internal/notify"
 )
 
+// stripeCreateTransfer is the one Stripe call in this file, behind a variable
+// for the same reason payments.go's are: so a settlement can be run end to end
+// against real rows in a test with no network. Production never reassigns it.
+var stripeCreateTransfer = func(params *stripe.TransferParams) (*stripe.Transfer, error) {
+	return transfer.New(params)
+}
+
+// Where a payout's money comes from (payouts.funding).
+const (
+	// A captured payment: the row names it in payment_id and the transfer is
+	// tied to its charge. Every payout before promo codes existed.
+	payoutFundingCharge = "charge"
+	// The platform's own balance: the part of a supporter's pay a promo
+	// discount took off the requester's charge. No payment, no
+	// source_transaction — the platform is paying, deliberately.
+	payoutFundingPromoSubsidy = "promo_subsidy"
+)
+
 // Payout statuses. Enforced by a CHECK on the table; the Go constants live
 // beside the only code that writes them.
 const (
@@ -87,8 +105,11 @@ type payoutInput struct {
 	TaskID      string
 	SupporterID string
 	// The CAPTURED payments row funding this transfer. One payout per payment,
-	// enforced by a unique index — see the migration.
+	// enforced by a unique index — see the migration. Empty for a promo
+	// subsidy, which no payment funds.
 	PaymentID string
+	// payoutFundingCharge unless set: see the constants above.
+	Funding string
 	// What the supporter is owed out of THIS payment, gross, before the
 	// platform cut. Already decided by the settlement; nothing here re-prices.
 	OwedCents int
@@ -121,6 +142,9 @@ type payoutSplit struct {
 const (
 	payoutSourceHold    = "hold"
 	payoutSourceBalance = "balance"
+	// The platform's own money: what a promo discount took off the
+	// requester's charge, made up to the supporter from the platform balance.
+	payoutSourcePromo = "promo"
 )
 
 // settlementPayouts decides what transfers a completed settlement produces.
@@ -131,23 +155,29 @@ const (
 // settleTaskPayment next to two Stripe calls and an email, is where the
 // off-by-one that underpays somebody would live.
 //
-// Three inputs:
+// Four inputs:
 //
-//	total           what the supporter is owed: time cost + reimbursed receipt
+//	total           what the supporter is owed: time cost + reimbursed receipt,
+//	                UNDISCOUNTED — a promo is the requester's, not theirs
 //	mainCaptured    what the HOLD actually took (clamped to the authorization)
 //	balanceCaptured what a completion_balance charge collected, or 0
+//	promoSubsidy    what the platform owes on top of the requester's money:
+//	                the promo discount that came off the charge (and any
+//	                sub-minimum remainder Stripe would not let us collect)
 //
 // And the one constraint that shapes the answer: a transfer tied to a funding
 // charge by source_transaction MAY NOT EXCEED THAT CHARGE. So the hold's
-// transfer is capped at what the hold captured, and anything above it rides on
-// the balance charge's own transfer — which is why an overrunning task
-// produces two transfers rather than one.
+// transfer is capped at what the hold captured, anything above it rides on the
+// balance charge's own transfer, and the discount — which no charge funded —
+// is a third transfer drawn on the platform's own balance.
 //
 //	total <= mainCaptured    one transfer for `total`; the hold covered it and
 //	                         Stripe released the rest of the authorization
 //	balance collected        two transfers: the hold in full, then the rest
-//	balance failed           one transfer for what the hold took, with the gap
-//	                         recorded as a shortfall. The supporter is short
+//	promo applied            plus a promo_subsidy transfer for the discount,
+//	                         so the supporter is whole
+//	balance failed           the gap that is neither collected nor subsidised
+//	                         is recorded as a shortfall. The supporter is short
 //	                         and the platform is carrying the receivable —
 //	                         which is NOT silently transferred, because a
 //	                         source_transaction-bound transfer cannot exceed
@@ -155,25 +185,39 @@ const (
 //	                         float nobody approved. Recovery is the requester
 //	                         settling their balance (markBalanceDue) or an ops
 //	                         person deciding otherwise.
-func settlementPayouts(total, mainCaptured, balanceCaptured int) []payoutSplit {
-	if total <= 0 || mainCaptured <= 0 {
+//
+// The subsidy is paid BEFORE a shortfall is declared: the platform's promise
+// to cover the discount does not depend on whether the requester's card
+// worked.
+func settlementPayouts(total, mainCaptured, balanceCaptured, promoSubsidy int) []payoutSplit {
+	if total <= 0 {
+		return nil
+	}
+	if mainCaptured <= 0 && balanceCaptured <= 0 && promoSubsidy <= 0 {
 		return nil
 	}
 
 	fromHold := minInt(total, mainCaptured)
 	remainder := total - fromHold
+	fromBalance := minInt(remainder, balanceCaptured)
+	remainder -= fromBalance
+	fromPromo := minInt(remainder, promoSubsidy)
+	shortfall := remainder - fromPromo
 
-	// The gap is what is owed, not collected, and not covered by the balance
-	// transfer below.
-	shortfall := remainder - minInt(remainder, balanceCaptured)
-
-	splits := []payoutSplit{{
-		Source:         payoutSourceHold,
-		OwedCents:      fromHold,
-		ShortfallCents: shortfall,
-	}}
-	if carried := minInt(remainder, balanceCaptured); carried > 0 {
-		splits = append(splits, payoutSplit{Source: payoutSourceBalance, OwedCents: carried})
+	var splits []payoutSplit
+	if fromHold > 0 {
+		splits = append(splits, payoutSplit{Source: payoutSourceHold, OwedCents: fromHold, ShortfallCents: shortfall})
+	}
+	if fromBalance > 0 {
+		splits = append(splits, payoutSplit{Source: payoutSourceBalance, OwedCents: fromBalance})
+	}
+	if fromPromo > 0 {
+		split := payoutSplit{Source: payoutSourcePromo, OwedCents: fromPromo}
+		if len(splits) == 0 {
+			// Nothing else carries it: the whole settlement was the discount.
+			split.ShortfallCents = shortfall
+		}
+		splits = append(splits, split)
 	}
 	return splits
 }
@@ -209,7 +253,16 @@ func payoutForTask(ctx context.Context, in payoutInput) *Payout {
 	if !paymentsEnabled() {
 		return nil
 	}
-	if in.OwedCents <= 0 || in.TaskID == "" || in.SupporterID == "" || in.PaymentID == "" {
+	if in.Funding == "" {
+		in.Funding = payoutFundingCharge
+	}
+	if in.OwedCents <= 0 || in.TaskID == "" || in.SupporterID == "" {
+		return nil
+	}
+	// A charge-funded transfer must name its payment; a subsidy must not.
+	if (in.Funding == payoutFundingCharge) != (in.PaymentID != "") {
+		log.Printf("[payments][payout][ERROR] task=%s funding=%s payment=%q — inconsistent, not sending",
+			in.TaskID, in.Funding, in.PaymentID)
 		return nil
 	}
 
@@ -244,7 +297,8 @@ func payoutForTask(ctx context.Context, in payoutInput) *Payout {
 	// before reaching Stripe at all.
 	p, err := insertPayout(ctx, in, amount)
 	if errors.Is(err, errPayoutExists) {
-		log.Printf("[payments][payout] payment=%s already has a payout — not sending a second", in.PaymentID)
+		log.Printf("[payments][payout] task=%s payment=%q funding=%s already has a payout — not sending a second",
+			in.TaskID, in.PaymentID, in.Funding)
 		return nil
 	}
 	if err != nil {
@@ -314,7 +368,7 @@ func sendTransfer(ctx context.Context, p *Payout, accountID string, in payoutInp
 	}
 	params.SetIdempotencyKey(transferIdempotencyKey(p.ID, p.AttemptCount))
 
-	tr, err := transfer.New(params)
+	tr, err := stripeCreateTransfer(params)
 	if err != nil {
 		return nil, err
 	}
@@ -364,23 +418,46 @@ func insertPayout(ctx context.Context, in payoutInput, amount int) (*Payout, err
 		raw = []byte("{}")
 	}
 
+	// NULL, not "", for a subsidy: payouts_funding_shape ties the two together.
+	var paymentID *string
+	if in.PaymentID != "" {
+		paymentID = &in.PaymentID
+	}
+	funding := in.Funding
+	if funding == "" {
+		funding = payoutFundingCharge
+	}
+	if funding == payoutFundingPromoSubsidy {
+		meta["subsidy_reason"] = "promo_discount"
+	}
+	raw, err = json.Marshal(meta)
+	if err != nil {
+		raw = []byte("{}")
+	}
+
 	var p Payout
+	var scannedPayment *string
+	// Bare ON CONFLICT: either unique index — one payout per payment, or one
+	// subsidy per task — makes this a duplicate, and both mean the same thing.
 	err = db.QueryRow(ctx, `
 		insert into public.payouts
-		       (task_id, supporter_id, payment_id, amount_cents, status, attempt_count, meta)
-		values ($1::uuid, $2::uuid, $3::uuid, $4, $5, 1, $6::jsonb)
-		on conflict (payment_id) do nothing
+		       (task_id, supporter_id, payment_id, amount_cents, status, attempt_count, meta, funding)
+		values ($1::uuid, $2::uuid, $3::uuid, $4, $5, 1, $6::jsonb, $7)
+		on conflict do nothing
 		returning id::text, task_id::text, supporter_id::text, payment_id::text,
 		          amount_cents, status, attempt_count
-	`, in.TaskID, in.SupporterID, in.PaymentID, amount, payoutStatusPending, string(raw)).
-		Scan(&p.ID, &p.TaskID, &p.SupporterID, &p.PaymentID, &p.AmountCents, &p.Status, &p.AttemptCount)
+	`, in.TaskID, in.SupporterID, paymentID, amount, payoutStatusPending, string(raw), funding).
+		Scan(&p.ID, &p.TaskID, &p.SupporterID, &scannedPayment, &p.AmountCents, &p.Status, &p.AttemptCount)
 	if errors.Is(err, pgx.ErrNoRows) {
-		// ON CONFLICT DO NOTHING returned nothing: the unique index caught a
-		// second payout for this payment.
+		// ON CONFLICT DO NOTHING returned nothing: a unique index caught a
+		// second payout for this payment (or a second subsidy for this task).
 		return nil, errPayoutExists
 	}
 	if err != nil {
 		return nil, err
+	}
+	if scannedPayment != nil {
+		p.PaymentID = *scannedPayment
 	}
 	return &p, nil
 }
@@ -562,16 +639,21 @@ func adminRetryPayout(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	var p Payout
-	var transferID *string
+	var transferID, paymentID *string
 	err := db.QueryRow(ctx, `
 		select id::text, task_id::text, supporter_id::text, payment_id::text,
 		       amount_cents, status, attempt_count, stripe_transfer_id
 		  from public.payouts where id = $1::uuid
-	`, payoutID).Scan(&p.ID, &p.TaskID, &p.SupporterID, &p.PaymentID,
+	`, payoutID).Scan(&p.ID, &p.TaskID, &p.SupporterID, &paymentID,
 		&p.AmountCents, &p.Status, &p.AttemptCount, &transferID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
 		return
+	}
+	if paymentID != nil {
+		// NULL on a promo_subsidy row, which is retried exactly like any other
+		// — drawn on the platform balance, as it was the first time.
+		p.PaymentID = *paymentID
 	}
 	if transferID != nil && *transferID != "" {
 		c.JSON(http.StatusConflict, gin.H{

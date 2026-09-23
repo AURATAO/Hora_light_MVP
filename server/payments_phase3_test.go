@@ -108,7 +108,9 @@ func TestPhase3SettlementPayoutSplit(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := settlementPayouts(tc.total, tc.mainCaptured, tc.balanceCaptured)
+			// No promo on any of these rows; the subsidy cases are in
+			// TestPromoPayoutIsUndiscounted (promo_test.go).
+			got := settlementPayouts(tc.total, tc.mainCaptured, tc.balanceCaptured, 0)
 			if len(got) != len(tc.want) {
 				t.Fatalf("got %d split(s) %+v, want %d %+v", len(got), got, len(tc.want), tc.want)
 			}

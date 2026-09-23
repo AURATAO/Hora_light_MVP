@@ -104,6 +104,7 @@ import {
   extensionDecidedAt,
   holdSummary,
   timeBasisNote,
+  promoHoldNote,
 } from "../../lib/payment-copy";
 import type {
   ExtensionRequest,
@@ -1318,6 +1319,9 @@ export default function TaskDetail() {
                   reimbursed against the receipt.
                 </Text>
               ) : null}
+              {promoHoldNote(task.payment) ? (
+                <Text className="text-caption text-muted">{promoHoldNote(task.payment)}</Text>
+              ) : null}
             </Disclosure>
           ) : (
             <View className="mb-4 gap-2 rounded-card border border-line bg-surface p-4">
@@ -1334,6 +1338,9 @@ export default function TaskDetail() {
                   The hold also covers up to {formatCost(task.prepay_amount_cents)} of shopping,
                   reimbursed against the receipt.
                 </Text>
+              ) : null}
+              {promoHoldNote(task.payment) ? (
+                <Text className="text-caption text-muted">{promoHoldNote(task.payment)}</Text>
               ) : null}
             </View>
           )
@@ -2227,11 +2234,29 @@ function SettlementCard({
         </View>
       ) : null}
 
+      {/* THE PROMO, on the requester's copy only — the server omits these
+          keys from the supporter's, whose pay it never touched. The total
+          below is then the discounted one; `cost.total_cents` stays what the
+          task cost before it (S-05: both numbers are the server's). */}
+      {(settlement.promo_discount_cents ?? 0) > 0 ? (
+        <View className="flex-row justify-between">
+          <Text className="text-caption text-muted">
+            Promo{settlement.promo_code ? ` (${settlement.promo_code})` : ""}
+          </Text>
+          <Text className="text-caption text-ink">−{formatCost(settlement.promo_discount_cents ?? 0)}</Text>
+        </View>
+      ) : null}
       <View className="flex-row justify-between border-t border-line pt-2">
         <Text className="text-body font-semibold text-ink">
           {settlement.state === "captured" ? "Total charged" : "Total"}
         </Text>
-        <Text className="text-body font-semibold text-ink">{formatCost(cost.total_cents)}</Text>
+        <Text className="text-body font-semibold text-ink">
+          {formatCost(
+            (settlement.promo_discount_cents ?? 0) > 0 && settlement.total_after_promo_cents !== undefined
+              ? settlement.total_after_promo_cents
+              : cost.total_cents
+          )}
+        </Text>
       </View>
 
       {settlement.state === "not_charged" ? (

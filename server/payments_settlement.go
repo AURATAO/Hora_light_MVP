@@ -47,7 +47,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/stripe/stripe-go/v86"
-	"github.com/stripe/stripe-go/v86/paymentintent"
 
 	notify "hora-auth/internal/notify"
 )
@@ -190,7 +189,7 @@ func chargeBalanceOffSession(ctx context.Context, p *Payment, taskID, requesterI
 	params.SetIdempotencyKey("balance_" + p.ID)
 	params.AddExpand("latest_charge")
 
-	pi, err := paymentintent.New(params)
+	pi, err := stripeCreatePaymentIntent(params)
 	if err != nil {
 		pe := classifyPreAuthError(err)
 		if pe.PaymentIntentID != "" {
@@ -280,6 +279,15 @@ type settlementOutcome struct {
 	// every task settled before Phase 3. Reported so the completion response
 	// can tell the supporter what they earned without a second lookup.
 	SupporterID string
+
+	// The promo discount that came off the requester's charge (promo.go), and
+	// the payments rows the money moved through — what the receipt names.
+	// Zero and empty on the overwhelming majority of tasks.
+	DiscountCents        int
+	MainPaymentID        string
+	MainCapturedCents    int
+	BalancePaymentID     string
+	BalanceCapturedCents int
 }
 
 // settleTaskPayment collects what a finished task owes.
@@ -308,12 +316,20 @@ func settleTaskPayment(ctx context.Context, taskID string, timeCostCents, receip
 		return out
 	}
 	out.Attempted = true
+	out.MainPaymentID = main.ID
 
+	// TWO TOTALS. `total` is what the SUPPORTER is owed — time plus receipt,
+	// undiscounted. `charged` is what the REQUESTER pays: the same, less any
+	// promo discount, never below $0. Every branch below collects `charged`
+	// and pays out `total`; the gap is the platform's (promo.go).
 	total := timeCostCents + receiptCents
+	_, promoDiscount := promoDiscountForTask(ctx, taskID)
+	charged := afterPromo(total, promoDiscount)
+	out.DiscountCents = total - charged
 
-	// Capture reuses the Phase 1 service unchanged: it clamps to the hold,
-	// logs UNDERCAPTURE when the clamp bites, and records the split.
-	captured, err := Capture(ctx, taskID, timeCostCents, receiptCents)
+	// Capture reuses the Phase 1 service: it clamps to the hold, logs
+	// UNDERCAPTURE when the clamp bites, and records the split.
+	captured, err := Capture(ctx, taskID, timeCostCents, receiptCents, promoDiscount)
 	if err != nil {
 		out.Err = err
 		markCaptureFailed(ctx, main.ID, err)
@@ -324,19 +340,35 @@ func settleTaskPayment(ctx context.Context, taskID string, timeCostCents, receip
 	// The supporter's first transfer is funded by this charge and may not
 	// exceed it — see payoutForTask.
 	mainCaptured := out.CapturedCents
+	out.MainCapturedCents = mainCaptured
 
 	// The overage. This is the branch the whole restructure buys: holding
 	// exactly the estimate means a task that ran over settles above its hold,
 	// and the difference is charged now rather than pre-emptively frozen on
 	// everybody's card for weeks.
+	//
+	// A remainder below Stripe's minimum charge cannot be collected at all — a
+	// promo that took the hold to $0 on a task that then settled for 30¢ — and
+	// is waived rather than left as a balance due that would block the
+	// requester's next post over money nobody can take. The supporter is still
+	// paid it, from the platform balance, beside the promo subsidy.
 	var balance *Payment
-	if shortfall := total - out.CapturedCents; shortfall > 0 {
+	waived := 0
+	shortfall := charged - out.CapturedCents
+	if shortfall > 0 && shortfall < stripeMinimumChargeCents {
+		log.Printf("[payments][settle] task=%s remainder %s is below Stripe's minimum — waived",
+			taskID, formatCentsUSD(shortfall))
+		waived, shortfall = shortfall, 0
+	}
+	if shortfall > 0 {
 		balance = collectCompletionBalance(ctx, taskID, main.RequesterID, shortfall)
 		switch {
 		case balance == nil:
 			out.BalanceDueCents = shortfall
 		case balance.Status == paymentStatusCaptured:
 			out.CapturedCents += shortfall
+			out.BalancePaymentID = balance.ID
+			out.BalanceCapturedCents = shortfall
 		default:
 			out.BalanceDueCents = shortfall
 		}
@@ -360,11 +392,11 @@ func settleTaskPayment(ctx context.Context, taskID string, timeCostCents, receip
 	if out.SupporterID != "" {
 		// How much the balance charge actually collected. Distinct from
 		// BalanceDueCents, which is what it FAILED to collect.
-		balanceCaptured := 0
-		if balance != nil && balance.Status == paymentStatusCaptured {
-			balanceCaptured = total - mainCaptured
-		}
-		for _, split := range settlementPayouts(total, mainCaptured, balanceCaptured) {
+		balanceCaptured := out.BalanceCapturedCents
+		// What the platform owes the supporter on top of the requester's
+		// money: the promo discount, plus any remainder too small to charge.
+		subsidy := out.DiscountCents + waived
+		for _, split := range settlementPayouts(total, mainCaptured, balanceCaptured, subsidy) {
 			in := payoutInput{
 				TaskID:         taskID,
 				SupporterID:    out.SupporterID,
@@ -376,6 +408,8 @@ func settleTaskPayment(ctx context.Context, taskID string, timeCostCents, receip
 				in.PaymentID, in.SourceChargeID = main.ID, captured.StripeChargeID
 			case payoutSourceBalance:
 				in.PaymentID, in.SourceChargeID = balance.ID, balance.StripeChargeID
+			case payoutSourcePromo:
+				in.Funding = payoutFundingPromoSubsidy
 			}
 			payoutForTask(ctx, in)
 		}
@@ -524,13 +558,20 @@ func settleCompletedTask(ctx context.Context, taskID, actorUID string, timeCostC
 	case out.Attempted:
 		recordTaskSettlement(ctx, taskID, timeCostCents, out.CapturedCents)
 		writeAudit(ctx, taskID, orSystemActor(actorUID), "PAYMENT_CAPTURED", "", map[string]any{
-			"time_cost_cents": timeCostCents,
-			"receipt_cents":   receiptCents,
-			"captured_cents":  out.CapturedCents,
+			"time_cost_cents":      timeCostCents,
+			"receipt_cents":        receiptCents,
+			"promo_discount_cents": out.DiscountCents,
+			"captured_cents":       out.CapturedCents,
 		})
-		log.Printf("[payments][settle] task=%s captured=%s (time=%s receipt=%s)",
+		log.Printf("[payments][settle] task=%s captured=%s (time=%s receipt=%s discount=%s)",
 			taskID, formatCentsUSD(out.CapturedCents),
-			formatCentsUSD(timeCostCents), formatCentsUSD(receiptCents))
+			formatCentsUSD(timeCostCents), formatCentsUSD(receiptCents), formatCentsUSD(out.DiscountCents))
+		// THE RECEIPT, from the same call that captured. This is the only
+		// place a completion's charges are known together — the hold and the
+		// balance — and putting the receipt here rather than in each closing
+		// handler is what makes "a charge can never happen without a receipt"
+		// a property of the code rather than a convention (receipts.go).
+		sendRequesterReceipt(ctx, taskID, receiptChargesFor(out))
 	}
 	return out
 }
@@ -577,6 +618,18 @@ type TaskPayment struct {
 	// breakdown at all.
 	TimeCostCents       int `json:"time_cost_cents,omitempty"`
 	ShoppingBudgetCents int `json:"shopping_budget_cents,omitempty"`
+	// The two halves of TimeCostCents, so a confirmation can say "$25.00 base
+	// + $7.50 time" — which is how a companionship task shows its base — with
+	// no subtraction on the client. Sent under the same reconciliation rule.
+	BaseFeeCents     int `json:"base_fee_cents,omitempty"`
+	MinutesCostCents int `json:"minutes_cost_cents,omitempty"`
+
+	// The promo, when the task was posted under one: the code, what it took
+	// off, and what the hold would have been without it. "$19.50 − $10.00
+	// promo = $9.50 reserved" is these three numbers in that order (S-05).
+	PromoCode          string `json:"promo_code,omitempty"`
+	PromoDiscountCents int    `json:"promo_discount_cents,omitempty"`
+	PreDiscountCents   int    `json:"pre_discount_cents,omitempty"`
 }
 
 // taskPaymentView reads the task's payment row, or nil when there is none.
@@ -609,7 +662,8 @@ func taskPaymentView(ctx context.Context, taskID string) *TaskPayment {
 	p.CardBrand, p.CardLast4 = brand, last4
 
 	// The split, reconstructed from the task the hold was placed for, and
-	// included ONLY when it adds up to what was actually authorized.
+	// included ONLY when it adds up to what was actually authorized — with
+	// the promo discount taken off first, when there is one.
 	var category string
 	var estimate, budget, rate int
 	if err := db.QueryRow(ctx, `
@@ -617,9 +671,17 @@ func taskPaymentView(ctx context.Context, taskID string) *TaskPayment {
 		       coalesce(prepay_amount_cents,0), coalesce(rate_cents_per_min,0)
 		  from public.tasks where id = $1::uuid
 	`, taskID).Scan(&category, &estimate, &budget, &rate); err == nil {
-		timePart := baseFeeCents(category) + timeCostCents(estimate, rate)
-		if timePart+budget == p.AuthorizedCents {
+		base := baseFeeCents(category)
+		minutes := timeCostCents(estimate, rate)
+		timePart := base + minutes
+		code, discount := promoDiscountForTask(ctx, taskID)
+		applied := promoApplied(discount, timePart+budget)
+		if timePart+budget-applied == p.AuthorizedCents {
 			p.TimeCostCents, p.ShoppingBudgetCents = timePart, budget
+			p.BaseFeeCents, p.MinutesCostCents = base, minutes
+			if applied > 0 {
+				p.PromoCode, p.PromoDiscountCents, p.PreDiscountCents = code, applied, timePart+budget
+			}
 		}
 	}
 
@@ -894,6 +956,11 @@ func runSettlePass(ctx context.Context, uid string) (settleOutcome, error) {
 				"payment_id":   d.id,
 				"amount_cents": d.cents,
 			})
+			// A charge happened; the requester gets the same receipt they would
+			// have got had it gone through at completion.
+			sendRequesterReceipt(ctx, d.taskID, []receiptCharge{{
+				Label: "Outstanding balance", PaymentID: d.id, Cents: d.cents,
+			}})
 			out.settledCents += d.cents
 			out.settledCount++
 			continue

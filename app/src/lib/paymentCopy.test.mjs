@@ -5,6 +5,8 @@ import {
   highBudgetWarning,
   holdPlacedMessage,
   holdReleasedMessage,
+  promoHoldNote,
+  promoReservedLine,
   holdSummary,
   holdWillBeReleasedMessage,
   outstandingBalanceMessage,
@@ -65,6 +67,51 @@ test('no shopping means a single number, not a breakdown with a zero in it', () 
   assert.equal(msg.primary, '$19.50 reserved')
   assert.doesNotMatch(msg.primary, /\$0\.00/)
   assert.doesNotMatch(msg.primary, /budget/)
+})
+
+test('the base fee is named on its own line when the server sends it', () => {
+  // How a companionship task shows its $25 base: the two halves of the time
+  // part arrive separately and nothing is subtracted here.
+  assert.equal(
+    holdPlacedMessage({ authorized_cents: 3250, time_cost_cents: 3250, base_fee_cents: 2500, minutes_cost_cents: 750 }).primary,
+    '$32.50 reserved — $25.00 base + $7.50 time'
+  )
+  assert.equal(
+    holdPlacedMessage({
+      authorized_cents: 4950, time_cost_cents: 1950, base_fee_cents: 1200, minutes_cost_cents: 750, shopping_budget_cents: 3000,
+    }).primary,
+    '$49.50 reserved — $12.00 base + $7.50 time + $30.00 budget'
+  )
+  // Inside the included minutes: the base fee IS the hold, and it says so
+  // rather than "+ $0.00 time".
+  const base = holdPlacedMessage({ authorized_cents: 2500, time_cost_cents: 2500, base_fee_cents: 2500, minutes_cost_cents: 0 })
+  assert.equal(base.primary, '$25.00 reserved — $25.00 base')
+  assert.doesNotMatch(base.primary, /\$0\.00/)
+})
+
+test('a promo is the estimate, the discount and what is actually reserved', () => {
+  const msg = holdPlacedMessage({
+    authorized_cents: 950, pre_discount_cents: 1950, promo_discount_cents: 1000, promo_code: 'WELCOME10',
+    time_cost_cents: 1950, base_fee_cents: 1200, minutes_cost_cents: 750,
+  })
+  assert.equal(msg.primary, '$19.50 − $10.00 promo = $9.50 reserved')
+  // A code that covered the whole hold is still a message — "$0.00 reserved"
+  // is the truth here, and the discount is why.
+  assert.equal(
+    holdPlacedMessage({ authorized_cents: 0, pre_discount_cents: 1950, promo_discount_cents: 1950 }).primary,
+    '$19.50 − $19.50 promo = $0.00 reserved'
+  )
+  // The form's line, from the quote's own three numbers.
+  assert.equal(
+    promoReservedLine({ total_cents: 1950, promo_discount_cents: 1000, hold_cents: 950 }),
+    '$19.50 − $10.00 promo = $9.50 reserved'
+  )
+  assert.equal(promoReservedLine({ total_cents: 1950, hold_cents: 1950 }), null)
+  assert.equal(promoReservedLine(null), null)
+  // And the live task's hold card names it.
+  assert.equal(promoHoldNote({ promo_discount_cents: 1000, promo_code: 'WELCOME10' }), 'Includes a $10.00 promo (WELCOME10).')
+  assert.equal(promoHoldNote({ promo_discount_cents: 1000 }), 'Includes a $10.00 promo.')
+  assert.equal(promoHoldNote({ authorized_cents: 1950 }), null)
 })
 
 test('a hold the server could not break down still states the total', () => {

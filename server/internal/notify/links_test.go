@@ -107,3 +107,45 @@ func TestCompletedEmailKeepsBothDestinations(t *testing.T) {
 		t.Error("completion email lost its review link")
 	}
 }
+
+// The receipt email renders the itemization it is given, escapes what the
+// user typed, and keeps the redirect link like every other task email.
+func TestReceiptEmailRendersTheItemization(t *testing.T) {
+	t.Setenv("APP_BASE_URL", "https://mvp.horaapp.co")
+	in := CreateNotificationInput{
+		TaskID: "task-9", Type: "RECEIPT", Title: "Your HO:RA receipt — $14.50",
+		TaskTitle: "Laundry <run>",
+		Receipt: &Receipt{
+			TaskTitle: "Laundry <run>",
+			Lines: []ReceiptLine{
+				{Label: "Base fee (first 15 min included)", Amount: "$12.00"},
+				{Label: "25 billable min × $0.50", Amount: "$12.50"},
+				{Label: "Promo (WELCOME10)", Amount: "−$10.00"},
+			},
+			Approvals: []string{"Approved 15 more minutes"},
+			Charges:   []ReceiptLine{{Label: "Reserved amount · Visa ••4242", Amount: "$14.50"}},
+			Total:     "$14.50",
+			Released:  "$35.50",
+		},
+	}
+	html := buildEmail(in, TaskLink(in.TaskID))
+	for _, want := range []string{
+		"Base fee (first 15 min included)", "$12.00", "25 billable min × $0.50", "Promo (WELCOME10)", "−$10.00",
+		"Total charged", "$14.50", "Reserved amount · Visa ••4242", "Approved 15 more minutes",
+		"$35.50 of the amount reserved", "Laundry &lt;run&gt;",
+		`href="https://mvp.horaapp.co/open/task/task-9"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("receipt email lacks %q", want)
+		}
+	}
+	if strings.Contains(html, "Laundry <run>") {
+		t.Error("receipt email did not escape the task title")
+	}
+	// Without an itemization it still renders — as the default template —
+	// rather than sending an empty page.
+	in.Receipt = nil
+	if html := buildEmail(in, TaskLink(in.TaskID)); !strings.Contains(html, "task-9") {
+		t.Error("receipt email with no itemization rendered nothing")
+	}
+}

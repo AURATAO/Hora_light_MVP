@@ -28,7 +28,6 @@ import (
 	"strings"
 	"time"
 
-
 	"hora-auth/auth"
 
 	"github.com/MicahParks/keyfunc/v2"
@@ -246,6 +245,10 @@ type createTaskInput struct {
 	// denial of something they were never asked. Only a client that actually
 	// rendered the checkbox sends a value.
 	AutoExtendConsent *bool `json:"auto_extend_consent"`
+	// A promo code, checked and redeemed inside the post transaction
+	// (server/promo.go). Empty for nearly every post. Ignored by PATCH — a
+	// discount is a term of the post, not something an edit can add.
+	PromoCode string `json:"promo_code"`
 }
 
 // The closed set behind tasks_created_via_check. Kept in the handler as well as
@@ -521,6 +524,13 @@ func main() {
 	// id. See payments_payouts.go.
 	r.POST("/admin/payouts/:id/retry", dualAuth(sqldb), requireOpsAdmin(), adminRetryPayout)
 
+	// Promo codes: create, deactivate, and see redemption counts. Same
+	// allowlist and audit trail as every other admin action; rendered by the
+	// web ops panel's Promo codes tab (server/promo.go).
+	r.GET("/admin/promo-codes", dualAuth(sqldb), requireOpsAdmin(), adminListPromoCodes)
+	r.POST("/admin/promo-codes", dualAuth(sqldb), requireOpsAdmin(), adminCreatePromoCode)
+	r.POST("/admin/promo-codes/:id/deactivate", dualAuth(sqldb), requireOpsAdmin(), adminDeactivatePromoCode)
+
 	// 列出所有路由（除錯用）
 
 	r.GET("/__routes", func(c *gin.Context) {
@@ -704,6 +714,10 @@ func main() {
 	r.POST("/push/unregister", dualAuth(sqldb), unregisterPushTokenHandler)
 
 	r.POST("/ai/parse-task", dualAuth(sqldb), parseTaskWithAI)
+
+	// The post form's "Apply" for a promo code. Advisory — POST /tasks
+	// re-checks inside its transaction (server/promo.go).
+	r.POST("/promo/validate", dualAuth(sqldb), validatePromoHandler)
 
 	tasksAPI := r.Group("/tasks")
 	tasksAPI.Use(dualAuth(sqldb))
@@ -1809,6 +1823,23 @@ func createTask(c *gin.Context) {
 		return
 	}
 
+	// ── The promo ──────────────────────────────────────────────────────────
+	//
+	// Inside the same transaction as the task row: a refused code means no
+	// task (the rollback below), and the redemption's unique indexes are what
+	// make "once per account" true under two concurrent posts. The discount
+	// is a snapshot on the redemption row, and it is what the hold below is
+	// reduced by. See promo.go.
+	var promo *PromoCode
+	if code := normalizePromoCode(in.PromoCode); code != "" {
+		p, err := applyPromoInTx(ctx, tx, code, uid, taskID)
+		if err != nil {
+			writePromoError(c, err)
+			return
+		}
+		promo = p
+	}
+
 	if err := tx.Commit(); err != nil {
 		log.Printf("[createTask] tx.commit error: %v", err)
 		c.JSON(500, gin.H{"error": "db error"})
@@ -1821,6 +1852,10 @@ func createTask(c *gin.Context) {
 	// with a hold on the requester's card and the task 'open', or with both
 	// rows gone and a 402 explaining why.
 	if enforcePayment {
+		promoDiscount := 0
+		if promo != nil {
+			promoDiscount = promo.AmountCents
+		}
 		p, err := CreatePreAuth(ctx, PreAuthInput{
 			TaskID:                taskID,
 			RequesterID:           uid,
@@ -1828,6 +1863,7 @@ func createTask(c *gin.Context) {
 			EstimatedMinutes:      in.EstimatedMinutes,
 			ShoppingBudgetCents:   in.PrepayAmountCents,
 			RateCents:             rateCents,
+			PromoDiscountCents:    promoDiscount,
 			StripeCustomerID:      payCtx.CustomerID,
 			StripePaymentMethodID: payCtx.PaymentMethodID,
 		})
@@ -3468,6 +3504,21 @@ func getWorklogs(c *gin.Context) {
 		settlement["receipt_photo_url"] = inputs.ReceiptPhotoURL
 	}
 
+	// THE PROMO, on the requester's copy only. `cost` and `total_cents` above
+	// stay undiscounted — they are what the supporter is paid from, and what
+	// every shipped build renders — and the requester's discounted total is
+	// its own field beside them. The supporter never sees the code or the
+	// discount: their pay does not depend on it, and what a requester paid
+	// is not their business (promo.go).
+	if isRequester {
+		if code, discount := promoDiscountForTask(ctx, taskID); discount > 0 {
+			applied := promoApplied(discount, cost.TotalCents)
+			settlement["promo_code"] = code
+			settlement["promo_discount_cents"] = applied
+			settlement["total_after_promo_cents"] = cost.TotalCents - applied
+		}
+	}
+
 	// Phase 3 — what the SUPPORTER earned, attached only for the supporter.
 	//
 	// The mirror image of TaskPayment, and deliberately disjoint from it. The
@@ -3891,7 +3942,11 @@ func completeTask(c *gin.Context) {
 	totalCents := timeCostCents + reimbursedCents
 
 	completeTotalStr := formatMinutes(totalMin)
+	// The supporter's figure: undiscounted. The requester's is below.
 	completeCostStr := formatCentsUSD(totalCents)
+	// What the REQUESTER pays: the same, less any promo discount (promo.go).
+	_, promoDiscount := promoDiscountForTask(ctx, taskID)
+	requesterCostStr := formatCentsUSD(afterPromo(totalCents, promoDiscount))
 
 	if _, err := db.Exec(ctx, `
 		UPDATE public.tasks
@@ -3923,7 +3978,7 @@ func completeTask(c *gin.Context) {
 		SupporterName:      resolveDisplayName(ctx, assigneeEmail),
 		TaskTitle:          completeTaskTitle,
 		TotalLogged:        completeTotalStr,
-		FinalCost:          completeCostStr,
+		FinalCost:          requesterCostStr,
 		CompletionPhotoURL: body.CompletionPhotoURL,
 		CompletionNote:     body.CompletionNote,
 	})
@@ -4172,6 +4227,9 @@ func cancelTask(c *gin.Context) {
 		settled = settleCompletedTask(ctx, taskID, meUID, billCents, 0)
 	} else {
 		released = releaseTaskHold(ctx, taskID, meUID, "requester_cancelled") != nil
+		// Nobody was charged, so the promo code — if there was one — was not
+		// used, and the requester may try it again (promo.go).
+		releasePromoRedemption(ctx, taskID, "cancelled_free")
 	}
 
 	// The supporter is detached: the task is over, and leaving them assigned to

@@ -72,7 +72,10 @@ export interface HoldMessage {
 }
 
 export function holdPlacedMessage(payment?: TaskPayment | null): HoldMessage | null {
-  if (!payment?.authorized_cents) return null;
+  if (!payment) return null;
+  // A promo that covered the whole hold reserves $0.00 — and that IS the
+  // message, said with the discount that made it so, not silence.
+  if (!payment.authorized_cents && !(payment.promo_discount_cents ?? 0)) return null;
   return {
     primary: holdBreakdown(payment),
     secondary: "Charged only for what's used. Rest released automatically.",
@@ -80,16 +83,63 @@ export function holdPlacedMessage(payment?: TaskPayment | null): HoldMessage | n
 }
 
 // The split comes from the server and only when it reconciles with the total;
-// nothing is added up here (S-05). No budget means the single number rather
-// than "— $19.50 time + $0.00 budget", which is noise pretending to be detail.
+// nothing is added up here (S-05).
+//
+//   promo             "$19.50 − $10.00 promo = $9.50 reserved"
+//   base on its own   "$32.50 reserved — $25.00 base + $7.50 time [+ $30.00 budget]"
+//                     (how a companionship task shows its $25 base)
+//   older backend     "$49.50 reserved — $19.50 time + $30.00 budget"
+//   no split          "$19.50 reserved"
+//
+// No budget means no budget clause rather than "+ $0.00 budget", which is
+// noise pretending to be detail; same for a task inside its included minutes.
 function holdBreakdown(payment: TaskPayment): string {
   const total = formatCost(payment.authorized_cents);
+  const promo = payment.promo_discount_cents ?? 0;
+  const pre = payment.pre_discount_cents ?? 0;
+  if (promo > 0 && pre > 0) {
+    return `${formatCost(pre)} − ${formatCost(promo)} promo = ${total} reserved`;
+  }
   const budget = payment.shopping_budget_cents ?? 0;
+  const base = payment.base_fee_cents ?? 0;
+  const minutes = payment.minutes_cost_cents ?? 0;
+  if (base > 0) {
+    const parts = [`${formatCost(base)} base`];
+    if (minutes > 0) parts.push(`${formatCost(minutes)} time`);
+    if (budget > 0) parts.push(`${formatCost(budget)} budget`);
+    return `${total} reserved — ${parts.join(" + ")}`;
+  }
   const time = payment.time_cost_cents ?? 0;
   if (budget > 0 && time > 0) {
     return `${total} reserved — ${formatCost(time)} time + ${formatCost(budget)} budget`;
   }
   return `${total} reserved`;
+}
+
+/**
+ * The post form's promo line, from the server quote: what the estimate was,
+ * what the code takes off, and what will actually be reserved. Null unless a
+ * discount applies. Mirrors app/src/lib/paymentCopy.js promoReservedLine.
+ */
+export function promoReservedLine(quote?: {
+  total_cents?: number;
+  promo_discount_cents?: number;
+  hold_cents?: number;
+} | null): string | null {
+  const discount = quote?.promo_discount_cents ?? 0;
+  if (!quote || discount <= 0 || quote.total_cents === undefined || quote.hold_cents === undefined) {
+    return null;
+  }
+  return `${formatCost(quote.total_cents)} − ${formatCost(discount)} promo = ${formatCost(quote.hold_cents)} reserved`;
+}
+
+/** On the live task's hold card: "Includes a $10.00 promo (WELCOME10)." Null
+ *  when the task was posted without one. */
+export function promoHoldNote(payment?: TaskPayment | null): string | null {
+  const discount = payment?.promo_discount_cents ?? 0;
+  if (!discount) return null;
+  const code = payment?.promo_code ? ` (${payment.promo_code})` : "";
+  return `Includes a ${formatCost(discount)} promo${code}.`;
 }
 
 /** Why a task is quoted more than usual. Null unless the evening rate applies;

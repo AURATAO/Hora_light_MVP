@@ -968,8 +968,10 @@ func earningsHandler(c *gin.Context) {
 		select po.task_id::text, coalesce(t.title,''), po.amount_cents, po.status, po.created_at,
 		       coalesce(p.time_cost_cents, 0), coalesce(p.shopping_receipt_cents, 0), po.bank_paid_at
 		  from public.payouts po
-		  join public.tasks t    on t.id = po.task_id
-		  join public.payments p on p.id = po.payment_id
+		  join public.tasks t         on t.id = po.task_id
+		  -- LEFT: a promo_subsidy row is the platform's own money and names no
+		  -- payment (payouts.funding). It is still the supporter's earnings.
+		  left join public.payments p on p.id = po.payment_id
 		 where po.supporter_id = $1::uuid
 		 order by po.created_at desc, po.id desc
 		 limit $2 offset $3

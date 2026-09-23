@@ -7,10 +7,12 @@ Authoritative version: `skills/constitution/STANDARDS.md` S-01, S-10, S-11.
 
 All reads and writes to Hora MVP tables (`users`, `profiles`, `tasks`,
 `worklogs`, `notifications`, `task_gps_pings`, `reviews`, `payments`,
-`stripe_webhook_events`, `extension_requests`) **MUST** go through the Go
-backend API. The last three are the money tables: a client-direct read of
-`payments` would expose charge history, and a client-direct write to
-`extension_requests` would be self-approval of a charge. Never use the Supabase JS client, PostgREST, or any
+`stripe_webhook_events`, `extension_requests`, `payouts`, `promo_codes`,
+`promo_redemptions`) **MUST** go through the Go backend API. Everything from
+`payments` on is a money table: a client-direct read of `payments` would
+expose charge history, a client-direct write to `extension_requests` would be
+self-approval of a charge, and a client-direct write to `promo_redemptions`
+would be a self-granted discount. Never use the Supabase JS client, PostgREST, or any
 direct database connection from client code for these tables.
 
 ### Rule 2 — Permitted direct Supabase calls from clients

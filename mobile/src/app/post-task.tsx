@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Platform, ScrollView, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { Check, ChevronLeft, CreditCard, Sparkles, X } from "lucide-react-native";
+import { Check, ChevronLeft, CreditCard, Sparkles, Tag, X } from "lucide-react-native";
 import { BetaNoticeSheet } from "../components/BetaNoticeSheet";
 import { CompanionshipPolicySheet } from "../components/CompanionshipPolicySheet";
 import {
@@ -15,7 +15,17 @@ import {
   type TaskFormState,
 } from "../components/TaskForm";
 import { Button, Card, Input, Pill, PressableScale, Screen, Skeleton } from "../components/ui";
-import { ApiError, createTask, getMe, getTask, parseTask, updateProfile } from "../lib/api";
+import {
+  ApiError,
+  createTask,
+  getMe,
+  getTask,
+  parseTask,
+  readPromoFailure,
+  updateProfile,
+  validatePromoCode,
+  type PromoValidation,
+} from "../lib/api";
 import { highBudgetWarning, holdPlacedMessage, surgeRateNote, type HoldMessage } from "../lib/payment-copy";
 import {
   completeCardAuthentication,
@@ -91,6 +101,16 @@ export default function PostTask() {
   // requester learns they need a card BEFORE filling in the form, and so that
   // beta users see nothing about payments at all while the flag is off.
   const [needsCard, setNeedsCard] = useState(false);
+
+  // The promo code. Typed here, checked with POST /promo/validate on Apply,
+  // and — once accepted — quoted by TaskForm's estimate and sent with the
+  // post, which re-checks it inside its transaction. Every refusal is the
+  // server's own sentence (invalid / expired / already used / not your first
+  // task), shown under the field.
+  const [promoInput, setPromoInput] = useState("");
+  const [promoApplied, setPromoApplied] = useState<PromoValidation | null>(null);
+  const [promoChecking, setPromoChecking] = useState(false);
+  const [promoError, setPromoError] = useState<string | null>(null);
 
   // "Post again": the source task's id, not its fields — the form fetches and
   // maps it here rather than having a whole Task serialized through navigation.
@@ -222,6 +242,36 @@ export default function PostTask() {
     }
   }
 
+  async function handleApplyPromo() {
+    const code = promoInput.trim();
+    if (!code) {
+      setPromoError("Type a promo code first.");
+      return;
+    }
+    setPromoChecking(true);
+    setPromoError(null);
+    try {
+      const accepted = await validatePromoCode(code);
+      setPromoApplied(accepted);
+      setPromoInput(accepted.code);
+    } catch (e) {
+      if (handleAuthError(e)) return;
+      setPromoApplied(null);
+      setPromoError(
+        readPromoFailure(e) ??
+          (e instanceof Error ? e.message : "We couldn't check that code just now. Try again.")
+      );
+    } finally {
+      setPromoChecking(false);
+    }
+  }
+
+  function handleRemovePromo() {
+    setPromoApplied(null);
+    setPromoInput("");
+    setPromoError(null);
+  }
+
   function handleFillManually() {
     setForm(emptyTaskForm(selectedCategory));
     setFieldErrors({});
@@ -252,10 +302,25 @@ export default function PostTask() {
     try {
       // The 201 carries the hold the server just placed, so the success screen
       // can name it without a refetch.
-      const posted = await createTask(taskFormToPayload(form, origin));
+      const posted = await createTask({
+        ...taskFormToPayload(form, origin),
+        promo_code: promoApplied?.code,
+      });
       finishPosted(posted?.payment ?? null);
     } catch (e) {
       if (handleAuthError(e)) return;
+
+      // The code stopped holding between Apply and the post — used on
+      // another device, expired, deactivated. Nothing was posted. The
+      // server's sentence goes under the field and the code comes off, so
+      // the next tap posts without it unless they apply another.
+      const promoFailure = readPromoFailure(e);
+      if (promoFailure) {
+        setPromoApplied(null);
+        setPromoError(promoFailure);
+        return;
+      }
+
       const failure = readPostFailure(e);
 
       // A bank that wants the cardholder present. The task already exists on
@@ -425,7 +490,12 @@ export default function PostTask() {
           </View>
         ) : (
           <View className="gap-4 pb-8">
-            <TaskForm form={form} onChange={setForm} errors={fieldErrors} />
+            <TaskForm
+              form={form}
+              onChange={setForm}
+              errors={fieldErrors}
+              promoCode={promoApplied?.code}
+            />
 
             {/* Both of these render nothing while PAYMENTS_ENFORCED is off,
                 which is every beta session today. */}
@@ -460,6 +530,47 @@ export default function PostTask() {
                 />
               </Card>
             ) : null}
+
+            {/* Optional, and quiet: one field and one button, below the form
+                and above the post. Applying re-quotes the estimate card above
+                with the discount line and "$19.50 − $10.00 promo = $9.50
+                reserved"; the post sends the code again and the server has the
+                last word. */}
+            <View>
+              <Text className="mb-1 text-caption text-muted">Promo code (optional)</Text>
+              <View className="flex-row items-start gap-2">
+                <View className="flex-1">
+                  <Input
+                    value={promoInput}
+                    onChangeText={(text) => {
+                      setPromoInput(text);
+                      if (promoError) setPromoError(null);
+                    }}
+                    placeholder="e.g. WELCOME10"
+                    autoCapitalize="characters"
+                    autoCorrect={false}
+                    editable={!promoApplied && !promoChecking}
+                    returnKeyType="done"
+                    onSubmitEditing={promoApplied ? undefined : handleApplyPromo}
+                    accessibilityLabel="Promo code"
+                  />
+                </View>
+                <Button
+                  label={promoApplied ? "Remove" : "Apply"}
+                  variant="secondary"
+                  onPress={promoApplied ? handleRemovePromo : handleApplyPromo}
+                  loading={promoChecking}
+                  className="min-w-[96px]"
+                />
+              </View>
+              {promoError ? <Text className="mt-1 text-caption text-danger">{promoError}</Text> : null}
+              {promoApplied && !promoError ? (
+                <View className="mt-1 flex-row items-center gap-2">
+                  <Tag color={color.brand} size={14} strokeWidth={size.iconStroke} />
+                  <Text className="text-caption text-brand">{promoApplied.message}</Text>
+                </View>
+              ) : null}
+            </View>
 
             {submitError ? <Text className="text-caption text-danger">{submitError}</Text> : null}
             <Button

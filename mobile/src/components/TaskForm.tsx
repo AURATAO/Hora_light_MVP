@@ -7,7 +7,7 @@ import { Button, Checkbox, Input, Pill, PressableScale } from "./ui";
 import { ApiError, estimateTaskCost, type CreateTaskPayload } from "../lib/api";
 import { DISABLED_CATEGORY_NOTICE, isCategoryDisabled } from "../lib/beta-notice";
 import { POST_CATEGORY_ORDER, getCategoryMeta } from "../lib/categories";
-import { highBudgetWarning, surgeRateNote } from "../lib/payment-copy";
+import { highBudgetWarning, promoReservedLine, surgeRateNote } from "../lib/payment-copy";
 import { formatCost, formatMinutes, formatScheduledAt, zeroSeconds } from "../lib/task-utils";
 import type { ParsedTask, Task, TaskCategory, TaskCreatedVia } from "../lib/types";
 
@@ -269,9 +269,16 @@ export interface TaskFormProps {
   form: TaskFormState;
   onChange: (update: (form: TaskFormState) => TaskFormState) => void;
   errors: TaskFormErrors;
+  /**
+   * A promo code the requester has applied (Post Task owns the field and the
+   * validation; this form only quotes it). The estimate is re-fetched with it
+   * and the card shows the discount and what will actually be reserved. Post
+   * only — the edit screen never passes one.
+   */
+  promoCode?: string;
 }
 
-export function TaskForm({ form, onChange, errors }: TaskFormProps) {
+export function TaskForm({ form, onChange, errors, promoCode }: TaskFormProps) {
   const router = useRouter();
 
   const [estimate, setEstimate] = useState<{
@@ -284,6 +291,12 @@ export function TaskForm({ form, onChange, errors }: TaskFormProps) {
     totalCents: number;
     surgeRate: boolean;
     highBudgetWarningCents: number;
+    /** The promo, from the server: absent unless a code was sent. */
+    promoCode?: string;
+    promoDiscountCents: number;
+    totalAfterPromoCents?: number;
+    holdCents?: number;
+    promoError?: string;
   } | null>(null);
 
   // Pre-submission price quote — server-computed (S-05), matching web's summary
@@ -315,6 +328,9 @@ export function TaskForm({ form, onChange, errors }: TaskFormProps) {
           // rate.
           is_immediate: form.isImmediate,
           scheduled_at: form.isImmediate ? "" : zeroSeconds(form.scheduledDate).toISOString(),
+          // Quoted the way the post will apply it; a refused code comes back
+          // as a sentence beside a still-correct quote.
+          promo_code: promoCode || undefined,
         });
         if (cancelled) return;
         setEstimate({
@@ -331,6 +347,11 @@ export function TaskForm({ form, onChange, errors }: TaskFormProps) {
           totalCents: result.total_cents,
           surgeRate: result.surge_rate ?? false,
           highBudgetWarningCents: result.high_budget_warning_cents ?? 0,
+          promoCode: result.promo_code,
+          promoDiscountCents: result.promo_discount_cents ?? 0,
+          totalAfterPromoCents: result.total_after_promo_cents,
+          holdCents: result.hold_cents,
+          promoError: result.promo_error,
         });
       } catch (e) {
         if (cancelled) return;
@@ -346,7 +367,7 @@ export function TaskForm({ form, onChange, errors }: TaskFormProps) {
       clearTimeout(id);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.category, form.estimatedMinutes, form.shoppingBudget]);
+  }, [form.category, form.estimatedMinutes, form.shoppingBudget, promoCode]);
 
   function updateLocation(id: number, text: string) {
     onChange((f) => ({ ...f, locations: f.locations.map((l) => (l.id === id ? { ...l, text } : l)) }));
@@ -568,10 +589,48 @@ export function TaskForm({ form, onChange, errors }: TaskFormProps) {
               <Text className="text-caption text-ink">{formatCost(estimate.shoppingCents)}</Text>
             </View>
           ) : null}
+          {/* THE PROMO, as the server quoted it: the line, then a total that
+              is the discounted one. Every number is the quote's own — the
+              undiscounted total, the applied discount (never more than that
+              total), and what will be reserved (S-05). */}
+          {estimate.promoDiscountCents > 0 ? (
+            <View className="flex-row justify-between">
+              <Text className="text-caption text-muted">
+                Promo{estimate.promoCode ? ` (${estimate.promoCode})` : ""}
+              </Text>
+              <Text className="text-caption text-ink">−{formatCost(estimate.promoDiscountCents)}</Text>
+            </View>
+          ) : null}
           <View className="mt-1 flex-row justify-between border-t border-line pt-1">
             <Text className="text-caption font-semibold text-ink">Total estimate</Text>
-            <Text className="text-caption font-semibold text-ink">{formatCost(estimate.totalCents)}</Text>
+            <Text className="text-caption font-semibold text-ink">
+              {formatCost(
+                estimate.promoDiscountCents > 0 && estimate.totalAfterPromoCents !== undefined
+                  ? estimate.totalAfterPromoCents
+                  : estimate.totalCents
+              )}
+            </Text>
           </View>
+          {promoReservedLine({
+            total_cents: estimate.totalCents,
+            promo_discount_cents: estimate.promoDiscountCents,
+            hold_cents: estimate.holdCents,
+          }) ? (
+            <Text className="text-caption text-ink">
+              {promoReservedLine({
+                total_cents: estimate.totalCents,
+                promo_discount_cents: estimate.promoDiscountCents,
+                hold_cents: estimate.holdCents,
+              })}
+            </Text>
+          ) : null}
+          {/* The server refused the code between Apply and this quote — it
+              expired, or was used on another device. The quote stands; the
+              discount does not, and the reader is told in the server's
+              sentence. */}
+          {estimate.promoError ? (
+            <Text className="text-caption text-danger">{estimate.promoError}</Text>
+          ) : null}
           {/* Why this task costs more than usual. The wording, the rate and the
               included block all come from the server quote. */}
           {surgeRateNote({
@@ -588,8 +647,9 @@ export function TaskForm({ form, onChange, errors }: TaskFormProps) {
             </Text>
           ) : null}
           <Text className="text-caption text-muted">
-            This exact amount is reserved on your card when you post. You&apos;re charged for
-            what&apos;s actually used.
+            {estimate.promoDiscountCents > 0
+              ? "The discounted amount is reserved on your card when you post. You're charged for what's actually used, less your promo."
+              : "This exact amount is reserved on your card when you post. You're charged for what's actually used."}
           </Text>
         </View>
       ) : null}

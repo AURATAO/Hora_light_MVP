@@ -87,6 +87,35 @@ type CreateNotificationInput struct {
 	MessagePreview     string
 	CompletionPhotoURL string
 	CompletionNote     string
+	// The itemized receipt, for Type == "RECEIPT". Rendered as a table by
+	// receiptEmail; the in-app row and the push carry Body, the one-line form.
+	Receipt *Receipt
+}
+
+// ReceiptLine is one row of the receipt table: what, and how much.
+type ReceiptLine struct {
+	Label  string
+	Amount string
+}
+
+// Receipt is everything the requester's receipt email says, already formatted
+// — every amount is a string built by the caller from integer cents, so this
+// package does no money arithmetic (S-05).
+type Receipt struct {
+	TaskTitle string
+	// The itemization: base fee, minutes × rate, reimbursement, promo.
+	Lines []ReceiptLine
+	// The mid-task asks the requester approved, as sentences. Informational —
+	// their effect is already in Lines.
+	Approvals []string
+	// What was taken, on which card. Two entries when a completion took two
+	// charges (the reserved amount and a balance).
+	Charges []ReceiptLine
+	// The sum of Charges.
+	Total string
+	// What Stripe released back to the card, when the hold was larger than
+	// the charge. Empty when nothing was.
+	Released string
 }
 
 func Create(ctx context.Context, in CreateNotificationInput) error {
@@ -156,9 +185,76 @@ func buildEmail(in CreateNotificationInput, taskURL string) string {
 		return taskReassignedEmail(in, taskURL)
 	case "SUPPORTER_ARRIVED":
 		return supporterArrivedEmail(in, taskURL)
+	case "RECEIPT":
+		return receiptEmail(in, taskURL)
 	default:
 		return defaultEmail(in, taskURL)
 	}
+}
+
+// receiptEmail is the itemized receipt: what the task cost, what was charged
+// and to which card, and what was released. Subject is in.Title ("Your HO:RA
+// receipt — $X"). Every value is HTML-escaped: the task title is user-typed.
+func receiptEmail(in CreateNotificationInput, taskURL string) string {
+	r := in.Receipt
+	if r == nil {
+		return defaultEmail(in, taskURL)
+	}
+	const labelStyle = `font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#555550;padding:6px 0;`
+	const amountStyle = `font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a16;padding:6px 0;text-align:right;white-space:nowrap;`
+	const totalLabelStyle = `font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;font-weight:600;color:#1a1a16;padding:10px 0 4px;border-top:1px solid #e0e0d8;`
+	const totalAmountStyle = `font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;font-weight:600;color:#1a1a16;padding:10px 0 4px;border-top:1px solid #e0e0d8;text-align:right;white-space:nowrap;`
+	const noteStyle = `margin:0 0 6px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;line-height:1.6;color:#888880;`
+
+	var rows strings.Builder
+	for _, l := range r.Lines {
+		fmt.Fprintf(&rows, `<tr><td style="%s">%s</td><td style="%s">%s</td></tr>`,
+			labelStyle, html.EscapeString(l.Label), amountStyle, html.EscapeString(l.Amount))
+	}
+	fmt.Fprintf(&rows, `<tr><td style="%s">Total charged</td><td style="%s">%s</td></tr>`,
+		totalLabelStyle, totalAmountStyle, html.EscapeString(r.Total))
+
+	var charges strings.Builder
+	for _, c := range r.Charges {
+		fmt.Fprintf(&charges, `<tr><td style="%s">%s</td><td style="%s">%s</td></tr>`,
+			labelStyle, html.EscapeString(c.Label), amountStyle, html.EscapeString(c.Amount))
+	}
+
+	var notes strings.Builder
+	for _, a := range r.Approvals {
+		fmt.Fprintf(&notes, `<p style="%s">%s</p>`, noteStyle, html.EscapeString(a))
+	}
+	if r.Released != "" {
+		fmt.Fprintf(&notes, `<p style="%s">%s of the amount reserved on your card has been released. Depending on your bank, it may take 1–7 days to disappear from your statement.</p>`,
+			noteStyle, html.EscapeString(r.Released))
+	}
+
+	card := fmt.Sprintf(`
+<table cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
+  <tr><td style="background:#e8f5e9;border-radius:20px;padding:5px 14px;">
+    <span style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;font-weight:600;color:#2e7d32;letter-spacing:0.06em;">RECEIPT</span>
+  </td></tr>
+</table>
+<h1 style="margin:0 0 12px;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:400;line-height:1.3;color:#1a1a16;">%s</h1>
+<p style="margin:0 0 24px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.65;color:#555550;">Here's what your task cost and what was charged.</p>
+<div style="background:#f4f4f0;border-radius:8px;padding:18px 20px;margin-bottom:16px;">
+  <p style="margin:0 0 10px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;">%s</p>
+  <table width="100%%" cellpadding="0" cellspacing="0">%s</table>
+</div>
+<div style="background:#f4f4f0;border-radius:8px;padding:18px 20px;margin-bottom:16px;">
+  <p style="margin:0 0 10px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:12px;color:#888880;text-transform:uppercase;letter-spacing:0.08em;">Charged to your card</p>
+  <table width="100%%" cellpadding="0" cellspacing="0">%s</table>
+</div>
+%s
+<table cellpadding="0" cellspacing="0" style="margin-top:12px;"><tr>
+  <td style="border-radius:8px;background:#1a1a16;">
+    <a href="%s" style="display:inline-block;padding:14px 28px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;font-weight:500;color:#f4f4f0;text-decoration:none;border-radius:8px;">View task &rarr;</a>
+  </td>
+</tr></table>`,
+		html.EscapeString(in.Title),
+		html.EscapeString(fallback(r.TaskTitle, "Your task")),
+		rows.String(), charges.String(), notes.String(), taskURL)
+	return wrapEmail(in.Title, card)
 }
 
 func wrapEmail(title, cardHTML string) string {

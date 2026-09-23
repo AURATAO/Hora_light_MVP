@@ -49,6 +49,18 @@ import (
 
 var errPaymentsDisabled = errors.New("payments disabled: STRIPE_SECRET_KEY not set")
 
+// The Stripe calls that move a requester's money, behind variables so the
+// settlement path can be tested against real rows without a network — the
+// same seam payments_bank_arrival.go uses for the payout leg. Production never
+// reassigns them.
+var stripeCreatePaymentIntent = func(params *stripe.PaymentIntentParams) (*stripe.PaymentIntent, error) {
+	return paymentintent.New(params)
+}
+
+var stripeCapturePaymentIntent = func(id string, params *stripe.PaymentIntentCaptureParams) (*stripe.PaymentIntent, error) {
+	return paymentintent.Capture(id, params)
+}
+
 // ErrPaymentsDisabled is the exported form for handlers that need to answer
 // 503 rather than 500 when Stripe is not configured.
 var ErrPaymentsDisabled = errPaymentsDisabled
@@ -163,6 +175,10 @@ type PreAuthInput struct {
 	// The rate resolved at post and stored on the task. Passed in rather than
 	// read here so the hold and the task row cannot disagree about it.
 	RateCents int
+	// A promo code's discount, off the hold. Zero for nearly every task. The
+	// snapshot on the redemption row, passed in by the post path that just
+	// wrote it, so the hold and the redemption cannot disagree either.
+	PromoDiscountCents int
 
 	// Stripe identifiers for the saved card. Both optional in test mode: with
 	// neither, the intent is created unconfirmed and a client secret is
@@ -185,7 +201,26 @@ func CreatePreAuth(ctx context.Context, in PreAuthInput) (*Payment, error) {
 		return nil, errors.New("payments: task_id and requester_id are required")
 	}
 
-	amount := preAuthAmountCents(in.Category, in.EstimatedMinutes, in.ShoppingBudgetCents, in.RateCents)
+	amount := preAuthAfterPromoCents(in.Category, in.EstimatedMinutes, in.ShoppingBudgetCents,
+		in.RateCents, in.PromoDiscountCents)
+
+	// A ZERO HOLD. A promo can take the hold below what Stripe will authorize
+	// at all (its $0.50 minimum), most often to exactly $0. Nothing is asked of
+	// the card, but the row is still written — 'authorized' for $0, with no
+	// intent — so that every later path finds a live payment where it expects
+	// one: Capture takes $0 from it, and whatever the task settles for above
+	// the discount is collected at completion as a balance charge against the
+	// saved card, exactly as an overrun is. A task with no row would settle as
+	// "never charged" and the overrun would be lost.
+	if amount < stripeMinimumChargeCents {
+		p, err := insertPayment(ctx, in.TaskID, in.RequesterID, paymentKindTaskPayment, paymentStatusAuthorized, 0)
+		if err != nil {
+			return nil, fmt.Errorf("payments: record zero hold: %w", err)
+		}
+		log.Printf("[payments] pre-auth task=%s payment=%s: promo discount %s covers the %s hold — nothing authorized",
+			in.TaskID, p.ID, formatCentsUSD(in.PromoDiscountCents), formatCentsUSD(amount))
+		return p, nil
+	}
 
 	// The row is written BEFORE the Stripe call, in requires_auth. If the
 	// process dies mid-call there is a local record of an intent that may
@@ -238,7 +273,7 @@ func CreatePreAuth(ctx context.Context, in PreAuthInput) (*Payment, error) {
 		params.OffSession = stripe.Bool(true)
 	}
 
-	pi, err := paymentintent.New(params)
+	pi, err := stripeCreatePaymentIntent(params)
 	if err != nil {
 		// A confirm that needs 3DS comes back as an ERROR carrying a perfectly
 		// good PaymentIntent — the card is fine, it just wants the cardholder
@@ -296,14 +331,15 @@ func CreatePreAuth(ctx context.Context, in PreAuthInput) (*Payment, error) {
 }
 
 // Capture takes the final amount from an authorized hold: the time actually
-// worked plus the verified receipt. Whatever was held above that is released
-// by Stripe automatically — that is the "unused time is refunded" promise, and
-// it involves no refund.
+// worked plus the verified receipt, less any promo discount. Whatever was held
+// above that is released by Stripe automatically — that is the "unused time is
+// refunded" promise, and it involves no refund.
 //
-// timeCostCents must already be the settled figure from calcTaskCostCents;
-// this function does no pricing of its own, so there is exactly one place
-// where a task's cost is decided.
-func Capture(ctx context.Context, taskID string, timeCostCents, shoppingReceiptCents int) (*Payment, error) {
+// timeCostCents must already be the settled figure from calcTaskCostCents and
+// discountCents the task's redemption snapshot; this function does no pricing
+// of its own, so there is exactly one place where a task's cost is decided and
+// one where its discount comes from (promoDiscountForTask).
+func Capture(ctx context.Context, taskID string, timeCostCents, shoppingReceiptCents, discountCents int) (*Payment, error) {
 	if !paymentsEnabled() {
 		return nil, errPaymentsDisabled
 	}
@@ -318,7 +354,25 @@ func Capture(ctx context.Context, taskID string, timeCostCents, shoppingReceiptC
 		return nil, errors.New("payments: capture amounts cannot be negative")
 	}
 
-	total := timeCostCents + shoppingReceiptCents
+	total := afterPromo(timeCostCents+shoppingReceiptCents, discountCents)
+
+	// A zero hold (CreatePreAuth, promo branch): there is no intent and nothing
+	// to capture. Recorded as a $0 capture so the row reads 'captured' like any
+	// settled task's, and the caller's shortfall arithmetic collects the whole
+	// discounted total as a balance charge.
+	if p.StripePaymentIntentID == "" {
+		if err := recordCapture(ctx, p.ID, 0, timeCostCents, shoppingReceiptCents, ""); err != nil {
+			return nil, fmt.Errorf("payments: record zero capture: %w", err)
+		}
+		log.Printf("[payments] capture task=%s payment=%s: zero hold, %s to collect at completion",
+			taskID, p.ID, formatCentsUSD(total))
+		zero := 0
+		p.Status = paymentStatusCaptured
+		p.CapturedCents = &zero
+		p.TimeCostCents = &timeCostCents
+		p.ShoppingReceiptCents = &shoppingReceiptCents
+		return p, nil
+	}
 
 	// Stripe rejects a capture above the authorized amount, so a settlement
 	// that outgrew its hold has to be clamped — and loudly. Reaching this
@@ -351,7 +405,7 @@ func Capture(ctx context.Context, taskID string, timeCostCents, shoppingReceiptC
 	params.AddExpand("latest_charge")
 	params.SetIdempotencyKey("capture_" + p.ID)
 
-	pi, err := paymentintent.Capture(p.StripePaymentIntentID, params)
+	pi, err := stripeCapturePaymentIntent(p.StripePaymentIntentID, params)
 	if err != nil {
 		return nil, fmt.Errorf("payments: capture %s: %w", p.StripePaymentIntentID, err)
 	}

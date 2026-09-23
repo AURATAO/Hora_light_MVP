@@ -216,13 +216,19 @@ type preAuthContext struct {
 
 var errNoCardOnFile = errors.New("payments: requester has no saved card")
 
+// stripeDefaultPaymentMethodFor reads the customer's charging card from
+// Stripe. Behind a variable for the same reason the intent calls are
+// (payments.go): a settlement's balance charge resolves the card first, and a
+// test of that path needs no network. Production never reassigns it.
+var stripeDefaultPaymentMethodFor = defaultPaymentMethodFor
+
 // resolvePreAuthContext finds the requester's Customer and charging card.
 func resolvePreAuthContext(ctx context.Context, uid, email string) (preAuthContext, error) {
 	customerID, err := stripeCustomerFor(ctx, uid, email)
 	if err != nil {
 		return preAuthContext{}, err
 	}
-	pmID, err := defaultPaymentMethodFor(customerID)
+	pmID, err := stripeDefaultPaymentMethodFor(customerID)
 	if err != nil {
 		return preAuthContext{}, err
 	}
@@ -269,6 +275,9 @@ func promoteTaskToOpen(ctx context.Context, taskID, paymentID string) error {
 // link has to be cut from the task side first or the second statement trips
 // tasks_payment_id_fkey.
 func discardUnpaidTask(ctx context.Context, taskID string) {
+	// The code goes back first: the redemption references the task row this
+	// is about to delete, and a post that never happened did not use it.
+	releasePromoRedemption(ctx, taskID, "post_discarded")
 	if _, err := db.Exec(ctx, `
 		update public.tasks set payment_id = null
 		 where id = $1::uuid and status = $2

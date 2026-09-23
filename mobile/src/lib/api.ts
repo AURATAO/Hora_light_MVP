@@ -326,6 +326,13 @@ export interface CreateTaskPayload {
    * posted before this field existed already had.
    */
   auto_extend_consent?: boolean;
+  /**
+   * A promo code, applied at post. The server re-checks it inside the post
+   * transaction and answers 400 with a `promo_*` error code when it no longer
+   * holds (see readPromoFailure). Omitted on PATCH: a discount is a term of
+   * the post, not something an edit can add.
+   */
+  promo_code?: string;
 }
 
 export function createTask(payload: CreateTaskPayload): Promise<Task> {
@@ -340,6 +347,9 @@ export interface EstimateTaskCostPayload {
    *  property of when the task happens, not of when the form was opened. */
   is_immediate?: boolean;
   scheduled_at?: string;
+  /** A promo code to quote the discount for. The quote comes back with either
+   *  the discount fields or `promo_error`, never both. */
+  promo_code?: string;
 }
 
 export interface TaskCostEstimate {
@@ -364,6 +374,17 @@ export interface TaskCostEstimate {
   /** Where the post form starts warning about a large reservation. Server-owned
    *  so both clients warn at the same number (S-05). */
   high_budget_warning_cents?: number;
+  /** The promo, when one was sent and accepted: the code as stored, what it
+   *  takes off (never more than the total), and the total after it. `hold_cents`
+   *  is then the discounted figure; `total_cents` stays undiscounted. */
+  promo_code?: string;
+  promo_discount_cents?: number;
+  total_after_promo_cents?: number;
+  /** The refusal, when one was sent and refused: a sentence for the form, and
+   *  the code behind it (promo_invalid / promo_expired / promo_used /
+   *  promo_not_first_task / promo_exhausted). The quote itself is still right. */
+  promo_error?: string;
+  promo_error_code?: string;
 
   /**
    * @deprecated The pre-Phase-1 name for `shopping_budget_cents`. The backend
@@ -378,6 +399,41 @@ export interface TaskCostEstimate {
 // pre-submission estimate shown on the Post Task review screen.
 export function estimateTaskCost(payload: EstimateTaskCostPayload): Promise<TaskCostEstimate> {
   return apiFetch<TaskCostEstimate>("/tasks/estimate", { method: "POST", body: payload });
+}
+
+// ---- Promo codes ------------------------------------------------------------
+
+/** A code the server accepted for this requester, right now. Advisory: POST
+ *  /tasks re-checks inside its transaction, and the unique index has the last
+ *  word (server/promo.go). */
+export interface PromoValidation {
+  /** The code as stored — "WELCOME10" for a typed "welcome10". */
+  code: string;
+  amount_cents: number;
+  first_task_only: boolean;
+  /** "$10.00 off with WELCOME10." */
+  message: string;
+}
+
+/** POST /promo/validate. Throws ApiError(400) carrying `{error: "promo_*",
+ *  message}` on a refusal — read it with readPromoFailure. */
+export function validatePromoCode(code: string): Promise<PromoValidation> {
+  return apiFetch<PromoValidation>("/promo/validate", { method: "POST", body: { code } });
+}
+
+/**
+ * The sentence for a refused code, or null when the error was something
+ * else. Every refusal the server sends — invalid, expired, already used, not
+ * your first task, fully redeemed — comes with its own sentence, and this
+ * relays it rather than paraphrasing.
+ */
+export function readPromoFailure(e: unknown): string | null {
+  if (!(e instanceof ApiError) || e.status !== 400) return null;
+  const body = (e.body ?? {}) as { error?: unknown; message?: unknown };
+  if (typeof body.error !== "string" || !body.error.startsWith("promo_")) return null;
+  return typeof body.message === "string" && body.message
+    ? body.message
+    : "That promo code can't be used. Post without one.";
 }
 
 // ---- Payments (card on file) ----------------------------------------------
