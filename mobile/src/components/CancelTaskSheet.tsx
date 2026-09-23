@@ -130,14 +130,27 @@ export function CancelTaskSheet({
       {/* Lifts the sheet above the keyboard so the note field — and the primary
           button sitting below it — stay visible while typing. */}
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-        <Pressable className="flex-1 justify-end bg-ink/40" onPress={handleClose}>
+        <View className="flex-1 justify-end">
+          {/* The backdrop is its own layer, not a Pressable wrapping the sheet
+              (the NamePromptSheet pattern). A Pressable is `accessible` by
+              default, so wrapping the sheet in one collapsed the heading, the
+              countdown, every reason pill, the note field and both buttons
+              into a single VoiceOver element — a requester using a screen
+              reader could not pick a reason, and so could not cancel. As a
+              sibling it is one focusable "Close" control and every control
+              inside the sheet is its own. */}
           <Pressable
-            className="rounded-t-card bg-surface p-6 pb-8"
-            onPress={(e) => e.stopPropagation()}
-          >
+            className="absolute inset-0 bg-ink/40"
+            onPress={handleClose}
+            accessibilityRole="button"
+            accessibilityLabel="Close"
+          />
+          <View className="rounded-t-card bg-surface p-6 pb-8">
             {done ? (
               <>
-                <Text className="mb-1 text-title font-semibold text-ink">Task cancelled</Text>
+                <Text className="mb-1 text-title font-semibold text-ink" accessibilityRole="header">
+                  Task cancelled
+                </Text>
                 {/* What was charged, when anything was. Under the current
                     policy a cancelled task usually HAS a bill, and a
                     confirmation that mentions only the release would be
@@ -163,7 +176,9 @@ export function CancelTaskSheet({
               </>
             ) : (
               <>
-                <Text className="mb-1 text-title font-semibold text-ink">Cancel this task?</Text>
+                <Text className="mb-1 text-title font-semibold text-ink" accessibilityRole="header">
+                  Cancel this task?
+                </Text>
 
                 {/* THE LIVE COUNTDOWN. Inside the grace window this is the
                     whole message: the cancel is free right now and will not be
@@ -246,8 +261,8 @@ export function CancelTaskSheet({
                 </View>
               </>
             )}
-          </Pressable>
-        </Pressable>
+          </View>
+        </View>
       </KeyboardAvoidingView>
     </Modal>
   );
