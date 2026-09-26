@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { View, Text, ActivityIndicator, Alert } from "react-native";
 import { useRouter } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
@@ -10,6 +10,7 @@ import { apiFetch, reviewLogin, type SessionIdentity } from "../../lib/api";
 import { Screen, Input, PressableScale, Logo, Checkbox } from "../../components/ui";
 import { LEGAL_URLS } from "../../lib/constants";
 import { color } from "../../theme/tokens";
+import { RESEND_COOLDOWN_MS, resendLabel, resendSecondsLeft } from "../../lib/otp-resend";
 import { useAuthState } from "../_layout";
 
 WebBrowser.maybeCompleteAuthSession();
@@ -64,6 +65,17 @@ export default function Login() {
   // Consent is deliberately screen-local, not persisted: the user re-confirms
   // on every login, which is the standard pattern for this gate.
   const [consented, setConsented] = useState(false);
+  // When "Resend code" becomes tappable again (ms epoch); 0 = never sent.
+  // Ticked once a second only while a countdown is on screen.
+  const [resendReadyAt, setResendReadyAt] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
+  const resendWait = resendSecondsLeft(resendReadyAt, now);
+
+  useEffect(() => {
+    if (!codeSent || resendWait === 0) return undefined;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [codeSent, resendWait]);
 
   // Every login path converges here once the backend has set the hora_session
   // cookie. Routes through the root gate (index) rather than straight to the
@@ -139,7 +151,12 @@ export default function Login() {
     }
   }
 
+  // Sends (or re-sends) the code to the address in the field. A fresh send
+  // always clears whatever was typed in the code box: the old code is dead
+  // the moment a new one is issued, and six stale digits left in place is how
+  // "Invalid code" gets reported against a working address.
   async function handleSendCode() {
+    if (loadingSendCode) return;
     setError(null);
     setLoadingSendCode(true);
     try {
@@ -148,12 +165,26 @@ export default function Login() {
         options: { shouldCreateUser: true },
       });
       if (otpError) throw otpError;
+      setCode("");
       setCodeSent(true);
+      setResendReadyAt(Date.now() + RESEND_COOLDOWN_MS);
+      setNow(Date.now());
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not send code");
     } finally {
       setLoadingSendCode(false);
     }
+  }
+
+  // Back to the email step with the address still in the field and
+  // editable. Everything about the pending code goes — the digits, the
+  // cooldown, the error — because the next send may be for a different
+  // address and must not inherit a countdown that belonged to the old one.
+  function useDifferentEmail() {
+    setCode("");
+    setError(null);
+    setResendReadyAt(0);
+    setCodeSent(false);
   }
 
   async function handleVerifyCode() {
@@ -259,6 +290,39 @@ export default function Login() {
               <Text className="text-body font-semibold text-ink">Verify code</Text>
             )}
           </PressableScale>
+
+          {/* The two ways out of a code screen that used to have none: a
+              mistyped address goes back to an editable field, and a lost
+              email is re-sent to the same one behind a 30-second cooldown so
+              a tap-tap-tap does not get the address rate-limited. Text
+              actions, not a second solid button (DESIGN.md §1). */}
+          <View className="mt-4 flex-row items-center justify-between">
+            <PressableScale
+              onPress={useDifferentEmail}
+              disabled={loadingVerifyCode || loadingSendCode}
+              hitSlop={8}
+              className="min-h-11 justify-center"
+              accessibilityRole="button"
+              accessibilityLabel="Use a different email"
+            >
+              <Text className="text-caption font-semibold text-brand">Use a different email</Text>
+            </PressableScale>
+            <PressableScale
+              onPress={handleSendCode}
+              disabled={loadingSendCode || loadingVerifyCode || resendWait > 0}
+              hitSlop={8}
+              className="min-h-11 justify-center"
+              accessibilityRole="button"
+              accessibilityLabel={resendLabel(resendReadyAt, now)}
+              accessibilityLiveRegion="polite"
+            >
+              <Text
+                className={`text-caption font-semibold ${resendWait > 0 ? "text-muted" : "text-brand"}`}
+              >
+                {loadingSendCode ? "Sending…" : resendLabel(resendReadyAt, now)}
+              </Text>
+            </PressableScale>
+          </View>
         </>
       ) : (
         <>

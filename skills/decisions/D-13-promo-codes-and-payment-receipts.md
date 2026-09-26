@@ -1,7 +1,7 @@
 # D-13: Promo codes are requester-only discounts absorbed by the platform; receipts are sent from the settlement path that captures
 
 **Date:** 2026-09-23
-**Status:** Accepted
+**Status:** Accepted. Item 1's payout arithmetic is amended by D-14: since the 20% platform fee comes off the undiscounted service, the platform's promo subsidy is the NET remainder (the discount less the fee), not the whole discount.
 **Trigger:** Build 13 batch (App Store candidate polish): promo codes, itemized payment receipts, and the supporter deposit push. Tier 3 — migrations, the payments and payouts tables, and pricing-adjacent logic.
 
 ## Decision

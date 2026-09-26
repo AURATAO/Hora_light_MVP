@@ -183,10 +183,10 @@ func TestPhase3SmokeTransferIsFundedByItsCharge(t *testing.T) {
 	// And the real thing: transfer exactly what the charge is worth, which is
 	// what settlementPayouts would ask for on this settlement.
 	payout := payoutForTask(context.Background(), payoutInput{
-		TaskID:         taskID,
-		SupporterID:    supporterUID,
-		PaymentID:      captured.ID,
-		OwedCents:      capturedCents,
+		TaskID:      taskID,
+		SupporterID: supporterUID,
+		PaymentID:   captured.ID,
+		AmountCents: capturedCents, ServiceCents: capturedCents,
 		SourceChargeID: captured.StripeChargeID,
 	})
 	if payout == nil {
@@ -203,9 +203,11 @@ func TestPhase3SmokeTransferIsFundedByItsCharge(t *testing.T) {
 		t.Fatalf("read back transfer: %v", err)
 	}
 
-	// Beta takes nothing, so the supporter gets the whole captured amount.
+	// This input carried no fee (ServiceCents with no FeeCents), so the
+	// transfer is the whole captured amount — the fee arithmetic itself is
+	// pinned in platform_fee_test.go.
 	if int(tr.Amount) != capturedCents {
-		t.Errorf("transferred %s of a %s charge — beta takes no cut",
+		t.Errorf("transferred %s of a %s charge with no fee on the input",
 			formatCentsUSD(int(tr.Amount)), formatCentsUSD(capturedCents))
 	}
 	// The grouping, on both sides of the task's money.
@@ -227,7 +229,7 @@ func TestPhase3SmokeTransferIsFundedByItsCharge(t *testing.T) {
 	// path declines rather than just the index.
 	if again := payoutForTask(context.Background(), payoutInput{
 		TaskID: taskID, SupporterID: supporterUID, PaymentID: captured.ID,
-		OwedCents: capturedCents, SourceChargeID: captured.StripeChargeID,
+		AmountCents: capturedCents, ServiceCents: capturedCents, SourceChargeID: captured.StripeChargeID,
 	}); again != nil {
 		t.Errorf("a second settle produced payout %s — the supporter would be paid twice", again.ID)
 	}

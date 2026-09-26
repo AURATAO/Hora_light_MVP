@@ -121,11 +121,24 @@ type BillingConfig struct {
 	// estimate is noise, and one that fires at the ceiling is not a warning.
 	CapWarningLeadMinutes int
 
-	// Marketplace take, in basis points of the captured total. Zero during
-	// beta: supporters keep 100% of time cost and the full receipt amount.
-	// Parameterized now so Phase 3 turns it on with a config edit (Stripe
-	// destination charge application_fee_amount), not a formula change.
-	ApplicationFeeBasisPoints int
+	// The platform's commission, in basis points of a task's SERVICE revenue
+	// — base fee + billable minutes + any approved time extension. It is
+	// deducted from what the SUPPORTER is paid; the requester's price is the
+	// same schedule it always was, and no quote or receipt on their side
+	// mentions it.
+	//
+	// NEVER applied to a receipt reimbursement. That is the supporter's own
+	// money, fronted at the shop and paid back in full: commissioning it would
+	// be charging somebody for lending us their cash.
+	//
+	// Computed ONCE per task on the undiscounted service revenue (a promo is
+	// the requester's discount and the platform's cost, not the supporter's),
+	// rounded half up to the cent, and attributed to the first transfer that
+	// carries any service — see platformFeeCents and settlementPayouts in
+	// payments_payouts.go. With separate charges and transfers the fee is
+	// simply money not transferred; Stripe's application_fee_amount does not
+	// apply. Was ApplicationFeeBasisPoints = 0 through the beta (D-14).
+	PlatformFeeBps int
 
 	// ISO 4217, lowercase, as Stripe wants it. The product has always been
 	// single-currency and every amount in the codebase is integer USD cents;
@@ -160,7 +173,7 @@ var Billing = BillingConfig{
 	ApprovalTimeoutMinutes: 5,
 	CapWarningLeadMinutes:  5,
 
-	ApplicationFeeBasisPoints: 0, // beta: platform takes nothing
+	PlatformFeeBps: 2000, // 20% of service revenue; reimbursements untouched
 
 	Currency: "usd",
 }

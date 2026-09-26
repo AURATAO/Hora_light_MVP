@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { AuthAPI } from '../api/client.js'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useLoader } from '../providers/LoaderProvider.jsx'
+import { RESEND_COOLDOWN_MS, resendLabel, resendSecondsLeft } from '../lib/otpResend.js'
 
 export default function Login() {
   const [email, setEmail] = useState('')
@@ -10,6 +11,10 @@ export default function Login() {
   const [code, setCode] = useState('')
   const [loading, setLoading] = useState(false)
   const [checking, setChecking] = useState(true)
+  // When "Resend code" becomes tappable again (ms epoch); 0 = never sent.
+  // Ticked once a second while a countdown is showing, nowhere else.
+  const [resendReadyAt, setResendReadyAt] = useState(0)
+  const [now, setNow] = useState(() => Date.now())
   const { wrap } = useLoader()
   const [agree, setAgree] = useState(false);
 
@@ -39,21 +44,46 @@ export default function Login() {
     return () => { alive = false }
   }, [from, nav])
 
+  useEffect(() => {
+    if (step !== 'code' || resendSecondsLeft(resendReadyAt, now) === 0) return undefined
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [step, resendReadyAt, now])
+
   // 檢查中交給全域 Overlay，避免白底
   if (checking) return null
 
+  // Sends (or re-sends) the code to the address in the field. A fresh send
+  // always clears whatever was typed in the code box: the old code is dead
+  // the moment a new one is issued, and leaving six stale digits in place is
+  // how "Invalid code" gets reported against a working address.
   async function sendOtp() {
-    if (!email) return
+    if (!email || loading) return
     setLoading(true)
     try {
       await wrap(() => AuthAPI.requestOtp(email))
+      setCode('')
       setStep('code')
+      setResendReadyAt(Date.now() + RESEND_COOLDOWN_MS)
+      setNow(Date.now())
     } catch (e) {
       alert(e.message || 'Failed to send code')
     } finally {
       setLoading(false)
     }
   }
+
+  // Back to the email step with the address still in the field and
+  // editable. Everything about the pending code is discarded — the digits,
+  // the cooldown — because the next send is for a (possibly) different
+  // address and must not inherit a countdown that belonged to the old one.
+  function useDifferentEmail() {
+    setCode('')
+    setResendReadyAt(0)
+    setStep('email')
+  }
+
+  const resendWait = resendSecondsLeft(resendReadyAt, now)
 
   async function verifyOtp(e) {
     e.preventDefault()
@@ -120,62 +150,85 @@ export default function Login() {
 
         <div className="my-6 h-px bg-slate-200" />
 
-        {step !== 'idle' && (
-          <div className="space-y-3">
+        {step === 'email' && (
+          <form
+            className="space-y-3"
+            onSubmit={e => { e.preventDefault(); sendOtp() }}
+          >
             <label className="block text-sm text-slate-600">
               Email
               <input
                 type="email"
+                autoFocus
                 value={email}
                 onChange={e => setEmail(e.target.value)}
                 placeholder="you@example.com"
                 className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-900 placeholder-slate-400 outline-none focus:ring-2 focus:ring-slate-900/10"
               />
             </label>
+            <button
+              type="submit"
+              disabled={loading || !email}
+              className="w-full rounded-lg bg-slate-900 text-white py-2.5 disabled:opacity-50"
+            >
+              {loading ? 'Sending…' : 'Send code'}
+            </button>
+          </form>
+        )}
 
-            {step === 'email' && (
+        {step === 'code' && (
+          <form onSubmit={verifyOtp} className="space-y-3">
+            {/* The address the code went to, read-only here. It is edited by
+                going back — not in place — because a code is bound to the
+                address it was sent to, and an address changed underneath a
+                pending code can only produce "Invalid code". */}
+            <div className="text-sm text-slate-600">
+              Code sent to <span className="font-medium text-slate-900 break-all">{email}</span>
+            </div>
+            <label className="block text-sm text-slate-600">
+              6-digit code
+              <input
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={6}
+                autoFocus
+                value={code}
+                onChange={e => setCode(e.target.value.replace(/\D/g, ''))}
+                placeholder="123456"
+                className="mt-1 w-full tracking-[0.3em] text-center rounded-lg border border-slate-200 px-3 py-2"
+              />
+            </label>
+            <button
+              type="submit"
+              disabled={!code || code.length < 6 || loading}
+              className="w-full rounded-lg bg-slate-900 text-white py-2.5 disabled:opacity-50"
+            >
+              Verify & Continue
+            </button>
+            <div className="flex items-center justify-between text-sm">
+              {/* The way back for a mistyped address. Returns to the email
+                  step with the field pre-filled and editable. */}
               <button
-                onClick={sendOtp}
-                disabled={loading || !email}
-                className="w-full rounded-lg bg-slate-900 text-white py-2.5 disabled:opacity-50"
+                type="button"
+                onClick={useDifferentEmail}
+                disabled={loading}
+                className="text-slate-600 underline underline-offset-4 hover:text-slate-900 disabled:opacity-50"
               >
-                {loading ? 'Sending…' : 'Send code'}
+                Use a different email
               </button>
-            )}
-
-            {step === 'code' && (
-              <form onSubmit={verifyOtp} className="space-y-3">
-                <label className="block text-sm text-slate-600">
-                  6-digit code
-                  <input
-                    inputMode="numeric"
-                    pattern="[0-9]*"
-                    maxLength={6}
-                    value={code}
-                    onChange={e => setCode(e.target.value.replace(/\D/g, ''))}
-                    placeholder="123456"
-                    className="mt-1 w-full tracking-[0.3em] text-center rounded-lg border border-slate-200 px-3 py-2"
-                  />
-                </label>
-                <div className="flex gap-2">
-                  <button
-                    type="submit"
-                    disabled={!code || code.length < 6 || loading}
-                    className="flex-1 rounded-lg bg-slate-900 text-white py-2.5 disabled:opacity-50"
-                  >
-                    Verify & Continue
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setStep('email')}
-                    className="px-4 rounded-lg border border-slate-200 text-slate-600"
-                  >
-                    Edit email
-                  </button>
-                </div>
-              </form>
-            )}
-          </div>
+              {/* Re-sends to the SAME address, behind a 30-second cooldown so
+                  a tap-tap-tap does not get the address rate-limited. */}
+              <button
+                type="button"
+                onClick={sendOtp}
+                disabled={loading || resendWait > 0}
+                aria-live="polite"
+                className="text-slate-600 underline underline-offset-4 hover:text-slate-900 disabled:opacity-50 disabled:no-underline"
+              >
+                {resendLabel(resendReadyAt, now)}
+              </button>
+            </div>
+          </form>
         )}
 
         <div className="flex items-center mb-4">

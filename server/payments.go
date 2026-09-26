@@ -389,17 +389,18 @@ func Capture(ctx context.Context, taskID string, timeCostCents, shoppingReceiptC
 		AmountToCapture: stripe.Int64(int64(total)),
 	}
 	// NO ApplicationFeeAmount, and this is a correction rather than an
-	// omission. Phase 1 set it here from Billing.ApplicationFeeBasisPoints on
-	// the assumption that Phase 3 would use destination charges. It does not:
+	// omission. Phase 1 set it here from the fee basis points (now
+	// Billing.PlatformFeeBps) on the assumption that Phase 3 would use
+	// destination charges. It does not:
 	// the hold is placed at POST, when no supporter has accepted and there is
 	// therefore nobody to name as the destination, so Phase 3 uses separate
 	// charges and transfers. On that model application_fee_amount is invalid —
 	// Stripe only accepts it when the charge itself is attached to a connected
 	// account — and a capture carrying it would have been REJECTED the moment
-	// somebody set the basis points above zero. The platform's cut is now
-	// taken the only way this model allows: by transferring less than was
-	// captured, in platformCutCents (payments_payouts.go). Zero during beta
-	// either way, which is why nothing has noticed until now.
+	// somebody set the basis points above zero. The platform's fee is taken
+	// the only way this model allows: by transferring less than was captured
+	// — settlementPayouts (payments_payouts.go) keeps 20% of the service
+	// revenue and passes the reimbursement through whole.
 	//
 	// The charge, because Phase 3's transfer needs it as source_transaction.
 	params.AddExpand("latest_charge")

@@ -170,6 +170,19 @@ type Task struct {
 	// getTask, so it is absent from list responses rather than false there.
 	AutoExtendConsent *bool `json:"auto_extend_consent,omitempty"`
 
+	// What the supporter handed in at completion: the proof-of-work photo,
+	// their note, and when. Selected only by getTask, on a completed task,
+	// for whoever passed its read check — the requester who paid for the
+	// work, the supporter who did it, ops. Both clients had typed these
+	// fields and rendered a "Completion" card from them for months; no
+	// handler ever sent them, so the card only ever showed the note's absence.
+	//
+	// The photo is a SIGNED link (task_photos.go): the bucket is private, and
+	// the link is minted behind the same check as the rest of this payload.
+	CompletionPhotoURL *string    `json:"completion_photo_url,omitempty"`
+	CompletionNote     *string    `json:"completion_note,omitempty"`
+	CompletedAt        *time.Time `json:"completed_at,omitempty"`
+
 	// When the assigned supporter tapped "On my way" — the pre-clock-in live
 	// sharing window (server/live_tracking.go). Selected only by getTask, so
 	// like AutoExtendConsent it is absent from list responses rather than null
@@ -2321,6 +2334,26 @@ func getTask(c *gin.Context) {
 		}
 	}
 
+	// The completion artefacts, for everybody who reached this line on a
+	// completed task (the read check above has already run). The receipt
+	// photo is NOT here: it belongs beside the reimbursement it justifies, in
+	// the settlement (getWorklogs), which is the one surface for money.
+	if t.Status == "completed" {
+		var photo, note *string
+		var completedAt *time.Time
+		if err := db.QueryRow(ctx,
+			`select nullif(completion_photo_url,''), nullif(completion_note,''), completed_at
+			   from public.tasks where id=$1::uuid`, id,
+		).Scan(&photo, &note, &completedAt); err == nil {
+			if photo != nil {
+				signed := signTaskPhotoURL(*photo, taskPhotoLinkTTL)
+				t.CompletionPhotoURL = &signed
+			}
+			t.CompletionNote = note
+			t.CompletedAt = completedAt
+		}
+	}
+
 	if t.Status == "removed" {
 		// Read separately instead of widening every task SELECT: only the
 		// detail screen needs the reason, and removal_note stays server-side.
@@ -3500,8 +3533,12 @@ func getWorklogs(c *gin.Context) {
 	// The receipt photo is the requester's evidence of what their money bought,
 	// and the supporter's own upload — both parties see it. Nobody else reaches
 	// this handler.
+	//
+	// SIGNED, not the stored URL: the bucket is private and this link is
+	// minted inside the ownership check above, so the photo carries exactly
+	// the authorization the rest of this payload does (task_photos.go).
 	if inputs.ReceiptPhotoURL != "" {
-		settlement["receipt_photo_url"] = inputs.ReceiptPhotoURL
+		settlement["receipt_photo_url"] = signTaskPhotoURL(inputs.ReceiptPhotoURL, taskPhotoLinkTTL)
 	}
 
 	// THE PROMO, on the requester's copy only. `cost` and `total_cents` above
@@ -3613,17 +3650,28 @@ func settlementState(ctx context.Context, taskID, taskStatus string) string {
 // nothing up, so "You earned $19.50 (time) + $12.40 (reimbursement)" cannot
 // disagree with what was actually transferred.
 type SupporterEarnings struct {
-	// The time half: base fee plus billable minutes at the task's resolved
-	// rate. What the supporter is paid for their hours.
+	// The service half AFTER the platform fee: base fee plus billable minutes
+	// at the task's resolved rate, less PlatformFeeCents. What the supporter
+	// is paid for their hours. Net rather than gross so that the two halves
+	// still add up to TotalCents on a client that only knows these two
+	// numbers — an older build must never render a sum that disagrees with
+	// the total beside it.
 	TimeCents int `json:"time_cents"`
 	// The receipt half: money they fronted, coming back. NOT earnings in any
 	// meaningful sense, which is exactly why it is a separate number — a
 	// supporter who sees one total for a shopping task cannot tell what they
-	// actually made from what they are being handed back.
+	// actually made from what they are being handed back. NEVER commissioned.
 	ReimbursementCents int `json:"reimbursement_cents"`
-	// The sum, net of the platform cut. Zero cut during beta, so today it is
-	// simply time + reimbursement.
+	// The sum: TimeCents + ReimbursementCents.
 	TotalCents int `json:"total_cents"`
+
+	// The fee, said out loud (D-14): what the service came to before it, how
+	// much was kept, and the rate, so the screen can read "$19.20 service
+	// (after 20% platform fee) + $12.40 reimbursement" with no client
+	// arithmetic (S-05).
+	ServiceGrossCents int `json:"service_gross_cents"`
+	PlatformFeeCents  int `json:"platform_fee_cents"`
+	PlatformFeeBps    int `json:"platform_fee_bps"`
 
 	// What actually happened to the transfer, when there is one.
 	//
@@ -3645,12 +3693,15 @@ type SupporterEarnings struct {
 // computing them from one value is what stops them drifting into a state where
 // the app tells two people different things about the same forty minutes.
 func supporterEarningsView(ctx context.Context, taskID, supporterID string, cost TaskQuote) SupporterEarnings {
+	pay := supporterPayFor(cost.BaseFeeCents+cost.TimeCostCents, cost.ShoppingReceiptCents)
 	e := SupporterEarnings{
-		TimeCents:          cost.BaseFeeCents + cost.TimeCostCents,
-		ReimbursementCents: cost.ShoppingReceiptCents,
+		TimeCents:          pay.ServiceNetCents(),
+		ReimbursementCents: pay.ReimbursementCents,
+		TotalCents:         pay.NetCents(),
+		ServiceGrossCents:  pay.ServiceCents,
+		PlatformFeeCents:   pay.FeeCents,
+		PlatformFeeBps:     Billing.PlatformFeeBps,
 	}
-	gross := e.TimeCents + e.ReimbursementCents
-	e.TotalCents = gross - platformCutCents(gross)
 
 	// The transfer, if one exists. A task may have two payout rows (the hold
 	// and a completion balance), so the worst status wins: 'failed' if
@@ -3737,7 +3788,7 @@ func uploadTaskCompletionPhoto(c *gin.Context) {
 		ext = ".jpg"
 	}
 	key := fmt.Sprintf("completions/%s/%d%s", taskID, time.Now().Unix(), ext)
-	const bucket = "task-completions"
+	const bucket = taskPhotoBucket
 
 	base := strings.TrimSuffix(os.Getenv("SUPABASE_PROJECT_URL"), "/")
 	serviceKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -3784,10 +3835,17 @@ func uploadTaskCompletionPhoto(c *gin.Context) {
 	}
 	log.Printf("[completion-photo][upload][OK] key=%s status=%d", key, resp.StatusCode)
 
+	// `url` is the CANONICAL reference the client sends back on completion
+	// and the database stores; it does not load from a private bucket.
+	// `signed_url` is the same object as a link the client can preview
+	// right now (task_photos.go).
 	publicURL := fmt.Sprintf("%s/storage/v1/object/public/%s/%s", base, bucket, key)
 	log.Printf("[completion-photo] task=%s url=%s", taskID, publicURL)
 
-	c.JSON(http.StatusOK, gin.H{"url": publicURL})
+	c.JSON(http.StatusOK, gin.H{
+		"url":        publicURL,
+		"signed_url": signTaskPhotoURL(publicURL, taskPhotoLinkTTL),
+	})
 }
 
 // Completion rules:
@@ -3889,7 +3947,11 @@ func completeTask(c *gin.Context) {
 	if body.ReceiptAmountCents != nil {
 		receiptCents = *body.ReceiptAmountCents
 	}
-	receiptPhotoURL := strings.TrimSpace(body.ReceiptPhotoURL)
+	// Stored in canonical form: a client that echoes back the signed link it
+	// was shown (or the upload response's) must not land a token in a column
+	// (task_photos.go).
+	receiptPhotoURL := canonicalTaskPhotoURL(body.ReceiptPhotoURL)
+	completionPhotoURL := canonicalTaskPhotoURL(body.CompletionPhotoURL)
 	if receiptCents < 0 {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   "invalid_receipt_amount",
@@ -3942,8 +4004,11 @@ func completeTask(c *gin.Context) {
 	totalCents := timeCostCents + reimbursedCents
 
 	completeTotalStr := formatMinutes(totalMin)
-	// The supporter's figure: undiscounted. The requester's is below.
-	completeCostStr := formatCentsUSD(totalCents)
+	// The supporter's figure: undiscounted, and NET of the platform fee —
+	// what will actually reach them, with the breakdown in the body so the
+	// deduction is never silent (D-14). The requester's is below.
+	supporterPay := supporterPayFor(timeCostCents, reimbursedCents)
+	completeCostStr := formatCentsUSD(supporterPay.NetCents())
 	// What the REQUESTER pays: the same, less any promo discount (promo.go).
 	_, promoDiscount := promoDiscountForTask(ctx, taskID)
 	requesterCostStr := formatCentsUSD(afterPromo(totalCents, promoDiscount))
@@ -3953,7 +4018,7 @@ func completeTask(c *gin.Context) {
 		SET status='completed', completion_photo_url=$2, completion_note=$3, completed_at=now(),
 		    receipt_amount_cents=$4, receipt_photo_url=nullif($5,'')
 		WHERE id = $1::uuid`,
-		taskID, body.CompletionPhotoURL, body.CompletionNote,
+		taskID, completionPhotoURL, body.CompletionNote,
 		body.ReceiptAmountCents, receiptPhotoURL); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
@@ -3971,25 +4036,31 @@ func completeTask(c *gin.Context) {
 
 	// Email requester: summary with time logged + final cost
 	notifyRequesterRich(c, notify.CreateNotificationInput{
-		TaskID:             taskID,
-		Type:               "COMPLETED",
-		Title:              "Your task has been completed",
-		Body:               "Everything is done. Please leave a rating when you have a moment.",
-		SupporterName:      resolveDisplayName(ctx, assigneeEmail),
-		TaskTitle:          completeTaskTitle,
-		TotalLogged:        completeTotalStr,
-		FinalCost:          requesterCostStr,
-		CompletionPhotoURL: body.CompletionPhotoURL,
+		TaskID:        taskID,
+		Type:          "COMPLETED",
+		Title:         "Your task has been completed",
+		Body:          "Everything is done. Please leave a rating when you have a moment.",
+		SupporterName: resolveDisplayName(ctx, assigneeEmail),
+		TaskTitle:     completeTaskTitle,
+		TotalLogged:   completeTotalStr,
+		FinalCost:     requesterCostStr,
+		// A long-lived signed link: the email may be opened days later, and
+		// it is bounded either way (task_photos.go).
+		CompletionPhotoURL: signTaskPhotoURL(completionPhotoURL, taskPhotoEmailTTL),
 		CompletionNote:     body.CompletionNote,
 	})
 	// TODO: WhatsApp notification here
 
 	// Email supporter: confirmation with time logged + earnings
+	supporterBody := fmt.Sprintf("The task has been marked complete. Time logged: %s.", completeTotalStr)
+	if line := payoutBreakdownLine(supporterPay.ServiceCents, supporterPay.FeeCents, supporterPay.ReimbursementCents); line != "" {
+		supporterBody += fmt.Sprintf(" You earned %s — %s.", completeCostStr, line)
+	}
 	notifyAssignee(c, notify.CreateNotificationInput{
 		TaskID:      taskID,
 		Type:        "COMPLETED_SUPPORTER",
 		Title:       "Task marked complete — great work!",
-		Body:        fmt.Sprintf("The task has been marked complete. Time logged: %s", completeTotalStr),
+		Body:        supporterBody,
 		TaskTitle:   completeTaskTitle,
 		TotalLogged: completeTotalStr,
 		FinalCost:   completeCostStr,

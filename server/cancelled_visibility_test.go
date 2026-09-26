@@ -105,11 +105,13 @@ func TestCancelledVisibilityOpensToAReadOnlyDetail(t *testing.T) {
 		wantEarned  int
 	}{
 		// $12.00 base + 25 billable x $0.50.
-		{"worked a session", 40, 2450},
+		// $24.50 of service nets $19.60 after the 20% platform fee (D-14).
+		{"worked a session", 40, 1960},
 		// Paid the guarantee, no worklog at all — and no assignment either,
 		// since the cancel detached them. Two of the three ways this handler
 		// knows somebody is a party to a task are gone.
-		{"never clocked in", 0, 1200},
+		// The $12.00 base fee is service too: $9.60 after the fee.
+		{"never clocked in", 0, 960},
 	}
 
 	for _, tc := range cases {

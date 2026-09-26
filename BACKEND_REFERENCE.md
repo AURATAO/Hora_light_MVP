@@ -644,9 +644,16 @@ Auto-extend consent (cap **+15 min**) is captured at post as
 
 ### 4. Payouts (Phase 3)
 
-Destination charge. During beta the supporter receives **100%** of time cost
-and the full receipt amount; `application_fee_amount` is parameterized via
-`BillingConfig.ApplicationFeeBasisPoints`, **0 for now**.
+Separate charges and transfers (the hold is placed at post, before there is a
+supporter to name). The platform keeps **20% of service revenue** — base fee +
+billable minutes + approved extensions — via `BillingConfig.PlatformFeeBps =
+2000`, deducted from the supporter's transfer; a receipt reimbursement is
+transferred **in full**, never commissioned. The fee is computed once per
+task on the undiscounted service, round half up, and recorded on the payouts
+row (`service_cents`, `fee_cents`, `reimbursement_cents`, `fee_bps`, CHECK
+`payouts_breakdown_reconciles`). Rows paid before 2026-09-26 carry a NULL
+breakdown and were paid at 100%. Stripe's `application_fee_amount` does not
+apply on this model; the fee is simply money not transferred. See D-14.
 
 ### 5. Where it lives
 
@@ -1265,7 +1272,7 @@ and never the word *refund*.
 | `GracePeriodMinutes` | 30 |
 | `ApprovalTimeoutMinutes` | 5 |
 | `CapWarningLeadMinutes` | 5 |
-| `ApplicationFeeBasisPoints` | 0 |
+| `PlatformFeeBps` | 2000 (20% of service revenue; reimbursements exempt) |
 | `Currency` | `usd` |
 
 **Removed:** `PreAuthMultiplier`, `PreAuthBufferCents`, `ShoppingBudgetCapCents`.

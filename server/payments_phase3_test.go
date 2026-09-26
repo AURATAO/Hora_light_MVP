@@ -55,7 +55,12 @@ import (
 // THAT CHARGE. So an overrunning task pays out across two transfers, one per
 // charge, and a task whose balance charge failed pays out short with the gap
 // recorded rather than quietly transferred out of platform float.
+//
+// Run with the fee OFF so the cases read as the plain integer relationships
+// they are; the fee's own arithmetic, and how it lands on these same splits,
+// is pinned in platform_fee_test.go.
 func TestPhase3SettlementPayoutSplit(t *testing.T) {
+	withPlatformFeeBps(t, 0)
 	cases := []struct {
 		name string
 		// What the supporter is owed: time cost + reimbursed receipt.
@@ -71,18 +76,18 @@ func TestPhase3SettlementPayoutSplit(t *testing.T) {
 		// the difference by itself, one transfer carries the whole thing.
 		{
 			"settled inside the hold", 2450, 4950, 0,
-			[]payoutSplit{{payoutSourceHold, 2450, 0}},
+			[]payoutSplit{{Source: payoutSourceHold, ServiceCents: 2450}},
 		},
 		// Exactly at the hold. No remainder, still one transfer.
 		{
 			"settled exactly at the hold", 4950, 4950, 0,
-			[]payoutSplit{{payoutSourceHold, 4950, 0}},
+			[]payoutSplit{{Source: payoutSourceHold, ServiceCents: 4950}},
 		},
 		// Overran, and the requester's card paid the difference. TWO
 		// transfers, because the first cannot exceed the charge funding it.
 		{
 			"overran, balance collected", 6000, 4950, 1050,
-			[]payoutSplit{{payoutSourceHold, 4950, 0}, {payoutSourceBalance, 1050, 0}},
+			[]payoutSplit{{Source: payoutSourceHold, ServiceCents: 4950}, {Source: payoutSourceBalance, ServiceCents: 1050}},
 		},
 		// Overran and the balance charge was DECLINED. The supporter gets what
 		// was actually collected; the $10.50 gap is stamped on the row. This
@@ -91,13 +96,13 @@ func TestPhase3SettlementPayoutSplit(t *testing.T) {
 		// collected.
 		{
 			"overran, balance failed — short, and flagged", 6000, 4950, 0,
-			[]payoutSplit{{payoutSourceHold, 4950, 1050}},
+			[]payoutSplit{{Source: payoutSourceHold, ServiceCents: 4950, ShortfallCents: 1050}},
 		},
 		// The balance charge partially landed. Vanishingly rare, but the
 		// arithmetic must not produce a negative or a double-count.
 		{
 			"overran, balance partly collected", 6000, 4950, 600,
-			[]payoutSplit{{payoutSourceHold, 4950, 450}, {payoutSourceBalance, 600, 0}},
+			[]payoutSplit{{Source: payoutSourceHold, ServiceCents: 4950, ShortfallCents: 450}, {Source: payoutSourceBalance, ServiceCents: 600}},
 		},
 		// Nothing captured: the capture itself failed. No transfer at all —
 		// there is no charge to fund one and no money to send.
@@ -110,7 +115,7 @@ func TestPhase3SettlementPayoutSplit(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// No promo on any of these rows; the subsidy cases are in
 			// TestPromoPayoutIsUndiscounted (promo_test.go).
-			got := settlementPayouts(tc.total, tc.mainCaptured, tc.balanceCaptured, 0)
+			got := settlementPayouts(supporterPayFor(tc.total, 0), tc.mainCaptured, tc.balanceCaptured, 0)
 			if len(got) != len(tc.want) {
 				t.Fatalf("got %d split(s) %+v, want %d %+v", len(got), got, len(tc.want), tc.want)
 			}
@@ -125,7 +130,7 @@ func TestPhase3SettlementPayoutSplit(t *testing.T) {
 			// money actually collected.
 			paid := 0
 			for _, s := range got {
-				paid += s.OwedCents
+				paid += s.AmountCents()
 			}
 			if paid > tc.total {
 				t.Errorf("paid %s on a settlement of %s — the supporter was overpaid",
@@ -149,26 +154,12 @@ func TestPhase3SettlementPayoutSplit(t *testing.T) {
 	}
 }
 
-// The platform cut, which is zero during beta. Fixed against BillingConfig
-// rather than recomputed from it, so that turning it on fails here loudly
-// instead of silently agreeing with itself.
-func TestPhase3PlatformCutIsZeroDuringBeta(t *testing.T) {
-	if Billing.ApplicationFeeBasisPoints != 0 {
-		t.Fatalf("beta takes nothing: ApplicationFeeBasisPoints = %d", Billing.ApplicationFeeBasisPoints)
-	}
-	if cut := platformCutCents(4950); cut != 0 {
-		t.Errorf("platform took %s from a $49.50 settlement during beta", formatCentsUSD(cut))
-	}
-
-	// And the shape it takes when it IS turned on, so the formula is pinned
-	// rather than only its current answer. 250bp of $49.50 is $1.23 (integer
-	// division truncates in the supporter's favour, deliberately).
-	prev := Billing.ApplicationFeeBasisPoints
-	Billing.ApplicationFeeBasisPoints = 250
-	defer func() { Billing.ApplicationFeeBasisPoints = prev }()
-	if cut := platformCutCents(4950); cut != 123 {
-		t.Errorf("250bp of $49.50 = %s, want $1.23", formatCentsUSD(cut))
-	}
+// withPlatformFeeBps pins the rate for one test and restores it after.
+func withPlatformFeeBps(t *testing.T, bps int) {
+	t.Helper()
+	prev := Billing.PlatformFeeBps
+	Billing.PlatformFeeBps = bps
+	t.Cleanup(func() { Billing.PlatformFeeBps = prev })
 }
 
 // ── 2. Onboarding ──────────────────────────────────────────────────────────
@@ -434,7 +425,7 @@ func TestPhase3OnePayoutPerPaymentEver(t *testing.T) {
 	w := seedOpsWorld(t, "completed")
 	paymentID := seedCapturedPayment(t, w.taskID, w.requesterID, 2450, "ch_phase3_once")
 
-	in := payoutInput{TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID, OwedCents: 2450}
+	in := payoutInput{TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID, AmountCents: 2450, ServiceCents: 2450}
 	first, err := insertPayout(context.Background(), in, 2450)
 	if err != nil {
 		t.Fatalf("first payout: %v", err)
@@ -469,7 +460,7 @@ func TestPhase3ShortfallIsRecordedOnThePayout(t *testing.T) {
 
 	p, err := insertPayout(context.Background(), payoutInput{
 		TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID,
-		OwedCents: 4950, ShortfallCents: 1050,
+		AmountCents: 4950, ServiceCents: 4950, ShortfallCents: 1050,
 	}, 4950)
 	if err != nil {
 		t.Fatalf("payout: %v", err)
@@ -487,7 +478,7 @@ func TestPhase3ShortfallIsRecordedOnThePayout(t *testing.T) {
 	// itself the signal.
 	other := seedCapturedPayment(t, w.taskID, w.requesterID, 2450, "ch_phase3_clean")
 	clean, err := insertPayout(context.Background(), payoutInput{
-		TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: other, OwedCents: 2450,
+		TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: other, AmountCents: 2450, ServiceCents: 2450,
 	}, 2450)
 	if err != nil {
 		t.Fatalf("clean payout: %v", err)
@@ -508,7 +499,7 @@ func TestPhase3SupporterWithNoAccountIsReportedNotPaid(t *testing.T) {
 	withStripeConfigured(t)
 
 	got := payoutForTask(context.Background(), payoutInput{
-		TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID, OwedCents: 2450,
+		TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID, AmountCents: 2450, ServiceCents: 2450,
 	})
 	if got != nil {
 		t.Errorf("payout = %+v, want nil for a supporter with no account", got)
@@ -529,14 +520,14 @@ func TestPhase3FailedTransferIsRecordedAndAudited(t *testing.T) {
 	w := seedOpsWorld(t, "completed")
 	paymentID := seedCapturedPayment(t, w.taskID, w.requesterID, 2450, "ch_phase3_fail")
 	p, err := insertPayout(context.Background(), payoutInput{
-		TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID, OwedCents: 2450,
+		TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID, AmountCents: 2450, ServiceCents: 2450,
 	}, 2450)
 	if err != nil {
 		t.Fatalf("payout: %v", err)
 	}
 
 	markPayoutFailed(context.Background(), p, payoutInput{
-		TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID, OwedCents: 2450,
+		TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID, AmountCents: 2450, ServiceCents: 2450,
 	}, fmt.Errorf("account restricted"))
 
 	if got := payoutStatusOf(t, p.ID); got != payoutStatusFailed {
@@ -560,7 +551,7 @@ func TestPhase3AdminRetryRefusesWhatItMustNotResend(t *testing.T) {
 	t.Run("a payout that already has a transfer", func(t *testing.T) {
 		paymentID := seedCapturedPayment(t, w.taskID, w.requesterID, 2450, "ch_phase3_retry_done")
 		p, err := insertPayout(context.Background(), payoutInput{
-			TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID, OwedCents: 2450,
+			TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID, AmountCents: 2450, ServiceCents: 2450,
 		}, 2450)
 		if err != nil {
 			t.Fatalf("payout: %v", err)
@@ -583,7 +574,7 @@ func TestPhase3AdminRetryRefusesWhatItMustNotResend(t *testing.T) {
 	t.Run("a supporter with nowhere to send it", func(t *testing.T) {
 		paymentID := seedCapturedPayment(t, w.taskID, w.requesterID, 2450, "ch_phase3_retry_noacct")
 		p, err := insertPayout(context.Background(), payoutInput{
-			TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID, OwedCents: 2450,
+			TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID, AmountCents: 2450, ServiceCents: 2450,
 		}, 2450)
 		if err != nil {
 			t.Fatalf("payout: %v", err)
@@ -607,7 +598,7 @@ func TestPhase3AdminRetryRefusesWhatItMustNotResend(t *testing.T) {
 	t.Run("anybody who is not ops", func(t *testing.T) {
 		paymentID := seedCapturedPayment(t, w.taskID, w.requesterID, 2450, "ch_phase3_retry_authz")
 		p, err := insertPayout(context.Background(), payoutInput{
-			TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID, OwedCents: 2450,
+			TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID, AmountCents: 2450, ServiceCents: 2450,
 		}, 2450)
 		if err != nil {
 			t.Fatalf("payout: %v", err)
@@ -658,7 +649,7 @@ func TestPhase3RetryFailsClosedWithoutStripe(t *testing.T) {
 	w := seedOpsWorld(t, "completed")
 	paymentID := seedCapturedPayment(t, w.taskID, w.requesterID, 2450, "ch_phase3_attempts")
 	p, err := insertPayout(context.Background(), payoutInput{
-		TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID, OwedCents: 2450,
+		TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID, AmountCents: 2450, ServiceCents: 2450,
 	}, 2450)
 	if err != nil {
 		t.Fatalf("payout: %v", err)
@@ -707,15 +698,22 @@ func TestPhase3SupporterSeesTheirOwnCut(t *testing.T) {
 		t.Fatalf("the supporter cannot see what they earned: %v", settlement)
 	}
 
-	// base $12.00 + 30 billable x $0.50 = $27.00 time, $12.40 reimbursed.
-	if got := num(earned["time_cents"]); got != 2700 {
-		t.Errorf("time = %s, want $27.00", formatCentsUSD(got))
+	// base $12.00 + 30 billable x $0.50 = $27.00 of service, less the 20%
+	// platform fee = $21.60; $12.40 reimbursed in full (D-14).
+	if got := num(earned["time_cents"]); got != 2160 {
+		t.Errorf("time = %s, want $21.60 after the fee", formatCentsUSD(got))
+	}
+	if got := num(earned["service_gross_cents"]); got != 2700 {
+		t.Errorf("service gross = %s, want $27.00", formatCentsUSD(got))
+	}
+	if got := num(earned["platform_fee_cents"]); got != 540 {
+		t.Errorf("fee = %s, want $5.40", formatCentsUSD(got))
 	}
 	if got := num(earned["reimbursement_cents"]); got != 1240 {
 		t.Errorf("reimbursement = %s, want $12.40", formatCentsUSD(got))
 	}
-	if got := num(earned["total_cents"]); got != 3940 {
-		t.Errorf("total = %s, want $39.40", formatCentsUSD(got))
+	if got := num(earned["total_cents"]); got != 3400 {
+		t.Errorf("total = %s, want $34.00", formatCentsUSD(got))
 	}
 
 	// The two halves are separate numbers on purpose: a supporter who sees one
@@ -792,7 +790,7 @@ func TestPhase3EarningsCarryNoRequesterData(t *testing.T) {
 	                    card_brand = 'visa', card_last4 = '4242'
 	              where id = $1::uuid`, paymentID)
 	p, err := insertPayout(context.Background(), payoutInput{
-		TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID, OwedCents: 2450,
+		TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID, AmountCents: 2450, ServiceCents: 2450,
 	}, 2450)
 	if err != nil {
 		t.Fatalf("payout: %v", err)
@@ -809,7 +807,7 @@ func TestPhase3EarningsCarryNoRequesterData(t *testing.T) {
 	// statement is worth more than one that cannot be.
 	other := seedCapturedPayment(t, w.taskID, w.requesterID, 1000, "ch_phase3_pending")
 	if _, err := insertPayout(context.Background(), payoutInput{
-		TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: other, OwedCents: 1000,
+		TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: other, AmountCents: 1000, ServiceCents: 1000,
 	}, 1000); err != nil {
 		t.Fatalf("pending payout: %v", err)
 	}
@@ -1240,13 +1238,13 @@ func TestPhase3AdminRetryWaitsForTransfersCapability(t *testing.T) {
 	w := seedOpsWorld(t, "completed")
 	paymentID := seedCapturedPayment(t, w.taskID, w.requesterID, 1200, "ch_phase3_retry_caps")
 	p, err := insertPayout(context.Background(), payoutInput{
-		TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID, OwedCents: 1200,
+		TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID, AmountCents: 1200, ServiceCents: 1200,
 	}, 1200)
 	if err != nil {
 		t.Fatalf("payout: %v", err)
 	}
 	markPayoutFailed(context.Background(), p, payoutInput{
-		TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID, OwedCents: 1200,
+		TaskID: w.taskID, SupporterID: w.supporterID, PaymentID: paymentID, AmountCents: 1200, ServiceCents: 1200,
 	}, fmt.Errorf("insufficient_capabilities_for_transfer"))
 
 	const acctID = "acct_phase3_retry_caps"

@@ -279,6 +279,9 @@ type settlementOutcome struct {
 	// every task settled before Phase 3. Reported so the completion response
 	// can tell the supporter what they earned without a second lookup.
 	SupporterID string
+	// The platform fee kept out of the supporter's service revenue
+	// (supporterPayFor). Zero when nobody was paid.
+	PlatformFeeCents int
 
 	// The promo discount that came off the requester's charge (promo.go), and
 	// the payments rows the money moved through — what the receipt names.
@@ -396,12 +399,19 @@ func settleTaskPayment(ctx context.Context, taskID string, timeCostCents, receip
 		// What the platform owes the supporter on top of the requester's
 		// money: the promo discount, plus any remainder too small to charge.
 		subsidy := out.DiscountCents + waived
-		for _, split := range settlementPayouts(total, mainCaptured, balanceCaptured, subsidy) {
+		// The pay packet: the fee comes off the UNDISCOUNTED service, once,
+		// here; the reimbursement is passed through whole (D-14).
+		pay := supporterPayFor(timeCostCents, receiptCents)
+		out.PlatformFeeCents = pay.FeeCents
+		for _, split := range settlementPayouts(pay, mainCaptured, balanceCaptured, subsidy) {
 			in := payoutInput{
-				TaskID:         taskID,
-				SupporterID:    out.SupporterID,
-				OwedCents:      split.OwedCents,
-				ShortfallCents: split.ShortfallCents,
+				TaskID:             taskID,
+				SupporterID:        out.SupporterID,
+				AmountCents:        split.AmountCents(),
+				ServiceCents:       split.ServiceCents,
+				FeeCents:           split.FeeCents,
+				ReimbursementCents: split.ReimbursementCents,
+				ShortfallCents:     split.ShortfallCents,
 			}
 			switch split.Source {
 			case payoutSourceHold:
@@ -562,6 +572,7 @@ func settleCompletedTask(ctx context.Context, taskID, actorUID string, timeCostC
 			"receipt_cents":        receiptCents,
 			"promo_discount_cents": out.DiscountCents,
 			"captured_cents":       out.CapturedCents,
+			"platform_fee_cents":   out.PlatformFeeCents,
 		})
 		log.Printf("[payments][settle] task=%s captured=%s (time=%s receipt=%s discount=%s)",
 			taskID, formatCentsUSD(out.CapturedCents),

@@ -183,7 +183,11 @@ function unwrapPage(envelope: KeysetEnvelope<Task> | null | undefined): TaskPage
 }
 
 export interface UploadResponse {
+  /** The canonical reference: what `completeTask` sends back and the server
+   *  stores. It does not load from the (private) bucket on its own. */
   url: string;
+  /** The same object as a signed, short-lived link, for showing it now. */
+  signed_url?: string;
 }
 
 // ---- Auth -------------------------------------------------------------
@@ -998,8 +1002,12 @@ export interface EarningsTransfer {
   task_id: string;
   task_title: string;
   amount_cents: number;
+  /** Service AFTER the platform fee; adds up to amount_cents with receipt_cents. */
   time_cents: number;
   receipt_cents: number;
+  /** The fee, itemized (D-14). Both 0 on a transfer sent before the fee. */
+  service_gross_cents?: number;
+  platform_fee_cents?: number;
   /** Row status: paid means the TRANSFER happened, not that the bank has it. */
   status: "pending" | "paid" | "failed";
   created_at: string;
@@ -1017,6 +1025,8 @@ export interface Earnings {
   /** The split of lifetime_earned_cents by where it is. They add up. */
   paid_out_cents?: number;
   in_transit_cents?: number;
+  /** The platform fee rate in force, for the explainer line (S-05). */
+  platform_fee_bps?: number;
   transfers: EarningsTransfer[];
   /** How many transfers exist in total, so a preview showing three can say
    *  "See all (47)". Distinct from transfers.length, which is one page. */

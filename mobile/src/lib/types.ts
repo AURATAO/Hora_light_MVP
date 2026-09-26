@@ -432,12 +432,19 @@ export interface Settlement {
 
 /** A settled task's money, from the side of the person who did the work. */
 export interface SupporterEarnings {
-  /** Base fee + billable minutes. What they made. */
+  /** Base fee + billable minutes AFTER the platform fee. What they made. */
   time_cents: number;
-  /** Money they fronted, coming back. Separate on purpose — it is not income. */
+  /** Money they fronted, coming back. Separate on purpose — it is not income,
+   *  and it is never commissioned. */
   reimbursement_cents: number;
-  /** The sum, net of the platform cut (zero during beta). */
+  /** The sum: time_cents + reimbursement_cents. */
   total_cents: number;
+  /** The fee, itemized (D-14): the service before it, what was kept, and the
+   *  rate. Absent from an older backend, where time_cents was the whole
+   *  service figure and nothing was deducted. */
+  service_gross_cents?: number;
+  platform_fee_cents?: number;
+  platform_fee_bps?: number;
   /** Absent when no transfer exists yet: the figures above are what is OWED. */
   payout_status?: "pending" | "paid" | "failed";
 }
