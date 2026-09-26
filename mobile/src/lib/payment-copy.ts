@@ -148,9 +148,13 @@ export function surgeRateNote(quote?: {
   surge_rate?: boolean;
   per_minute_rate_cents?: number;
   included_minutes?: number;
+  surge_window?: string;
 } | null): string | null {
   if (!quote?.surge_rate) return null;
-  return `Evening rate: ${formatCost(quote.per_minute_rate_cents ?? 0)}/min after the first ${quote.included_minutes ?? 0} minutes.`;
+  // The window text is the server's (surge_window); the fallback is the
+  // shipped window for a backend that predates it.
+  const window = quote.surge_window || "9 PM–9 AM";
+  return `Evening & overnight rate: ${formatCost(quote.per_minute_rate_cents ?? 0)}/min after the first ${quote.included_minutes ?? 0} minutes (${window}).`;
 }
 
 /** The red notice when a lot of money is about to be reserved. The threshold

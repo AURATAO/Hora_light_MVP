@@ -39,11 +39,11 @@
  *   PerMinuteRateCents          50   $0.50/min
  *   BaseFeeCompanionshipCents 2500   $25 companionship
  *   SurgeRateCentsPerMin       100   $1.00/min
- *   SurgeStartHour              21   from 9 PM
+ *   SurgeStartHour / SurgeEndHour  21 / 9   9 PM–9 AM, wrapping midnight
  */
 export const PRICING_LINE =
   '$12 base fee includes the first 15 minutes, then $0.50/min ' +
-  '($25 base for companionship; $1.00/min for tasks starting after 9 PM)'
+  '($25 base for companionship; $1.00/min for tasks starting 9 PM–9 AM)'
 
 /**
  * How purchases are settled — and WHICH of the two sentences below is true
