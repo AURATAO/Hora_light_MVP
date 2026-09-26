@@ -81,7 +81,7 @@ const promoCodesMigrationPath = "../supabase/migrations/20260923104026_promo_cod
 
 // The platform fee: service_cents / fee_cents / reimbursement_cents / fee_bps
 // on payouts, with the CHECK that they reconcile to amount_cents (D-14).
-const platformFeeMigrationPath = "../supabase/migrations/20260926120000_payouts_platform_fee_breakdown.sql"
+const platformFeeMigrationPath = "../supabase/migrations/20260926145917_payouts_platform_fee_breakdown.sql"
 
 func setupStripeWebhookDB(t *testing.T) {
 	t.Helper()
