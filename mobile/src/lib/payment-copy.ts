@@ -153,7 +153,7 @@ export function surgeRateNote(quote?: {
   if (!quote?.surge_rate) return null;
   // The window text is the server's (surge_window); the fallback is the
   // shipped window for a backend that predates it.
-  const window = quote.surge_window || "9 PM–9 AM";
+  const window = quote.surge_window || "9 PM–8 AM";
   return `Evening & overnight rate: ${formatCost(quote.per_minute_rate_cents ?? 0)}/min after the first ${quote.included_minutes ?? 0} minutes (${window}).`;
 }
 
