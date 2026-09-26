@@ -52,8 +52,15 @@ type BillingConfig struct {
 	PerMinuteRateCents int
 	IncludedMinutes    int
 
-	// Evening surge. From SurgeStartHour local time in SurgeTimezone, minutes
-	// past the included block bill at SurgeRateCentsPerMin.
+	// Evening & overnight surge. A task whose scheduled start falls in the
+	// window [SurgeStartHour, SurgeEndHour) local time in SurgeTimezone —
+	// 21:00 through 08:59, wrapping midnight — bills minutes past the
+	// included block at SurgeRateCentsPerMin; a start from SurgeEndHour to
+	// the minute before SurgeStartHour bills at PerMinuteRateCents.
+	//
+	// The window WRAPS. It used to be "hour >= 21", which made a 02:00 start
+	// cheaper than a 21:30 one — the midnight gap. SurgeEndHour is exclusive:
+	// 08:59 is surge, 09:00 is standard.
 	//
 	// RESOLVED ONCE, AT POST, from the task's scheduled start, and stored on
 	// the task — never re-derived afterwards. A task starting at 20:50 bills
@@ -63,6 +70,7 @@ type BillingConfig struct {
 	// the seam a future weather or festival surge hangs off.
 	SurgeRateCentsPerMin int
 	SurgeStartHour       int
+	SurgeEndHour         int
 	SurgeTimezone        string
 
 	// Shopping. The requester approves a budget at post; the supporter fronts
@@ -157,8 +165,9 @@ var Billing = BillingConfig{
 	PerMinuteRateCents: 50, // $0.50/min, standard
 	IncludedMinutes:    15,
 
-	SurgeRateCentsPerMin: 100, // $1.00/min from 21:00 New York
+	SurgeRateCentsPerMin: 100, // $1.00/min for starts from 21:00 to 08:59 New York
 	SurgeStartHour:       21,
+	SurgeEndHour:         9, // exclusive: 09:00 is the first standard minute
 	SurgeTimezone:        "America/New_York",
 
 	OverageToleranceCents: 500, // $5.00 auto-approved over the approved budget
@@ -207,10 +216,45 @@ func resolveRateCentsPerMin(start time.Time) int {
 			Billing.SurgeTimezone, err)
 		return Billing.PerMinuteRateCents
 	}
-	if start.In(loc).Hour() >= Billing.SurgeStartHour {
+	if inSurgeWindow(start.In(loc).Hour()) {
 		return Billing.SurgeRateCentsPerMin
 	}
 	return Billing.PerMinuteRateCents
+}
+
+// inSurgeWindow is the range test on a local hour, wrapping midnight when the
+// window does: with 21 and 9 that is 21..23 and 0..8. A window that does not
+// wrap (say 18 to 22) is the plain range. Start == end is an empty window.
+func inSurgeWindow(hour int) bool {
+	from, to := Billing.SurgeStartHour, Billing.SurgeEndHour
+	if from == to {
+		return false
+	}
+	if from < to {
+		return hour >= from && hour < to
+	}
+	return hour >= from || hour < to
+}
+
+// surgeWindowLabel is the window as the clients print it — "9 PM–9 AM" — so
+// the sentence beside a quote is the server's, not a client's copy of the
+// config (S-05).
+func surgeWindowLabel() string {
+	return clockHourLabel(Billing.SurgeStartHour) + "–" + clockHourLabel(Billing.SurgeEndHour)
+}
+
+// clockHourLabel is "9 PM" for 21, "12 AM" for 0, "12 PM" for 12.
+func clockHourLabel(hour int) string {
+	hour = ((hour % 24) + 24) % 24
+	suffix := "AM"
+	if hour >= 12 {
+		suffix = "PM"
+	}
+	h := hour % 12
+	if h == 0 {
+		h = 12
+	}
+	return fmt.Sprintf("%d %s", h, suffix)
 }
 
 // isSurgeRate reports whether a stored rate is the evening one, so a client can
@@ -760,6 +804,8 @@ func estimateTaskCost(c *gin.Context) {
 		"included_minutes":      quote.IncludedMinutes,
 		"per_minute_rate_cents": quote.PerMinuteRateCents,
 		"surge_rate":            quote.SurgeRate,
+		// The window, worded here, so the form's "(9 PM–9 AM)" is the server's.
+		"surge_window":          surgeWindowLabel(),
 		"total_minutes":         quote.TotalMinutes,
 		"billable_minutes":      quote.BillableMinutes,
 		"time_cost_cents":       quote.TimeCostCents,

@@ -30,10 +30,19 @@ import (
 // ── The rate ───────────────────────────────────────────────────────────────
 
 // The boundary, to the minute, in the timezone that decides it.
+//
+// The window is a RANGE that wraps midnight — 21:00 through 08:59 — not
+// "hour >= 21", which left a midnight gap where a 02:00 start was cheaper
+// than a 21:30 one. Every edge is pinned: the last standard minute before it,
+// the first minute of it, either side of midnight, the small hours, the last
+// minute of it, and the first standard minute after it.
 func TestRestructureRateBoundary(t *testing.T) {
 	ny, err := time.LoadLocation(Billing.SurgeTimezone)
 	if err != nil {
 		t.Skipf("tzdata unavailable: %v", err)
+	}
+	if Billing.SurgeStartHour != 21 || Billing.SurgeEndHour != 9 {
+		t.Fatalf("window = %d..%d, want 21..9", Billing.SurgeStartHour, Billing.SurgeEndHour)
 	}
 
 	cases := []struct {
@@ -42,15 +51,19 @@ func TestRestructureRateBoundary(t *testing.T) {
 		want  int
 		surge bool
 	}{
-		{"08:00 — standard", time.Date(2026, 9, 15, 8, 0, 0, 0, ny), Billing.PerMinuteRateCents, false},
+		{"12:00 — standard", time.Date(2026, 9, 15, 12, 0, 0, 0, ny), Billing.PerMinuteRateCents, false},
 		{"20:00 — standard", time.Date(2026, 9, 15, 20, 0, 0, 0, ny), Billing.PerMinuteRateCents, false},
-		// The two that matter. 20:59 is the last standard minute; a task
-		// starting then bills at $0.50 for its whole run, including the part
-		// after 21:00 — see the immutability test below.
+		// 20:59 is the last standard minute; a task starting then bills at
+		// $0.50 for its whole run, including the part after 21:00 — see the
+		// immutability test below.
 		{"20:59 — still standard", time.Date(2026, 9, 15, 20, 59, 59, 0, ny), Billing.PerMinuteRateCents, false},
 		{"21:00 — evening", time.Date(2026, 9, 15, 21, 0, 0, 0, ny), Billing.SurgeRateCentsPerMin, true},
 		{"23:59 — evening", time.Date(2026, 9, 15, 23, 59, 0, 0, ny), Billing.SurgeRateCentsPerMin, true},
-		{"00:30 — back to standard", time.Date(2026, 9, 16, 0, 30, 0, 0, ny), Billing.PerMinuteRateCents, false},
+		// Across midnight, the same window. This was the gap.
+		{"00:00 — overnight", time.Date(2026, 9, 16, 0, 0, 0, 0, ny), Billing.SurgeRateCentsPerMin, true},
+		{"02:00 — overnight", time.Date(2026, 9, 16, 2, 0, 0, 0, ny), Billing.SurgeRateCentsPerMin, true},
+		{"08:59 — last overnight minute", time.Date(2026, 9, 16, 8, 59, 59, 0, ny), Billing.SurgeRateCentsPerMin, true},
+		{"09:00 — standard again", time.Date(2026, 9, 16, 9, 0, 0, 0, ny), Billing.PerMinuteRateCents, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -65,10 +78,38 @@ func TestRestructureRateBoundary(t *testing.T) {
 
 	// The hour is read in NEW YORK, not in whatever zone the server or the
 	// caller happens to be in. 21:00 New York is 01:00 UTC the next day; a
-	// naive UTC read would call it standard.
+	// naive UTC read would call it standard. And 09:00 New York is 13:00 UTC,
+	// which a naive read would call overnight.
 	utcEvening := time.Date(2026, 9, 16, 1, 0, 0, 0, time.UTC)
 	if got := resolveRateCentsPerMin(utcEvening); got != Billing.SurgeRateCentsPerMin {
 		t.Errorf("01:00 UTC (= 21:00 New York) resolved to %d — the zone is being ignored", got)
+	}
+	utcMorning := time.Date(2026, 9, 16, 13, 0, 0, 0, time.UTC)
+	if got := resolveRateCentsPerMin(utcMorning); got != Billing.PerMinuteRateCents {
+		t.Errorf("13:00 UTC (= 09:00 New York) resolved to %d — the zone is being ignored", got)
+	}
+
+	// The window text the estimate carries, so both forms print the server's
+	// sentence rather than their own reading of the config.
+	if got := surgeWindowLabel(); got != "9 PM–9 AM" {
+		t.Errorf("surge window label = %q, want 9 PM–9 AM", got)
+	}
+	for hour, want := range map[int]string{0: "12 AM", 9: "9 AM", 12: "12 PM", 21: "9 PM", 23: "11 PM"} {
+		if got := clockHourLabel(hour); got != want {
+			t.Errorf("clockHourLabel(%d) = %q, want %q", hour, got, want)
+		}
+	}
+
+	// inSurgeWindow on its own: a non-wrapping window and an empty one.
+	prevFrom, prevTo := Billing.SurgeStartHour, Billing.SurgeEndHour
+	t.Cleanup(func() { Billing.SurgeStartHour, Billing.SurgeEndHour = prevFrom, prevTo })
+	Billing.SurgeStartHour, Billing.SurgeEndHour = 18, 22
+	if !inSurgeWindow(18) || !inSurgeWindow(21) || inSurgeWindow(22) || inSurgeWindow(2) {
+		t.Error("a non-wrapping 18..22 window is misread")
+	}
+	Billing.SurgeStartHour, Billing.SurgeEndHour = 9, 9
+	if inSurgeWindow(9) || inSurgeWindow(0) {
+		t.Error("an empty window admits an hour")
 	}
 }
 

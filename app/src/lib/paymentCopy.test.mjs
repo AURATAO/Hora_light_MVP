@@ -159,7 +159,7 @@ test('no hold means nothing is said about money', () => {
 test('the evening rate explains itself, in the server’s numbers', () => {
   assert.equal(
     surgeRateNote({ surge_rate: true, per_minute_rate_cents: 100, included_minutes: 15 }),
-    'Evening rate: $1.00/min after the first 15 minutes.'
+    'Evening & overnight rate: $1.00/min after the first 15 minutes (9 PM–9 AM).'
   )
   assert.equal(surgeRateNote({ surge_rate: false, per_minute_rate_cents: 50 }), null)
   assert.equal(surgeRateNote(null), null)

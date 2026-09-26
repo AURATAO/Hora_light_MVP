@@ -290,6 +290,7 @@ export function TaskForm({ form, onChange, errors, promoCode }: TaskFormProps) {
     shoppingCents: number;
     totalCents: number;
     surgeRate: boolean;
+    surgeWindow?: string;
     highBudgetWarningCents: number;
     /** The promo, from the server: absent unless a code was sent. */
     promoCode?: string;
@@ -346,6 +347,7 @@ export function TaskForm({ form, onChange, errors, promoCode }: TaskFormProps) {
           shoppingCents: result.shopping_budget_cents ?? result.shopping_cents ?? 0,
           totalCents: result.total_cents,
           surgeRate: result.surge_rate ?? false,
+          surgeWindow: result.surge_window,
           highBudgetWarningCents: result.high_budget_warning_cents ?? 0,
           promoCode: result.promo_code,
           promoDiscountCents: result.promo_discount_cents ?? 0,
@@ -637,12 +639,14 @@ export function TaskForm({ form, onChange, errors, promoCode }: TaskFormProps) {
             surge_rate: estimate.surgeRate,
             per_minute_rate_cents: estimate.perMinuteRateCents,
             included_minutes: estimate.includedMinutes,
+            surge_window: estimate.surgeWindow,
           }) ? (
             <Text className="text-caption text-muted">
               {surgeRateNote({
                 surge_rate: estimate.surgeRate,
                 per_minute_rate_cents: estimate.perMinuteRateCents,
                 included_minutes: estimate.includedMinutes,
+                surge_window: estimate.surgeWindow,
               })}
             </Text>
           ) : null}

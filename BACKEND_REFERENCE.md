@@ -576,7 +576,7 @@ literals in `main.go` and three hand-copied duplicates in the web app.
 | Base fee | **$12.00** default, **$25.00** companionship/companion |
 | Included | the **first 15 minutes** are inside the base fee |
 | Billable minutes | `max(total_logged_minutes − 15, 0)` |
-| Rate | **$0.50/min**, or **$1.00/min** from **21:00 America/New_York** — resolved once at post and stored on the task (§11.1) |
+| Rate | **$0.50/min**, or **$1.00/min** for a start between **21:00 and 08:59 America/New_York** (wrapping midnight) — resolved once at post and stored on the task (§11.1) |
 | Task time cost | `base_fee + billable_minutes × the task's stored rate` |
 
 `total_logged_minutes` is the sum across **all closed worklog sessions** on the
@@ -1142,9 +1142,16 @@ Supersedes the hold shape in §3 and the approval-time authorization in §10.3.
 #### 11.1 The evening rate
 
 ```
-rate = $1.00/min  when the task STARTS at or after 21:00 America/New_York
+rate = $1.00/min  when the task STARTS between 21:00 and 08:59 America/New_York
+                  (a RANGE that wraps midnight: 21:00 first surge minute,
+                   08:59 last, 09:00 first standard minute)
        $0.50/min  otherwise
 ```
+
+It was "at or after 21:00" until 2026-09-26, which left a midnight gap: a
+02:00 start billed the standard rate and was cheaper than a 21:30 one.
+`BillingConfig.SurgeStartHour` / `SurgeEndHour` (21 / 9, end exclusive) bound
+the window; `inSurgeWindow` is the range test.
 
 **Resolved once, at post**, from the scheduled start (posting time for ASAP),
 and stored on `tasks.rate_cents_per_min`. Estimate, ceilings, settlement and
@@ -1162,8 +1169,10 @@ off. Nothing else in the codebase may branch on time to decide money. A missing
 tzdata falls back to the standard rate — under-charging, never over-charging.
 
 `POST /tasks/estimate` takes `is_immediate` / `scheduled_at` and returns
-`per_minute_rate_cents` plus `surge_rate`, so a form quoting a 21:30 task at
-6pm quotes the evening rate and can say why.
+`per_minute_rate_cents` plus `surge_rate` and `surge_window` ("9 PM–9 AM"), so
+a form quoting a 21:30 task at 6pm quotes the evening rate and can say why in
+the server's words: "Evening & overnight rate: $1.00/min after the first 15
+minutes (9 PM–9 AM)".
 
 #### 11.2 The hold, and what pays for shrinking it
 
@@ -1265,6 +1274,7 @@ and never the word *refund*.
 | `IncludedMinutes` | 15 |
 | `SurgeRateCentsPerMin` | 100 |
 | `SurgeStartHour` | 21 |
+| `SurgeEndHour` | 9 (exclusive; the window wraps midnight) |
 | `SurgeTimezone` | `America/New_York` |
 | `OverageToleranceCents` | 500 |
 | `HighBudgetWarningCents` | 50000 |

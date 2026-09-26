@@ -136,7 +136,10 @@ export function promoHoldNote(payment) {
  */
 export function surgeRateNote(quote) {
   if (!quote?.surge_rate) return null
-  return `Evening rate: ${formatCents(quote.per_minute_rate_cents)}/min after the first ${quote.included_minutes} minutes.`
+  // The window text is the server's (surge_window); the fallback is the
+  // shipped window for a backend that predates it.
+  const window = quote.surge_window || '9 PM–9 AM'
+  return `Evening & overnight rate: ${formatCents(quote.per_minute_rate_cents)}/min after the first ${quote.included_minutes} minutes (${window}).`
 }
 
 /**
