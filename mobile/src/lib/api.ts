@@ -371,7 +371,7 @@ export interface TaskCostEstimate {
   shopping_budget_cents?: number;
   /** Whether the evening rate applies to this quote. */
   surge_rate?: boolean;
-  /** The window, worded by the server ("9 PM–9 AM"), for the note beside the
+  /** The window, worded by the server ("9 PM–8 AM"), for the note beside the
    *  quote. Absent from an older backend; the copy then uses the shipped one. */
   surge_window?: string;
   /** What posting will actually reserve. Identical to total_cents — the hold

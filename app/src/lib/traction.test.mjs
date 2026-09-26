@@ -155,7 +155,7 @@ test('the pricing line is the whole schedule, in one sentence', () => {
   assert.equal(
     PRICING_LINE,
     '$12 base fee includes the first 15 minutes, then $0.50/min ' +
-      '($25 base for companionship; $1.00/min for tasks starting 9 PM–9 AM)'
+      '($25 base for companionship; $1.00/min for tasks starting 9 PM–8 AM)'
   )
   // Every number in it, against server/billing.go's BillingConfig. A schedule
   // change that misses this string quotes the old price to the person being
@@ -166,7 +166,7 @@ test('the pricing line is the whole schedule, in one sentence', () => {
   assert.ok(PRICING_LINE.includes('$0.50/min'), 'PerMinuteRateCents 50')
   assert.ok(PRICING_LINE.includes('$25 base for companionship'), 'BaseFeeCompanionshipCents 2500')
   assert.ok(PRICING_LINE.includes('$1.00/min'), 'SurgeRateCentsPerMin 100')
-  assert.ok(PRICING_LINE.includes('9 PM–9 AM'), 'SurgeStartHour 21 / SurgeEndHour 9 — the window wraps midnight')
+  assert.ok(PRICING_LINE.includes('9 PM–8 AM'), 'SurgeStartHour 21 / SurgeEndHour 8 — the window wraps midnight')
 })
 
 test('the $30 purchase cap is gone from every word of the notice', () => {

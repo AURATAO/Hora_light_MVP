@@ -297,7 +297,7 @@ export interface TaskCost {
   /** Whether per_minute_rate_cents is the evening rate, so a client can say
    *  WHY it is quoting more without knowing the rate or when it starts. */
   surge_rate?: boolean;
-  /** The window, worded by the server ("9 PM–9 AM"), for the note beside the
+  /** The window, worded by the server ("9 PM–8 AM"), for the note beside the
    *  quote. Absent from an older backend; the copy then uses the shipped window. */
   surge_window?: string;
 }

@@ -54,13 +54,13 @@ type BillingConfig struct {
 
 	// Evening & overnight surge. A task whose scheduled start falls in the
 	// window [SurgeStartHour, SurgeEndHour) local time in SurgeTimezone —
-	// 21:00 through 08:59, wrapping midnight — bills minutes past the
+	// 21:00 through 07:59, wrapping midnight — bills minutes past the
 	// included block at SurgeRateCentsPerMin; a start from SurgeEndHour to
 	// the minute before SurgeStartHour bills at PerMinuteRateCents.
 	//
 	// The window WRAPS. It used to be "hour >= 21", which made a 02:00 start
 	// cheaper than a 21:30 one — the midnight gap. SurgeEndHour is exclusive:
-	// 08:59 is surge, 09:00 is standard.
+	// 07:59 is surge, 08:00 is standard.
 	//
 	// RESOLVED ONCE, AT POST, from the task's scheduled start, and stored on
 	// the task — never re-derived afterwards. A task starting at 20:50 bills
@@ -165,9 +165,9 @@ var Billing = BillingConfig{
 	PerMinuteRateCents: 50, // $0.50/min, standard
 	IncludedMinutes:    15,
 
-	SurgeRateCentsPerMin: 100, // $1.00/min for starts from 21:00 to 08:59 New York
+	SurgeRateCentsPerMin: 100, // $1.00/min for starts from 21:00 to 07:59 New York
 	SurgeStartHour:       21,
-	SurgeEndHour:         9, // exclusive: 09:00 is the first standard minute
+	SurgeEndHour:         8, // exclusive: 08:00 is the first standard minute
 	SurgeTimezone:        "America/New_York",
 
 	OverageToleranceCents: 500, // $5.00 auto-approved over the approved budget
@@ -236,7 +236,7 @@ func inSurgeWindow(hour int) bool {
 	return hour >= from || hour < to
 }
 
-// surgeWindowLabel is the window as the clients print it — "9 PM–9 AM" — so
+// surgeWindowLabel is the window as the clients print it — "9 PM–8 AM" — so
 // the sentence beside a quote is the server's, not a client's copy of the
 // config (S-05).
 func surgeWindowLabel() string {
@@ -804,7 +804,7 @@ func estimateTaskCost(c *gin.Context) {
 		"included_minutes":      quote.IncludedMinutes,
 		"per_minute_rate_cents": quote.PerMinuteRateCents,
 		"surge_rate":            quote.SurgeRate,
-		// The window, worded here, so the form's "(9 PM–9 AM)" is the server's.
+		// The window, worded here, so the form's "(9 PM–8 AM)" is the server's.
 		"surge_window":          surgeWindowLabel(),
 		"total_minutes":         quote.TotalMinutes,
 		"billable_minutes":      quote.BillableMinutes,
