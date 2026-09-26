@@ -855,6 +855,14 @@ type EarningsTransfer struct {
 	AmountCents  int `json:"amount_cents"`
 	TimeCents    int `json:"time_cents"`
 	ReceiptCents int `json:"receipt_cents"`
+	// The fee, itemized, so the row can say "$19.20 service (after the 20%
+	// platform fee) + $12.40 reimbursement" and a deduction is never silent
+	// (D-14). TimeCents above is the service AFTER the fee — the number that
+	// adds up to AmountCents with ReceiptCents — and ServiceGrossCents is what
+	// it was before. Both zero on a transfer sent before the fee existed,
+	// where TimeCents was the whole service figure.
+	ServiceGrossCents int `json:"service_gross_cents"`
+	PlatformFeeCents  int `json:"platform_fee_cents"`
 	// The payouts row status: pending / paid / failed. "paid" means the
 	// TRANSFER happened — money left the platform — not that the bank has it.
 	Status    string    `json:"status"`
@@ -907,8 +915,13 @@ type Earnings struct {
 	// always add up to LifetimeEarnedCents, and the screen shows both as
 	// numbers — "$X on its way to your bank · $Y paid out" — rather than a
 	// hedge about what is or is not counted.
-	PaidOutCents   int                `json:"paid_out_cents"`
-	InTransitCents int                `json:"in_transit_cents"`
+	PaidOutCents   int `json:"paid_out_cents"`
+	InTransitCents int `json:"in_transit_cents"`
+	// The rate in force, for the one-line explainer both clients print under
+	// the list ("HO:RA takes 20% of service fees; purchase reimbursements are
+	// always paid back in full"). Sent so the sentence and the arithmetic
+	// cannot disagree (S-05).
+	PlatformFeeBps int                `json:"platform_fee_bps"`
 	Transfers      []EarningsTransfer `json:"transfers"`
 	// How many transfers exist in total, so a screen showing three of them can
 	// say "See all (47)". Distinct from len(Transfers), which is one page.
@@ -952,7 +965,7 @@ func earningsHandler(c *gin.Context) {
 	limit := parseLimit(c.Query("limit"), earningsRecentLimit, earningsMaxLimit)
 	offset := parseOffset(c.Query("offset"))
 
-	out := Earnings{Onboarding: st, Transfers: []EarningsTransfer{}}
+	out := Earnings{Onboarding: st, Transfers: []EarningsTransfer{}, PlatformFeeBps: Billing.PlatformFeeBps}
 	out.LifetimeEarnedCents = lifetimePaidCents(ctx, uid)
 	out.PaidOutCents = lifetimeBankPaidCents(ctx, uid)
 	out.InTransitCents = out.LifetimeEarnedCents - out.PaidOutCents
@@ -964,9 +977,14 @@ func earningsHandler(c *gin.Context) {
 	// repeat a row at a page boundary. A supporter's payout history is small
 	// and read rarely; offset is correct, and correct beats clever on a screen
 	// that is telling somebody what they were paid.
+	// The breakdown comes from the payout row itself when it has one (every
+	// row since the platform fee), and from the funding payment's split for
+	// the rows before it — which were paid at 100%, so the payment's time
+	// cost IS what they received for their time.
 	rows, err := db.Query(ctx, `
 		select po.task_id::text, coalesce(t.title,''), po.amount_cents, po.status, po.created_at,
-		       coalesce(p.time_cost_cents, 0), coalesce(p.shopping_receipt_cents, 0), po.bank_paid_at
+		       coalesce(p.time_cost_cents, 0), coalesce(p.shopping_receipt_cents, 0), po.bank_paid_at,
+		       po.service_cents, po.fee_cents, po.reimbursement_cents
 		  from public.payouts po
 		  join public.tasks t         on t.id = po.task_id
 		  -- LEFT: a promo_subsidy row is the platform's own money and names no
@@ -985,9 +1003,16 @@ func earningsHandler(c *gin.Context) {
 
 	for rows.Next() {
 		var e EarningsTransfer
+		var service, fee, reimb *int
 		if err := rows.Scan(&e.TaskID, &e.TaskTitle, &e.AmountCents, &e.Status, &e.CreatedAt,
-			&e.TimeCents, &e.ReceiptCents, &e.BankPaidAt); err != nil {
+			&e.TimeCents, &e.ReceiptCents, &e.BankPaidAt, &service, &fee, &reimb); err != nil {
 			break
+		}
+		if service != nil && fee != nil && reimb != nil {
+			e.ServiceGrossCents = *service
+			e.PlatformFeeCents = *fee
+			e.TimeCents = *service - *fee
+			e.ReceiptCents = *reimb
 		}
 		e.DisplayStatus = displayStatusFor(e.Status, e.BankPaidAt)
 		out.Transfers = append(out.Transfers, e)

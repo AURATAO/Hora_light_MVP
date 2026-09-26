@@ -18,13 +18,13 @@ package main
 // charge would require knowing the payee before anyone had volunteered to be
 // one.
 //
-// THE PLATFORM CUT IS NOT AN APPLICATION FEE. With separate charges and
+// THE PLATFORM FEE IS NOT AN APPLICATION FEE. With separate charges and
 // transfers, Stripe's application_fee_amount does not apply — it is only valid
 // on direct and destination charges, where the charge itself is attached to a
-// connected account. Here the cut is simply the money that does not get
+// connected account. Here the fee is simply the money that does not get
 // transferred: it stays on the platform balance because nothing moved it.
-// BillingConfig.ApplicationFeeBasisPoints is zero during beta, so the
-// supporter receives the whole settlement.
+// BillingConfig.PlatformFeeBps (20%) is taken from the task's SERVICE revenue
+// only; a receipt reimbursement is transferred in full. See supporterPayFor.
 //
 // SOURCE_TRANSACTION IS LOAD-BEARING. A bare Transfer is paid out of the
 // platform's AVAILABLE balance and fails outright when that balance is short —
@@ -97,6 +97,13 @@ type Payout struct {
 	StripeTransferID string
 	Status           string
 	AttemptCount     int
+	// The breakdown behind AmountCents, as the row records it:
+	// AmountCents = ServiceCents - FeeCents + ReimbursementCents. All zero on
+	// a row written before the platform fee existed (NULL columns), where
+	// AmountCents alone is the record.
+	ServiceCents       int
+	FeeCents           int
+	ReimbursementCents int
 }
 
 // payoutInput is everything a transfer needs, gathered by the settlement path
@@ -110,9 +117,20 @@ type payoutInput struct {
 	PaymentID string
 	// payoutFundingCharge unless set: see the constants above.
 	Funding string
-	// What the supporter is owed out of THIS payment, gross, before the
-	// platform cut. Already decided by the settlement; nothing here re-prices.
-	OwedCents int
+	// What this transfer sends, NET: the split's service after the platform
+	// fee, plus its reimbursement. Already decided by the settlement
+	// (settlementPayouts); nothing here re-prices, and nothing here deducts.
+	AmountCents int
+	// The breakdown behind AmountCents, persisted on the row so that every
+	// payout is auditable without re-deriving anything:
+	//
+	//	AmountCents = ServiceCents - FeeCents + ReimbursementCents
+	//
+	// ServiceCents is GROSS. All three are zero on an admin retry of a
+	// pre-fee row, which carries no breakdown and keeps none.
+	ServiceCents       int
+	FeeCents           int
+	ReimbursementCents int
 	// The Stripe charge this money actually came from. Becomes
 	// source_transaction, which is what lets the transfer succeed against a
 	// platform balance that has not settled yet.
@@ -125,18 +143,85 @@ type payoutInput struct {
 
 // ── What a settlement owes the supporter ───────────────────────────────────
 
-// payoutSplit is one transfer a settlement produces: how much, funded by which
-// captured payment, and how much of the supporter's money this transfer does
-// NOT carry.
+// supporterPay is a whole task's pay packet: what the service came to, what
+// the platform keeps of it, and what is handed back for the receipt.
+//
+//	ServiceCents        base fee + billable minutes (+ approved extensions),
+//	                    UNDISCOUNTED — a promo is the requester's, not theirs
+//	FeeCents            BillingConfig.PlatformFeeBps of ServiceCents
+//	ReimbursementCents  the verified receipt, never commissioned
+//	NetCents            ServiceCents - FeeCents + ReimbursementCents
+//
+// Built by supporterPayFor and nowhere else, so the fee is computed exactly
+// once per task — never per transfer, where a per-row rounding could take a
+// cent more than the rate says.
+type supporterPay struct {
+	ServiceCents       int
+	FeeCents           int
+	ReimbursementCents int
+}
+
+func (p supporterPay) ServiceNetCents() int { return p.ServiceCents - p.FeeCents }
+func (p supporterPay) NetCents() int        { return p.ServiceNetCents() + p.ReimbursementCents }
+
+// supporterPayFor is THE fee calculation. Service is commissioned, the
+// reimbursement is not, and both are clamped at zero so a malformed input can
+// never produce a negative pay packet.
+func supporterPayFor(serviceCents, reimbursementCents int) supporterPay {
+	if serviceCents < 0 {
+		serviceCents = 0
+	}
+	if reimbursementCents < 0 {
+		reimbursementCents = 0
+	}
+	return supporterPay{
+		ServiceCents:       serviceCents,
+		FeeCents:           platformFeeCents(serviceCents),
+		ReimbursementCents: reimbursementCents,
+	}
+}
+
+// platformFeeCents is the platform's take on one task's SERVICE revenue, in
+// whole cents, ROUND HALF UP. Zero when the rate is zero.
+//
+// Parameterized here rather than inlined so that changing the rate is a
+// config edit in billing.go and not a formula change in a payments file —
+// and so there is exactly one place the arithmetic lives, which is the same
+// rule the rest of the billing engine follows (S-05).
+//
+// Rounding: the fee is taken to the nearest cent, so a sub-cent remainder
+// never accumulates against the supporter across transfers or tasks. At 20%
+// the fraction is always one of .0 .2 .4 .6 .8 — the half-up rule matters
+// only for other rates and is stated so the answer is pinned.
+func platformFeeCents(serviceCents int) int {
+	if serviceCents <= 0 || Billing.PlatformFeeBps <= 0 {
+		return 0
+	}
+	return (serviceCents*Billing.PlatformFeeBps + 5000) / 10000
+}
+
+// payoutSplit is one transfer a settlement produces: what it carries, funded
+// by which captured payment, and how much of the supporter's money this
+// transfer does NOT carry.
 type payoutSplit struct {
-	// Which captured payment funds it — 'hold' or 'balance'. Named rather than
-	// ordered so a test failure says which one is wrong.
+	// Which captured payment funds it — 'hold', 'balance' or 'promo'. Named
+	// rather than ordered so a test failure says which one is wrong.
 	Source string
-	// Gross, before the platform cut. payoutForTask applies the cut.
-	OwedCents int
-	// Money the supporter is owed that this transfer cannot carry, because the
-	// requester's balance charge failed and it was never collected.
+	// The breakdown this row records. AmountCents() is what is transferred.
+	// ServiceCents is GROSS; FeeCents is the task's whole fee, on whichever
+	// split first carries any service, and zero on the others.
+	ServiceCents       int
+	FeeCents           int
+	ReimbursementCents int
+	// Money the supporter is owed (net) that this transfer cannot carry,
+	// because the requester's balance charge failed and it was never
+	// collected. Stamped on the first split only.
 	ShortfallCents int
+}
+
+// AmountCents is what the transfer sends.
+func (s payoutSplit) AmountCents() int {
+	return s.ServiceCents - s.FeeCents + s.ReimbursementCents
 }
 
 const (
@@ -157,8 +242,8 @@ const (
 //
 // Four inputs:
 //
-//	total           what the supporter is owed: time cost + reimbursed receipt,
-//	                UNDISCOUNTED — a promo is the requester's, not theirs
+//	pay             the supporter's pay packet (supporterPayFor): service,
+//	                fee, reimbursement. Its NetCents is what must be sent.
 //	mainCaptured    what the HOLD actually took (clamped to the authorization)
 //	balanceCaptured what a completion_balance charge collected, or 0
 //	promoSubsidy    what the platform owes on top of the requester's money:
@@ -171,11 +256,24 @@ const (
 // balance charge's own transfer, and the discount — which no charge funded —
 // is a third transfer drawn on the platform's own balance.
 //
-//	total <= mainCaptured    one transfer for `total`; the hold covered it and
+// THE ORDER THINGS ARE PAID IN. The net pay is laid out as [reimbursement,
+// service-after-fee] and carved into the sources in order [hold, balance,
+// promo]. Reimbursement first because it is the supporter's own cash: if
+// anything is going to be short, it is the earnings, not the money they lent.
+// The fee is not "paid" by anyone — it is the part of the service revenue that
+// stays on the platform — and is attributed to the first split that carries
+// any service so that every row's breakdown reconciles and the fee appears on
+// exactly one row per task.
+//
+//	net <= mainCaptured      one transfer for `net`; the hold covered it and
 //	                         Stripe released the rest of the authorization
 //	balance collected        two transfers: the hold in full, then the rest
-//	promo applied            plus a promo_subsidy transfer for the discount,
-//	                         so the supporter is whole
+//	promo applied            plus a promo_subsidy transfer for what the
+//	                         requester's money did not cover, so the
+//	                         supporter is whole. Note it is the NET remainder:
+//	                         the fee comes off the undiscounted service first,
+//	                         so the platform's subsidy shrinks by exactly the
+//	                         fee it would otherwise have retained.
 //	balance failed           the gap that is neither collected nor subsidised
 //	                         is recorded as a shortfall. The supporter is short
 //	                         and the platform is carrying the receivable —
@@ -189,35 +287,52 @@ const (
 // The subsidy is paid BEFORE a shortfall is declared: the platform's promise
 // to cover the discount does not depend on whether the requester's card
 // worked.
-func settlementPayouts(total, mainCaptured, balanceCaptured, promoSubsidy int) []payoutSplit {
-	if total <= 0 {
+func settlementPayouts(pay supporterPay, mainCaptured, balanceCaptured, promoSubsidy int) []payoutSplit {
+	if pay.NetCents() <= 0 {
 		return nil
 	}
 	if mainCaptured <= 0 && balanceCaptured <= 0 && promoSubsidy <= 0 {
 		return nil
 	}
 
-	fromHold := minInt(total, mainCaptured)
-	remainder := total - fromHold
-	fromBalance := minInt(remainder, balanceCaptured)
-	remainder -= fromBalance
-	fromPromo := minInt(remainder, promoSubsidy)
-	shortfall := remainder - fromPromo
+	sources := []struct {
+		name string
+		room int
+	}{
+		{payoutSourceHold, mainCaptured},
+		{payoutSourceBalance, balanceCaptured},
+		{payoutSourcePromo, promoSubsidy},
+	}
+	reimbLeft := pay.ReimbursementCents
+	serviceLeft := pay.ServiceNetCents()
+	feeLeft := pay.FeeCents
 
 	var splits []payoutSplit
-	if fromHold > 0 {
-		splits = append(splits, payoutSplit{Source: payoutSourceHold, OwedCents: fromHold, ShortfallCents: shortfall})
-	}
-	if fromBalance > 0 {
-		splits = append(splits, payoutSplit{Source: payoutSourceBalance, OwedCents: fromBalance})
-	}
-	if fromPromo > 0 {
-		split := payoutSplit{Source: payoutSourcePromo, OwedCents: fromPromo}
-		if len(splits) == 0 {
-			// Nothing else carries it: the whole settlement was the discount.
-			split.ShortfallCents = shortfall
+	for _, src := range sources {
+		if src.room <= 0 || reimbLeft+serviceLeft <= 0 {
+			continue
+		}
+		room := src.room
+		r := minInt(room, reimbLeft)
+		room -= r
+		reimbLeft -= r
+		sv := minInt(room, serviceLeft)
+		serviceLeft -= sv
+		if r == 0 && sv == 0 {
+			continue
+		}
+		split := payoutSplit{Source: src.name, ReimbursementCents: r, ServiceCents: sv}
+		if sv > 0 && feeLeft > 0 {
+			// The row records GROSS service and the fee kept out of it, so
+			// the first service-carrying split absorbs the task's whole fee.
+			split.ServiceCents += feeLeft
+			split.FeeCents = feeLeft
+			feeLeft = 0
 		}
 		splits = append(splits, split)
+	}
+	if len(splits) > 0 {
+		splits[0].ShortfallCents = reimbLeft + serviceLeft
 	}
 	return splits
 }
@@ -233,11 +348,12 @@ func settlementPayouts(total, mainCaptured, balanceCaptured, promoSubsidy int) [
 // requester has already been charged. A failed transfer is an ops ticket, not
 // a reason to unwind anything.
 //
-// WHAT IS TRANSFERRED, exactly: OwedCents minus the platform cut. When the
-// hold did not cover the settlement and the balance charge succeeded, the
-// balance is a second captured payment and gets its own payout row — so the
-// supporter ends up whole across two transfers, each tied to the charge that
-// funded it.
+// WHAT IS TRANSFERRED, exactly: in.AmountCents, which settlementPayouts has
+// already netted of the platform fee — nothing is deducted here, and the
+// breakdown it was computed from is written on the row. When the hold did not
+// cover the settlement and the balance charge succeeded, the balance is a
+// second captured payment and gets its own payout row — so the supporter ends
+// up whole across two transfers, each tied to the charge that funded it.
 //
 // WHEN THE BALANCE CHARGE FAILED, the supporter is short and the platform is
 // carrying the receivable. This does NOT silently transfer the uncollected
@@ -256,7 +372,7 @@ func payoutForTask(ctx context.Context, in payoutInput) *Payout {
 	if in.Funding == "" {
 		in.Funding = payoutFundingCharge
 	}
-	if in.OwedCents <= 0 || in.TaskID == "" || in.SupporterID == "" {
+	if in.AmountCents <= 0 || in.TaskID == "" || in.SupporterID == "" {
 		return nil
 	}
 	// A charge-funded transfer must name its payment; a subsidy must not.
@@ -278,12 +394,7 @@ func payoutForTask(ctx context.Context, in payoutInput) *Payout {
 		return nil
 	}
 
-	amount := in.OwedCents - platformCutCents(in.OwedCents)
-	if amount <= 0 {
-		log.Printf("[payments][payout] task=%s owed=%d nets to zero after the platform cut — nothing to send",
-			in.TaskID, in.OwedCents)
-		return nil
-	}
+	amount := in.AmountCents
 
 	// The row is written BEFORE the Stripe call, exactly as payments rows are,
 	// and for the mirror-image reason: a transfer that exists at Stripe with
@@ -325,20 +436,6 @@ func payoutForTask(ctx context.Context, in payoutInput) *Payout {
 	p.StripeTransferID = tr.ID
 	notifySupporterPaid(ctx, in, amount)
 	return p
-}
-
-// platformCutCents is the marketplace take on one settlement.
-//
-// Zero during beta (BillingConfig.ApplicationFeeBasisPoints). Parameterized
-// here rather than inlined so that turning it on is a config edit in
-// billing.go and not a formula change in a payments file — and so there is
-// exactly one place the arithmetic lives, which is the same rule the rest of
-// the billing engine follows (S-05).
-func platformCutCents(owedCents int) int {
-	if Billing.ApplicationFeeBasisPoints <= 0 {
-		return 0
-	}
-	return owedCents * Billing.ApplicationFeeBasisPoints / 10000
 }
 
 // sendTransfer is the Stripe call, and the three parameters that matter.
@@ -435,18 +532,29 @@ func insertPayout(ctx context.Context, in payoutInput, amount int) (*Payout, err
 		raw = []byte("{}")
 	}
 
+	// The breakdown, which the row's CHECK insists reconciles to the amount.
+	// A settlement always has one (settlementPayouts); a caller that passes
+	// none — there is none today — would trip the constraint rather than
+	// write an unauditable row, which is the right failure.
+	if amount != in.ServiceCents-in.FeeCents+in.ReimbursementCents {
+		return nil, fmt.Errorf("payouts: amount %d does not reconcile with service %d - fee %d + reimbursement %d",
+			amount, in.ServiceCents, in.FeeCents, in.ReimbursementCents)
+	}
+
 	var p Payout
 	var scannedPayment *string
 	// Bare ON CONFLICT: either unique index — one payout per payment, or one
 	// subsidy per task — makes this a duplicate, and both mean the same thing.
 	err = db.QueryRow(ctx, `
 		insert into public.payouts
-		       (task_id, supporter_id, payment_id, amount_cents, status, attempt_count, meta, funding)
-		values ($1::uuid, $2::uuid, $3::uuid, $4, $5, 1, $6::jsonb, $7)
+		       (task_id, supporter_id, payment_id, amount_cents, status, attempt_count, meta, funding,
+		        service_cents, fee_cents, reimbursement_cents, fee_bps)
+		values ($1::uuid, $2::uuid, $3::uuid, $4, $5, 1, $6::jsonb, $7, $8, $9, $10, $11)
 		on conflict do nothing
 		returning id::text, task_id::text, supporter_id::text, payment_id::text,
 		          amount_cents, status, attempt_count
-	`, in.TaskID, in.SupporterID, paymentID, amount, payoutStatusPending, string(raw), funding).
+	`, in.TaskID, in.SupporterID, paymentID, amount, payoutStatusPending, string(raw), funding,
+		in.ServiceCents, in.FeeCents, in.ReimbursementCents, Billing.PlatformFeeBps).
 		Scan(&p.ID, &p.TaskID, &p.SupporterID, &scannedPayment, &p.AmountCents, &p.Status, &p.AttemptCount)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// ON CONFLICT DO NOTHING returned nothing: a unique index caught a
@@ -459,6 +567,7 @@ func insertPayout(ctx context.Context, in payoutInput, amount int) (*Payout, err
 	if scannedPayment != nil {
 		p.PaymentID = *scannedPayment
 	}
+	p.ServiceCents, p.FeeCents, p.ReimbursementCents = in.ServiceCents, in.FeeCents, in.ReimbursementCents
 	return &p, nil
 }
 
@@ -519,11 +628,14 @@ func markPayoutFailed(ctx context.Context, p *Payout, in payoutInput, cause erro
 		in.TaskID, in.SupporterID, p.ID, formatCentsUSD(p.AmountCents), cause)
 
 	writeAudit(ctx, in.TaskID, systemActorUID, "PAYOUT_FAILED", "", map[string]any{
-		"payout_id":    p.ID,
-		"supporter_id": in.SupporterID,
-		"payment_id":   in.PaymentID,
-		"amount_cents": p.AmountCents,
-		"error":        cause.Error(),
+		"payout_id":           p.ID,
+		"supporter_id":        in.SupporterID,
+		"payment_id":          in.PaymentID,
+		"amount_cents":        p.AmountCents,
+		"service_cents":       in.ServiceCents,
+		"fee_cents":           in.FeeCents,
+		"reimbursement_cents": in.ReimbursementCents,
+		"error":               cause.Error(),
 	})
 
 	supporter := supporterLabel(ctx, in.SupporterID)
@@ -554,21 +666,25 @@ in Stripe &rarr; Connect &rarr; Accounts. Once the account is good again, retry 
 // row with no amount and no destination would be a row about an absence.
 func reportUnpayableSupporter(ctx context.Context, in payoutInput) {
 	writeAudit(ctx, in.TaskID, systemActorUID, "PAYOUT_SKIPPED_NO_ACCOUNT", "", map[string]any{
-		"supporter_id": in.SupporterID,
-		"payment_id":   in.PaymentID,
-		"owed_cents":   in.OwedCents,
+		"supporter_id":        in.SupporterID,
+		"payment_id":          in.PaymentID,
+		"owed_cents":          in.AmountCents,
+		"service_cents":       in.ServiceCents,
+		"fee_cents":           in.FeeCents,
+		"reimbursement_cents": in.ReimbursementCents,
 	})
 	supporter := supporterLabel(ctx, in.SupporterID)
 	emailOpsAdmins(
-		fmt.Sprintf("[HO:RA] Owed but not payable — %s to %s", formatCentsUSD(in.OwedCents), supporter),
+		fmt.Sprintf("[HO:RA] Owed but not payable — %s to %s", formatCentsUSD(in.AmountCents), supporter),
 		fmt.Sprintf(`<p><strong>A completed task owes a supporter who has no payout account.</strong></p>
 <p>Normal while PAYMENTS_ENFORCED is off — nobody has been asked to set up payouts yet — and this is
 the list of people to settle with by hand when it is flipped on.</p>
 <ul>
   <li>Task: %s</li>
   <li>Supporter: %s</li>
-  <li>Owed: %s</li>
-</ul>`, in.TaskID, supporter, formatCentsUSD(in.OwedCents)))
+  <li>Owed: %s (net — %s service less %s platform fee, plus %s reimbursement)</li>
+</ul>`, in.TaskID, supporter, formatCentsUSD(in.AmountCents),
+			formatCentsUSD(in.ServiceCents), formatCentsUSD(in.FeeCents), formatCentsUSD(in.ReimbursementCents)))
 }
 
 // supporterLabel is "Name <email>" for an ops email, or the uid when the row
@@ -600,6 +716,11 @@ func supporterLabel(ctx context.Context, uid string) string {
 // and the bank deposit is a further step on Stripe's daily payout schedule.
 // Telling somebody the money is in their account when it is two days out is
 // the kind of copy that generates support tickets.
+//
+// The figure is the NET amount — what actually moves — and the body says what
+// it is made of when a fee was taken, so a deduction is never silent
+// (D-14): "$31.60 on its way — $19.20 service (after the 20% platform fee)
+// + $12.40 reimbursement".
 func notifySupporterPaid(ctx context.Context, in payoutInput, amount int) {
 	t, err := loadAdminTask(ctx, in.TaskID)
 	if err != nil {
@@ -609,15 +730,53 @@ func notifySupporterPaid(ctx context.Context, in payoutInput, amount int) {
 	_ = db.QueryRow(ctx,
 		`select coalesce(email,'') from public.users where id = $1::uuid`, in.SupporterID).Scan(&email)
 
+	body := fmt.Sprintf("Your payment for %q is on its way to your bank.", t.Title)
+	if breakdown := payoutBreakdownLine(in.ServiceCents, in.FeeCents, in.ReimbursementCents); breakdown != "" {
+		body = fmt.Sprintf("Your payment for %q is on its way to your bank: %s.", t.Title, breakdown)
+	}
 	notifyUser(ctx, in.SupporterID, email, notify.CreateNotificationInput{
-		TaskID: in.TaskID,
-		Type:   "PAYOUT_SENT",
-		Title:  fmt.Sprintf("%s on its way", formatCentsUSD(amount)),
-		Body: fmt.Sprintf(
-			"Your payment for %q is on its way to your bank. You can see it in Profile → Earnings.",
-			t.Title),
+		TaskID:    in.TaskID,
+		Type:      "PAYOUT_SENT",
+		Title:     fmt.Sprintf("%s on its way", formatCentsUSD(amount)),
+		Body:      body + " You can see it in Profile → Earnings.",
 		TaskTitle: t.Title,
 	})
+}
+
+// payoutBreakdownLine is the supporter-facing sentence behind a net figure:
+//
+//	$19.20 service (after the 20% platform fee) + $12.40 reimbursement
+//	$19.20 service (after the 20% platform fee)
+//	$12.40 reimbursement
+//
+// Empty when there is no breakdown to state (a pre-fee row on an admin
+// retry). Worded here, once, so the deposit push, the completion email and
+// the task screen cannot describe the same transfer three different ways.
+func payoutBreakdownLine(serviceCents, feeCents, reimbursementCents int) string {
+	var parts []string
+	if serviceCents > 0 {
+		net := serviceCents - feeCents
+		if feeCents > 0 {
+			parts = append(parts, fmt.Sprintf("%s service (after the %s platform fee)",
+				formatCentsUSD(net), platformFeePercentLabel()))
+		} else {
+			parts = append(parts, fmt.Sprintf("%s service", formatCentsUSD(net)))
+		}
+	}
+	if reimbursementCents > 0 {
+		parts = append(parts, fmt.Sprintf("%s reimbursement", formatCentsUSD(reimbursementCents)))
+	}
+	return strings.Join(parts, " + ")
+}
+
+// platformFeePercentLabel is "20%" for 2000 bps — and "2.5%" for 250, so the
+// copy never rounds a rate it did not charge.
+func platformFeePercentLabel() string {
+	bps := Billing.PlatformFeeBps
+	if bps%100 == 0 {
+		return fmt.Sprintf("%d%%", bps/100)
+	}
+	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.2f", float64(bps)/100), "0"), ".") + "%"
 }
 
 // ── Admin retry ────────────────────────────────────────────────────────────
@@ -640,12 +799,17 @@ func adminRetryPayout(c *gin.Context) {
 
 	var p Payout
 	var transferID, paymentID *string
+	// The breakdown is NULL on a pre-fee row; coalesced to zero, and the retry
+	// then sends amount_cents as recorded — a retry re-sends what the row
+	// says, it never re-prices.
 	err := db.QueryRow(ctx, `
 		select id::text, task_id::text, supporter_id::text, payment_id::text,
-		       amount_cents, status, attempt_count, stripe_transfer_id
+		       amount_cents, status, attempt_count, stripe_transfer_id,
+		       coalesce(service_cents, 0), coalesce(fee_cents, 0), coalesce(reimbursement_cents, 0)
 		  from public.payouts where id = $1::uuid
 	`, payoutID).Scan(&p.ID, &p.TaskID, &p.SupporterID, &paymentID,
-		&p.AmountCents, &p.Status, &p.AttemptCount, &transferID)
+		&p.AmountCents, &p.Status, &p.AttemptCount, &transferID,
+		&p.ServiceCents, &p.FeeCents, &p.ReimbursementCents)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
 		return
@@ -728,11 +892,14 @@ func adminRetryPayout(c *gin.Context) {
 	}
 
 	in := payoutInput{
-		TaskID:         p.TaskID,
-		SupporterID:    p.SupporterID,
-		PaymentID:      p.PaymentID,
-		OwedCents:      p.AmountCents,
-		SourceChargeID: chargeForPayment(ctx, p.PaymentID),
+		TaskID:             p.TaskID,
+		SupporterID:        p.SupporterID,
+		PaymentID:          p.PaymentID,
+		AmountCents:        p.AmountCents,
+		ServiceCents:       p.ServiceCents,
+		FeeCents:           p.FeeCents,
+		ReimbursementCents: p.ReimbursementCents,
+		SourceChargeID:     chargeForPayment(ctx, p.PaymentID),
 	}
 	tr, err := sendTransfer(ctx, &p, accountID, in)
 	if err != nil {

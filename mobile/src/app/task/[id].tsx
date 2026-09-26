@@ -21,6 +21,7 @@ import { CancelTaskSheet } from "../../components/CancelTaskSheet";
 import { CompleteTaskSheet, type CompleteTaskPayload } from "../../components/CompleteTaskSheet";
 import { approvedBudgetCentsFor } from "../../lib/task-budget";
 import { LiveTrackingCard } from "../../components/LiveTrackingCard";
+import { PhotoViewer } from "../../components/PhotoViewer";
 import { ReviewSheet } from "../../components/ReviewSheet";
 import { TractionReviewSheet } from "../../components/TractionReviewSheet";
 import {
@@ -58,6 +59,7 @@ import {
 } from "../../lib/api";
 import { TRACTION_3_CONFIG, isTractionWindowActive } from "../../lib/beta-notice";
 import { getCategoryMeta } from "../../lib/categories";
+import { earnedBreakdownLine } from "../../lib/earnings-copy";
 import { broadcastPhase, shouldPollLive } from "../../lib/live-tracking";
 import {
   GAP_LABEL,
@@ -213,6 +215,8 @@ export default function TaskDetail() {
   const [reviewOpen, setReviewOpen] = useState(false);
   const [completeOpen, setCompleteOpen] = useState(false);
   const [budgetOpen, setBudgetOpen] = useState(false);
+  // The proof-of-work photo, full-screen.
+  const [completionPhotoOpen, setCompletionPhotoOpen] = useState(false);
   // The mid-task asks, plus the two numbers that go with them (the currently
   // approved budget and the time ceiling). Null until the first fetch; the
   // sections that read it render nothing until then rather than guessing.
@@ -1627,12 +1631,25 @@ export default function TaskDetail() {
           <View className="mb-4 gap-3 rounded-card border border-line bg-surface p-4">
             <Text className="text-caption font-semibold text-muted">Completion</Text>
             {task.completion_photo_url ? (
-              <Image
-                source={{ uri: task.completion_photo_url }}
-                className="h-40 w-full rounded-sm"
-                resizeMode="cover"
-              />
+              <PressableScale
+                onPress={() => setCompletionPhotoOpen(true)}
+                accessibilityRole="button"
+                accessibilityLabel="View completion photo"
+              >
+                <Image
+                  source={{ uri: task.completion_photo_url }}
+                  className="h-40 w-full rounded-sm"
+                  resizeMode="cover"
+                  accessibilityIgnoresInvertColors
+                />
+                <Text className="mt-1 text-caption text-muted">Tap to view</Text>
+              </PressableScale>
             ) : null}
+            <PhotoViewer
+              uri={completionPhotoOpen ? task.completion_photo_url : null}
+              label="Completion photo"
+              onClose={() => setCompletionPhotoOpen(false)}
+            />
             {task.completion_note ? (
               <Text className="text-body text-ink">{task.completion_note}</Text>
             ) : null}
@@ -2164,6 +2181,10 @@ function SettlementCard({
     cost.cap_minutes !== undefined &&
     cost.billed_minutes !== undefined &&
     cost.total_minutes > cost.billed_minutes;
+  // The receipt photo, full-screen.
+  const [receiptOpen, setReceiptOpen] = useState(false);
+  const recordedCents = settlement.receipt_amount_cents ?? 0;
+  const reimbursedCents = cost.shopping_receipt_cents ?? 0;
 
   return (
     <View className="mb-4 gap-3 rounded-card border border-line bg-surface p-4">
@@ -2233,6 +2254,44 @@ function SettlementCard({
           </Text>
         </View>
       ) : null}
+      {/* THE RECEIPT ITSELF, beside the line it justifies. The requester paid
+          this reimbursement; the photo is what they paid it against, and it
+          used to sit at the bottom of the card, cropped to 160pt, with no way
+          to read it. Tap for full-screen. The amount beside it is what the
+          supporter RECORDED — the reimbursed figure unless the budget capped
+          it, in which case both are said. The link is a signed, short-lived
+          one the server minted behind the same check as this payload. */}
+      {settlement.receipt_photo_url ? (
+        <PressableScale
+          onPress={() => setReceiptOpen(true)}
+          className="flex-row items-center gap-3 rounded-sm border border-line p-2"
+          accessibilityRole="button"
+          accessibilityLabel={`View receipt photo, ${formatCost(recordedCents)} recorded`}
+        >
+          <Image
+            source={{ uri: settlement.receipt_photo_url }}
+            className="h-14 w-14 rounded-sm"
+            resizeMode="cover"
+            accessibilityIgnoresInvertColors
+          />
+          <View className="flex-1">
+            <Text className="text-caption text-ink">
+              Receipt photo · {formatCost(recordedCents)} recorded
+            </Text>
+            <Text className="text-caption text-muted">
+              {recordedCents !== reimbursedCents
+                ? `${formatCost(reimbursedCents)} reimbursed (capped at the approved budget). `
+                : ""}
+              Tap to view
+            </Text>
+          </View>
+        </PressableScale>
+      ) : null}
+      <PhotoViewer
+        uri={receiptOpen ? (settlement.receipt_photo_url ?? null) : null}
+        label="Receipt photo"
+        onClose={() => setReceiptOpen(false)}
+      />
 
       {/* THE PROMO, on the requester's copy only — the server omits these
           keys from the supporter's, whose pay it never touched. The total
@@ -2324,12 +2383,13 @@ function SettlementCard({
       {settlement.earned ? (
         <View className="gap-1 border-t border-line pt-3">
           <Text className="text-caption font-semibold text-muted">You earned</Text>
+          {/* Never a silent deduction (D-14): the service figure is named
+              AFTER the fee with the rate beside it, and the reimbursement —
+              never commissioned — is its own number. Every figure and the
+              sentence's shape are the server's. */}
           <View className="flex-row justify-between">
             <Text className="flex-1 pr-2 text-caption text-muted">
-              {formatCost(settlement.earned.time_cents)} (time)
-              {settlement.earned.reimbursement_cents > 0
-                ? ` + ${formatCost(settlement.earned.reimbursement_cents)} (reimbursement)`
-                : ""}
+              {earnedBreakdownLine(settlement.earned)}
             </Text>
             <Text className="text-body font-semibold text-ink">
               {formatCost(settlement.earned.total_cents)}
@@ -2348,17 +2408,6 @@ function SettlementCard({
               nothing you need to do.
             </Text>
           ) : null}
-        </View>
-      ) : null}
-
-      {settlement.receipt_photo_url ? (
-        <View className="gap-2">
-          <Text className="text-caption text-muted">Receipt</Text>
-          <Image
-            source={{ uri: settlement.receipt_photo_url }}
-            className="h-40 w-full rounded-sm"
-            resizeMode="cover"
-          />
         </View>
       ) : null}
 

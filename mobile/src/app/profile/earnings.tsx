@@ -15,7 +15,7 @@ import {
 } from "../../lib/api";
 import { HISTORY_PREVIEW_COUNT, HistorySection } from "../../components/HistorySection";
 import { TransferRow } from "../../components/TransferRow";
-import { earningsWhereaboutsLine } from "../../lib/earnings-copy";
+import { earningsWhereaboutsLine, platformFeeExplainer } from "../../lib/earnings-copy";
 import { color, size } from "../../theme/tokens";
 
 /**
@@ -297,6 +297,12 @@ export default function EarningsScreen() {
                     ))}
                   </HistorySection>
                 )}
+                {/* The fee, stated once where the numbers live, so no row
+                    above is ever a silent deduction (D-14). The rate is the
+                    backend's. */}
+                <Text className="mt-2 text-caption text-muted">
+                  {platformFeeExplainer(data?.platform_fee_bps)}
+                </Text>
               </View>
             </>
           ) : null}

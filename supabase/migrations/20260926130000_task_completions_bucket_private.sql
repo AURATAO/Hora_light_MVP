@@ -1,0 +1,25 @@
+-- task-completions: the bucket that holds every proof-of-work photo and every
+-- receipt photo a supporter has uploaded. PUBLIC until now, which meant the
+-- inside of a requester's home and a stranger's purchases were readable by
+-- anybody holding (or guessing: completions/<task id>/<unix ts>.jpg) the link,
+-- while the task payload around them sat behind the requester/assignee check.
+--
+-- Private from here. The Go backend signs a short-lived link for each photo
+-- at read time, inside the handler that has already authorized the caller for
+-- the task (server/task_photos.go): GET /tasks/:id, GET /tasks/:id/worklogs,
+-- the completion email. Uploads were always made with the service key and
+-- are unaffected. The stored public-form URLs stay as they are — they are the
+-- canonical reference the signer parses the object key out of — and simply
+-- stop resolving on their own, which is the point.
+--
+-- ORDERING: apply AFTER the backend that signs links is live. Applied first,
+-- every task screen on the old backend shows a broken image until the deploy
+-- lands. Links already sent in completion emails before this date stop
+-- working; that is the price of closing the exposure and is accepted (D-14).
+--
+-- The `avatars` bucket is a different bucket with a different rule (CLAUDE.md
+-- Rule 2: public reads permitted) and is not touched.
+--
+-- Rollback: UPDATE storage.buckets SET public = true WHERE id = 'task-completions';
+
+UPDATE storage.buckets SET public = false WHERE id = 'task-completions';

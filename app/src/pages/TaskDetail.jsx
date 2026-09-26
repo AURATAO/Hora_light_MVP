@@ -36,6 +36,8 @@ import {
   timeBasisNote,
 } from '../lib/paymentCopy'
 import { isPayoutsOnboardingRequired } from '../api/payments'
+import PhotoLightbox from '../components/PhotoLightbox'
+import { earnedBreakdownLine } from '../lib/earningsCopy'
 
 
 /**
@@ -184,6 +186,8 @@ function askPhrase(request) {
 }
 
 function SettlementPanel({ cost, settlement, timeline, isOwner, taskId }) {
+  // The receipt photo, full-screen. Hooks before the early return.
+  const [receiptOpen, setReceiptOpen] = useState(false)
   if (!cost || !settlement) return null
   // Only when the task was worked in more than one sitting: on a single-session
   // task the timeline restates the billable-minutes line above it and earns
@@ -238,6 +242,44 @@ function SettlementPanel({ cost, settlement, timeline, isOwner, taskId }) {
           <span className="text-white">{formatCents(cost.shopping_receipt_cents || 0)}</span>
         </div>
       )}
+      {/* THE RECEIPT ITSELF, beside the line it justifies. The requester paid
+          this reimbursement; the photo is what they paid it against, and it
+          used to sit at the bottom of the card, cropped, with no way to read
+          it. Tap for full-screen. The amount beside it is what the supporter
+          RECORDED, which is the reimbursed figure unless the budget capped it
+          — in which case both are said. The link is a signed, short-lived
+          one the server minted behind the same check as the rest of this
+          payload; it is not a public bucket URL. */}
+      {settlement.receipt_photo_url && (
+        <button
+          type="button"
+          onClick={() => setReceiptOpen(true)}
+          aria-label="View receipt photo"
+          className="flex w-full items-center gap-3 rounded-lg border border-white/10 bg-white/5 p-2 text-left hover:bg-white/10"
+        >
+          <img
+            src={settlement.receipt_photo_url}
+            alt=""
+            className="h-14 w-14 shrink-0 rounded-md object-cover"
+          />
+          <span className="min-w-0 flex-1">
+            <span className="block text-white/80">
+              Receipt photo · {formatCents(settlement.receipt_amount_cents || 0)} recorded
+            </span>
+            <span className="block text-xs text-white/40">
+              {(settlement.receipt_amount_cents || 0) !== (cost.shopping_receipt_cents || 0)
+                ? `${formatCents(cost.shopping_receipt_cents || 0)} reimbursed (capped at the approved budget). `
+                : ''}
+              Tap to view
+            </span>
+          </span>
+        </button>
+      )}
+      <PhotoLightbox
+        src={receiptOpen ? settlement.receipt_photo_url : ''}
+        alt="Receipt photo"
+        onClose={() => setReceiptOpen(false)}
+      />
 
       <div className="border-t border-white/10 pt-2 flex justify-between font-semibold">
         <span>{settlement.state === 'captured' ? 'Total charged' : 'Total'}</span>
@@ -301,14 +343,13 @@ function SettlementPanel({ cost, settlement, timeline, isOwner, taskId }) {
       {settlement.earned && (
         <div className="border-t border-white/10 pt-2 space-y-1">
           <div className="text-xs text-white/60">You earned</div>
-          <div className="flex justify-between">
-            <span className="text-white/70">
-              {formatCents(settlement.earned.time_cents)} (time)
-              {settlement.earned.reimbursement_cents > 0 && (
-                <> + {formatCents(settlement.earned.reimbursement_cents)} (reimbursement)</>
-              )}
-            </span>
-            <span className="font-semibold text-white">
+          {/* Never a silent deduction (D-14): the service figure is named
+              AFTER the fee, with the fee's rate beside it, and the
+              reimbursement — never commissioned — is its own number. Every
+              figure and the sentence's shape are the server's. */}
+          <div className="flex justify-between gap-3">
+            <span className="text-white/70">{earnedBreakdownLine(settlement.earned)}</span>
+            <span className="font-semibold text-white shrink-0">
               {formatCents(settlement.earned.total_cents)}
             </span>
           </div>
@@ -326,17 +367,6 @@ function SettlementPanel({ cost, settlement, timeline, isOwner, taskId }) {
               you need to do.
             </div>
           )}
-        </div>
-      )}
-
-      {settlement.receipt_photo_url && (
-        <div className="space-y-1">
-          <div className="text-xs text-white/60">Receipt</div>
-          <img
-            src={settlement.receipt_photo_url}
-            alt="Receipt"
-            className="w-full rounded-lg object-cover max-h-64"
-          />
         </div>
       )}
 
@@ -388,6 +418,13 @@ export default function TaskDetail() {
   // Complete-task modal
   const [showCompleteModal, setShowCompleteModal] = useState(false)
   const [completionPhotoURL, setCompletionPhotoURL] = useState('')
+  // Uploads answer with the CANONICAL url (what the completion body sends
+  // and the database stores — it does not load from the private bucket) and
+  // a signed link for previewing it right now. Kept side by side so the
+  // modal shows the photo without ever sending a token back.
+  const [photoPreviews, setPhotoPreviews] = useState({})
+  // The proof-of-work photo on a completed task, full-screen.
+  const [completionPhotoOpen, setCompletionPhotoOpen] = useState(false)
   const [completionNote, setCompletionNote] = useState('')
   const [photoUploading, setPhotoUploading] = useState(false)
   const completionPhotoInputRef = useRef(null)
@@ -896,6 +933,7 @@ export default function TaskDetail() {
       console.log('[uploadCompletionPhoto] status=%d body=', res.status, data)
       if (!res.ok) throw new Error(data?.error || `Upload failed (${res.status})`)
       setURL(data.url)
+      setPhotoPreviews(prev => ({ ...prev, [data.url]: data.signed_url || data.url }))
     } catch (err) {
       console.error('[uploadCompletionPhoto] error:', err)
       toast(err.message || 'Photo upload failed', 'error')
@@ -1865,6 +1903,41 @@ export default function TaskDetail() {
               />
             )}
 
+            {/* WHAT WAS HANDED IN. The proof-of-work photo and the note the
+                supporter left at completion — the requester's evidence that
+                the work was done, and until now on web shown nowhere but the
+                completion email. GET /tasks/:id sends them on a completed
+                task, as signed links behind its own read check. */}
+            {task?.status === 'completed' && (task.completion_photo_url || task.completion_note) && (
+              <div className="border border-white/20 rounded-md p-3 space-y-2 text-sm">
+                <div className="text-xs text-white/60">Completion</div>
+                {task.completion_photo_url && (
+                  <button
+                    type="button"
+                    onClick={() => setCompletionPhotoOpen(true)}
+                    aria-label="View completion photo"
+                    className="block w-full"
+                  >
+                    <img
+                      src={task.completion_photo_url}
+                      alt="Completion photo"
+                      className="w-full max-h-64 rounded-lg object-cover"
+                    />
+                    <span className="mt-1 block text-xs text-white/40">Tap to view</span>
+                  </button>
+                )}
+                {task.completion_note && <p className="text-white/80 whitespace-pre-wrap">{task.completion_note}</p>}
+                {task.completed_at && (
+                  <div className="text-xs text-white/40">Completed {new Date(task.completed_at).toLocaleString()}</div>
+                )}
+                <PhotoLightbox
+                  src={completionPhotoOpen ? task.completion_photo_url : ''}
+                  alt="Completion photo"
+                  onClose={() => setCompletionPhotoOpen(false)}
+                />
+              </div>
+            )}
+
             {/* THE REQUESTER'S WAY OUT, at every stage of a live task.
                 There was none for an accepted task before this: the list card
                 offered a cancel only while the task was unaccepted, the
@@ -2407,7 +2480,7 @@ export default function TaskDetail() {
             {completionPhotoURL ? (
               <div className="relative">
                 <img
-                  src={completionPhotoURL}
+                  src={photoPreviews[completionPhotoURL] || completionPhotoURL}
                   alt="Completion preview"
                   className="w-full rounded-lg object-cover max-h-48"
                 />
@@ -2477,7 +2550,7 @@ export default function TaskDetail() {
                 receiptPhotoURL ? (
                   <div className="relative">
                     <img
-                      src={receiptPhotoURL}
+                      src={photoPreviews[receiptPhotoURL] || receiptPhotoURL}
                       alt="Receipt preview"
                       className="w-full rounded-lg object-cover max-h-48"
                     />

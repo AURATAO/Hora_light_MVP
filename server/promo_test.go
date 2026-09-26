@@ -77,6 +77,9 @@ func TestPromoArithmetic(t *testing.T) {
 // The supporter is paid the UNDISCOUNTED settlement, and the part the
 // requester's discount took off is a third transfer from the platform.
 func TestPromoPayoutIsUndiscounted(t *testing.T) {
+	// Fee off: these are the funding-shape cases. What the fee does to a
+	// promo-subsidised task is pinned in platform_fee_test.go.
+	withPlatformFeeBps(t, 0)
 	cases := []struct {
 		name                                          string
 		total, mainCaptured, balanceCaptured, subsidy int
@@ -85,29 +88,29 @@ func TestPromoPayoutIsUndiscounted(t *testing.T) {
 		// $24.50 owed; the requester paid $14.50 (a $10 promo); the platform
 		// pays the $10.
 		{"promo inside the hold", 2450, 1450, 0, 1000,
-			[]payoutSplit{{payoutSourceHold, 1450, 0}, {payoutSourcePromo, 1000, 0}}},
+			[]payoutSplit{{Source: payoutSourceHold, ServiceCents: 1450}, {Source: payoutSourcePromo, ServiceCents: 1000}}},
 		// A zero hold: everything the requester owed was a balance charge,
 		// and the platform pays the discount.
 		{"zero hold, balance collected", 2450, 0, 500, 1950,
-			[]payoutSplit{{payoutSourceBalance, 500, 0}, {payoutSourcePromo, 1950, 0}}},
+			[]payoutSplit{{Source: payoutSourceBalance, ServiceCents: 500}, {Source: payoutSourcePromo, ServiceCents: 1950}}},
 		// A promo that covered the whole settlement: one transfer, all
 		// platform money.
 		{"fully discounted", 1200, 0, 0, 1200,
-			[]payoutSplit{{payoutSourcePromo, 1200, 0}}},
+			[]payoutSplit{{Source: payoutSourcePromo, ServiceCents: 1200}}},
 		// The balance charge failed. The subsidy is still paid — the
 		// platform's promise does not depend on the requester's card — and
 		// only the uncollected balance is a shortfall.
 		{"balance failed, subsidy still paid", 2450, 0, 0, 1950,
-			[]payoutSplit{{payoutSourcePromo, 1950, 500}}},
+			[]payoutSplit{{Source: payoutSourcePromo, ServiceCents: 1950, ShortfallCents: 500}}},
 		{"balance failed after a partial hold", 3000, 1000, 0, 1000,
-			[]payoutSplit{{payoutSourceHold, 1000, 1000}, {payoutSourcePromo, 1000, 0}}},
+			[]payoutSplit{{Source: payoutSourceHold, ServiceCents: 1000, ShortfallCents: 1000}, {Source: payoutSourcePromo, ServiceCents: 1000}}},
 		// No promo: exactly the Phase 3 shape.
 		{"no promo", 6000, 4950, 1050, 0,
-			[]payoutSplit{{payoutSourceHold, 4950, 0}, {payoutSourceBalance, 1050, 0}}},
+			[]payoutSplit{{Source: payoutSourceHold, ServiceCents: 4950}, {Source: payoutSourceBalance, ServiceCents: 1050}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := settlementPayouts(tc.total, tc.mainCaptured, tc.balanceCaptured, tc.subsidy)
+			got := settlementPayouts(supporterPayFor(tc.total, 0), tc.mainCaptured, tc.balanceCaptured, tc.subsidy)
 			if len(got) != len(tc.want) {
 				t.Fatalf("got %+v, want %+v", got, tc.want)
 			}
@@ -116,7 +119,7 @@ func TestPromoPayoutIsUndiscounted(t *testing.T) {
 				if got[i] != tc.want[i] {
 					t.Errorf("split %d = %+v, want %+v", i, got[i], tc.want[i])
 				}
-				paid += got[i].OwedCents
+				paid += got[i].AmountCents()
 				short += got[i].ShortfallCents
 			}
 			// Never overpaid, never paid out of money nobody put in, and the
@@ -590,8 +593,11 @@ func TestPromoCaptureDiscountedPayoutUndiscounted(t *testing.T) {
 			t.Errorf("payout %+v: funding and payment_id disagree", r)
 		}
 	}
-	if paid[payoutFundingCharge] != 1450 || paid[payoutFundingPromoSubsidy] != 1000 {
-		t.Errorf("payouts = %+v, want $14.50 from the charge + $10.00 subsidy", rows)
+	// The supporter's 80% is of the UNDISCOUNTED $24.50 = $19.60 (D-14): the
+	// charge funds $14.50 of it and the platform makes up the $5.10 — the
+	// discount less the fee it would otherwise have kept.
+	if paid[payoutFundingCharge] != 1450 || paid[payoutFundingPromoSubsidy] != 510 {
+		t.Errorf("payouts = %+v, want $14.50 from the charge + $5.10 subsidy", rows)
 	}
 	// The subsidy transfer is unbound; the charge-funded one names its charge.
 	for _, tr := range f.transfers {
@@ -600,7 +606,7 @@ func TestPromoCaptureDiscountedPayoutUndiscounted(t *testing.T) {
 			if tr.Source == "" {
 				t.Error("the charge-funded transfer has no source_transaction")
 			}
-		case 1000:
+		case 510:
 			if tr.Source != "" {
 				t.Error("the subsidy transfer is bound to a charge it exceeds")
 			}
@@ -622,8 +628,8 @@ func TestPromoCaptureDiscountedPayoutUndiscounted(t *testing.T) {
 			t.Errorf("the supporter's settlement carries %s", k)
 		}
 	}
-	if earned := s["earned"].(map[string]any); num(earned["total_cents"]) != 2450 {
-		t.Errorf("supporter earned %v, want $24.50 undiscounted", earned)
+	if earned := s["earned"].(map[string]any); num(earned["total_cents"]) != 1960 || num(earned["service_gross_cents"]) != 2450 {
+		t.Errorf("supporter earned %v, want $19.60: 80%% of the undiscounted $24.50", earned)
 	}
 
 	// The receipt: once, for the discounted charge, with the promo line.
@@ -681,8 +687,10 @@ func TestPromoZeroHoldCollectsTheRestAsABalance(t *testing.T) {
 	for _, r := range payoutRows(t, w.taskID) {
 		paid[r.Funding] += r.Cents
 	}
-	if paid[payoutFundingCharge] != 500 || paid[payoutFundingPromoSubsidy] != 1950 {
-		t.Errorf("payouts = %v, want $5.00 from the balance charge + $19.50 subsidy", paid)
+	// $24.50 of service nets $19.60 after the fee; the balance charge funds
+	// $5.00 of it and the platform the remaining $14.60.
+	if paid[payoutFundingCharge] != 500 || paid[payoutFundingPromoSubsidy] != 1460 {
+		t.Errorf("payouts = %v, want $5.00 from the balance charge + $14.60 subsidy", paid)
 	}
 	if n := countNotifications(t, w.requesterID, "RECEIPT"); n != 1 {
 		t.Fatalf("%d receipts, want 1", n)

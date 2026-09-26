@@ -7,7 +7,12 @@ import {
   getEarnings,
 } from '../api/payments'
 import { formatCents } from '../lib/formatCents'
-import { earningsWhereaboutsLine, transferStatusCopy } from '../lib/earningsCopy'
+import {
+  earningsWhereaboutsLine,
+  transferStatusCopy,
+  platformFeeExplainer,
+  transferBreakdownLine,
+} from '../lib/earningsCopy'
 import { useToast } from '../providers/ToastProvider'
 
 /**
@@ -177,6 +182,10 @@ export default function Earnings({ isSupporter }) {
                 loadingMore={loadingMore}
                 onSeeAll={loadAllTransfers}
               />
+              {/* The fee, stated once where the numbers live, so no row above
+                  is ever a silent deduction (D-14). The rate is the
+                  backend's. */}
+              <p className="text-xs text-white/40">{platformFeeExplainer(data.platform_fee_bps)}</p>
             </>
           )}
         </>
@@ -295,10 +304,7 @@ function TransferList({ transfers, total, onSeeAll, expanded, loadingMore }) {
             {/* The split, said out loud. A supporter who sees one total for a
                 shopping task cannot tell what they MADE from what they are
                 being handed back, and those are very different numbers. */}
-            <div className="text-xs text-white/40">
-              {formatCents(t.time_cents)} time
-              {t.receipt_cents > 0 && <> + {formatCents(t.receipt_cents)} reimbursement</>}
-            </div>
+            <div className="text-xs text-white/40">{transferBreakdownLine(t)}</div>
           </div>
           <div className="text-right shrink-0">
             <div className="text-white">{formatCents(t.amount_cents)}</div>

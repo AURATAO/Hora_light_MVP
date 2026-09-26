@@ -79,6 +79,10 @@ const bankArrivalMigrationPath = "../supabase/migrations/20260922224407_payouts_
 // payouts table it alters.
 const promoCodesMigrationPath = "../supabase/migrations/20260923104026_promo_codes.sql"
 
+// The platform fee: service_cents / fee_cents / reimbursement_cents / fee_bps
+// on payouts, with the CHECK that they reconcile to amount_cents (D-14).
+const platformFeeMigrationPath = "../supabase/migrations/20260926120000_payouts_platform_fee_breakdown.sql"
+
 func setupStripeWebhookDB(t *testing.T) {
 	t.Helper()
 	setupAdminOpsDB(t) // users, tasks, worklogs, audit_logs + the pool swap
@@ -120,7 +124,7 @@ func setupStripeWebhookDB(t *testing.T) {
 
 	for _, path := range []string{paymentsMigrationPath, phase2aMigrationPath, phase2bMigrationPath, cardDisplayMigrationPath,
 		restructureMigrationPath, connectPayoutsMigrationPath, transfersActiveMigrationPath,
-		bankArrivalMigrationPath, promoCodesMigrationPath} {
+		bankArrivalMigrationPath, promoCodesMigrationPath, platformFeeMigrationPath} {
 		migration, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read migration %s: %v", path, err)
