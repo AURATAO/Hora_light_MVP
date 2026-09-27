@@ -344,6 +344,11 @@ type ConnectStatus struct {
 	// can put the prompt in front of a supporter BEFORE they pick a task, and
 	// so beta users are shown nothing while the flag is off.
 	PayoutsEnforced bool `json:"payouts_enforced"`
+	// The review sandbox (sandbox.go). A sandbox account is reported as
+	// complete by fiat — it is paid on paper by recordSandboxPayout and never
+	// through Stripe — so the clients must not offer it Stripe's onboarding or
+	// the Express dashboard: there is no account behind this status.
+	Sandbox bool `json:"sandbox"`
 }
 
 // stateFor collapses the cached facts into the one word the clients use.
@@ -541,6 +546,11 @@ func readConnectStatus(ctx context.Context, uid string) (ConnectStatus, error) {
 		RequirementsDue: []string{},
 		PayoutsEnforced: paymentsEnforcedFor(ctx, uid),
 	}
+	if sandbox, err := isSandboxUser(ctx, uid); err != nil {
+		return st, err
+	} else if sandbox {
+		return sandboxConnectStatus(), nil
+	}
 
 	var accountID *string
 	if err := db.QueryRow(ctx,
@@ -590,6 +600,11 @@ func cachedConnectStatus(ctx context.Context, uid string) (ConnectStatus, error)
 		RequirementsDue: []string{},
 		PayoutsEnforced: paymentsEnforcedFor(ctx, uid),
 	}
+	if sandbox, err := isSandboxUser(ctx, uid); err != nil {
+		return st, err
+	} else if sandbox {
+		return sandboxConnectStatus(), nil
+	}
 	var accountID *string
 	var rawDue []byte
 	err := db.QueryRow(ctx, `
@@ -609,6 +624,50 @@ func cachedConnectStatus(ctx context.Context, uid string) (ConnectStatus, error)
 	st.State = stateFor(st.PayoutsEnabled, st.TransfersActive, st.DetailsSubmitted,
 		accountID != nil && *accountID != "", len(st.RequirementsDue))
 	return st, nil
+}
+
+// ── The review sandbox ─────────────────────────────────────────────────────
+
+// sandboxConnectStatus is what every status read answers for a sandbox
+// account, and the whole reason the App Review walkthrough can accept a task.
+//
+// A reviewer cannot complete Stripe's hosted onboarding — it asks for a date
+// of birth, the last four of an SSN and a bank account, none of which Apple's
+// reviewer has or should be asked for — so the sandbox is declared payable
+// here, by fiat, and is then paid on paper: recordSandboxPayout writes the
+// payout row a settlement would have written and never calls Stripe. This is
+// the only account the shortcut applies to, and users.is_sandbox is set by the
+// review-login seed and nothing else (review_account.go).
+//
+// The status is synthesised, never cached: the users columns stay whatever
+// Stripe last said, and nothing here writes them. The clients read Sandbox
+// and hide the Stripe surfaces; the two link handlers refuse regardless.
+func sandboxConnectStatus() ConnectStatus {
+	return ConnectStatus{
+		State:            onboardingComplete,
+		PayoutsEnabled:   true,
+		TransfersActive:  true,
+		DetailsSubmitted: true,
+		RequirementsDue:  []string{},
+		PayoutsEnforced:  true,
+		Sandbox:          true,
+	}
+}
+
+// refuseSandboxConnect answers 409 for a sandbox account on the two routes
+// that would put it in front of Stripe. Returns true when it wrote the
+// response. A read error is treated as "not sandbox": the route then behaves
+// exactly as it does for everyone else, which is the safe direction here.
+func refuseSandboxConnect(c *gin.Context, uid string) bool {
+	sandbox, err := isSandboxUser(c.Request.Context(), uid)
+	if err != nil || !sandbox {
+		return false
+	}
+	c.JSON(http.StatusConflict, gin.H{
+		"error":   "sandbox_account",
+		"message": "The review sandbox is paid on paper. There is no Stripe account to set up or open.",
+	})
+	return true
 }
 
 // ── The accept gate ────────────────────────────────────────────────────────
@@ -746,6 +805,9 @@ func connectOnboardingLinkHandler(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
 		return
 	}
+	if refuseSandboxConnect(c, uid) {
+		return
+	}
 	ctx := c.Request.Context()
 
 	accountID, err := connectAccountFor(ctx, uid, email)
@@ -838,6 +900,9 @@ func connectLoginLinkHandler(c *gin.Context) {
 	uid := c.GetString("uid")
 	if uid == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+		return
+	}
+	if refuseSandboxConnect(c, uid) {
 		return
 	}
 	ctx := c.Request.Context()

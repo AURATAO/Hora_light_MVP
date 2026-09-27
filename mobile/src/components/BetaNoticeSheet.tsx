@@ -103,10 +103,24 @@ export function BetaNoticeSheet({ visible, onDismiss, onAccept }: BetaNoticeShee
             </View>
 
             <Text className="mt-6 text-caption text-muted">{BETA_NOTICE_COPY.finePrint}</Text>
+          </ScrollView>
 
+          {/* Pinned footer — the CTA never scrolls away, and its top hairline
+              doubles as the "content continues above" edge cue.
+
+              The acknowledgement lives HERE, next to the button it enables,
+              not at the end of the scrolling body. On an iPhone 17 the body
+              alone fills the sheet, so a checkbox below it was invisible and
+              the disabled CTA read as broken — the 2026-09-27 pre-submission
+              walk found it only by scrolling. Beside the button, the unticked
+              box is the explanation. */}
+          <View
+            className="border-t border-line px-6 pt-4"
+            style={{ paddingBottom: Math.max(insets.bottom, space[8]) }}
+          >
             {/* The label is tappable too, so the whole row behaves like web's
                 <label> rather than asking for a hit on the 22pt box. */}
-            <View className="mt-6 flex-row items-center">
+            <View className="mb-4 flex-row items-center">
               <Checkbox
                 checked={checked}
                 onChange={setChecked}
@@ -120,14 +134,6 @@ export function BetaNoticeSheet({ visible, onDismiss, onAccept }: BetaNoticeShee
                 {BETA_NOTICE_COPY.acknowledgement}
               </Text>
             </View>
-          </ScrollView>
-
-          {/* Pinned footer — the CTA never scrolls away, and its top hairline
-              doubles as the "content continues above" edge cue. */}
-          <View
-            className="border-t border-line px-6 pt-4"
-            style={{ paddingBottom: Math.max(insets.bottom, space[8]) }}
-          >
             <Button
               label={BETA_NOTICE_COPY.cta}
               onPress={handleAccept}

@@ -70,6 +70,15 @@ const COPY: Record<OnboardingState, { title: string; body: string; cta: string }
   },
 };
 
+// The App Review sandbox: the server reports it complete and pays it on
+// paper (no Stripe account behind it), so the copy must not promise a bank
+// and there is no dashboard to offer — the login-link route answers 409.
+const SANDBOX_COPY = {
+  title: "Payouts are set up",
+  body: "Review account: earnings are recorded here without a bank transfer.",
+  cta: "",
+};
+
 
 export default function EarningsScreen() {
   const router = useRouter();
@@ -147,7 +156,8 @@ export default function EarningsScreen() {
   }
 
   const state: OnboardingState = data?.onboarding?.state ?? "not_started";
-  const copy = COPY[state] ?? COPY.not_started;
+  const sandbox = data?.onboarding?.sandbox === true;
+  const copy = sandbox ? SANDBOX_COPY : (COPY[state] ?? COPY.not_started);
   const done = state === "complete";
   const verifying = state === "verifying";
   const due = data?.onboarding?.requirements_due ?? [];
@@ -203,7 +213,7 @@ export default function EarningsScreen() {
             </Card>
 
             <View className="mt-3">
-              {done ? (
+              {done && sandbox ? null : done ? (
                 // A text action, not a second solid button: the one solid CTA
                 // on this screen belongs to setting payouts up (DESIGN.md §1).
                 <PressableScale

@@ -139,6 +139,10 @@ type payoutInput struct {
 	// a completion_balance that failed. Recorded on the row rather than
 	// silently absorbed; see the note in payoutForTask.
 	ShortfallCents int
+	// Set by payoutForTask, never by a caller: the task belongs to the review
+	// sandbox, so the row is written as paid and Stripe is never called. See
+	// recordSandboxPayout.
+	Sandbox bool
 }
 
 // ── What a settlement owes the supporter ───────────────────────────────────
@@ -382,6 +386,20 @@ func payoutForTask(ctx context.Context, in payoutInput) *Payout {
 		return nil
 	}
 
+	// THE REVIEW SANDBOX IS PAID ON PAPER. Its task's money is test-mode
+	// money on a test-mode key (sandbox.go), and its supporter has no
+	// connected account and never will — a reviewer cannot pass Stripe's
+	// hosted onboarding. So the row a real settlement would write is written,
+	// marked paid, and no Transfer is ever created for it. Fails closed on a
+	// read error: not knowing which side of the wall a task is on is not a
+	// reason to move money.
+	if sandbox, err := isSandboxTask(ctx, in.TaskID); err != nil {
+		log.Printf("[payments][payout][ERROR] task=%s sandbox flag unreadable: %v — not sending", in.TaskID, err)
+		return nil
+	} else if sandbox {
+		return recordSandboxPayout(ctx, in)
+	}
+
 	accountID, err := supporterAccountID(ctx, in.SupporterID)
 	if err != nil || accountID == "" {
 		// A completed task whose supporter never onboarded. Possible whenever
@@ -435,6 +453,42 @@ func payoutForTask(ctx context.Context, in payoutInput) *Payout {
 	p.Status = payoutStatusPaid
 	p.StripeTransferID = tr.ID
 	notifySupporterPaid(ctx, in, amount)
+	return p
+}
+
+// recordSandboxPayout is payoutForTask for the review sandbox: the same row,
+// the same breakdown, the same one-payout-per-payment idempotency — and no
+// Stripe call. The row goes straight to paid with no stripe_transfer_id and
+// meta.sandbox = true, and bank_paid_at is stamped so the Earnings totals read
+// it as settled rather than as money forever in transit. adminRetryPayout
+// refuses these rows, so nothing can later turn one into a real transfer.
+//
+// No PAYOUT_SENT notification: its copy says the money is on its way to a
+// bank, and here it is not. The row on the Earnings screen is the record.
+func recordSandboxPayout(ctx context.Context, in payoutInput) *Payout {
+	in.Sandbox = true
+	p, err := insertPayout(ctx, in, in.AmountCents)
+	if errors.Is(err, errPayoutExists) {
+		log.Printf("[payments][payout][sandbox] task=%s payment=%q already has a payout — not recording a second",
+			in.TaskID, in.PaymentID)
+		return nil
+	}
+	if err != nil {
+		log.Printf("[payments][payout][sandbox][ERROR] task=%s could not record a %s payout: %v",
+			in.TaskID, formatCentsUSD(in.AmountCents), err)
+		return nil
+	}
+	if _, err := db.Exec(ctx, `
+		update public.payouts
+		   set status = $2, bank_paid_at = now(), updated_at = now()
+		 where id = $1::uuid
+	`, p.ID, payoutStatusPaid); err != nil {
+		log.Printf("[payments][payout][sandbox][ERROR] recorded payout=%s but could not mark it paid: %v", p.ID, err)
+		return p
+	}
+	p.Status = payoutStatusPaid
+	log.Printf("[payments][payout][sandbox] task=%s supporter=%s payout=%s amount=%s — recorded, no transfer",
+		in.TaskID, in.SupporterID, p.ID, formatCentsUSD(in.AmountCents))
 	return p
 }
 
@@ -494,6 +548,22 @@ func transferIdempotencyKey(payoutID string, attempt int) string {
 	return fmt.Sprintf("transfer_%s_%d", payoutID, attempt)
 }
 
+// isSandboxPayoutMeta reads the mark recordSandboxPayout leaves on the row.
+func isSandboxPayoutMeta(raw []byte) bool {
+	var m struct {
+		Sandbox bool `json:"sandbox"`
+	}
+	return len(raw) > 0 && json.Unmarshal(raw, &m) == nil && m.Sandbox
+}
+
+// isSandboxTaskOrErr is isSandboxTask failing CLOSED: a task whose side of
+// the wall cannot be read is treated as sandbox by the one caller that would
+// otherwise send money.
+func isSandboxTaskOrErr(ctx context.Context, taskID string) bool {
+	sandbox, err := isSandboxTask(ctx, taskID)
+	return err != nil || sandbox
+}
+
 // ── Rows ───────────────────────────────────────────────────────────────────
 
 // errPayoutExists is the unique-index violation, named so the caller can tell
@@ -527,6 +597,12 @@ func insertPayout(ctx context.Context, in payoutInput, amount int) (*Payout, err
 	}
 	if funding == payoutFundingPromoSubsidy {
 		meta["subsidy_reason"] = "promo_discount"
+	}
+	if in.Sandbox {
+		// Read by adminRetryPayout, which refuses the row, and by anyone
+		// reconciling payouts against Stripe, where this one will not be.
+		meta["sandbox"] = true
+		meta["funding_note"] = "review sandbox: recorded as paid, no Stripe transfer"
 	}
 	raw, err = json.Marshal(meta)
 	if err != nil {
@@ -800,19 +876,32 @@ func adminRetryPayout(c *gin.Context) {
 
 	var p Payout
 	var transferID, paymentID *string
+	var rawMeta []byte
 	// The breakdown is NULL on a pre-fee row; coalesced to zero, and the retry
 	// then sends amount_cents as recorded — a retry re-sends what the row
 	// says, it never re-prices.
 	err := db.QueryRow(ctx, `
 		select id::text, task_id::text, supporter_id::text, payment_id::text,
 		       amount_cents, status, attempt_count, stripe_transfer_id,
-		       coalesce(service_cents, 0), coalesce(fee_cents, 0), coalesce(reimbursement_cents, 0)
+		       coalesce(service_cents, 0), coalesce(fee_cents, 0), coalesce(reimbursement_cents, 0),
+		       coalesce(meta, '{}'::jsonb)
 		  from public.payouts where id = $1::uuid
 	`, payoutID).Scan(&p.ID, &p.TaskID, &p.SupporterID, &paymentID,
 		&p.AmountCents, &p.Status, &p.AttemptCount, &transferID,
-		&p.ServiceCents, &p.FeeCents, &p.ReimbursementCents)
+		&p.ServiceCents, &p.FeeCents, &p.ReimbursementCents, &rawMeta)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
+		return
+	}
+	// A sandbox row was never a transfer and must never become one: it is
+	// paid on paper (recordSandboxPayout). Checked on the row's own mark AND
+	// on the task, so neither a hand-edited row nor a row written before the
+	// mark existed can reach Stripe from here.
+	if isSandboxPayoutMeta(rawMeta) || isSandboxTaskOrErr(ctx, p.TaskID) {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":   "sandbox_payout",
+			"message": "This payout belongs to the review sandbox and was never a Stripe transfer. There is nothing to retry.",
+		})
 		return
 	}
 	if paymentID != nil {

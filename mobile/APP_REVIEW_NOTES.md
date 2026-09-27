@@ -1,4 +1,5 @@
-<!-- Paste into App Store Connect → App Review Information → Notes. Replace the two <…> placeholders with Render's REVIEW_ACCOUNT_EMAIL / REVIEW_ACCOUNT_CODE first; never commit the live values. -->
+<!-- Paste into App Store Connect → App Review Information → Notes. Replace the two <…> placeholders with Render's REVIEW_ACCOUNT_EMAIL / REVIEW_ACCOUNT_CODE first; never commit the live values.
+     The pair committed in bc0096b is dead: REVIEW_ACCOUNT_CODE was rotated on Render on 2026-09-27; verified 2026-09-27T20:28Z, POST /auth/review-login with the old code answers 401. -->
 Demo account
 Email: <REVIEW_ACCOUNT_EMAIL>
 Code: <REVIEW_ACCOUNT_CODE> — tap "Send code", then enter the code above. (An emailed code may also arrive; ignore it — the fixed code above always works.)

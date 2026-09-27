@@ -1050,6 +1050,12 @@ export interface ConnectStatus {
   requirements_due: string[];
   /** Whether accepting is currently gated on payouts (PAYMENTS_ENFORCED). */
   payouts_enforced: boolean;
+  /**
+   * The App Review sandbox account. Reported as "complete" by fiat — it is
+   * paid on paper, never through Stripe — so there is no Express dashboard to
+   * open and no onboarding to continue; the server refuses both links.
+   */
+  sandbox?: boolean;
 }
 
 /** The one word a payout row renders. "paid" is reserved for money in the BANK. */
