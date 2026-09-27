@@ -1,13 +1,14 @@
+<!-- Paste into App Store Connect → App Review Information → Notes. Replace the two <…> placeholders with Render's REVIEW_ACCOUNT_EMAIL / REVIEW_ACCOUNT_CODE first; never commit the live values. -->
 Demo account
-Email: info@my-hora.com
-Code: 708341 — tap "Send code", then enter the code above. (No email is actually sent for this demo account; the code is fixed.)
+Email: <REVIEW_ACCOUNT_EMAIL>
+Code: <REVIEW_ACCOUNT_CODE> — tap "Send code", then enter the code above. (An emailed code may also arrive; ignore it — the fixed code above always works.)
 
 HO:RA is a two-sided marketplace for short, in-person tasks. Your demo account is set up as both a requester and an approved supporter, so you can walk both sides with one login. It has a saved test card already attached — you will never be asked for card details.
 
 Walkthrough
 1. Sign in: tick the Terms/Privacy checkbox, tap "Send code", enter the code above.
-2. Home → "Post a task". Any title and any address (your own location is fine). Tap "Post task". A hold is placed on the test card (the reserved amount is shown on screen).
-3. Work tab → open the task you just posted → "Accept task".
+2. Home → tap the "Groceries? A queue? Company?" banner (or any category). Describe the task in a sentence, tap "Continue", pick any address suggestion. Tap "Post task". A hold is placed on the test card (the reserved amount is shown on screen).
+3. Earn tab → open the task you just posted → "Accept task".
 4. Tap "On my way". iOS asks for location permission here (see note c). The requester view shows your live position.
 5. Tap "Clock in" (timer starts), wait a moment, then "Clock out".
 6. Tap "Complete task" → choose any photo from the library (or take one) as the completion photo → confirm. The test card is charged for the time worked; an itemized receipt appears.
