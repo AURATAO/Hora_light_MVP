@@ -67,7 +67,7 @@ export function betaSettlementLine(
     return "Payments and purchase reimbursements are handled securely in the app.";
   }
   if (paymentsEnforced === false) {
-    return "During beta, settle purchases directly with your supporter.";
+    return "Settle purchases directly with your supporter.";
   }
   return null;
 }
@@ -86,7 +86,7 @@ export const SERVICE_AREA = "New York City";
 // place. The clients were still refusing $31 and still promising a ceiling
 // nothing enforced.
 export const BETA_NOTICE_COPY = {
-  heading: "You're in. Welcome to HO:RA Beta.",
+  heading: "You're in. Welcome to HO:RA.",
   intro: [
     `HO:RA is a minute-billing platform for urban support — real people helping with real tasks in ${SERVICE_AREA}.`,
     "You post what you need, a nearby supporter accepts it, and you pay for the time they actually work.",
@@ -96,12 +96,12 @@ export const BETA_NOTICE_COPY = {
     "You're charged for time on the clock only — a supporter who steps away clocks out, and waiting time is free",
     "Every task is manually reviewed by the HO:RA team before a supporter is dispatched",
     "Reimbursement only: you cover actual item costs (e.g. a $5 coffee), nothing else",
-    "This is an early-stage beta — things may change, and some tasks may not be fulfilled",
+    "HO:RA is currently available in New York City. Availability depends on supporters nearby, so some tasks may not be fulfilled",
   ],
   finePrint:
-    "By continuing, you agree to use this platform responsibly and understand this is an early-stage test.",
+    "By continuing, you agree to use this platform responsibly.",
   acknowledgement:
-    "I understand this is a beta — things may change and some tasks may not be fulfilled",
+    "I understand HO:RA is currently available in New York City and some tasks may not be fulfilled",
   cta: "Enter HO:RA",
 } as const;
 
@@ -155,10 +155,10 @@ export function isCategoryDisabled(category: TaskCategory | undefined): boolean 
 }
 
 /** Marker under a disabled category in any picker. */
-export const DISABLED_CATEGORY_BADGE = "Coming soon";
+export const DISABLED_CATEGORY_BADGE = "Unavailable";
 
 /** Shown when a task somehow arrives already set to a disabled category. */
-export const DISABLED_CATEGORY_NOTICE = "Companionship tasks aren't available this round";
+export const DISABLED_CATEGORY_NOTICE = "Companionship tasks aren't available right now";
 
 /**
  * QA escape hatch: forces the round open regardless of today's date, so the

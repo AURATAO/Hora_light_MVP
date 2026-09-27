@@ -13,7 +13,7 @@ import { getMe, getProfile } from "../lib/api";
 // headless location launch.
 import { resyncTaskTracking, teardownForNotification } from "../lib/task-teardown";
 // Importing ./push registers the app's single notification handler at boot.
-import { registerForPushNotifications, routeFromNotificationResponse } from "../lib/push";
+import { registerPushIfAlreadyGranted, routeFromNotificationResponse } from "../lib/push";
 import type { Profile } from "../lib/types";
 import SplashCollision from "../components/SplashCollision";
 import { ErrorBoundary } from "../components/ErrorBoundary";
@@ -94,12 +94,14 @@ export default function RootLayout() {
         setState({ loading: false, authenticated: false, profile: null });
         return;
       }
-      // Register this device for push once we know the user is signed in. This
-      // runs on app-start-when-authenticated AND after login (finishLogin's
+      // Register this device for push once we know the user is signed in —
+      // but only if permission was ALREADY granted. The prompt itself is asked
+      // in context (push.ts askForPushInContext), never at launch. This runs
+      // on app-start-when-authenticated AND after login (finishLogin's
       // refresh() and supabase onAuthStateChange both route through here). The
       // server upsert makes repeat calls harmless. Fire-and-forget — it never
       // throws and must not gate auth resolution.
-      registerForPushNotifications();
+      registerPushIfAlreadyGranted();
       try {
         const profile = await getProfile();
         setState({ loading: false, authenticated: true, profile });

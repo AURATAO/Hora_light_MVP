@@ -34,3 +34,15 @@
 **Why blocks are mutual.** Apple's requirement is that blocked users cannot contact each other. Directional storage keeps the audit trail honest about who acted; mutual enforcement is what the person who blocked actually wanted.
 
 **Why the chat is read-only rather than hidden.** A blocked person who was mid-task still needs the history (what was agreed, where to be); what they must not be able to do is send. TalkJS's `Read` access does exactly that.
+
+## Amendment (2026-09-27, same day): the four likely rejection blockers
+
+7. **In-app account deletion** (Guideline 5.1.1(v)) — `DELETE /profile` with a `GET /profile/deletion` preview (`account_deletion.go`). Refused, with the reason, while an open task, an outstanding balance or a payout that has not reached the bank exists. Otherwise the users row is KEPT and anonymised (placeholder email, identity subs cleared, profile fields blanked, legacy email columns on tasks/worklogs rewritten), location pings / push tokens / notifications deleted, the Stripe Customer deleted (cards go with it), the Supabase auth user deleted via the admin API; the Connect account, the money rows, reviews written, and safety records are retained — the confirmation UI on both clients says exactly this. `ACCOUNT_DELETED` audit row on the system job id. Web + mobile, under Profile.
+
+8. **Sign in with Apple** (Guideline 4.8) beside Google on both clients: native `signInAsync` → `signInWithIdToken` on mobile (nonce hashed for Apple, raw for Supabase); Supabase OAuth with an `/auth/apple-callback` page on web. Needs the Apple Developer / Supabase dashboard steps recorded in the submission notes.
+
+9. **Privacy manifest** declared in app.json (`ios.privacyManifests`): the eleven collected data types from the inventory, all app-functionality, linked, no tracking; required-reason APIs UserDefaults CA92.1, FileTimestamp C617.1, SystemBootTime 35F9.1, DiskSpace E174.1.
+
+10. **Notification permission asked in context**, never at launch: at launch only an already-granted permission registers a token; the system prompt follows our one-line explanation after a first post ("a supporter accepts, is arriving, needs your approval") or a first accept (`push.ts askForPushInContext`), at most once per device.
+
+11. **No "beta" positioning** in user-facing copy: the notice, the acknowledgement, removal notices and the Terms page now say HO:RA is currently available in New York City. Identifiers, routes and `beta_accepted` are unchanged.

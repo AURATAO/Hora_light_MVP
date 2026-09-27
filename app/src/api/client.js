@@ -78,6 +78,16 @@ export const AuthAPI = {
   },
 
   // 單一登出：清 server cookie + supabase
+  // Account deletion (App Store 5.1.1(v)) — see server/account_deletion.go.
+  deletionPreview() {
+    return api("/profile/deletion");
+  },
+  async deleteAccount() {
+    const res = await api("/profile", { method: "DELETE" });
+    await supabase.auth.signOut().catch(() => {});
+    return res;
+  },
+
   async logout() {
     await api("/auth/logout", { method: "POST" }).catch(() => {});
     await supabase.auth.signOut().catch(() => {});

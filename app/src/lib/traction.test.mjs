@@ -209,9 +209,25 @@ test('the notice says what HO:RA is, where it runs, and what it costs', () => {
   assert.ok(intro.includes('minute-billing'), 'what it is')
   assert.ok(intro.includes(SERVICE_AREA), 'where it runs')
   assert.ok(BETA_NOTICE_COPY.points.includes(PRICING_LINE), 'what it costs')
-  // And the beta expectation, which is the one thing the acknowledgement is
-  // actually an acknowledgement OF.
-  assert.ok(/early-stage beta/i.test(BETA_NOTICE_COPY.points.join(' ')))
+  // And the availability expectation, which is the one thing the
+  // acknowledgement is actually an acknowledgement OF.
+  assert.ok(/currently available in New York City/i.test(BETA_NOTICE_COPY.points.join(' ')))
+})
+
+test('no beta, early-stage or pilot positioning survives in the notice', () => {
+  // App Review does not accept beta positioning in a released app. The
+  // identifiers keep the name; the strings the user reads do not.
+  const everything = [
+    BETA_NOTICE_COPY.heading,
+    ...BETA_NOTICE_COPY.intro,
+    ...BETA_NOTICE_COPY.points,
+    BETA_NOTICE_COPY.finePrint,
+    BETA_NOTICE_COPY.acknowledgement,
+    BETA_NOTICE_COPY.cta,
+  ]
+  for (const line of everything) {
+    assert.ok(!/beta|early-stage|pilot/i.test(line), `beta positioning survives: ${line}`)
+  }
 })
 
 // ── The settlement line, and the sentence that must not leak ───────────────
@@ -219,7 +235,7 @@ test('the notice says what HO:RA is, where it runs, and what it costs', () => {
 test('the settlement line follows the payments flag', () => {
   assert.equal(
     betaSettlementLine(false),
-    'During beta, settle purchases directly with your supporter.'
+    'Settle purchases directly with your supporter.'
   )
   assert.equal(
     betaSettlementLine(true),

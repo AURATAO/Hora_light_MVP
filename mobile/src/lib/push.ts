@@ -1,7 +1,7 @@
 import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
 import * as SecureStore from "expo-secure-store";
-import { Platform } from "react-native";
+import { Alert, Platform } from "react-native";
 import { registerPushToken, unregisterPushToken } from "./api";
 
 // The app's SINGLE notification handler. It governs how a notification is
@@ -37,9 +37,71 @@ function easProjectId(): string | undefined {
 // break the login / app-start path it's called from. Returns the token on
 // success, else null.
 export async function registerForPushNotifications(): Promise<string | null> {
+  return registerPush({ request: true });
+}
+
+// The app-start variant: registers the token ONLY when permission was already
+// granted, and never shows the system prompt. The prompt itself is asked in
+// context (askForPushInContext) — after a first post, after a first accept —
+// with a line about what will be sent, not at launch with no explanation.
+export async function registerPushIfAlreadyGranted(): Promise<string | null> {
+  return registerPush({ request: false });
+}
+
+// Where the in-context ask has already been made on this device, so a person
+// who said "Not now" is not asked on every post. iOS itself only ever shows
+// the system prompt once; this guards OUR pre-prompt.
+const PUSH_ASKED_KEY = "hora_push_asked";
+
+export type PushAskContext = "task_posted" | "task_accepted";
+
+/** The one-line explanation shown before the system prompt. */
+export function pushAskCopy(context: PushAskContext): { title: string; body: string } {
+  if (context === "task_accepted") {
+    return {
+      title: "Turn on notifications?",
+      body: "We'll let you know when the requester messages you, approves a request, or cancels — and remind you to clock out.",
+    };
+  }
+  return {
+    title: "Turn on notifications?",
+    body: "We'll let you know when a supporter accepts your task, when they're arriving, and when something needs your approval.",
+  };
+}
+
+// Ask for push permission at a moment it makes sense, with a reason. Shows
+// our own explanatory alert first; the system prompt follows only on "Turn
+// on". Asked at most once per device by this path; a later change of mind
+// goes through iOS Settings. Never throws.
+export async function askForPushInContext(context: PushAskContext): Promise<void> {
+  try {
+    const perm = await Notifications.getPermissionsAsync();
+    if (perm.granted) {
+      await registerPush({ request: false });
+      return;
+    }
+    if (!perm.canAskAgain) return;
+    const asked = await SecureStore.getItemAsync(PUSH_ASKED_KEY).catch(() => null);
+    if (asked) return;
+    await SecureStore.setItemAsync(PUSH_ASKED_KEY, "1").catch(() => {});
+
+    const { title, body } = pushAskCopy(context);
+    const turnOn = await new Promise<boolean>((resolve) => {
+      Alert.alert(title, body, [
+        { text: "Not now", style: "cancel", onPress: () => resolve(false) },
+        { text: "Turn on", onPress: () => resolve(true) },
+      ]);
+    });
+    if (turnOn) await registerPush({ request: true });
+  } catch (e) {
+    if (__DEV__) console.warn("[push] in-context ask failed:", e);
+  }
+}
+
+async function registerPush({ request }: { request: boolean }): Promise<string | null> {
   try {
     let perm = await Notifications.getPermissionsAsync();
-    if (!perm.granted) {
+    if (!perm.granted && request) {
       perm = await Notifications.requestPermissionsAsync();
     }
     if (!perm.granted) return null;

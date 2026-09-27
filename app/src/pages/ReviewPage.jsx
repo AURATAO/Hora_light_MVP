@@ -129,7 +129,7 @@ export default function ReviewPage() {
         <div className="w-full max-w-md bg-[#2d3748] rounded-2xl p-8 text-center space-y-4">
           <div className="text-4xl">✓</div>
           <h2 className="text-white text-xl font-semibold">Thanks for the feedback</h2>
-          <p className="text-white/50 text-sm">This round closes {TRACTION_3_CONFIG.window}.</p>
+          <p className="text-white/50 text-sm">The feedback window closes {TRACTION_3_CONFIG.window}.</p>
           <Link to={`/tasks/${taskID}`} className="inline-block mt-2 text-[#9aab3a] text-sm hover:underline">
             Back to task
           </Link>

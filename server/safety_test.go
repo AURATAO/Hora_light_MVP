@@ -17,7 +17,7 @@ import (
 // a real Postgres. Skipped unless TEST_DATABASE_URL is set — see
 // admin_reassign_test.go for the throwaway-container recipe.
 
-const safetyMigrationPath = "../supabase/migrations/20260927120000_user_safety_and_review_sandbox.sql"
+const safetyMigrationPath = "../supabase/migrations/20260927165051_user_safety_and_review_sandbox.sql"
 
 // applySafetyMigration applies the real migration on top of whichever fixture
 // the caller built. Every fixture that reaches accept, the feed, a task read,

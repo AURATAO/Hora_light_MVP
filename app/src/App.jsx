@@ -15,6 +15,7 @@ import Profile from "./pages/Profile.jsx";
 import ReviewPage from "./pages/ReviewPage.jsx";
 import BecomeSupporter from "./pages/BecomeSupporter.jsx";
 import OpenInApp from "./pages/OpenInApp.jsx";
+import AppleCallback from "./pages/AppleCallback.jsx";
 
 export default function App() {
   console.log("[App] routes boot");
@@ -30,6 +31,10 @@ export default function App() {
           See app/src/pages/OpenInApp.jsx and server/internal/notify/links.go. */}
       <Route path="/open/task/:id" element={<OpenInApp />} />
       <Route path="/open/task/:id/review" element={<OpenInApp />} />
+      {/* Sign in with Apple lands here (Supabase redirectTo) with a PKCE
+          code; the page trades it for a session and the hora_session cookie.
+          Public: nobody is signed in yet when they arrive. */}
+      <Route path="/auth/apple-callback" element={<AppleCallback />} />
 
       {/* 受保護區：唯一守門 */}
       <Route element={<ProtectedLayout />}>

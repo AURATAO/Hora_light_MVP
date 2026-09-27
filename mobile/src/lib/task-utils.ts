@@ -26,9 +26,9 @@ export function statusLabel(status: DerivedTaskStatus): string {
 // task detail shows when they open it afterwards.
 const REMOVAL_NOTICE: Record<TaskRemovalReason, string> = {
   out_of_scope_private_residence:
-    "This task was removed because it falls outside this beta's scope (public locations only — no private residences). Feel free to post it again at a public location!",
+    "This task was removed because it falls outside HO:RA's scope (public locations only — no private residences). Feel free to post it again at a public location!",
   out_of_scope_other:
-    "This task was removed because it falls outside this beta's scope (short, in-person tasks at public locations). Feel free to post it again within scope!",
+    "This task was removed because it falls outside HO:RA's scope (short, in-person tasks at public locations). Feel free to post it again within scope!",
   inappropriate:
     "This task was removed because it doesn't meet our community guidelines. Get in touch if you think this was a mistake.",
   other:

@@ -3,6 +3,7 @@ import { Alert, Platform, ScrollView, Text, View } from "react-native";
 import * as WebBrowser from "expo-web-browser";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Check, ChevronLeft, CreditCard, Sparkles, Tag, X } from "lucide-react-native";
+import { askForPushInContext } from "../lib/push";
 import { BetaNoticeSheet } from "../components/BetaNoticeSheet";
 import { LEGAL_URLS } from "../lib/constants";
 import { CompanionshipPolicySheet } from "../components/CompanionshipPolicySheet";
@@ -309,6 +310,9 @@ export default function PostTask() {
         promo_code: promoApplied?.code,
       });
       finishPosted(posted?.payment ?? null);
+      // The first moment a push makes sense to a requester: their task is
+      // live and the next thing that happens to it happens without them.
+      askForPushInContext("task_posted");
     } catch (e) {
       if (handleAuthError(e)) return;
 

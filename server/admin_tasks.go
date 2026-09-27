@@ -54,12 +54,12 @@ func removalNotice(reason, taskTitle string) string {
 	switch reason {
 	case "out_of_scope_private_residence":
 		return fmt.Sprintf(
-			"Your task %q was removed because it falls outside this beta's scope "+
+			"Your task %q was removed because it falls outside HO:RA's scope "+
 				"(public locations only — no private residences). "+
 				"Feel free to post it again at a public location!", taskTitle)
 	case "out_of_scope_other":
 		return fmt.Sprintf(
-			"Your task %q was removed because it falls outside this beta's scope "+
+			"Your task %q was removed because it falls outside HO:RA's scope "+
 				"(short, in-person tasks at public locations). "+
 				"Feel free to post it again within scope!", taskTitle)
 	case "inappropriate":

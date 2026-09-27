@@ -16,6 +16,7 @@ import {
   User,
   type LucideIcon,
 } from "lucide-react-native";
+import { DeleteAccountSheet } from "../../components/DeleteAccountSheet";
 import { EditProfileSheet } from "../../components/EditProfileSheet";
 import { SupporterStatusRow } from "../../components/SupporterStatusBanner";
 import { Avatar, Card, EmptyState, PressableScale, Screen, Skeleton } from "../../components/ui";
@@ -70,6 +71,7 @@ export default function Profile() {
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   // Own rating, for approved supporters only — null until loaded / when the
   // user isn't a supporter, which is what keeps the section off everyone
@@ -197,6 +199,32 @@ export default function Profile() {
     }
   }
 
+  // Everything the device holds for the signed-in person, dropped. Shared by
+  // logout and by account deletion, which is logout plus the server side.
+  async function clearLocalSession() {
+    await Promise.all([
+      supabase.auth.signOut().catch(() => {}),
+      // A signed-out device must not keep the blue location indicator
+      // running (and pinging an endpoint it can no longer authenticate),
+      // nor any reminder for a task it can no longer act on.
+      endAllTaskTracking(),
+    ]);
+    await Promise.all([
+      SecureStore.deleteItemAsync("hora_user_id").catch(() => {}),
+      SecureStore.deleteItemAsync("hora_user_email").catch(() => {}),
+      SecureStore.deleteItemAsync("hora_user_name").catch(() => {}),
+    ]);
+    router.replace("/(auth)/login");
+  }
+
+  // The server has already anonymised the account and ended the session
+  // (DELETE /profile); the push token went with it, so only local state is
+  // left to clear.
+  async function handleDeleted() {
+    setDeleteOpen(false);
+    await clearLocalSession();
+  }
+
   function handleLogout() {
     Alert.alert("Log out?", "You'll need to sign in again to use HO:RA.", [
       { text: "Cancel", style: "cancel" },
@@ -208,20 +236,8 @@ export default function Profile() {
           // valid — /push/unregister is auth-gated, so it must run before
           // logout() clears the session. Best-effort; never blocks logout.
           await unregisterCurrentPushToken();
-          await Promise.all([
-            supabase.auth.signOut().catch(() => {}),
-            logout().catch(() => {}),
-            // A signed-out device must not keep the blue location indicator
-            // running (and pinging an endpoint it can no longer authenticate),
-            // nor any reminder for a task it can no longer act on.
-            endAllTaskTracking(),
-          ]);
-          await Promise.all([
-            SecureStore.deleteItemAsync("hora_user_id").catch(() => {}),
-            SecureStore.deleteItemAsync("hora_user_email").catch(() => {}),
-            SecureStore.deleteItemAsync("hora_user_name").catch(() => {}),
-          ]);
-          router.replace("/(auth)/login");
+          await logout().catch(() => {});
+          await clearLocalSession();
         },
       },
     ]);
@@ -395,9 +411,22 @@ export default function Profile() {
         </Text>
       </View>
 
-      <PressableScale onPress={handleLogout} className="mb-8 items-center py-3">
+      <PressableScale onPress={handleLogout} className="items-center py-3">
         <Text className="text-body font-semibold text-danger">Log out</Text>
       </PressableScale>
+      {/* In-app account deletion (App Store 5.1.1(v)). A text action rather
+          than a row: it is the one thing on this tab nobody should tap by
+          accident, and the sheet behind it is the confirmation. */}
+      <PressableScale
+        onPress={() => setDeleteOpen(true)}
+        className="mb-8 items-center py-3"
+        accessibilityRole="button"
+        accessibilityLabel="Delete account"
+      >
+        <Text className="text-caption text-muted">Delete account</Text>
+      </PressableScale>
+
+      <DeleteAccountSheet visible={deleteOpen} onClose={() => setDeleteOpen(false)} onDeleted={handleDeleted} />
 
       <EditProfileSheet
         visible={editOpen}
