@@ -152,6 +152,7 @@ func setupCreatedViaDB(t *testing.T) {
 		pool.Close()
 		db, sqldb = prevPool, prevSQL
 	})
+	applySafetyMigration(t)
 }
 
 const createdViaEmail = "requester@example.test"

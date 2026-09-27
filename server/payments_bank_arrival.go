@@ -47,8 +47,12 @@ var payoutDestinationPayments = func(ctx context.Context, accountID, payoutID st
 	params.Context = ctx
 	params.SetStripeAccount(accountID)
 	params.Limit = stripe.Int64(100)
+	key, err := stripeKeyForAccount(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
 	var out []string
-	it := balancetransaction.List(params)
+	it := (balancetransaction.Client{B: stripeBackend(), Key: key}).List(params)
 	for it.Next() {
 		bt := it.BalanceTransaction()
 		if bt.Source != nil && bt.Source.ID != "" {
@@ -66,7 +70,11 @@ var payoutDestinationPayments = func(ctx context.Context, accountID, payoutID st
 var transferDestinationPayment = func(ctx context.Context, transferID string) (string, error) {
 	params := &stripe.TransferParams{}
 	params.Context = ctx
-	tr, err := transfer.Get(transferID, params)
+	key, err := stripeKeyForTransfer(ctx, transferID)
+	if err != nil {
+		return "", err
+	}
+	tr, err := (transfer.Client{B: stripeBackend(), Key: key}).Get(transferID, params)
 	if err != nil {
 		return "", fmt.Errorf("get transfer %s: %w", transferID, err)
 	}
@@ -177,8 +185,12 @@ func reconcileBankPayouts(ctx context.Context, uid, accountID string) (int, erro
 	params.Context = ctx
 	params.SetStripeAccount(accountID)
 	params.Limit = stripe.Int64(100)
+	key, err := stripeKeyForUser(ctx, uid)
+	if err != nil {
+		return 0, err
+	}
 	total := 0
-	it := payout.List(params)
+	it := (payout.Client{B: stripeBackend(), Key: key}).List(params)
 	for it.Next() {
 		po := it.Payout()
 		arrived := time.Unix(po.ArrivalDate, 0)

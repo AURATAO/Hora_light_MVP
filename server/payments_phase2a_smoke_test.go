@@ -224,7 +224,7 @@ func TestPhase2aSmokeCannotRemoveAnotherAccountsCard(t *testing.T) {
 	setupStripeWebhookDB(t)
 
 	ownerUID, ownerCustomer := seedRequesterWithCard(t, "owner@example.test", testPMVisa)
-	cards, _, err := savedCardsFor(ownerCustomer)
+	cards, _, err := savedCardsFor(stripe.Key, ownerCustomer)
 	if err != nil || len(cards) == 0 {
 		t.Fatalf("owner has no card: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestPhase2aSmokeCannotRemoveAnotherAccountsCard(t *testing.T) {
 	}
 
 	// And the card is still there.
-	after, _, err := savedCardsFor(ownerCustomer)
+	after, _, err := savedCardsFor(stripe.Key, ownerCustomer)
 	if err != nil {
 		t.Fatalf("re-list owner cards: %v", err)
 	}

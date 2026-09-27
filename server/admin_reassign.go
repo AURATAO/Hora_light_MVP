@@ -141,6 +141,28 @@ func adminReassignTask(c *gin.Context) {
 		})
 		return
 	}
+	// A blocked pair cannot be matched by ops either (safety.go), and the
+	// App Review sandbox never meets a real account (sandbox.go).
+	blocked, err := usersBlocked(ctx, target.UID, requesterID)
+	if err != nil {
+		log.Printf("[admin.reassign][block] task=%s err=%v", taskID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+	if blocked {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "users_blocked",
+			"message": fmt.Sprintf("%s and the requester have blocked each other, so they can't be matched.", target.Email),
+		})
+		return
+	}
+	if allowed, err := sandboxPartitionAllows(ctx, requesterID, target.UID); err != nil || !allowed {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "sandbox_mismatch",
+			"message": "The App Review account and real accounts can't be matched with each other.",
+		})
+		return
+	}
 
 	affected, err := applyReassign(ctx, taskID, target, oldID)
 	if err != nil {

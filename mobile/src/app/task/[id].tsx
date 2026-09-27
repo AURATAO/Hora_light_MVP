@@ -17,6 +17,7 @@ import {
   ShieldAlert,
 } from "lucide-react-native";
 import { BudgetIncreaseSheet, type BudgetIncreaseSubmit } from "../../components/BudgetIncreaseSheet";
+import { UserSafetyMenu } from "../../components/UserSafetyMenu";
 import { CancelTaskSheet } from "../../components/CancelTaskSheet";
 import { CompleteTaskSheet, type CompleteTaskPayload } from "../../components/CompleteTaskSheet";
 import { approvedBudgetCentsFor } from "../../lib/task-budget";
@@ -1027,7 +1028,25 @@ export default function TaskDetail() {
   const Icon = meta.icon;
   const isRequester = meId !== null && task.requester_id === meId;
   const isAssignee = meId !== null && task.assigned_to_id === meId;
-  const isAvailableToAccept = meId !== null && !isRequester && !isAssignee && task.status === "open" && !task.assigned_to_id;
+  // can_self_accept is the App Review sandbox's one-login walkthrough: the
+  // server sets it only on that account's own open task (server/sandbox.go),
+  // and refuses a self-accept from anybody else regardless of what is drawn.
+  const isAvailableToAccept =
+    meId !== null &&
+    (!isRequester || task.can_self_accept === true) &&
+    !isAssignee &&
+    task.status === "open" &&
+    !task.assigned_to_id;
+  // The other party on this task, for Report / Block (App Store Guideline
+  // 1.2): the supporter for the requester, the requester for the supporter.
+  // Nobody when the task is unassigned, or when the other seat is the viewer
+  // (the sandbox's self-accepted task).
+  const counterpart: { id: string; name: string | null } | null =
+    isRequester && task.assigned_to_id && task.assigned_to_id !== meId
+      ? { id: task.assigned_to_id, name: supporter?.name?.trim() || task.assignee_name || null }
+      : isAssignee && task.requester_id && task.requester_id !== meId
+        ? { id: task.requester_id, name: requester?.name?.trim() || task.requester_name || null }
+        : null;
   // Editing stays open-only: changing the terms of a job somebody has already
   // accepted is a renegotiation, and that belongs in chat. deriveTaskStatus
   // only returns "open" while assigned_to_id is null, and the server enforces
@@ -1153,6 +1172,17 @@ export default function TaskDetail() {
       <HeaderRow
         onBack={() => router.back()}
         onEdit={editable ? () => router.push(`/task/${id}/edit`) : undefined}
+        safety={
+          counterpart ? (
+            <UserSafetyMenu
+              userId={counterpart.id}
+              userName={counterpart.name}
+              taskId={task.id}
+              blocked={task.chat_blocked === true}
+              onBlocked={load}
+            />
+          ) : undefined
+        }
       />
 
       <ScrollView showsVerticalScrollIndicator={false}>
@@ -2422,7 +2452,16 @@ function SettlementCard({
 
 // `onEdit` is passed only for a task the signed-in requester can still change,
 // so the pencil is absent — not disabled — the moment someone accepts it.
-function HeaderRow({ onBack, onEdit }: { onBack: () => void; onEdit?: () => void }) {
+function HeaderRow({
+  onBack,
+  onEdit,
+  safety,
+}: {
+  onBack: () => void;
+  onEdit?: () => void;
+  /** Report / Block for the other party on this task (UserSafetyMenu). */
+  safety?: ReactNode;
+}) {
   return (
     <View className="mb-6 mt-4 flex-row items-center justify-between">
       <View className="flex-row items-center">
@@ -2442,17 +2481,20 @@ function HeaderRow({ onBack, onEdit }: { onBack: () => void; onEdit?: () => void
         </PressableScale>
         <Text className="ml-1 text-title font-semibold text-ink">Task</Text>
       </View>
-      {onEdit ? (
-        <PressableScale
-          onPress={onEdit}
-          className="h-11 w-11 items-center justify-center rounded-pill"
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel="Edit task"
-        >
-          <Pencil color={color.ink} size={20} strokeWidth={size.iconStroke} />
-        </PressableScale>
-      ) : null}
+      <View className="flex-row items-center gap-2">
+        {onEdit ? (
+          <PressableScale
+            onPress={onEdit}
+            className="h-11 w-11 items-center justify-center rounded-pill"
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Edit task"
+          >
+            <Pencil color={color.ink} size={20} strokeWidth={size.iconStroke} />
+          </PressableScale>
+        ) : null}
+        {safety}
+      </View>
     </View>
   );
 }

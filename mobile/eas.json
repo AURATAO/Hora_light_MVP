@@ -23,6 +23,18 @@
       "distribution": "store",
       "environment": "preview",
       "autoIncrement": true
+    },
+    // The App Store release. Identical to preview (store distribution, build
+    // number auto-incremented on EAS — appVersionSource is "remote" — and the
+    // marketing version from app.json, 1.0.0) except for the EAS environment
+    // it reads EXPO_PUBLIC_* from. That environment must hold the same five
+    // variables preview does before the first production build, and never
+    // EXPO_PUBLIC_GPS_DEBUG (gps-tracking.ts shows the debug row whenever it
+    // is set).
+    "production": {
+      "distribution": "store",
+      "environment": "production",
+      "autoIncrement": true
     }
   },
   // Submit profiles are matched to the build profile by name. Without a
@@ -30,6 +42,11 @@
   // "production", which does not exist, and fails asking for ascAppId.
   "submit": {
     "preview": {
+      "ios": {
+        "ascAppId": "6795529693"
+      }
+    },
+    "production": {
       "ios": {
         "ascAppId": "6795529693"
       }

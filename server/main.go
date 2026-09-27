@@ -231,6 +231,17 @@ type Task struct {
 	// Selected only by getTask, so it is absent from list responses rather
 	// than null there.
 	ShoppingBudgetApprovedCents *int `json:"shopping_budget_approved_cents,omitempty"`
+
+	// The review sandbox's one-login walkthrough: true on the sandbox
+	// account's OWN open task, which it — and only it — may accept
+	// (sandbox.go canSelfAccept). Absent for everybody else.
+	CanSelfAccept bool `json:"can_self_accept,omitempty"`
+
+	// The viewer and the other party on this task have blocked each other
+	// (either direction — server/safety.go). The chat renders read-only with
+	// an explanatory line, and no new match between them is possible.
+	// Selected only by getTask; absent when false.
+	ChatBlocked bool `json:"chat_blocked,omitempty"`
 }
 
 type createTaskInput struct {
@@ -271,13 +282,16 @@ type createTaskInput struct {
 var validCreatedVia = map[string]bool{"form": true, "ai_parse": true, "duplicate": true}
 
 type Profile struct {
-	Email               string     `json:"email"`
-	Name                string     `json:"name"`
-	Phone               string     `json:"phone"`
-	City                string     `json:"city"`
-	AvatarURL           string     `json:"avatar_url"`
-	Bio                 string     `json:"bio"`
-	BetaAccepted        bool       `json:"beta_accepted"`
+	Email        string `json:"email"`
+	Name         string `json:"name"`
+	Phone        string `json:"phone"`
+	City         string `json:"city"`
+	AvatarURL    string `json:"avatar_url"`
+	Bio          string `json:"bio"`
+	BetaAccepted bool   `json:"beta_accepted"`
+	// When the person agreed to the Terms of Use and Privacy Policy. Set on
+	// PATCH /profile's response only; see patchMyProfile.
+	TermsAcceptedAt     *time.Time `json:"terms_accepted_at,omitempty"`
 	IsVerifiedSupporter bool       `json:"is_verified_supporter"`
 	SupporterAppliedAt  *time.Time `json:"supporter_applied_at,omitempty"`
 	SupporterRejectedAt *time.Time `json:"supporter_rejected_at,omitempty"`
@@ -503,6 +517,9 @@ func main() {
 	// routes; see payments_connect.go.
 	RegisterConnectRoutes(r, dualAuth(sqldb))
 	RegisterNotificationRoutes(r, sqldb)
+	// Report / Block (App Store Guideline 1.2) and the ops Reports view. See
+	// safety.go.
+	RegisterSafetyRoutes(r, dualAuth(sqldb))
 
 	addAvatarUploadRouteV1(r)
 
@@ -1208,6 +1225,10 @@ func patchMyProfile(c *gin.Context) {
 		AvatarURL    *string `json:"avatar_url"`
 		Bio          *string `json:"bio"`
 		BetaAccepted *bool   `json:"beta_accepted"`
+		// The sign-in consent checkbox, recorded. Both clients gate sign-in
+		// on it and send this once the session exists. Only true means
+		// anything; the first acceptance is kept.
+		TermsAccepted *bool `json:"terms_accepted"`
 	}
 	if err := c.BindJSON(&in); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
@@ -1257,6 +1278,15 @@ func patchMyProfile(c *gin.Context) {
 		log.Printf("[profile][upsert] email=%s err=%v", email, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
+	}
+	if in.TermsAccepted != nil && *in.TermsAccepted {
+		if err := db.QueryRow(ctx, `
+			update public.profiles set terms_accepted_at = coalesce(terms_accepted_at, now())
+			 where email = $1
+			returning terms_accepted_at
+		`, email).Scan(&p.TermsAcceptedAt); err != nil {
+			log.Printf("[profile][terms] email=%s err=%v", email, err)
+		}
 	}
 	// Opportunistic fix while this handler is already open: PATCH returned a
 	// Profile with an empty supporter_status, so a client that stored the
@@ -1628,7 +1658,9 @@ func createTask(c *gin.Context) {
 	//
 	// With PAYMENTS_ENFORCED off (the default, and the running beta) this whole
 	// block is skipped and posting behaves exactly as it did before Phase 2a.
-	enforcePayment := paymentsEnforced()
+	// Always on for the App Review sandbox (sandbox.go): the reviewer walks
+	// the real hold → capture → payout path, on test keys.
+	enforcePayment := paymentsEnforcedFor(ctx, c.GetString("uid"))
 	var payCtx preAuthContext
 	if enforcePayment {
 		// An unpaid completion blocks the next post. The requester was told
@@ -1905,7 +1937,7 @@ func createTask(c *gin.Context) {
 				"client_secret":     pe.ClientSecret,
 				"payment_intent_id": pe.PaymentIntentID,
 				"task_id":           taskID,
-				"publishable_key":   stripePublishableKey(),
+				"publishable_key":   publishableKeyForUser(ctx, c.GetString("uid")),
 			})
 			return
 
@@ -2227,6 +2259,25 @@ func getTask(c *gin.Context) {
 		`, id, uid).Scan(&cancelledAssignee)
 	}
 
+	// An OPEN task is readable by any signed-in supporter browsing the board
+	// — but not across the review-sandbox wall, and not by somebody the
+	// requester has blocked or who has blocked them. Same answer as a task
+	// that does not exist: the board never showed it to them either.
+	if t.Status == "open" && uid != t.RequesterID && !isAssignee && !isAdmin {
+		allowed, err := sandboxPartitionAllows(ctx, t.RequesterID, uid)
+		if err == nil && allowed {
+			blocked, berr := usersBlocked(ctx, uid, t.RequesterID)
+			allowed, err = !blocked, berr
+		}
+		if err != nil || !allowed {
+			if err != nil {
+				log.Printf("[getTask] visibility check task=%s uid=%s: %v", id, uid, err)
+			}
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+	}
+
 	if t.Status != "open" && uid != t.RequesterID && !isAssignee && !isAdmin && !workedOnIt && !cancelledAssignee {
 		if t.Status == "removed" {
 			// Distinct from a plain "forbidden" so a client holding a stale
@@ -2363,6 +2414,30 @@ func getTask(c *gin.Context) {
 			`select removed_at, removal_reason from public.tasks where id=$1::uuid`, id,
 		).Scan(&removedAt, &reason); err == nil {
 			t.RemovedAt, t.RemovalReason = removedAt, reason
+		}
+	}
+
+	// The sandbox's own open task, which it alone may accept.
+	if uid != "" && uid == t.RequesterID && t.Status == "open" && t.AssignedToID == nil {
+		t.CanSelfAccept = canSelfAccept(ctx, uid)
+	}
+
+	// A block between the viewer and the other party on this task: the chat
+	// renders read-only with an explanatory line (safety.go).
+	if uid != "" {
+		other := ""
+		switch {
+		case uid == t.RequesterID && t.AssignedToID != nil:
+			other = *t.AssignedToID
+		case isAssignee || workedOnIt || cancelledAssignee:
+			other = t.RequesterID
+		}
+		if other != "" && other != uid {
+			if blocked, err := usersBlocked(ctx, uid, other); err == nil {
+				t.ChatBlocked = blocked
+			} else {
+				log.Printf("[getTask] block check task=%s: %v", id, err)
+			}
 		}
 	}
 
@@ -2619,10 +2694,17 @@ func listAvailableTasks(c *gin.Context) {
 		beforeID = &s
 	}
 
+	// Your own tasks are not on your board — except in the App Review
+	// sandbox, whose one login plays both sides (sandbox.go). The partition
+	// clause keeps sandbox tasks off every real supporter's board and real
+	// tasks off the reviewer's; the block clause keeps a blocked pair from
+	// seeing each other's tasks at all (safety.go).
 	where := []string{
 		"status='open'",
 		"assigned_to_id is null",
-		"requester_id <> $1::uuid",
+		"(requester_id <> $1::uuid or coalesce((select su.is_sandbox from public.users su where su.id = $1::uuid), false))",
+		sameSandboxPartitionSQL("tasks", "$1"),
+		"not " + usersBlockedSQL("$1::uuid", "tasks.requester_id"),
 	}
 	args := []any{meUID}
 	arg := 2
@@ -2951,7 +3033,9 @@ func acceptTask(c *gin.Context) {
 		return
 	}
 
-	if requesterID == meUID {
+	// The one exception is the App Review sandbox, whose single login plays
+	// both sides of its own task (sandbox.go).
+	if requesterID == meUID && !canSelfAccept(ctx, meUID) {
 		c.JSON(400, gin.H{"error": "cannot accept your own task"})
 		return
 	}
@@ -2960,6 +3044,23 @@ func acceptTask(c *gin.Context) {
 		return
 	}
 	if status != "open" || assignedToID != nil {
+		c.JSON(400, gin.H{"error": "not available"})
+		return
+	}
+	// Across the sandbox wall, or between a blocked pair: the task was never
+	// on this person's board, so it is "not available" like any other task
+	// they cannot take. Re-tested inside the claiming UPDATE below.
+	if allowed, err := sandboxPartitionAllows(ctx, requesterID, meUID); err != nil || !allowed {
+		if err != nil {
+			log.Printf("[accept] task=%s partition check: %v", id, err)
+		}
+		c.JSON(400, gin.H{"error": "not available"})
+		return
+	}
+	if blocked, err := usersBlocked(ctx, meUID, requesterID); err != nil || blocked {
+		if err != nil {
+			log.Printf("[accept] task=%s block check: %v", id, err)
+		}
 		c.JSON(400, gin.H{"error": "not available"})
 		return
 	}
@@ -3013,6 +3114,8 @@ func acceptTask(c *gin.Context) {
     where id = $3
       and status = 'open'
       and assigned_to_id is null
+      and not `+usersBlockedSQL("$1::uuid", "public.tasks.requester_id")+`
+      and `+sameSandboxPartitionSQL("public.tasks", "$1")+`
   `, meUID, meEmail, id)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "db error"})

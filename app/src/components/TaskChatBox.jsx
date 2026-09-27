@@ -2,6 +2,7 @@ import { useMemo, useCallback, useEffect, useState } from 'react'
 import Talk from 'talkjs'
 import { Session, Chatbox } from '@talkjs/react'
 import { api } from '../api/client'
+import { CHAT_BLOCKED_LINE } from '../lib/safety'
 
 /**
  * TaskChatBox
@@ -61,12 +62,20 @@ export default function TaskChatBox({ task, me, height, fullscreen = false, clas
   }, [task, me, iAmRequester])
   const otherName = iAmRequester ? task?.assignee_name : task?.requester_name
 
+  // A block between the two (server/safety.go): both seats read-only. The
+  // server already set this through TalkJS's REST API; passing it here too
+  // keeps a conversation first opened AFTER the block from being created
+  // read-write. Unblocked, access is left unset — TalkJS keeps whatever the
+  // server set, so opening the chat can never undo a block.
+  const blocked = task?.chat_blocked === true
+  const access = blocked ? { access: 'Read' } : undefined
+
   // 4) Conversation for this task
   const syncConversation = useCallback(
     (session) => {
       if (!ready || !task?.id) return null
       const conv = session.getOrCreateConversation(`task_${task.id}`)
-      conv.setParticipant(session.me)
+      conv.setParticipant(session.me, access)
       if (otherEmail) {
         const other = new Talk.User({
           id: otherEmail,
@@ -74,12 +83,13 @@ export default function TaskChatBox({ task, me, height, fullscreen = false, clas
           email: otherEmail,
           role: 'default',
         })
-        conv.setParticipant(other)
+        conv.setParticipant(other, access)
       }
       conv.setAttributes({ subject: task.title ?? 'Task', custom: { taskId: task.id } })
       return conv
     },
-    [ready, task?.id, task?.title, otherEmail, otherName]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [ready, task?.id, task?.title, otherEmail, otherName, blocked]
   )
 
   // Guards & placeholders
@@ -105,12 +115,16 @@ export default function TaskChatBox({ task, me, height, fullscreen = false, clas
   return (
     <Session appId={appId} syncUser={syncUser} signature={signature ?? undefined}>
       <Chatbox
+        key={blocked ? 'read-only' : 'read-write'}
         syncConversation={syncConversation}
         className={fullscreen ? className : `rounded bg-white/5 border border-white/10 ${className}`}
-        style={{ width: '100%', height: resolvedHeight }}
-        messageField={{ placeholder: 'Type here…' }}
+        style={{ width: '100%', height: blocked && fullscreen ? 'calc(100% - 64px)' : resolvedHeight }}
+        messageField={blocked ? { visible: false } : { placeholder: 'Type here…' }}
         showChatHeader={!fullscreen}
       />
+      {blocked && (
+        <p className="px-4 py-3 text-xs text-white/60 border-t border-white/10">{CHAT_BLOCKED_LINE}</p>
+      )}
     </Session>
   )
 }

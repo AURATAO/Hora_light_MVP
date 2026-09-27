@@ -261,7 +261,7 @@ func stripeCustomerIDFor(t *testing.T, uid string) string {
 
 func defaultPMFor(t *testing.T, uid string) string {
 	t.Helper()
-	pm, err := defaultPaymentMethodFor(stripeCustomerIDFor(t, uid))
+	pm, err := defaultPaymentMethodFor(stripe.Key, stripeCustomerIDFor(t, uid))
 	if err != nil {
 		t.Fatalf("default payment method: %v", err)
 	}

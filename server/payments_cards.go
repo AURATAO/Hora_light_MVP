@@ -224,6 +224,13 @@ func createStripeCustomer(ctx context.Context, uid, email string) (string, error
 		return existing, nil
 	}
 
+	// The review sandbox's Customer is a TEST-mode Customer, whatever the
+	// platform key is (sandbox.go) — and so is every card later saved on it.
+	key, err := stripeKeyForUser(ctx, uid)
+	if err != nil {
+		return "", fmt.Errorf("payments: stripe key for user %s: %w", uid, err)
+	}
+
 	params := &stripe.CustomerParams{
 		Metadata: map[string]string{"user_id": uid},
 	}
@@ -238,7 +245,7 @@ func createStripeCustomer(ctx context.Context, uid, email string) (string, error
 	// object it produced.
 	params.SetIdempotencyKey("customer_" + uid)
 
-	cus, err := customer.New(params)
+	cus, err := (customer.Client{B: stripeBackend(), Key: key}).New(params)
 	if err != nil {
 		// Reachable despite the lock, in exactly one shape: an earlier attempt
 		// whose HTTP request is still open at Stripe while this process no
@@ -266,7 +273,7 @@ func createStripeCustomer(ctx context.Context, uid, email string) (string, error
 		// rather than leaving it behind: nothing references it, nobody will
 		// ever look for it, and the next call will make another.
 		log.Printf("[payments][ERROR] created customer=%s for user=%s but could not store it: %v", cus.ID, uid, err)
-		discardStripeCustomer(cus.ID, uid, "could not be stored")
+		discardStripeCustomer(key, cus.ID, uid, "could not be stored")
 		return "", fmt.Errorf("payments: persist customer %s for user %s: %w", cus.ID, uid, err)
 	}
 
@@ -280,7 +287,7 @@ func createStripeCustomer(ctx context.Context, uid, email string) (string, error
 		if err := tx.Commit(ctx); err != nil {
 			return "", fmt.Errorf("payments: commit customer for user %s: %w", uid, err)
 		}
-		discardStripeCustomer(cus.ID, uid, "lost a race that should not have been possible")
+		discardStripeCustomer(key, cus.ID, uid, "lost a race that should not have been possible")
 		return stored, nil
 	}
 
@@ -288,7 +295,7 @@ func createStripeCustomer(ctx context.Context, uid, email string) (string, error
 		// Same reasoning as the failed UPDATE above: the row did not change,
 		// so this Customer belongs to nobody.
 		log.Printf("[payments][ERROR] created customer=%s for user=%s but could not commit: %v", cus.ID, uid, err)
-		discardStripeCustomer(cus.ID, uid, "its transaction did not commit")
+		discardStripeCustomer(key, cus.ID, uid, "its transaction did not commit")
 		return "", fmt.Errorf("payments: commit customer for user %s: %w", uid, err)
 	}
 
@@ -308,11 +315,11 @@ func createStripeCustomer(ctx context.Context, uid, email string) (string, error
 // Deliberately NOT given the request's context: it runs on paths where that
 // context has just been cancelled or timed out, and inheriting it would make
 // the cleanup fail exactly when it is needed.
-func discardStripeCustomer(customerID, uid, why string) {
+func discardStripeCustomer(key, customerID, uid, why string) {
 	if strings.TrimSpace(customerID) == "" {
 		return
 	}
-	if _, err := customer.Del(customerID, nil); err != nil {
+	if _, err := (customer.Client{B: stripeBackend(), Key: key}).Del(customerID, nil); err != nil {
 		log.Printf("[payments][WARN] could not delete orphan customer=%s (user=%s, %s): %v — "+
 			"it holds nothing, but it is worth removing by hand", customerID, uid, why, err)
 		return
@@ -361,7 +368,14 @@ func createSetupIntentHandler(c *gin.Context) {
 		return
 	}
 
-	si, err := setupintent.New(&stripe.SetupIntentParams{
+	key, err := stripeKeyForUser(ctx, uid)
+	if err != nil {
+		log.Printf("[payments][setup-intent] stripe key for uid=%s: %v", uid, err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "payments_unavailable"})
+		return
+	}
+
+	si, err := (setupintent.Client{B: stripeBackend(), Key: key}).New(&stripe.SetupIntentParams{
 		Customer: stripe.String(customerID),
 		// The whole reason this endpoint exists: the saved card has to work at
 		// post time with nobody looking at the phone.
@@ -378,7 +392,7 @@ func createSetupIntentHandler(c *gin.Context) {
 	// PaymentSheet needs an ephemeral key to read and attach payment methods on
 	// the customer directly. It is short-lived (about an hour) and scoped to
 	// this one customer, which is what makes handing it to a phone safe.
-	key, err := ephemeralkey.New(&stripe.EphemeralKeyParams{
+	ek, err := (ephemeralkey.Client{B: stripeBackend(), Key: key}).New(&stripe.EphemeralKeyParams{
 		Customer:      stripe.String(customerID),
 		StripeVersion: stripe.String(stripeEphemeralKeyVersion),
 	})
@@ -391,10 +405,12 @@ func createSetupIntentHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, setupIntentResponse{
 		ClientSecret: si.ClientSecret,
 		CustomerID:   customerID,
-		EphemeralKey: key.Secret,
+		EphemeralKey: ek.Secret,
 		// Sent rather than configured per client so a key rotation is one
-		// backend env change instead of a web deploy plus a native rebuild.
-		PublishableKey:  stripePublishableKey(),
+		// backend env change instead of a web deploy plus a native rebuild —
+		// and so the review sandbox gets the TEST key that matches its
+		// test-mode Customer.
+		PublishableKey:  publishableKeyForUser(ctx, uid),
 		MerchantDisplay: "HO:RA",
 	})
 }
@@ -451,7 +467,13 @@ func listPaymentMethodsHandler(c *gin.Context) {
 		return
 	}
 
-	cards, _, err := savedCardsFor(customerID)
+	key, err := stripeKeyForUser(ctx, uid)
+	if err != nil {
+		log.Printf("[payments][cards] stripe key for uid=%s: %v", uid, err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "payments_unavailable"})
+		return
+	}
+	cards, _, err := savedCardsFor(key, customerID)
 	if err != nil {
 		log.Printf("[payments][cards] list for customer=%s: %v", customerID, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "payments_error"})
@@ -461,8 +483,8 @@ func listPaymentMethodsHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, paymentMethodsResponse{
 		Cards:            cards,
 		HasCard:          len(cards) > 0,
-		PublishableKey:   stripePublishableKey(),
-		PaymentsEnforced: paymentsEnforced(),
+		PublishableKey:   publishableKeyForUser(ctx, uid),
+		PaymentsEnforced: paymentsEnforcedFor(ctx, uid),
 	})
 }
 
@@ -470,8 +492,8 @@ func listPaymentMethodsHandler(c *gin.Context) {
 // a pre-auth would use. Stripe returns payment methods in reverse creation
 // order, so "the default" with nothing explicitly set is the first element —
 // the card the requester most recently chose to save.
-func savedCardsFor(customerID string) (cards []SavedCard, defaultID string, err error) {
-	cus, err := customer.Get(customerID, &stripe.CustomerParams{})
+func savedCardsFor(key, customerID string) (cards []SavedCard, defaultID string, err error) {
+	cus, err := (customer.Client{B: stripeBackend(), Key: key}).Get(customerID, &stripe.CustomerParams{})
 	if err != nil {
 		return nil, "", err
 	}
@@ -479,7 +501,7 @@ func savedCardsFor(customerID string) (cards []SavedCard, defaultID string, err 
 		defaultID = cus.InvoiceSettings.DefaultPaymentMethod.ID
 	}
 
-	iter := paymentmethod.List(&stripe.PaymentMethodListParams{
+	iter := (paymentmethod.Client{B: stripeBackend(), Key: key}).List(&stripe.PaymentMethodListParams{
 		Customer: stripe.String(customerID),
 		Type:     stripe.String("card"),
 	})
@@ -514,8 +536,8 @@ func savedCardsFor(customerID string) (cards []SavedCard, defaultID string, err 
 
 // defaultPaymentMethodFor is what CreatePreAuth charges. Empty means the
 // requester has no card on file — the caller answers 402, never 500.
-func defaultPaymentMethodFor(customerID string) (string, error) {
-	_, defaultID, err := savedCardsFor(customerID)
+func defaultPaymentMethodFor(key, customerID string) (string, error) {
+	_, defaultID, err := savedCardsFor(key, customerID)
 	return defaultID, err
 }
 
@@ -527,8 +549,8 @@ var errPaymentMethodNotOwned = errors.New("payments: payment method does not bel
 // does not own. Without this check the id in the URL would be the only thing
 // naming the card, and pm ids are guessable enough in aggregate that "detach
 // by id" would be a way to remove strangers' cards.
-func requireOwnedPaymentMethod(pmID, customerID string) (*stripe.PaymentMethod, error) {
-	pm, err := paymentmethod.Get(pmID, &stripe.PaymentMethodParams{})
+func requireOwnedPaymentMethod(key, pmID, customerID string) (*stripe.PaymentMethod, error) {
+	pm, err := (paymentmethod.Client{B: stripeBackend(), Key: key}).Get(pmID, &stripe.PaymentMethodParams{})
 	if err != nil {
 		return nil, err
 	}
@@ -558,7 +580,14 @@ func deletePaymentMethodHandler(c *gin.Context) {
 		return
 	}
 
-	if _, err := requireOwnedPaymentMethod(pmID, customerID); err != nil {
+	key, err := stripeKeyForUser(ctx, uid)
+	if err != nil {
+		log.Printf("[payments][cards] stripe key for uid=%s: %v", uid, err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "payments_unavailable"})
+		return
+	}
+
+	if _, err := requireOwnedPaymentMethod(key, pmID, customerID); err != nil {
 		if errors.Is(err, errPaymentMethodNotOwned) {
 			// 404, not 403: confirming that a card exists but belongs to
 			// somebody else is itself the leak.
@@ -597,7 +626,7 @@ func deletePaymentMethodHandler(c *gin.Context) {
 		return
 	}
 
-	if _, err := paymentmethod.Detach(pmID, &stripe.PaymentMethodDetachParams{}); err != nil {
+	if _, err := (paymentmethod.Client{B: stripeBackend(), Key: key}).Detach(pmID, &stripe.PaymentMethodDetachParams{}); err != nil {
 		log.Printf("[payments][cards] detach pm=%s: %v", pmID, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "payments_error", "message": stripeUserMessage(err)})
 		return
@@ -636,7 +665,11 @@ type blockingTask struct {
 // whose holds this card is carrying, newest first. Empty when the card is not
 // the charging card at all (see the note above) or nothing is live.
 func liveHoldTasksForCard(ctx context.Context, uid, customerID, pmID string) ([]blockingTask, error) {
-	defaultID, err := defaultPaymentMethodFor(customerID)
+	key, err := stripeKeyForUser(ctx, uid)
+	if err != nil {
+		return nil, err
+	}
+	defaultID, err := defaultPaymentMethodFor(key, customerID)
 	if err != nil {
 		return nil, err
 	}

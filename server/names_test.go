@@ -22,11 +22,11 @@ import (
 
 func TestNamesChainIsPureAndLastResortOnly(t *testing.T) {
 	cases := []struct{ name, email, want string }{
-		{"Rita", "rita.r@example.com", "Rita"},                 // chosen wins
-		{"  Rita  ", "rita.r@example.com", "Rita"},             // trimmed
-		{"", "taoaura.lavoro@example.com", "Taoaura Lavoro"},   // last resort, title-cased
-		{"   ", "jane@example.com", "Jane"},                    // whitespace is not a name
-		{"", "no-at-sign", "no-at-sign"},                       // nothing to split
+		{"Rita", "rita.r@example.com", "Rita"},                       // chosen wins
+		{"  Rita  ", "rita.r@example.com", "Rita"},                   // trimmed
+		{"", "taoaura.lavoro@example.com", "Taoaura Lavoro"},         // last resort, title-cased
+		{"   ", "jane@example.com", "Jane"},                          // whitespace is not a name
+		{"", "no-at-sign", "no-at-sign"},                             // nothing to split
 		{"Taoaura Lavoro", "taoaura.lavoro@x.com", "Taoaura Lavoro"}, // a deliberate match is still theirs
 	}
 	for _, c := range cases {

@@ -8,6 +8,8 @@ import { Avatar } from "../../../components/ui/Avatar";
 import { EmptyState } from "../../../components/ui/EmptyState";
 import { PressableScale } from "../../../components/ui/PressableScale";
 import { Skeleton } from "../../../components/ui/Skeleton";
+import { UserSafetyMenu } from "../../../components/UserSafetyMenu";
+import { CHAT_BLOCKED_LINE } from "../../../lib/safety";
 import { ApiError, getMe, getProfile, getPublicProfile, getTalkjsSignature, getTask } from "../../../lib/api";
 import { color, size } from "../../../theme/tokens";
 
@@ -20,6 +22,13 @@ interface ChatSetup {
   taskTitle: string;
   counterpartName: string;
   counterpartAvatar: string | null;
+  /** The other party's users.id, for Report / Block. Null when there is
+   *  nobody else on the task — including the App Review sandbox's own
+   *  self-accepted task, where the other party is the viewer. */
+  counterpartId: string | null;
+  taskId: string;
+  /** A block between the two (either way): the thread is read-only. */
+  blocked: boolean;
 }
 
 export default function TaskChat() {
@@ -80,15 +89,26 @@ export default function TaskChat() {
         photoUrl: profile.avatar_url ?? undefined,
       };
 
+      // Blocked: both seats read-only. The server has already set this
+      // through TalkJS's REST API (server/safety.go); passing it here too
+      // keeps a conversation opened for the first time AFTER the block from
+      // being created read-write. Unblocked, access is left unset, which
+      // TalkJS treats as "leave whatever the server set" — so opening the
+      // chat can never undo a block.
+      const blocked = task.chat_blocked === true;
+      const access = blocked ? ({ access: "Read" } as const) : undefined;
       const builder = getConversationBuilder(`task_${task.id}`);
-      builder.setParticipant(me);
+      builder.setParticipant(me, access);
       if (otherEmail) {
-        builder.setParticipant({
-          id: otherEmail,
-          name: otherName,
-          email: otherEmail,
-          photoUrl: otherProfile?.avatar_url ?? undefined,
-        });
+        builder.setParticipant(
+          {
+            id: otherEmail,
+            name: otherName,
+            email: otherEmail,
+            photoUrl: otherProfile?.avatar_url ?? undefined,
+          },
+          access
+        );
       }
       builder.setAttributes({ subject: task.title || "Task", custom: { taskId: task.id } });
 
@@ -99,6 +119,9 @@ export default function TaskChat() {
         taskTitle: task.title || "Task",
         counterpartName: otherEmail ? otherName : "Chat",
         counterpartAvatar: otherProfile?.avatar_url ?? null,
+        counterpartId: otherId && otherId !== auth.id ? otherId : null,
+        taskId: task.id,
+        blocked,
       });
       setError(null);
     } catch (e) {
@@ -147,6 +170,15 @@ export default function TaskChat() {
                   {setup.taskTitle}
                 </Text>
               </View>
+              {setup.counterpartId ? (
+                <UserSafetyMenu
+                  userId={setup.counterpartId}
+                  userName={setup.counterpartName}
+                  taskId={setup.taskId}
+                  blocked={setup.blocked}
+                  onBlocked={load}
+                />
+              ) : null}
             </>
           ) : (
             <Text className="text-body font-semibold text-ink">Chat</Text>
@@ -190,11 +222,17 @@ export default function TaskChat() {
             onError={() => setSessionError("Check your connection and try again.")}
           >
             <Chatbox
+              key={setup.blocked ? "read-only" : "read-write"}
               conversationBuilder={setup.conversationBuilder}
               showChatHeader={false}
-              messageField={{ placeholder: "Type here…" }}
+              messageField={setup.blocked ? { visible: false } : { placeholder: "Type here…" }}
               keyboardVerticalOffset={headerHeight}
             />
+            {setup.blocked ? (
+              <View className="border-t border-line bg-surface px-6 py-4">
+                <Text className="text-caption text-muted">{CHAT_BLOCKED_LINE}</Text>
+              </View>
+            ) : null}
           </Session>
         ) : null}
       </SafeAreaView>

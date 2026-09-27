@@ -154,6 +154,15 @@ func handleTalkJSWebhook(c *gin.Context, db *sql.DB) {
 	log.Printf("[talkjs][webhook] message.sent conv=%s task=%s sender=%s recipients=%d",
 		ev.Data.Conversation.ID, taskID, ev.Data.Sender.ID, len(recipients))
 
+	// A blocked pair gets no pushes from each other (safety.go). The thread
+	// is read-only for both, so this only matters for a client that got a
+	// message through before the block landed — it must not buzz a phone.
+	senderTalkJSID := ev.Data.Sender.ID
+	if senderTalkJSID == "" {
+		senderTalkJSID = ev.Data.Message.SenderID
+	}
+	senderUID, _ := userIDForTalkJSID(c.Request.Context(), db, senderTalkJSID)
+
 	for _, talkjsID := range recipients {
 		userID, err := userIDForTalkJSID(c.Request.Context(), db, talkjsID)
 		if err != nil {
@@ -162,6 +171,12 @@ func handleTalkJSWebhook(c *gin.Context, db *sql.DB) {
 		}
 		if userID == "" {
 			log.Printf("[talkjs][webhook] no HO:RA user for talkjs_id=%s — skipping", talkjsID)
+			continue
+		}
+		if blocked, err := pairBlocked(c.Request.Context(), db, senderUID, userID); err != nil || blocked {
+			if err != nil {
+				log.Printf("[talkjs][webhook] block check failed — not pushing: %v", err)
+			}
 			continue
 		}
 		// Same shape every task-event push uses: data carries task_id + type,
@@ -323,6 +338,16 @@ func userIDForTalkJSID(ctx context.Context, db *sql.DB, talkjsID string) (string
 		return "", err
 	}
 	return uid, nil
+}
+
+// pairBlocked is safety.go's mutual block check on this handler's *sql.DB.
+func pairBlocked(ctx context.Context, db *sql.DB, a, b string) (bool, error) {
+	if db == nil || a == "" || b == "" || a == b {
+		return false, nil
+	}
+	var blocked bool
+	err := db.QueryRowContext(ctx, `select `+usersBlockedSQL("$1::uuid", "$2::uuid"), a, b).Scan(&blocked)
+	return blocked, err
 }
 
 // sortStrings is a tiny insertion sort — the participant list is two entries in

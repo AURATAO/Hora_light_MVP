@@ -240,6 +240,7 @@ func setupReassignDB(t *testing.T) {
 		pool.Close()
 		db, sqldb = prevPool, prevSQL
 	})
+	applySafetyMigration(t)
 }
 
 // ── Seeding ────────────────────────────────────────────────────────────────

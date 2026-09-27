@@ -228,7 +228,11 @@ func resolvePreAuthContext(ctx context.Context, uid, email string) (preAuthConte
 	if err != nil {
 		return preAuthContext{}, err
 	}
-	pmID, err := stripeDefaultPaymentMethodFor(customerID)
+	key, err := stripeKeyForUser(ctx, uid)
+	if err != nil {
+		return preAuthContext{}, err
+	}
+	pmID, err := stripeDefaultPaymentMethodFor(key, customerID)
 	if err != nil {
 		return preAuthContext{}, err
 	}
@@ -405,7 +409,13 @@ func confirmTaskPayment(c *gin.Context) {
 	// exactly like one that went straight through.
 	getParams := &stripe.PaymentIntentParams{}
 	getParams.AddExpand("latest_charge")
-	pi, err := paymentintent.Get(p.StripePaymentIntentID, getParams)
+	key, err := stripeKeyForTask(ctx, taskID)
+	if err != nil {
+		log.Printf("[payments][confirm] stripe key for task=%s: %v", taskID, err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "payments_unavailable"})
+		return
+	}
+	pi, err := (paymentintent.Client{B: stripeBackend(), Key: key}).Get(p.StripePaymentIntentID, getParams)
 	if err != nil {
 		log.Printf("[payments][confirm] fetch intent=%s: %v", p.StripePaymentIntentID, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "payments_error"})
@@ -449,7 +459,7 @@ func confirmTaskPayment(c *gin.Context) {
 			"client_secret":     pi.ClientSecret,
 			"payment_intent_id": pi.ID,
 			"task_id":           taskID,
-			"publishable_key":   stripePublishableKey(),
+			"publishable_key":   publishableKeyForUser(ctx, c.GetString("uid")),
 		})
 
 	default:

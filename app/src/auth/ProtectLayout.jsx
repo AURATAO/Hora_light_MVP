@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import BetaModal from "../components/BetaModal.jsx";
 import { useProfileGate } from "../hooks/useProfileGate.js";
 import WhatsAppFloat from "../components/WhatsAppFloat.jsx";
+import { api } from "../api/client";
+import { flushTermsConsent } from "../lib/termsConsent";
 import NamePrompt from "../components/NamePrompt.jsx";
 
 export default function ProtectedLayout() {
@@ -11,6 +13,11 @@ export default function ProtectedLayout() {
   const loc = useLocation();
   const [timeoutHit, setTimeoutHit] = useState(false);
   const { checking } = useProfileGate();
+
+  // Record the sign-in consent checkbox once a session exists (lib/termsConsent).
+  useEffect(() => {
+    if (user) flushTermsConsent(api);
+  }, [user]);
 
   // 最多等 8 秒就不再顯示空白
   useEffect(() => {

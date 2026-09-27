@@ -53,12 +53,16 @@ var errPaymentsDisabled = errors.New("payments disabled: STRIPE_SECRET_KEY not s
 // settlement path can be tested against real rows without a network — the
 // same seam payments_bank_arrival.go uses for the payout leg. Production never
 // reassigns them.
-var stripeCreatePaymentIntent = func(params *stripe.PaymentIntentParams) (*stripe.PaymentIntent, error) {
-	return paymentintent.New(params)
+//
+// Each takes the secret key it is to be made with: the platform's, or the
+// review sandbox's test key (sandbox.go). Never the global stripe.Key
+// implicitly — that is the call that would charge a reviewer real money.
+var stripeCreatePaymentIntent = func(key string, params *stripe.PaymentIntentParams) (*stripe.PaymentIntent, error) {
+	return paymentintent.Client{B: stripeBackend(), Key: key}.New(params)
 }
 
-var stripeCapturePaymentIntent = func(id string, params *stripe.PaymentIntentCaptureParams) (*stripe.PaymentIntent, error) {
-	return paymentintent.Capture(id, params)
+var stripeCapturePaymentIntent = func(key, id string, params *stripe.PaymentIntentCaptureParams) (*stripe.PaymentIntent, error) {
+	return paymentintent.Client{B: stripeBackend(), Key: key}.Capture(id, params)
 }
 
 // ErrPaymentsDisabled is the exported form for handlers that need to answer
@@ -204,6 +208,14 @@ func CreatePreAuth(ctx context.Context, in PreAuthInput) (*Payment, error) {
 	amount := preAuthAfterPromoCents(in.Category, in.EstimatedMinutes, in.ShoppingBudgetCents,
 		in.RateCents, in.PromoDiscountCents)
 
+	// The requester's key: the sandbox's test key for the review account.
+	// Resolved before any row is written, so a sandbox with no test key
+	// configured refuses cleanly instead of leaving a requires_auth row.
+	key, err := stripeKeyForUser(ctx, in.RequesterID)
+	if err != nil {
+		return nil, fmt.Errorf("payments: stripe key for requester %s: %w", in.RequesterID, err)
+	}
+
 	// A ZERO HOLD. A promo can take the hold below what Stripe will authorize
 	// at all (its $0.50 minimum), most often to exactly $0. Nothing is asked of
 	// the card, but the row is still written — 'authorized' for $0, with no
@@ -273,7 +285,7 @@ func CreatePreAuth(ctx context.Context, in PreAuthInput) (*Payment, error) {
 		params.OffSession = stripe.Bool(true)
 	}
 
-	pi, err := stripeCreatePaymentIntent(params)
+	pi, err := stripeCreatePaymentIntent(key, params)
 	if err != nil {
 		// A confirm that needs 3DS comes back as an ERROR carrying a perfectly
 		// good PaymentIntent — the card is fine, it just wants the cardholder
@@ -406,7 +418,11 @@ func Capture(ctx context.Context, taskID string, timeCostCents, shoppingReceiptC
 	params.AddExpand("latest_charge")
 	params.SetIdempotencyKey("capture_" + p.ID)
 
-	pi, err := stripeCapturePaymentIntent(p.StripePaymentIntentID, params)
+	key, err := stripeKeyForTask(ctx, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("payments: stripe key for task %s: %w", taskID, err)
+	}
+	pi, err := stripeCapturePaymentIntent(key, p.StripePaymentIntentID, params)
 	if err != nil {
 		return nil, fmt.Errorf("payments: capture %s: %w", p.StripePaymentIntentID, err)
 	}
@@ -462,9 +478,13 @@ func Release(ctx context.Context, taskID string) (*Payment, error) {
 	}
 
 	if p.StripePaymentIntentID != "" {
+		key, err := stripeKeyForTask(ctx, taskID)
+		if err != nil {
+			return nil, fmt.Errorf("payments: stripe key for task %s: %w", taskID, err)
+		}
 		params := &stripe.PaymentIntentCancelParams{}
 		params.SetIdempotencyKey("release_" + p.ID)
-		if _, err := paymentintent.Cancel(p.StripePaymentIntentID, params); err != nil {
+		if _, err := (paymentintent.Client{B: stripeBackend(), Key: key}).Cancel(p.StripePaymentIntentID, params); err != nil {
 			return nil, fmt.Errorf("payments: cancel %s: %w", p.StripePaymentIntentID, err)
 		}
 	}

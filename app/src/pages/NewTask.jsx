@@ -667,6 +667,16 @@ function confirmCompanionPolicy() {
             </div>
           )}
 
+          {/* The acceptance point at first post, beside the button that
+              commits to it — the same two documents the sign-in checkbox
+              links and records. */}
+          <p className="text-xs text-white/60">
+            By posting, you agree to the{' '}
+            <a href="https://www.my-hora.com/terms" target="_blank" rel="noopener noreferrer" className="underline">Terms of Use</a>
+            {' '}and{' '}
+            <a href="https://www.my-hora.com/privacy" target="_blank" rel="noopener noreferrer" className="underline">Privacy Policy</a>.
+          </p>
+
           {/* Actions */}
           <div className="flex gap-3 pt-2">
             <button type="submit" disabled={!canSubmit || isSubmitting || needsCard}

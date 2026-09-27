@@ -234,6 +234,9 @@ export interface UpdateProfilePatch {
   avatar_url?: string;
   bio?: string;
   beta_accepted?: boolean;
+  /** The sign-in consent checkbox, recorded once the session exists. The
+   *  server stamps the first acceptance and keeps it. */
+  terms_accepted?: boolean;
 }
 
 export function updateProfile(patch: UpdateProfilePatch): Promise<Profile> {
@@ -631,6 +634,37 @@ export function cancelTask(
     method: "POST",
     body: { reason, reason_code: reasonCode },
   });
+}
+
+// ── Safety: Report / Block (App Store Guideline 1.2) ─────────────────────
+//
+// Task-scoped: the target must be the other party on that task, which is the
+// server's whole authorization (server/safety.go). The reasons are a closed
+// set the server owns, like cancel reasons.
+
+export interface ReportReason {
+  value: string;
+  label: string;
+}
+
+export function getReportReasons(): Promise<{ reasons: ReportReason[] }> {
+  return apiFetch<{ reasons: ReportReason[] }>("/safety/report-reasons");
+}
+
+export function reportUser(
+  userId: string,
+  taskId: string,
+  reasonCode: string,
+  details?: string
+): Promise<{ ok: boolean; message: string }> {
+  return apiFetch("/safety/report", {
+    method: "POST",
+    body: { user_id: userId, task_id: taskId, reason_code: reasonCode, details },
+  });
+}
+
+export function blockUser(userId: string, taskId: string): Promise<{ ok: boolean; message: string }> {
+  return apiFetch("/safety/block", { method: "POST", body: { user_id: userId, task_id: taskId } });
 }
 
 export interface CompleteTaskPayload {

@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from 'react'
+import { markTermsConsent } from '../lib/termsConsent'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { AuthAPI } from '../api/client.js'
 import { useAuth } from '../auth/AuthContext.jsx'
@@ -235,7 +236,10 @@ export default function Login() {
           <input
             type="checkbox"
             checked={agree}
-            onChange={(e) => setAgree(e.target.checked)}
+            onChange={(e) => {
+              setAgree(e.target.checked)
+              markTermsConsent(e.target.checked)
+            }}
             className="mr-2 accent-secondary"
           />
           <span className="text-primary text-sm">

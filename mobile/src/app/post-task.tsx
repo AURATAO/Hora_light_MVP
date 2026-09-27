@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Platform, ScrollView, Text, View } from "react-native";
+import { Alert, Platform, ScrollView, Text, View } from "react-native";
+import * as WebBrowser from "expo-web-browser";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Check, ChevronLeft, CreditCard, Sparkles, Tag, X } from "lucide-react-native";
 import { BetaNoticeSheet } from "../components/BetaNoticeSheet";
+import { LEGAL_URLS } from "../lib/constants";
 import { CompanionshipPolicySheet } from "../components/CompanionshipPolicySheet";
 import {
   TaskForm,
@@ -579,6 +581,20 @@ export default function PostTask() {
               loading={submitting}
               disabled={needsCard}
             />
+            {/* The acceptance point at first post, beside the button that
+                commits to it — the same two documents the sign-in checkbox
+                links (and records, server-side). */}
+            <Text className="text-center text-caption text-muted">
+              By posting, you agree to the{" "}
+              <Text className="text-brand underline" onPress={() => openLegalPage(LEGAL_URLS.terms)}>
+                Terms of Use
+              </Text>{" "}
+              and{" "}
+              <Text className="text-brand underline" onPress={() => openLegalPage(LEGAL_URLS.privacy)}>
+                Privacy Policy
+              </Text>
+              .
+            </Text>
           </View>
         )}
       </ScrollView>
@@ -601,4 +617,13 @@ export default function PostTask() {
       />
     </Screen>
   );
+}
+
+// Same in-app browser pattern as sign-in's and Profile's legal links.
+async function openLegalPage(url: string) {
+  try {
+    await WebBrowser.openBrowserAsync(url);
+  } catch {
+    Alert.alert("Page temporarily unavailable", "Try again later.");
+  }
 }

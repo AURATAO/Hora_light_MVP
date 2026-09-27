@@ -163,7 +163,7 @@ func stubStripe(t *testing.T) *stripeFixture {
 	}
 	prevNew, prevCap, prevTr, prevPM := stripeCreatePaymentIntent, stripeCapturePaymentIntent,
 		stripeCreateTransfer, stripeDefaultPaymentMethodFor
-	stripeCreatePaymentIntent = func(params *stripe.PaymentIntentParams) (*stripe.PaymentIntent, error) {
+	stripeCreatePaymentIntent = func(_ string, params *stripe.PaymentIntentParams) (*stripe.PaymentIntent, error) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		id := next("pi")
@@ -179,7 +179,7 @@ func stubStripe(t *testing.T) *stripeFixture {
 		return &stripe.PaymentIntent{ID: id, Amount: amount, AmountReceived: amount,
 			Status: stripe.PaymentIntentStatusSucceeded, LatestCharge: card}, nil
 	}
-	stripeCapturePaymentIntent = func(id string, params *stripe.PaymentIntentCaptureParams) (*stripe.PaymentIntent, error) {
+	stripeCapturePaymentIntent = func(_, id string, params *stripe.PaymentIntentCaptureParams) (*stripe.PaymentIntent, error) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		amount := *params.AmountToCapture
@@ -187,7 +187,7 @@ func stubStripe(t *testing.T) *stripeFixture {
 		return &stripe.PaymentIntent{ID: id, AmountReceived: amount, Status: stripe.PaymentIntentStatusSucceeded,
 			LatestCharge: &stripe.Charge{ID: "ch_" + id}}, nil
 	}
-	stripeCreateTransfer = func(params *stripe.TransferParams) (*stripe.Transfer, error) {
+	stripeCreateTransfer = func(_ string, params *stripe.TransferParams) (*stripe.Transfer, error) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		src := ""
@@ -201,7 +201,7 @@ func stubStripe(t *testing.T) *stripeFixture {
 		id := next("tr")
 		return &stripe.Transfer{ID: id, DestinationPayment: &stripe.Charge{ID: "py_" + id}}, nil
 	}
-	stripeDefaultPaymentMethodFor = func(string) (string, error) { return "pm_fixture", nil }
+	stripeDefaultPaymentMethodFor = func(string, string) (string, error) { return "pm_fixture", nil }
 	t.Cleanup(func() {
 		stripeCreatePaymentIntent, stripeCapturePaymentIntent, stripeCreateTransfer,
 			stripeDefaultPaymentMethodFor = prevNew, prevCap, prevTr, prevPM
