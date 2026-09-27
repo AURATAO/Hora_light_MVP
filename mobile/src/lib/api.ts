@@ -243,6 +243,26 @@ export function updateProfile(patch: UpdateProfilePatch): Promise<Profile> {
   return apiFetch<Profile>("/profile", { method: "PATCH", body: patch });
 }
 
+// ---- Account deletion (App Store 5.1.1(v)) --------------------------------
+
+export interface DeletionBlocker {
+  code: string;
+  message: string;
+  count?: number;
+}
+
+/** What deleting would run into right now. Empty blockers means it can go. */
+export function getAccountDeletionPreview(): Promise<{ can_delete: boolean; blockers: DeletionBlocker[] }> {
+  return apiFetch("/profile/deletion");
+}
+
+/** Anonymises the account server-side and ends the session. 409 with
+ *  `blockers` when something (an open task, a balance, a payout) stands in
+ *  the way. */
+export function deleteMyAccount(): Promise<{ ok: boolean; message: string }> {
+  return apiFetch("/profile", { method: "DELETE" });
+}
+
 export async function uploadAvatar(file: FilePart): Promise<UploadResponse> {
   return apiFetch<UploadResponse>("/profile/avatar", {
     method: "POST",

@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from 'react'
 import { markTermsConsent } from '../lib/termsConsent'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { AuthAPI } from '../api/client.js'
+import { supabase } from '../lib/supabaseClient.js'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useLoader } from '../providers/LoaderProvider.jsx'
 import { RESEND_COOLDOWN_MS, resendLabel, resendSecondsLeft } from '../lib/otpResend.js'
@@ -86,6 +87,30 @@ export default function Login() {
 
   const resendWait = resendSecondsLeft(resendReadyAt, now)
 
+  // Sign in with Apple, browser flow: Supabase drives the Apple authorize
+  // page and lands back on /auth/apple-callback with a PKCE code, which
+  // that page exchanges for a session before doing the same /auth/exchange
+  // + /auth/me + setUser dance as verifyOtp below. Unlike Google (whose
+  // whole flow is server-side), the consent tick has to be parked in
+  // localStorage (markTermsConsent) and flushed by ProtectLayout.
+  async function loginWithApple() {
+    if (!agree || loading) return
+    setLoading(true)
+    try {
+      const baseURL = new URL(import.meta.env.BASE_URL || '/', window.location.origin)
+      const redirectTo = new URL('auth/apple-callback', baseURL).toString()
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'apple',
+        options: { redirectTo },
+      })
+      if (error) throw error
+      // On success the browser is navigating away; nothing more to do here.
+    } catch (e) {
+      alert(e.message || 'Could not start Apple sign-in')
+      setLoading(false)
+    }
+  }
+
   async function verifyOtp(e) {
     e.preventDefault()
     if (!email || !code) return
@@ -131,6 +156,24 @@ export default function Login() {
               <path fill="#FF3D00" d="M6.3 14.6l6.6 4.9C14.5 15.9 18.9 13 24 13c3.3 0 6.3 1.2 8.6 3.2l5.7-5.7C34.6 7.4 29.6 5.5 24 5.5c-7.8 0-14.4 4.3-17.7 10.6z" />
               <path fill="#4CAF50" d="M24 42.5c5.1 0 9.7-1.7 13.3-4.7l-6.1-5.1C29.1 34 26.7 35 24 35c-5.2 0-9.6-3.5-11.2-8.3l-6.6 5.1C9.4 38.1 16.1 42.5 24 42.5z" />
               <path fill="#1976D2" d="M46 24c0-1.5-.2-3-.4-4H24v8h11.3c-.8 3.7-3.2 6.2-6 7.7l6.1 5.1C38.3 38.7 46 32.5 46 24z" />
+            </svg>
+          </button>
+
+          <button
+            type="button"
+            onClick={loginWithApple}
+            disabled={!agree || loading}
+            title={!agree ? "Please agree to Privacy Policy and Terms to continue" : "Continue with Apple"}
+            aria-label="Continue with Apple"
+            className={`group h-12 w-12 rounded-full border border-slate-200 bg-white shadow-sm transition active:scale-95 flex items-center justify-center
+              ${!agree ? "opacity-40 cursor-not-allowed" : "hover:shadow-md"}`}
+          >
+            {/* Apple logo, monochrome as Apple's HIG requires. */}
+            <svg viewBox="0 0 24 24" className="h-6 w-6 text-slate-900" aria-hidden>
+              <path
+                fill="currentColor"
+                d="M16.365 12.66c-.02-2.06 1.685-3.05 1.762-3.1-.96-1.404-2.454-1.596-2.985-1.618-1.27-.129-2.48.748-3.125.748-.644 0-1.64-.73-2.695-.71-1.386.02-2.665.806-3.378 2.047-1.44 2.497-.368 6.196 1.035 8.222.686.99 1.503 2.103 2.577 2.063 1.034-.04 1.425-.669 2.676-.669 1.25 0 1.6.669 2.696.65 1.113-.02 1.818-1.01 2.5-2.004.788-1.15 1.113-2.263 1.132-2.32-.025-.011-2.173-.834-2.195-3.309zM14.31 6.6c.57-.69.955-1.65.85-2.6-.82.033-1.815.547-2.404 1.236-.528.61-.99 1.588-.866 2.523.915.07 1.85-.465 2.42-1.159z"
+              />
             </svg>
           </button>
 

@@ -1,15 +1,23 @@
 import { useEffect, useState } from "react";
-import { View, Text, ActivityIndicator, Alert } from "react-native";
+import { View, Text, ActivityIndicator, Alert, Platform } from "react-native";
 import { useRouter } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
 import * as SecureStore from "expo-secure-store";
+import * as AppleAuthentication from "expo-apple-authentication";
+import * as Crypto from "expo-crypto";
 import { supabase } from "../../lib/supabase";
 import { hasWebCryptoSupport } from "../../lib/crypto-polyfill";
 import { getAuthRedirectUrl } from "../../lib/auth-redirect";
-import { apiFetch, reviewLogin, updateProfile, type SessionIdentity } from "../../lib/api";
+import {
+  apiFetch,
+  getProfile,
+  reviewLogin,
+  updateProfile,
+  type SessionIdentity,
+} from "../../lib/api";
 import { Screen, Input, PressableScale, Logo, Checkbox } from "../../components/ui";
 import { LEGAL_URLS } from "../../lib/constants";
-import { color } from "../../theme/tokens";
+import { color, radius, size } from "../../theme/tokens";
 import { RESEND_COOLDOWN_MS, resendLabel, resendSecondsLeft } from "../../lib/otp-resend";
 import { useAuthState } from "../_layout";
 
@@ -52,12 +60,50 @@ async function completeSessionFromUrl(url: string) {
   return data.session;
 }
 
+// Sign in with Apple binds the identity token to a nonce: the RAW nonce goes
+// to Supabase (which checks it against the token), the SHA-256 of it goes to
+// Apple (which embeds it in the token). supabase-js 2.110 has no
+// generateRawNonce(), so the raw value is 32 random bytes from expo-crypto,
+// hex-encoded.
+async function makeAppleNonce() {
+  const bytes = await Crypto.getRandomBytesAsync(32);
+  const rawNonce = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  const hashedNonce = await Crypto.digestStringAsync(
+    Crypto.CryptoDigestAlgorithm.SHA256,
+    rawNonce
+  );
+  return { rawNonce, hashedNonce };
+}
+
+// Apple only hands the name over on the very FIRST authorization for this
+// app; every later sign-in returns null parts. Joined and trimmed so a
+// given-name-only account does not end up as "Ada " (or " Lovelace").
+function appleDisplayName(fullName: AppleAuthentication.AppleAuthenticationFullName | null) {
+  if (!fullName) return "";
+  return [fullName.givenName, fullName.familyName]
+    .filter((part): part is string => !!part && part.trim().length > 0)
+    .map((part) => part.trim())
+    .join(" ");
+}
+
+// The user backed out of the Apple sheet (or the system dismissed it): not an
+// error, nothing to show.
+function isAppleCancel(e: unknown) {
+  return (
+    typeof e === "object" && e !== null && (e as { code?: unknown }).code === "ERR_REQUEST_CANCELED"
+  );
+}
+
 export default function Login() {
   const router = useRouter();
   const { refresh } = useAuthState();
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
   const [codeSent, setCodeSent] = useState(false);
+  // The native Apple button is only rendered where Apple sign-in can actually
+  // complete: iOS 13+ with the capability on. Android and Expo Go never see it.
+  const [appleAvailable, setAppleAvailable] = useState(false);
+  const [loadingApple, setLoadingApple] = useState(false);
   const [loadingGoogle, setLoadingGoogle] = useState(false);
   const [loadingSendCode, setLoadingSendCode] = useState(false);
   const [loadingVerifyCode, setLoadingVerifyCode] = useState(false);
@@ -77,6 +123,19 @@ export default function Login() {
     return () => clearInterval(id);
   }, [codeSent, resendWait]);
 
+  useEffect(() => {
+    if (Platform.OS !== "ios") return undefined;
+    let alive = true;
+    AppleAuthentication.isAvailableAsync()
+      .then((available) => {
+        if (alive) setAppleAvailable(available);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   // Every login path converges here once the backend has set the hora_session
   // cookie. Routes through the root gate (index) rather than straight to the
   // tabs, so a new / incomplete user lands in onboarding. refresh() populates
@@ -93,11 +152,15 @@ export default function Login() {
     router.replace("/");
   }
 
-  async function finishLogin(accessToken: string) {
+  // `beforeEnter` runs once the hora_session cookie exists and before the
+  // profile is cached + the gate routes — the one place a login path can
+  // patch the profile and have enterApp's refresh() pick the change up.
+  async function finishLogin(accessToken: string, beforeEnter?: () => Promise<void>) {
     const me = await apiFetch<SessionIdentity>("/auth/exchange", {
       method: "POST",
       body: { access_token: accessToken },
     });
+    if (beforeEnter) await beforeEnter();
     await enterApp(me);
   }
 
@@ -107,6 +170,58 @@ export default function Login() {
       await WebBrowser.openBrowserAsync(url);
     } catch {
       Alert.alert("Page temporarily unavailable", "Try again later.");
+    }
+  }
+
+  // Native Sign in with Apple (App Store Guideline 4.8). No browser round
+  // trip: the system sheet hands back an identity token which Supabase
+  // verifies directly, so unlike Google there is no PKCE verifier to keep
+  // alive across a redirect.
+  async function handleAppleLogin() {
+    // The native button has no disabled prop, so the consent gate is enforced
+    // here as well as by the pointerEvents wrapper around it.
+    if (!consented || loadingApple) return;
+    setError(null);
+    setLoadingApple(true);
+    try {
+      const { rawNonce, hashedNonce } = await makeAppleNonce();
+      const credential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+        nonce: hashedNonce,
+      });
+      if (!credential.identityToken) throw new Error("Apple sign-in returned no identity token");
+
+      const { data, error: idTokenError } = await supabase.auth.signInWithIdToken({
+        provider: "apple",
+        token: credential.identityToken,
+        nonce: rawNonce,
+      });
+      if (idTokenError) throw idTokenError;
+      if (!data.session?.access_token) throw new Error("Apple sign-in returned no session");
+
+      // Apple sends the name exactly once (first authorization), and Supabase
+      // does not carry it into user metadata for id-token sign-ins, so it is
+      // written to the profile here — only when the profile has no name yet,
+      // and best-effort: the login must not fail on a profile write.
+      const name = appleDisplayName(credential.fullName);
+      await finishLogin(data.session.access_token, async () => {
+        if (!name) return;
+        try {
+          const profile = await getProfile();
+          if (profile.name?.trim()) return;
+          await updateProfile({ name });
+        } catch {
+          // Name backfill is a nicety; the onboarding gate asks anyway.
+        }
+      });
+    } catch (e) {
+      if (isAppleCancel(e)) return;
+      setError(e instanceof Error ? e.message : "Apple sign-in failed");
+    } finally {
+      setLoadingApple(false);
     }
   }
 
@@ -261,6 +376,29 @@ export default function Login() {
           </Text>
         </Text>
       </View>
+
+      {appleAvailable && (
+        // Apple's own button (Guideline 4.8 wants the system-rendered one,
+        // not a look-alike). It takes no `disabled` and no className, so the
+        // consent gate is a pointerEvents wrapper at the same 40% opacity as
+        // the Google button below, and the 52px pill height is an inline
+        // style — the native view ignores NativeWind's h-[52px]. The
+        // `cornerRadius` prop is the button's own radius (pill); `style`
+        // must not carry borderRadius or backgroundColor.
+        <View
+          className={`mb-4 ${consented ? "" : "opacity-40"}`}
+          pointerEvents={consented && !loadingApple ? "auto" : "none"}
+          accessibilityState={{ disabled: !consented || loadingApple }}
+        >
+          <AppleAuthentication.AppleAuthenticationButton
+            buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
+            buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+            cornerRadius={radius.pill}
+            style={{ height: size.buttonHeight }}
+            onPress={handleAppleLogin}
+          />
+        </View>
+      )}
 
       <PressableScale
         onPress={handleGoogleLogin}

@@ -1,14 +1,62 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { api } from '../api/client'
+import { api, AuthAPI } from '../api/client'
+import { useAuth } from '../auth/AuthContext.jsx'
+import Modal from '../components/Modal'
 import AvatarUploader from '../components/AvatarUploader'
 import Earnings from '../components/Earnings'
 import PaymentMethods from '../components/PaymentMethods'
 import { useToast } from '../providers/ToastProvider'
 
+// Web mirror of mobile's DeleteAccountSheet copy (App Store 5.1.1(v)).
+const DELETION_REMOVES = [
+  'Your name, phone number, city, photo and bio',
+  "Your email and sign-in — you won't be able to sign in again",
+  'Saved cards, your location history and notifications',
+]
+const DELETION_KEEPS =
+  'Records of completed tasks and their payments are kept for tax and dispute purposes, with your name replaced by “Deleted user”. Reviews you wrote and safety reports stay too.'
+
 export default function Profile() {
   const navigate = useNavigate()
   const toast = useToast()
+  const { setUser } = useAuth()
+
+  // Delete account: the server's blockers (open tasks, a balance, a payout on
+  // its way) or the confirmation itself.
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [deleteChecking, setDeleteChecking] = useState(false)
+  const [deleteBlockers, setDeleteBlockers] = useState([])
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
+
+  async function openDelete() {
+    setDeleteOpen(true)
+    setDeleteChecking(true)
+    setDeleteError('')
+    try {
+      const r = await AuthAPI.deletionPreview()
+      setDeleteBlockers(Array.isArray(r?.blockers) ? r.blockers : [])
+    } catch (e) {
+      setDeleteError(e?.message || "Couldn't check your account. Try again.")
+    } finally {
+      setDeleteChecking(false)
+    }
+  }
+
+  async function confirmDelete() {
+    setDeleting(true)
+    setDeleteError('')
+    try {
+      await AuthAPI.deleteAccount()
+      setUser?.(null)
+      navigate('/login', { replace: true })
+    } catch (e) {
+      if (Array.isArray(e?.body?.blockers)) setDeleteBlockers(e.body.blockers)
+      else setDeleteError(e?.body?.message || e?.message || "Couldn't delete your account. Try again.")
+      setDeleting(false)
+    }
+  }
 
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('')
@@ -201,6 +249,55 @@ export default function Profile() {
             <span className="text-white/40">&rsaquo;</span>
           </Link>
         )}
+
+        {/* In-app account deletion (App Store 5.1.1(v)); server/account_deletion.go. */}
+        <div className="pt-4 text-center">
+          <button type="button" onClick={openDelete} className="text-xs text-white/50 underline hover:text-white/80">
+            Delete account
+          </button>
+        </div>
+
+        <Modal
+          open={deleteOpen}
+          onClose={() => { if (!deleting) setDeleteOpen(false) }}
+          title={deleteBlockers.length > 0 ? 'Not yet — a few things first' : 'Delete your account?'}
+          actions={
+            <>
+              <button
+                className="px-3 py-1.5 rounded-md border border-white/20 hover:border-white/40 text-accent"
+                onClick={() => setDeleteOpen(false)}
+                disabled={deleting}
+              >
+                {deleteBlockers.length > 0 ? 'OK' : 'Keep my account'}
+              </button>
+              {!deleteChecking && deleteBlockers.length === 0 && (
+                <button
+                  className="px-3 py-1.5 rounded-md bg-red-500/90 hover:bg-red-500 text-black disabled:opacity-60"
+                  onClick={confirmDelete}
+                  disabled={deleting}
+                >
+                  {deleting ? 'Deleting…' : 'Delete my account'}
+                </button>
+              )}
+            </>
+          }
+        >
+          {deleteChecking ? (
+            <p>Checking your account…</p>
+          ) : deleteBlockers.length > 0 ? (
+            <div className="space-y-2">
+              {deleteBlockers.map((b) => <p key={b.code}>• {b.message}</p>)}
+              <p className="text-white/60">Once these are cleared, come back here and the deletion goes through.</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-white/60">This removes, permanently:</p>
+              {DELETION_REMOVES.map((line) => <p key={line}>• {line}</p>)}
+              <p className="text-white/60">{DELETION_KEEPS}</p>
+            </div>
+          )}
+          {deleteError && <p className="mt-2 text-red-400 text-sm">{deleteError}</p>}
+        </Modal>
 
       </div>
     </div>

@@ -449,7 +449,7 @@ function confirmCompanionPolicy() {
                 <span>ASAP</span>
                 {/* Tooltip */}
                 <div className="absolute bottom-full left-0 mb-2 w-64 bg-gray-800 text-white text-xs rounded-lg px-3 py-2 hidden group-hover:block z-10 pointer-events-none">
-                  Instant Support coming soon — use Scheduled Task for now 💚
+                  Instant support isn't available yet — schedule a task instead
                 </div>
               </label>
               <label className="inline-flex items-center gap-2">

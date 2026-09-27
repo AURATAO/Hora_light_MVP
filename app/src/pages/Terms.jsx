@@ -46,7 +46,7 @@ export default function Terms() {
 
           <section>
             <h2 className="font-semibold text-base mb-2">6. Disclaimers</h2>
-            <p>Hora Light is provided "as is" during the beta period. We do not guarantee the quality, safety, or legality of tasks posted. Use the platform at your own discretion.</p>
+            <p>Hora Light is provided "as is". We do not guarantee the quality, safety, or legality of tasks posted. Use the platform at your own discretion.</p>
           </section>
 
           <section>

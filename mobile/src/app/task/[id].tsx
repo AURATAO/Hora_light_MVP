@@ -17,6 +17,7 @@ import {
   ShieldAlert,
 } from "lucide-react-native";
 import { BudgetIncreaseSheet, type BudgetIncreaseSubmit } from "../../components/BudgetIncreaseSheet";
+import { askForPushInContext } from "../../lib/push";
 import { UserSafetyMenu } from "../../components/UserSafetyMenu";
 import { CancelTaskSheet } from "../../components/CancelTaskSheet";
 import { CompleteTaskSheet, type CompleteTaskPayload } from "../../components/CompleteTaskSheet";
@@ -435,6 +436,9 @@ export default function TaskDetail() {
     try {
       await acceptTask(id);
       await load();
+      // The first moment a push makes sense to a supporter: they now have a
+      // requester who can message, approve and cancel while the app is closed.
+      askForPushInContext("task_accepted");
     } catch (e) {
       if (handleAuthError(e)) return;
       if (isPayoutsOnboardingRequired(e)) {
@@ -1711,7 +1715,7 @@ export default function TaskDetail() {
               {myReview.stars !== null ? (
                 <Text className="text-body text-ink">{"★".repeat(myReview.stars)}{"☆".repeat(5 - myReview.stars)}</Text>
               ) : (
-                <Text className="text-caption text-muted">Thanks — this round closes {TRACTION_3_CONFIG.window}.</Text>
+                <Text className="text-caption text-muted">Thanks — the feedback window closes {TRACTION_3_CONFIG.window}.</Text>
               )}
               {myReview.comment ? <Text className="text-caption text-ink">{myReview.comment}</Text> : null}
             </View>

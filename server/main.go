@@ -635,22 +635,7 @@ func main() {
 	})
 
 	r.POST("/auth/logout", func(c *gin.Context) {
-		isProd := strings.EqualFold(os.Getenv("APP_ENV"), "prod") || strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true")
-
-		cookie := &http.Cookie{
-			Name:     "hora_session",
-			Value:    "",
-			Path:     "/",
-			MaxAge:   -1,
-			HttpOnly: true,
-			Secure:   isProd, // ✅ prod 要 true
-		}
-		if isProd {
-			cookie.SameSite = http.SameSiteNoneMode // ✅ 跨網域需要
-		} else {
-			cookie.SameSite = http.SameSiteLaxMode
-		}
-		http.SetCookie(c.Writer, cookie)
+		clearHoraSessionCookie(c) // shared with account deletion (account_deletion.go)
 		c.Status(http.StatusNoContent)
 	})
 
@@ -732,6 +717,9 @@ func main() {
 	{
 		meAPI.GET("", getMyProfile)
 		meAPI.PATCH("", patchMyProfile)
+		// In-app account deletion (App Store 5.1.1(v)); see account_deletion.go.
+		meAPI.GET("/deletion", accountDeletionPreview)
+		meAPI.DELETE("", deleteMyAccount)
 	}
 
 	r.GET("/talkjs/signature", dualAuth(sqldb), talkjsSignatureHandler)
