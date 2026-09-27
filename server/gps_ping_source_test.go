@@ -104,6 +104,7 @@ func setupGpsPingDB(t *testing.T) {
 		pool.Close()
 		db = prev
 	})
+	applySafetyMigration(t)
 }
 
 // seedClockedInTask returns (taskID, supporterID, supporterEmail) for a

@@ -66,9 +66,17 @@ func RegisterStripeWebhooks(r *gin.Engine) {
 //
 // Order matters only for speed: the account secret is tried first because it
 // signs the overwhelming majority of traffic.
+//
+// The two SANDBOX secrets are the review account's test-mode endpoints, and
+// only matter once the platform runs on live keys: test-mode events are then
+// delivered by a separate pair of endpoints in the test-mode dashboard, each
+// with its own secret (sandbox.go). While the platform itself is on test keys
+// they are unset and the first two cover everything. A test event can only
+// ever match test-mode objects, which only sandbox rows reference.
 func stripeWebhookSecrets() []string {
 	var out []string
-	for _, name := range []string{"STRIPE_WEBHOOK_SECRET", "STRIPE_CONNECT_WEBHOOK_SECRET"} {
+	for _, name := range []string{"STRIPE_WEBHOOK_SECRET", "STRIPE_CONNECT_WEBHOOK_SECRET",
+		"STRIPE_SANDBOX_WEBHOOK_SECRET", "STRIPE_SANDBOX_CONNECT_WEBHOOK_SECRET"} {
 		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
 			out = append(out, v)
 		}

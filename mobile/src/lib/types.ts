@@ -258,6 +258,13 @@ export interface Task {
    *  are for identity checks only and are never shown as a name. */
   requester_name?: string;
   assignee_name?: string;
+  /** The App Review sandbox's own open task, which that one account may
+   *  accept so a single login walks both sides (server/sandbox.go). Absent
+   *  for everybody else. */
+  can_self_accept?: boolean;
+  /** The viewer and the other party on this task have blocked each other
+   *  (either direction). The chat is read-only (server/safety.go). */
+  chat_blocked?: boolean;
 }
 
 export interface Worklog {

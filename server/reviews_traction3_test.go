@@ -92,6 +92,7 @@ func setupTraction3DB(t *testing.T) {
 		pool.Close()
 		db = prev
 	})
+	applySafetyMigration(t)
 }
 
 // seedCompletedTask returns (taskID, requesterID, supporterID).

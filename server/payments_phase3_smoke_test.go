@@ -346,7 +346,7 @@ func onboardedSmokeAccount(t *testing.T, uid string) string {
 	if err != nil {
 		t.Fatalf("supporter account: %v", err)
 	}
-	link, linkErr := accountLinkFor(acctID)
+	link, linkErr := accountLinkFor(context.Background(), acctID)
 	if linkErr != nil {
 		link = "(could not mint an onboarding link: " + linkErr.Error() + ")"
 	}
@@ -396,7 +396,7 @@ func seedSmokeSupporter(t *testing.T, email string) string {
 
 func mustOnboardingLink(t *testing.T, accountID string) string {
 	t.Helper()
-	link, err := accountLinkFor(accountID)
+	link, err := accountLinkFor(context.Background(), accountID)
 	if err != nil {
 		t.Fatalf("account link: %v", err)
 	}
@@ -439,7 +439,7 @@ func TestPhase3SmokeMintOnboardingLink(t *testing.T) {
 		return
 	}
 
-	link, err := accountLinkFor(acctID)
+	link, err := accountLinkFor(context.Background(), acctID)
 	if err != nil {
 		t.Fatalf("mint account link: %v", err)
 	}

@@ -148,3 +148,20 @@ export function createPromoCode(body) {
 export function deactivatePromoCode(id) {
   return opsFetch(`/admin/promo-codes/${id}/deactivate`, { method: 'POST' })
 }
+
+// ── User reports (server/safety.go — App Store Guideline 1.2) ────────────
+//
+// GET /admin/reports?status=open|all — newest first, with how many reports
+// name the same person and whether the reporter also blocked them.
+export function listUserReports(status = 'open') {
+  return opsFetch(`/admin/reports?status=${encodeURIComponent(status)}`)
+}
+
+// POST /admin/reports/:id/resolve — { resolution } is the ops note for the
+// audit row. 404 when the report is already resolved.
+export function resolveUserReport(id, resolution) {
+  return opsFetch(`/admin/reports/${id}/resolve`, {
+    method: 'POST',
+    body: JSON.stringify({ resolution }),
+  })
+}

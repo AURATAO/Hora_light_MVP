@@ -202,7 +202,11 @@ func connectAccountFor(ctx context.Context, uid, email string) (string, error) {
 	// object it produced.
 	params.SetIdempotencyKey("connect_account_" + uid)
 
-	acct, err := account.New(params)
+	key, err := stripeKeyForUser(ctx, uid)
+	if err != nil {
+		return "", fmt.Errorf("payments: stripe key for user %s: %w", uid, err)
+	}
+	acct, err := (account.Client{B: stripeBackend(), Key: key}).New(params)
 	if err != nil {
 		if isAccountsV1Disabled(err) {
 			// Stripe refuses v1 account creation by default on platforms
@@ -376,20 +380,27 @@ func transfersActive(acct *stripe.Account) bool {
 }
 
 var (
-	stripeClientOnce sync.Once
-	stripeClientV    *stripe.Client
+	stripeClientsMu sync.Mutex
+	stripeClients   = map[string]*stripe.Client{}
 )
 
-// stripeClient is the client-style SDK entry point, which is the only way
-// into the /v2 surface. Built once, from the key initStripe set; nil when
-// there is none, so callers can skip the call rather than send an
-// unauthenticated request.
-func stripeClient() *stripe.Client {
-	if !paymentsEnabled() {
+// stripeClientFor is the client-style SDK entry point, which is the only way
+// into the /v2 surface. One per secret key — the platform's, and the review
+// sandbox's test key (sandbox.go) — built on first use; nil when the key is
+// empty, so callers can skip the call rather than send an unauthenticated
+// request.
+func stripeClientFor(key string) *stripe.Client {
+	if key == "" {
 		return nil
 	}
-	stripeClientOnce.Do(func() { stripeClientV = stripe.NewClient(stripe.Key) })
-	return stripeClientV
+	stripeClientsMu.Lock()
+	defer stripeClientsMu.Unlock()
+	if sc, ok := stripeClients[key]; ok {
+		return sc
+	}
+	sc := stripe.NewClient(key)
+	stripeClients[key] = sc
+	return sc
 }
 
 // recipientTransfersStatus is the v2 Account's answer:
@@ -399,8 +410,16 @@ func stripeClient() *stripe.Client {
 // could not be read — no key, network, or the platform has no v2 surface —
 // and is different from "known and not active".
 func recipientTransfersStatus(ctx context.Context, accountID string) (string, bool) {
-	sc := stripeClient()
-	if sc == nil || accountID == "" {
+	if accountID == "" {
+		return "", false
+	}
+	key, err := stripeKeyForAccount(ctx, accountID)
+	if err != nil {
+		log.Printf("[payments][connect] account=%s key unresolved (%v) — v1 capability stands alone", accountID, err)
+		return "", false
+	}
+	sc := stripeClientFor(key)
+	if sc == nil {
 		return "", false
 	}
 	acct, err := sc.V2CoreAccounts.Retrieve(ctx, accountID, &stripe.V2CoreAccountRetrieveParams{
@@ -520,7 +539,7 @@ func readConnectStatus(ctx context.Context, uid string) (ConnectStatus, error) {
 	st := ConnectStatus{
 		State:           onboardingNotStarted,
 		RequirementsDue: []string{},
-		PayoutsEnforced: paymentsEnforced(),
+		PayoutsEnforced: paymentsEnforcedFor(ctx, uid),
 	}
 
 	var accountID *string
@@ -540,7 +559,12 @@ func readConnectStatus(ctx context.Context, uid string) (ConnectStatus, error) {
 		return cachedConnectStatus(ctx, uid)
 	}
 
-	acct, err := account.GetByID(*accountID, &stripe.AccountParams{})
+	key, err := stripeKeyForUser(ctx, uid)
+	if err != nil {
+		log.Printf("[payments][connect] user=%s key unresolved (%v) — answering from cache", uid, err)
+		return cachedConnectStatus(ctx, uid)
+	}
+	acct, err := (account.Client{B: stripeBackend(), Key: key}).GetByID(*accountID, &stripe.AccountParams{})
 	if err != nil {
 		// Stripe is unreachable or the account is gone. Fall back to the
 		// cache, which is the whole reason it exists — an Earnings screen that
@@ -564,7 +588,7 @@ func cachedConnectStatus(ctx context.Context, uid string) (ConnectStatus, error)
 	st := ConnectStatus{
 		State:           onboardingNotStarted,
 		RequirementsDue: []string{},
-		PayoutsEnforced: paymentsEnforced(),
+		PayoutsEnforced: paymentsEnforcedFor(ctx, uid),
 	}
 	var accountID *string
 	var rawDue []byte
@@ -626,7 +650,7 @@ const (
 // and between "try again in a moment" and "we cannot pay you", the first is
 // the kinder failure.
 func supporterPayoutGate(ctx context.Context, uid string) (ready bool, message string, err error) {
-	if !paymentsEnforced() {
+	if !paymentsEnforcedFor(ctx, uid) {
 		return true, "", nil
 	}
 	st, err := cachedConnectStatus(ctx, uid)
@@ -745,7 +769,7 @@ func connectOnboardingLinkHandler(c *gin.Context) {
 		return
 	}
 
-	url, err := accountLinkFor(accountID)
+	url, err := accountLinkFor(ctx, accountID)
 	if err != nil {
 		log.Printf("[payments][connect] account link for uid=%s account=%s: %v", uid, accountID, err)
 		c.JSON(http.StatusBadGateway, gin.H{
@@ -768,8 +792,12 @@ func connectOnboardingLinkHandler(c *gin.Context) {
 // named in exactly one place — they have to be identical across every link
 // minted for an account or the refresh loop sends the supporter somewhere
 // unexpected mid-onboarding.
-func accountLinkFor(accountID string) (string, error) {
-	link, err := accountlink.New(&stripe.AccountLinkParams{
+func accountLinkFor(ctx context.Context, accountID string) (string, error) {
+	key, err := stripeKeyForAccount(ctx, accountID)
+	if err != nil {
+		return "", err
+	}
+	link, err := (accountlink.Client{B: stripeBackend(), Key: key}).New(&stripe.AccountLinkParams{
 		Account: stripe.String(accountID),
 		Type:    stripe.String("account_onboarding"),
 		// Stripe sends the supporter here when the link is stale — expired,
@@ -825,7 +853,14 @@ func connectLoginLinkHandler(c *gin.Context) {
 		return
 	}
 
-	link, err := loginlink.New(&stripe.LoginLinkParams{Account: accountID})
+	key, err := stripeKeyForUser(ctx, uid)
+	if err != nil {
+		log.Printf("[payments][connect] login link key for uid=%s: %v", uid, err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "payouts_error",
+			"message": "We couldn't open your payouts dashboard just now."})
+		return
+	}
+	link, err := (loginlink.Client{B: stripeBackend(), Key: key}).New(&stripe.LoginLinkParams{Account: accountID})
 	if err != nil {
 		log.Printf("[payments][connect] login link for uid=%s account=%s: %v", uid, *accountID, err)
 		c.JSON(http.StatusBadGateway, gin.H{

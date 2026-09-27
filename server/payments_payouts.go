@@ -56,8 +56,8 @@ import (
 // stripeCreateTransfer is the one Stripe call in this file, behind a variable
 // for the same reason payments.go's are: so a settlement can be run end to end
 // against real rows in a test with no network. Production never reassigns it.
-var stripeCreateTransfer = func(params *stripe.TransferParams) (*stripe.Transfer, error) {
-	return transfer.New(params)
+var stripeCreateTransfer = func(key string, params *stripe.TransferParams) (*stripe.Transfer, error) {
+	return transfer.Client{B: stripeBackend(), Key: key}.New(params)
 }
 
 // Where a payout's money comes from (payouts.funding).
@@ -465,12 +465,13 @@ func sendTransfer(ctx context.Context, p *Payout, accountID string, in payoutInp
 	}
 	params.SetIdempotencyKey(transferIdempotencyKey(p.ID, p.AttemptCount))
 
-	tr, err := stripeCreateTransfer(params)
+	// The task's key — the mode of the charge funding this transfer. The
+	// sandbox partition guarantees the supporter is on the same side.
+	key, err := stripeKeyForTask(ctx, in.TaskID)
 	if err != nil {
 		return nil, err
 	}
-	_ = ctx
-	return tr, nil
+	return stripeCreateTransfer(key, params)
 }
 
 // transferIdempotencyKey keys a transfer on the payout row AND the attempt,

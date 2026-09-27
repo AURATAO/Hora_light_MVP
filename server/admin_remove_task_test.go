@@ -197,6 +197,7 @@ func setupRemoveDB(t *testing.T) {
 		pool.Close()
 		db, sqldb = prevPool, prevSQL
 	})
+	applySafetyMigration(t)
 }
 
 // seedTask returns (taskID, requesterID, supporterID). supporterEmail empty

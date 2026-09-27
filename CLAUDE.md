@@ -6,9 +6,13 @@ Authoritative version: `skills/constitution/STANDARDS.md` S-01, S-10, S-11.
 ### Rule 1 — All Hora table reads/writes go through the Go backend API
 
 All reads and writes to Hora MVP tables (`users`, `profiles`, `tasks`,
-`worklogs`, `notifications`, `task_gps_pings`, `reviews`, `payments`,
-`stripe_webhook_events`, `extension_requests`, `payouts`, `promo_codes`,
-`promo_redemptions`) **MUST** go through the Go backend API. Everything from
+`worklogs`, `notifications`, `task_gps_pings`, `reviews`, `user_reports`,
+`user_blocks`, `payments`, `stripe_webhook_events`, `extension_requests`,
+`payouts`, `promo_codes`, `promo_redemptions`) **MUST** go through the Go
+backend API. `user_reports` and `user_blocks` are safety tables: a
+client-direct read of `user_reports` would tell a reported user who reported
+them, and a client-direct write to `user_blocks` would let anyone make
+themselves unmatchable to anyone. Everything from
 `payments` on is a money table: a client-direct read of `payments` would
 expose charge history, a client-direct write to `extension_requests` would be
 self-approval of a charge, and a client-direct write to `promo_redemptions`

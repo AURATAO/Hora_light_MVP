@@ -115,10 +115,17 @@ func talkjsConversationExists(ctx context.Context, taskID string) (bool, error) 
 // user ids are emails throughout this codebase — the id both clients set on
 // Talk.User and the value talkjsSignatureHandler signs.
 func talkjsSetParticipant(ctx context.Context, taskID, userEmail string) error {
+	return talkjsSetParticipantAccess(ctx, taskID, userEmail, "ReadWrite")
+}
+
+// talkjsSetParticipantAccess sets a participant's access: "ReadWrite", or
+// "Read" — which is how a block makes a thread read-only (safety.go). A Read
+// participant keeps the history and cannot send.
+func talkjsSetParticipantAccess(ctx context.Context, taskID, userEmail, access string) error {
 	status, raw, err := talkjsRequest(ctx, http.MethodPut,
 		"/conversations/"+url.PathEscape(talkjsConversationID(taskID))+
 			"/participants/"+url.PathEscape(userEmail),
-		map[string]any{"access": "ReadWrite", "notify": true})
+		map[string]any{"access": access, "notify": access == "ReadWrite"})
 	if err != nil {
 		return err
 	}

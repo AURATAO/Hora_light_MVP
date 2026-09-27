@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 const read = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 
 // Every component that renders a <Modal> bottom sheet with its own backdrop.
-const SHEETS = ["EditProfileSheet", "CancelTaskSheet", "NamePromptSheet", "BetaNoticeSheet"];
+const SHEETS = ["EditProfileSheet", "CancelTaskSheet", "NamePromptSheet", "BetaNoticeSheet", "ReportUserSheet"];
 
 /** Source with JSX comments and string literals stripped, so prose about the
  *  old shape cannot trip the check. */

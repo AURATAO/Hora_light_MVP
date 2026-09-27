@@ -262,6 +262,7 @@ func setupLiveDB(t *testing.T) {
 	liveRate.Lock()
 	liveRate.seen = map[string]liveRateEntry{}
 	liveRate.Unlock()
+	applySafetyMigration(t)
 }
 
 type liveWorld struct {

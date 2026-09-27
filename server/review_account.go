@@ -18,6 +18,13 @@ package main
 //   - Wrong codes aimed at the review address are counted and throttled, so a
 //     fixed six-digit credential on a public route isn't a brute-force target.
 //   - Every accepted login is logged, so we can see when Apple used it.
+//
+// The account is also the REVIEW SANDBOX (sandbox.go): users.is_sandbox is set
+// on every login, which walls its tasks off from every real account, lets it
+// accept its own task so one login walks both sides, and routes every Stripe
+// call made for it through TEST keys — permanently, whatever the platform's
+// own keys are. And it lands with a saved test Visa (seedReviewTestCard), so a
+// reviewer never types card details.
 
 import (
 	"context"
@@ -33,6 +40,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stripe/stripe-go/v86"
+	"github.com/stripe/stripe-go/v86/customer"
+	"github.com/stripe/stripe-go/v86/paymentmethod"
 )
 
 // Guessing budget for the review credential. Six digits is a small space and
@@ -249,10 +259,76 @@ func ensureReviewAccount(ctx context.Context, sdb *sql.DB, ra reviewAccount) (st
 	if internalID == "" {
 		return "", errors.New("empty internal id for review account")
 	}
+	// Re-forced every login, like the supporter flag below: the sandbox wall
+	// and the test-key routing are the reason this account is safe to hand
+	// to a stranger.
+	if _, err := sdb.ExecContext(ctx,
+		`update public.users set is_sandbox = true where id = $1::uuid and not is_sandbox`, internalID); err != nil {
+		return "", fmt.Errorf("mark sandbox: %w", err)
+	}
 	if err := seedReviewProfile(ctx, sdb, internalID, ra); err != nil {
 		return "", fmt.Errorf("seed profile: %w", err)
 	}
+	// Best-effort, and never fatal to the login: a reviewer without the seeded
+	// card can still add Stripe's test card from Profile → Payment methods.
+	seedReviewTestCard(ctx, internalID, ra.Email)
 	return internalID, nil
+}
+
+// reviewTestPaymentMethod is Stripe's test-mode token for a Visa ending 4242
+// (4242 4242 4242 4242, any future expiry, any CVC). Attaching it mints a
+// real test-mode PaymentMethod on the sandbox Customer. It does not exist in
+// live mode, which is one more guarantee: this call cannot succeed against a
+// live key even if one were somehow chosen.
+const reviewTestPaymentMethod = "pm_card_visa"
+
+// seedReviewTestCard makes sure the review account has a saved card, so
+// posting a task never stops at "Add a card". Test keys only — the key comes
+// from stripeKeyForUser, which for a sandbox user is the sandbox test key or
+// an error, never the live key.
+func seedReviewTestCard(ctx context.Context, uid, email string) {
+	if !paymentsEnabled() {
+		return
+	}
+	key, err := stripeKeyForUser(ctx, uid)
+	if err != nil {
+		log.Printf("[review-login] no test card seeded: %v", err)
+		return
+	}
+	customerID, err := stripeCustomerFor(ctx, uid, email)
+	if err != nil {
+		log.Printf("[review-login] no test card seeded: customer: %v", err)
+		return
+	}
+	if existing, err := defaultPaymentMethodFor(key, customerID); err != nil {
+		log.Printf("[review-login] no test card seeded: list cards: %v", err)
+		return
+	} else if existing != "" {
+		return
+	}
+	pm, err := stripeAttachTestCard(key, customerID)
+	if err != nil {
+		log.Printf("[review-login] no test card seeded: attach: %v", err)
+		return
+	}
+	log.Printf("[review-login] seeded test card %s on customer %s", pm, customerID)
+}
+
+// stripeAttachTestCard attaches reviewTestPaymentMethod and makes it the
+// customer's default. Behind a variable so the seed can be tested offline.
+var stripeAttachTestCard = func(key, customerID string) (string, error) {
+	pm, err := (paymentmethod.Client{B: stripeBackend(), Key: key}).Attach(reviewTestPaymentMethod,
+		&stripe.PaymentMethodAttachParams{Customer: stripe.String(customerID)})
+	if err != nil {
+		return "", err
+	}
+	_, err = (customer.Client{B: stripeBackend(), Key: key}).Update(customerID, &stripe.CustomerParams{
+		InvoiceSettings: &stripe.CustomerInvoiceSettingsParams{DefaultPaymentMethod: stripe.String(pm.ID)},
+	})
+	if err != nil {
+		return pm.ID, fmt.Errorf("set default %s: %w", pm.ID, err)
+	}
+	return pm.ID, nil
 }
 
 // seedReviewProfile puts the account in the state a reviewer needs on arrival:

@@ -8,10 +8,11 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true,
+      "supportsTablet": false,
       "bundleIdentifier": "co.horaapp.app",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
+        "LSApplicationQueriesSchemes": ["mailto"],
         "UIBackgroundModes": [
           "location"
         ]
@@ -43,22 +44,29 @@
         }
       ],
       "expo-web-browser",
-      "expo-secure-store",
+      [
+        "expo-secure-store",
+        {
+          "faceIDPermission": "HO:RA does not use Face ID. Your sign-in is kept in the iOS keychain without biometrics."
+        }
+      ],
       "@react-native-community/datetimepicker",
       [
         "expo-location",
         {
           "isIosBackgroundLocationEnabled": true,
-          "locationWhenInUsePermission": "HO:RA records your location while you are clocked in on a task so requesters can track progress and work time can be verified.",
-          "locationAlwaysAndWhenInUsePermission": "HO:RA records your location while you are clocked in on a task so requesters can track progress and work time can be verified.",
-          "locationAlwaysPermission": "HO:RA records your location while you are clocked in on a task so requesters can track progress and work time can be verified."
+          "motionUsagePermission": "HO:RA does not use motion or fitness data. Location sharing during a task uses GPS only.",
+          "locationWhenInUsePermission": "HO:RA uses your location while the app is open to confirm you've arrived at a task location and to show the requester how close you are while you're on a task.",
+          "locationAlwaysAndWhenInUsePermission": "HO:RA uses your location in the background to share your live location with the requester while you're on your way to and working on their task. Sharing stops when you clock out or the task ends.",
+          "locationAlwaysPermission": "HO:RA uses your location in the background to share your live location with the requester while you're on your way to and working on their task. Sharing stops when you clock out or the task ends."
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "HO:RA needs access to your photos to attach a completion photo.",
-          "cameraPermission": "HO:RA needs camera access to take a completion photo."
+          "photosPermission": "HO:RA uses your photo library when you choose a profile photo, a task completion photo or a receipt photo.",
+          "cameraPermission": "HO:RA uses the camera when you take a profile photo, a task completion photo or a receipt photo.",
+          "microphonePermission": "HO:RA only takes photos and never records audio, so it does not use the microphone."
         }
       ],
       "expo-notifications",

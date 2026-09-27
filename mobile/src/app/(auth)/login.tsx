@@ -6,7 +6,7 @@ import * as SecureStore from "expo-secure-store";
 import { supabase } from "../../lib/supabase";
 import { hasWebCryptoSupport } from "../../lib/crypto-polyfill";
 import { getAuthRedirectUrl } from "../../lib/auth-redirect";
-import { apiFetch, reviewLogin, type SessionIdentity } from "../../lib/api";
+import { apiFetch, reviewLogin, updateProfile, type SessionIdentity } from "../../lib/api";
 import { Screen, Input, PressableScale, Logo, Checkbox } from "../../components/ui";
 import { LEGAL_URLS } from "../../lib/constants";
 import { color } from "../../theme/tokens";
@@ -84,6 +84,11 @@ export default function Login() {
   async function enterApp(me: SessionIdentity) {
     if (me?.id) await SecureStore.setItemAsync("hora_user_id", String(me.id));
     if (me?.email) await SecureStore.setItemAsync("hora_user_email", String(me.email));
+    // Every path here is behind the consent checkbox (both sign-in buttons
+    // are disabled until it is ticked), so this records an answer the person
+    // has just given. Best-effort: the server keeps the FIRST acceptance, and
+    // a failed write must not keep anybody out of the app.
+    await updateProfile({ terms_accepted: true }).catch(() => undefined);
     await refresh();
     router.replace("/");
   }
@@ -171,6 +176,13 @@ export default function Login() {
       setNow(Date.now());
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not send code");
+      // The code field is shown anyway. A send that Supabase refused (its
+      // email rate limit, most often) is still worth a code the person
+      // already holds — a previous send's, or the App Review account's fixed
+      // one, which no send ever issues (server/review_account.go). Without
+      // this the reviewer could be locked out of the app by an email quota.
+      setCode("");
+      setCodeSent(true);
     } finally {
       setLoadingSendCode(false);
     }

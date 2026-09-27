@@ -189,7 +189,11 @@ func chargeBalanceOffSession(ctx context.Context, p *Payment, taskID, requesterI
 	params.SetIdempotencyKey("balance_" + p.ID)
 	params.AddExpand("latest_charge")
 
-	pi, err := stripeCreatePaymentIntent(params)
+	key, err := stripeKeyForUser(ctx, requesterID)
+	if err != nil {
+		return nil, fmt.Errorf("stripe key for requester %s: %w", requesterID, err)
+	}
+	pi, err := stripeCreatePaymentIntent(key, params)
 	if err != nil {
 		pe := classifyPreAuthError(err)
 		if pe.PaymentIntentID != "" {
@@ -811,7 +815,7 @@ func settleOutstandingBalance(c *gin.Context) {
 			"message":           "Your bank needs to confirm this payment.",
 			"client_secret":     out.authErr.ClientSecret,
 			"payment_intent_id": out.authErr.PaymentIntentID,
-			"publishable_key":   stripePublishableKey(),
+			"publishable_key":   publishableKeyForUser(ctx, c.GetString("uid")),
 			"settled_cents":     out.settledCents,
 			"outstanding":       outstandingBalanceFor(ctx, uid),
 		})

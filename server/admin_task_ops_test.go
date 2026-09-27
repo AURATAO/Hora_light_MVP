@@ -215,6 +215,7 @@ func setupAdminOpsDB(t *testing.T) {
 		pool.Close()
 		db, sqldb = prevPool, prevSQL
 	})
+	applySafetyMigration(t)
 }
 
 // opsWorld is an admin, a requester, a supporter, and a task they share.

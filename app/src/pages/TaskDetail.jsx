@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { approvedBudgetCentsFor, needsReceipt } from '../lib/taskBudget'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { api, API_BASE } from '../api/client'
+import UserSafetyMenu from '../components/UserSafetyMenu'
 import TaskChatBox from '../components/TaskChatBox'
 import CancelTaskButton from '../components/CancelTaskButton'
 import { useAuth } from '../auth/AuthContext'
@@ -756,7 +757,26 @@ export default function TaskDetail() {
   const isAssignee = Boolean(user?.id && task?.assigned_to_id && user.id === task.assigned_to_id)
   const hasLogged = (work.total_minutes || 0) > 0
   const canComplete = Boolean((isOwner || isAssignee) && task?.status === 'open' && !!task?.assigned_to_id && !work.has_open && hasLogged)
-  const canAccept = Boolean(!isOwner && !isAssignee && task?.status === 'open' && !task?.assigned_to_id)
+  // can_self_accept: the App Review sandbox's own task (server/sandbox.go).
+  const canAccept = Boolean((!isOwner || task?.can_self_accept) && !isAssignee && task?.status === 'open' && !task?.assigned_to_id)
+  // The other party, for Report / Block (App Store Guideline 1.2 — parity
+  // with mobile). Nobody on an unassigned task, or when the other seat is the
+  // viewer (the sandbox's self-accepted task).
+  const counterpart =
+    isOwner && task?.assigned_to_id && task.assigned_to_id !== user?.id
+      ? { id: task.assigned_to_id, name: task.assignee_name }
+      : isAssignee && task?.requester_id && task.requester_id !== user?.id
+        ? { id: task.requester_id, name: task.requester_name }
+        : null
+  const safetyMenu = counterpart ? (
+    <UserSafetyMenu
+      userId={counterpart.id}
+      userName={counterpart.name}
+      taskId={task.id}
+      blocked={task?.chat_blocked === true}
+      onBlocked={reloadWorkAndTask}
+    />
+  ) : null
 
   // ── Multi-session ─────────────────────────────────────────────────────────
   //
@@ -1344,6 +1364,7 @@ export default function TaskDetail() {
                   Edit
                 </button>
               )}
+              {safetyMenu}
             </div>
 
             {/* The payouts gate. Shown in place of a toast because it carries
@@ -2636,6 +2657,7 @@ export default function TaskDetail() {
             Back
           </button>
           <p className="flex-1 text-center text-sm font-semibold text-accent truncate px-4">{task.title}</p>
+          {safetyMenu}
         </div>
         <div className="flex-1 min-h-0">
           <TaskChatBox task={task} me={user} fullscreen />
