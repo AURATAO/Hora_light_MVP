@@ -4,7 +4,7 @@ Demo account
 Email: <REVIEW_ACCOUNT_EMAIL>
 Code: <REVIEW_ACCOUNT_CODE> — tap "Send code", then enter the code above. (An emailed code may also arrive; ignore it — the fixed code above always works.)
 
-HO:RA is a two-sided marketplace for short, in-person tasks. Your demo account is set up as both a requester and an approved supporter, so you can walk both sides with one login. It has a saved test card already attached — you will never be asked for card details.
+HO:RA is a two-sided marketplace for short, in-person tasks. Your demo account is set up as both a requester and an approved supporter, so you can walk both sides with one login. It has a saved test card already attached — you will never be asked for card details. Because the demo account is both parties, you will receive both sides' notifications (requester and supporter) on the same device.
 
 Walkthrough
 1. Sign in: tick the Terms/Privacy checkbox, tap "Send code", enter the code above.
