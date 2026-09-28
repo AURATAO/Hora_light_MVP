@@ -89,10 +89,14 @@ func TestCancellationSettlementByState(t *testing.T) {
 // The grace window: an undo, not an option. Measured from acceptance against
 // the server's clock, and a task with no accepted_at is NOT inside it.
 func TestCancellationGraceWindowBoundary(t *testing.T) {
-	if Billing.CancelGraceMinutes != 2 {
-		t.Fatalf("this test is written against a 2-minute grace window; BillingConfig says %d",
-			Billing.CancelGraceMinutes)
+	// Every case is derived from BillingConfig rather than spelling the window
+	// out: the value moved once already (2 → 3 minutes, 2026-09-28), and a
+	// test that hardcodes it only tells you the config changed.
+	if Billing.CancelGraceMinutes != 3 {
+		t.Fatalf("CancelGraceMinutes = %d, want 3 — the agreed free-cancellation window", Billing.CancelGraceMinutes)
 	}
+	grace := time.Duration(Billing.CancelGraceMinutes) * time.Minute
+	graceSec := int(grace.Seconds())
 	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
 	at := func(d time.Duration) *time.Time { ts := now.Add(-d); return &ts }
 
@@ -102,14 +106,14 @@ func TestCancellationGraceWindowBoundary(t *testing.T) {
 		wantInside  bool
 		wantLeftSec int
 	}{
-		{"accepted this instant", at(0), true, 120},
-		{"one second in", at(time.Second), true, 119},
-		{"one second before the boundary", at(2*time.Minute - time.Second), true, 1},
+		{"accepted this instant", at(0), true, graceSec},
+		{"one second in", at(time.Second), true, graceSec - 1},
+		{"one second before the boundary", at(grace - time.Second), true, 1},
 		// EXACTLY at the boundary is OUTSIDE. Somewhere has to be, and the
 		// direction that favours the supporter is the one that matches the
 		// promise the window is carved out of.
-		{"exactly at the boundary", at(2 * time.Minute), false, 0},
-		{"one second past", at(2*time.Minute + time.Second), false, 0},
+		{"exactly at the boundary", at(grace), false, 0},
+		{"one second past", at(grace + time.Second), false, 0},
 		{"an hour past", at(time.Hour), false, 0},
 		// No acceptance timestamp: a task nobody accepted, or one accepted
 		// before the column existed. Not inside — the alternative hands a free
@@ -396,13 +400,15 @@ func TestCancellationPreviewCarriesTheGraceDeadline(t *testing.T) {
 		assigned := w.supporterID
 		preview := cancellationPreview(ctx, w.taskID, &assigned, 5000)
 		if !preview.WithinGrace {
-			t.Fatal("a task accepted 30 seconds ago is outside the 2-minute window")
+			t.Fatal("a task accepted 30 seconds ago is outside the grace window")
 		}
 		if preview.GraceEndsAt == nil {
 			t.Fatal("no deadline to count down to")
 		}
-		if left := time.Until(*preview.GraceEndsAt); left <= 0 || left > 90*time.Second {
-			t.Errorf("deadline is %v away, want something inside the remaining ~90s", left)
+		// Accepted 30s ago, so the deadline is the window minus 30s away.
+		remaining := time.Duration(Billing.CancelGraceMinutes)*time.Minute - 30*time.Second
+		if left := time.Until(*preview.GraceEndsAt); left <= 0 || left > remaining {
+			t.Errorf("deadline is %v away, want something inside the remaining ~%v", left, remaining)
 		}
 		if preview.ChargeCents != 0 {
 			t.Errorf("a free cancel previews a %s charge", formatCentsUSD(preview.ChargeCents))

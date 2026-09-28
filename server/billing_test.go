@@ -237,8 +237,14 @@ func callEstimate(t *testing.T, body string) (int, map[string]any) {
 	return w.Code, out
 }
 
+// daytimeStart is a scheduled start outside the surge window in the billing
+// timezone (16:00Z is noon in New York), so the estimate tests below quote the
+// standard rate whatever the clock says. Quoting ASAP made them fail every
+// Rome morning: 03:00–14:00 CEST is 9 PM–8 AM in New York (found 2026-09-28).
+const daytimeStart = `"is_immediate":false,"scheduled_at":"2026-10-01T16:00:00Z"`
+
 func TestBillingEstimateBreakdownShape(t *testing.T) {
-	code, out := callEstimate(t, `{"category":"standard","estimated_minutes":60,"prepay_amount_cents":1000}`)
+	code, out := callEstimate(t, `{"category":"standard","estimated_minutes":60,"prepay_amount_cents":1000,`+daytimeStart+`}`)
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (%v)", code, out)
 	}
@@ -292,7 +298,7 @@ func TestBillingEstimateKeepsLegacyShoppingKeyForShippedMobile(t *testing.T) {
 func TestBillingEstimateQuotesAnyBudget(t *testing.T) {
 	for _, budget := range []int{3000, 3001, 50000, 250000} {
 		code, out := callEstimate(t, `{"category":"delivery","estimated_minutes":30,"prepay_amount_cents":`+
-			itoa(budget)+`}`)
+			itoa(budget)+`,`+daytimeStart+`}`)
 		if code != http.StatusOK {
 			t.Fatalf("budget %s refused with %d (%v)", formatCentsUSD(budget), code, out)
 		}

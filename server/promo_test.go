@@ -466,7 +466,8 @@ func TestPromoEstimateShowsTheDiscount(t *testing.T) {
 	seedPromoCode(t, "WELCOME10", 1000, promoOpts{})
 
 	quote := func(promo string) map[string]any {
-		body := fmt.Sprintf(`{"category":"delivery","estimated_minutes":30,"prepay_amount_cents":0,"is_immediate":true,"promo_code":%q}`, promo)
+		// A daytime start, not ASAP: see daytimeStart in billing_test.go.
+		body := fmt.Sprintf(`{"category":"delivery","estimated_minutes":30,"prepay_amount_cents":0,`+daytimeStart+`,"promo_code":%q}`, promo)
 		code, rec := callTaskHandler(t, estimateTaskCost, http.MethodPost, "/tasks/estimate", "", w.requesterID, requesterEmail, body, nil)
 		if code != http.StatusOK {
 			t.Fatalf("estimate: %d %s", code, rec.Body.String())

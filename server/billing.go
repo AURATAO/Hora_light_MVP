@@ -112,8 +112,9 @@ type BillingConfig struct {
 	// cancelling pays it. That is right, and it is harsh in the first thirty
 	// seconds — a requester who watches the wrong person accept, or realises
 	// immediately that they posted the wrong thing, should not owe $12 for a
-	// commitment nobody has acted on yet. Two minutes is long enough to undo a
-	// mistake and far too short to be a free option on somebody's travel time.
+	// commitment nobody has acted on yet. Three minutes is long enough to undo
+	// a mistake and far too short to be a free option on somebody's travel
+	// time.
 	//
 	// PENDING FINAL CONFIRMATION with Dani — which is exactly why it is a
 	// constant here rather than a literal in cancelTask. Moving it is one
@@ -177,7 +178,7 @@ var Billing = BillingConfig{
 	AutoExtendMinutes:  15,
 	GracePeriodMinutes: 30,
 
-	CancelGraceMinutes: 2, // free cancellation window after acceptance
+	CancelGraceMinutes: 3, // free cancellation window after acceptance (2 → 3 on 2026-09-28)
 
 	ApprovalTimeoutMinutes: 5,
 	CapWarningLeadMinutes:  5,

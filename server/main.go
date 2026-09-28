@@ -4172,7 +4172,7 @@ func completeTask(c *gin.Context) {
 //	                        where a cancel costs nothing.
 //
 //	accepted, inside the    free. The grace window (BillingConfig
-//	grace window            .CancelGraceMinutes, 2 minutes from accepted_at) is
+//	grace window            .CancelGraceMinutes, 3 minutes from accepted_at) is
 //	                        there so that watching the wrong person take your
 //	                        task, or realising you posted the wrong thing, is
 //	                        an undo rather than a $12 lesson.
@@ -4305,8 +4305,8 @@ func cancelTask(c *gin.Context) {
 	committed := assignedToID != nil
 
 	// The grace window: an undo, not an option. Inside it a cancel is a full
-	// release even though a supporter has accepted, because two minutes is not
-	// long enough for anyone to have acted on it and a mis-tap should not cost
+	// release even though a supporter has accepted, because three minutes is
+	// not long enough for anyone to have acted on it and a mis-tap should not cost
 	// $12. Measured from accepted_at against the SERVER's clock.
 	withinGrace := committed && cancelIsWithinGrace(acceptedAt, time.Now())
 
