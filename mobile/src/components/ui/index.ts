@@ -2,6 +2,8 @@ export * from "./PressableScale";
 export * from "./Logo";
 export * from "./Avatar";
 export * from "./Button";
+export * from "./ProviderButton";
+export * from "./GoogleLogo";
 export * from "./Pill";
 export * from "./Card";
 export * from "./Disclosure";

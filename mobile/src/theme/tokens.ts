@@ -21,6 +21,17 @@ export const color = {
   danger: "#C24E3A",
   transparent: "transparent",
   white: "#FFFFFF",
+  // Login-screen provider buttons ONLY. The native Sign in with Apple button
+  // (BLACK style) is pure #000 and cannot be recoloured, so the Google button
+  // beside it uses the same black to read as a matched pair. Every other
+  // solid fill in the app is `ink`.
+  providerBlack: "#000000",
+  // The Google "G" mark, per Google's sign-in branding guidelines. Third-party
+  // brand colours: they draw that logo and nothing else.
+  googleBlue: "#4285F4",
+  googleGreen: "#34A853",
+  googleYellow: "#FBBC05",
+  googleRed: "#EA4335",
 } as const;
 
 export const space = {
@@ -46,6 +57,12 @@ export const type = {
   bodyStrong: { fontSize: 15, lineHeight: 22, fontWeight: "600" },
   caption: { fontSize: 13, lineHeight: 18, fontWeight: "400" },
   micro: { fontSize: 11, lineHeight: 14, fontWeight: "600" },
+  // Login-screen provider buttons ONLY. The native Sign in with Apple button
+  // takes no font prop and sets its own title: measured on the iOS 26
+  // simulator at 44pt tall, its "Continue with" is 68pt wide with a 12.3pt
+  // cap height, which is SF at 16pt. This is the size the Google button
+  // beside it has to match. Not a sixth size for anything else.
+  providerButton: { fontSize: 16, lineHeight: 22, fontWeight: "600" },
 } as const;
 
 export const size = {
@@ -53,6 +70,15 @@ export const size = {
   pillHeight: 36,
   tapTarget: 44,
   iconStroke: 1.8,
+  // Login-screen provider pair (Apple + Google): the minimum tap target, so
+  // the pair stops dominating the screen, and the logo box that puts the
+  // round Google "G" at the optical size of the Apple glyph the native button
+  // draws at that height (measured: 10×13pt).
+  providerButtonHeight: 44,
+  providerLogo: 14,
+  // Logo-to-label gap. Off the 4pt grid because the native button's is:
+  // measured at 6.7pt, and the pair reads as one only if both are the same.
+  providerLogoGap: 6,
 } as const;
 
 // Floating pill tab bar geometry (DESIGN.md §5 tab bar, restyled as a floating

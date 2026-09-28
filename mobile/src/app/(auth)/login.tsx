@@ -15,9 +15,17 @@ import {
   updateProfile,
   type SessionIdentity,
 } from "../../lib/api";
-import { Screen, Input, PressableScale, Logo, Checkbox } from "../../components/ui";
+import {
+  Screen,
+  Input,
+  PressableScale,
+  Logo,
+  Checkbox,
+  ProviderButton,
+  GoogleLogo,
+} from "../../components/ui";
 import { LEGAL_URLS } from "../../lib/constants";
-import { color, radius, size } from "../../theme/tokens";
+import { radius, size } from "../../theme/tokens";
 import { RESEND_COOLDOWN_MS, resendLabel, resendSecondsLeft } from "../../lib/otp-resend";
 import { useAuthState } from "../_layout";
 
@@ -377,44 +385,44 @@ export default function Login() {
         </Text>
       </View>
 
+      {/* The provider pair. Both keep their official logo + text form (Apple
+          HIG; App Store Guideline 4.8 wants Sign in with Apple no less
+          prominent than the other options), and the Google button is built
+          to the native Apple button's geometry — same height, radius, type
+          size, logo size — so the two read as one pair. Apple first, on the
+          same 4.8 grounds. */}
       {appleAvailable && (
         // Apple's own button (Guideline 4.8 wants the system-rendered one,
         // not a look-alike). It takes no `disabled` and no className, so the
         // consent gate is a pointerEvents wrapper at the same 40% opacity as
-        // the Google button below, and the 52px pill height is an inline
-        // style — the native view ignores NativeWind's h-[52px]. The
-        // `cornerRadius` prop is the button's own radius (pill); `style`
-        // must not carry borderRadius or backgroundColor.
+        // ProviderButton's, and the height is an inline style — the native
+        // view ignores NativeWind's h-[...]. The `cornerRadius` prop is the
+        // button's own radius (pill); `style` must not carry borderRadius or
+        // backgroundColor.
         <View
-          className={`mb-4 ${consented ? "" : "opacity-40"}`}
+          className={`mb-3 ${consented ? "" : "opacity-40"}`}
           pointerEvents={consented && !loadingApple ? "auto" : "none"}
           accessibilityState={{ disabled: !consented || loadingApple }}
         >
           <AppleAuthentication.AppleAuthenticationButton
-            buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
+            buttonType={AppleAuthentication.AppleAuthenticationButtonType.CONTINUE}
             buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
             cornerRadius={radius.pill}
-            style={{ height: size.buttonHeight }}
+            style={{ height: size.providerButtonHeight }}
             onPress={handleAppleLogin}
           />
         </View>
       )}
 
-      <PressableScale
+      <ProviderButton
+        label="Continue with Google"
+        logo={<GoogleLogo size={size.providerLogo} />}
         onPress={handleGoogleLogin}
-        disabled={loadingGoogle || !consented}
-        className={`mb-4 h-[52px] flex-row items-center justify-center rounded-pill bg-ink ${
-          consented ? "" : "opacity-40"
-        }`}
-      >
-        {loadingGoogle ? (
-          <ActivityIndicator color={color.white} />
-        ) : (
-          <Text className="text-body font-semibold text-white">Continue with Google</Text>
-        )}
-      </PressableScale>
+        disabled={!consented}
+        loading={loadingGoogle}
+      />
 
-      <View className="my-4 h-px bg-line" />
+      <View className="my-6 h-px bg-line" />
 
       {codeSent ? (
         <>
