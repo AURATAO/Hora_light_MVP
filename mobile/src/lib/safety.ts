@@ -16,6 +16,34 @@ export const FALLBACK_REPORT_REASONS: ReportReason[] = [
   { value: "other", label: "Something else" },
 ];
 
+/**
+ * The other party on a task, for Report / Block: the supporter for the
+ * requester, the requester for the supporter; null when the task has no
+ * supporter yet or the viewer is not on it.
+ *
+ * THE VIEWER CAN BE THEIR OWN COUNTERPART. On the App Review sandbox's
+ * self-accepted task both seats are the reviewer, and the menu still has to
+ * render — Guideline 1.2 is checked by opening it and seeing the Report sheet.
+ * The server refuses the actual self-report / self-block with
+ * "You can't report or block yourself." (server/safety.go), which the sheet
+ * and the block alert both show as-is. Hiding the menu instead is what made a
+ * reviewer following step 8 of the review notes find nothing (2026-09-28).
+ */
+export function safetyCounterpart(task: {
+  meId: string | null;
+  requesterId: string | null | undefined;
+  assignedToId: string | null | undefined;
+  requesterName?: string | null;
+  supporterName?: string | null;
+}): { id: string; name: string | null } | null {
+  const { meId, requesterId, assignedToId } = task;
+  if (!meId || !requesterId || !assignedToId) return null;
+  const clean = (n: string | null | undefined) => n?.trim() || null;
+  if (meId === requesterId) return { id: assignedToId, name: clean(task.supporterName) };
+  if (meId === assignedToId) return { id: requesterId, name: clean(task.requesterName) };
+  return null;
+}
+
 /** What a person is called in the menu when the app has no name for them. */
 export function safetyTargetName(name: string | null | undefined): string {
   const n = (name ?? "").trim();

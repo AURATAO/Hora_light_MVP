@@ -10,6 +10,7 @@ import {
   FALLBACK_REPORT_REASONS,
   CHAT_BLOCKED_LINE,
   blockConfirmTitle,
+  safetyCounterpart,
   safetyTargetName,
 } from "../src/lib/safety.ts";
 
@@ -49,4 +50,22 @@ test("the read-only line says why and what to do", () => {
   assert.match(CHAT_BLOCKED_LINE, /read-only/);
   assert.match(CHAT_BLOCKED_LINE, /blocked/);
   assert.doesNotMatch(CHAT_BLOCKED_LINE, /!/);
+});
+
+// Who the "⋯" menu targets. The one non-obvious case is the App Review
+// sandbox's self-accepted task, where both seats are the viewer: the menu must
+// still render (a reviewer opens it to find Report), so the counterpart is the
+// viewer and the server does the refusing.
+test("the safety menu targets the other seat, and the viewer's own seat when both are theirs", () => {
+  const base = { requesterId: "r", assignedToId: "s", requesterName: " Rita ", supporterName: "Otto" };
+  assert.deepEqual(safetyCounterpart({ ...base, meId: "r" }), { id: "s", name: "Otto" });
+  assert.deepEqual(safetyCounterpart({ ...base, meId: "s" }), { id: "r", name: "Rita" });
+  assert.equal(safetyCounterpart({ ...base, meId: "x" }), null, "a non-party gets no menu");
+  assert.equal(safetyCounterpart({ ...base, meId: "r", assignedToId: null }), null, "no supporter yet");
+  assert.equal(safetyCounterpart({ ...base, meId: null }), null, "signed out");
+  assert.deepEqual(
+    safetyCounterpart({ meId: "me", requesterId: "me", assignedToId: "me", requesterName: "Hora Review", supporterName: "" }),
+    { id: "me", name: null },
+    "self-accepted: the counterpart is the viewer, with no name pretending otherwise"
+  );
 });

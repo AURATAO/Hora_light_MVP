@@ -19,6 +19,7 @@ import {
 import { BudgetIncreaseSheet, type BudgetIncreaseSubmit } from "../../components/BudgetIncreaseSheet";
 import { askForPushInContext } from "../../lib/push";
 import { UserSafetyMenu } from "../../components/UserSafetyMenu";
+import { safetyCounterpart } from "../../lib/safety";
 import { CancelTaskSheet } from "../../components/CancelTaskSheet";
 import { CompleteTaskSheet, type CompleteTaskPayload } from "../../components/CompleteTaskSheet";
 import { approvedBudgetCentsFor } from "../../lib/task-budget";
@@ -1043,14 +1044,16 @@ export default function TaskDetail() {
     !task.assigned_to_id;
   // The other party on this task, for Report / Block (App Store Guideline
   // 1.2): the supporter for the requester, the requester for the supporter.
-  // Nobody when the task is unassigned, or when the other seat is the viewer
-  // (the sandbox's self-accepted task).
-  const counterpart: { id: string; name: string | null } | null =
-    isRequester && task.assigned_to_id && task.assigned_to_id !== meId
-      ? { id: task.assigned_to_id, name: supporter?.name?.trim() || task.assignee_name || null }
-      : isAssignee && task.requester_id && task.requester_id !== meId
-        ? { id: task.requester_id, name: requester?.name?.trim() || task.requester_name || null }
-        : null;
+  // Nobody when the task is unassigned. On the sandbox's self-accepted task
+  // the other seat IS the viewer and the menu still renders — see
+  // safetyCounterpart for why.
+  const counterpart = safetyCounterpart({
+    meId,
+    requesterId: task.requester_id,
+    assignedToId: task.assigned_to_id,
+    supporterName: supporter?.name || task.assignee_name,
+    requesterName: requester?.name || task.requester_name,
+  });
   // Editing stays open-only: changing the terms of a job somebody has already
   // accepted is a renegotiation, and that belongs in chat. deriveTaskStatus
   // only returns "open" while assigned_to_id is null, and the server enforces

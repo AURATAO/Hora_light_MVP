@@ -22,9 +22,10 @@ interface ChatSetup {
   taskTitle: string;
   counterpartName: string;
   counterpartAvatar: string | null;
-  /** The other party's users.id, for Report / Block. Null when there is
-   *  nobody else on the task — including the App Review sandbox's own
-   *  self-accepted task, where the other party is the viewer. */
+  /** The other party's users.id, for Report / Block. Null only when there is
+   *  no other party yet. On the sandbox's self-accepted task this is the
+   *  viewer's own id and the menu still renders (lib/safety.ts
+   *  safetyCounterpart); the server refuses the self-report itself. */
   counterpartId: string | null;
   taskId: string;
   /** A block between the two (either way): the thread is read-only. */
@@ -119,7 +120,7 @@ export default function TaskChat() {
         taskTitle: task.title || "Task",
         counterpartName: otherEmail ? otherName : "Chat",
         counterpartAvatar: otherProfile?.avatar_url ?? null,
-        counterpartId: otherId && otherId !== auth.id ? otherId : null,
+        counterpartId: otherId || null,
         taskId: task.id,
         blocked,
       });

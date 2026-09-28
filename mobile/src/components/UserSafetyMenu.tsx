@@ -11,6 +11,9 @@ import { color, size } from "../theme/tokens";
 // the chat header and the task detail header — both roles, wherever the app
 // shows the other party on a task. The server checks that `userId` really is
 // the other party on `taskId`; this component only decides what to draw.
+// `userId` may be the viewer (the sandbox's self-accepted task): the menu and
+// the Report sheet still open, and the server's "You can't report or block
+// yourself." is what the sheet and the block alert then show.
 
 export interface UserSafetyMenuProps {
   userId: string;
