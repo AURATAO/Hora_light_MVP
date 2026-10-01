@@ -1,3 +1,4 @@
+import SupporterStatusBanner from '../components/SupporterStatusBanner'
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api, AuthAPI } from '../api/client'
@@ -235,8 +236,14 @@ export default function Profile() {
             no entry point on this page at all, and the supporter surfaces are
             now hidden everywhere else — so without this the application is
             reachable only by knowing the URL.
-            Absent for applied/approved/rejected, each of which has its own
-            state elsewhere and none of which wants a second form. */}
+            Applied and rejected get their status here instead, as on
+            mobile's Profile. This comment used to say those states had
+            "their own state elsewhere" — the only place was the Available
+            tab, which is hidden from exactly those accounts, so an applicant
+            saw nothing and a rejected one had no route to support. */}
+        {(supporterStatus === 'applied' || supporterStatus === 'rejected') && (
+          <SupporterStatusBanner status={supporterStatus} />
+        )}
         {supporterStatus === 'none' && (
           <Link
             to="/become-supporter"

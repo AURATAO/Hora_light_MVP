@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { useToast } from '../providers/ToastProvider'
+import SupporterStatusBanner from '../components/SupporterStatusBanner'
 
 export default function BecomeSupporter() {
   const { user } = useAuth()
@@ -16,6 +17,9 @@ export default function BecomeSupporter() {
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [submitted, setSubmitted] = useState(false)
+  // Where this account already is in the pipeline, from the same /profile
+  // read that prefills the form.
+  const [status, setStatus] = useState('')
 
   useEffect(() => {
     api('/profile')
@@ -25,6 +29,7 @@ export default function BecomeSupporter() {
         setLastName(parts.slice(1).join(' '))
         setPhone(p?.phone ?? '')
         setCity(p?.city ?? '')
+        setStatus(p?.supporter_status ?? '')
       })
       .catch(() => {})
       .finally(() => setLoading(false))
@@ -43,13 +48,22 @@ export default function BecomeSupporter() {
         method: 'POST',
         body: { first_name: firstName.trim(), last_name: lastName.trim() },
       })
-      toast("Application submitted! We'll be in touch soon.")
-      nav('/my')
+      // Stay here and show the status the application now has. This used to
+      // toast and leave for /my, where an applicant sees nothing about it.
+      toast('Application submitted')
+      setStatus('applied')
+      setSubmitting(false)
     } catch (e) {
       toast(e.message || 'Something went wrong')
       setSubmitting(false)
     }
   }
+
+  // Already applied or approved: the status, not a second form. Submitting
+  // again reset supporter_applied_at and put a reviewed application back at
+  // the end of the queue. REJECTED is deliberately not guarded — re-applying
+  // clears the rejection (D-08), and a second chance is a form, not a notice.
+  const inPipeline = status === 'applied' || status === 'approved'
 
   const inputClass =
     'w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white placeholder-white/30 outline-none focus:border-secondary/50 transition-colors'
@@ -80,6 +94,21 @@ export default function BecomeSupporter() {
 
           {loading ? (
             <div className="text-sm text-white/40 text-center py-4">Loading…</div>
+          ) : inPipeline ? (
+            status === 'applied' ? (
+              <SupporterStatusBanner status="applied" />
+            ) : (
+              <div className="text-center space-y-3">
+                <p className="text-sm text-white/70">You&apos;re already a verified supporter.</p>
+                <button
+                  onClick={() => nav('/my')}
+                  className="rounded-xl px-6 py-2.5 text-sm font-secondary font-semibold text-white hover:brightness-110"
+                  style={{ backgroundColor: '#9aab3a' }}
+                >
+                  Go to tasks
+                </button>
+              </div>
+            )
           ) : (
             <>
               <label className="block space-y-1.5">

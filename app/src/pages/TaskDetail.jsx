@@ -38,6 +38,7 @@ import {
   timeBasisNote,
 } from '../lib/paymentCopy'
 import { totalAfterPromo } from '../lib/promo'
+import { supportMailto } from '../lib/support'
 import { isCompanionCategory, needsCompanionPolicy } from '../lib/companionship'
 import CompanionPolicyModal from '../components/CompanionPolicyModal'
 import { isPayoutsOnboardingRequired } from '../api/payments'
@@ -392,7 +393,7 @@ function SettlementPanel({ cost, settlement, timeline, isOwner, taskId }) {
       {isOwner && (
         <a
           className="inline-block text-xs text-white/60 underline hover:text-white"
-          href={`mailto:support@horaapp.co?subject=${encodeURIComponent(`Problem with task ${taskId}`)}`}
+          href={supportMailto(`Problem with task ${taskId}`)}
         >
           Report a problem
         </a>
