@@ -1,6 +1,7 @@
 // useNotifications.js
 import { useEffect, useRef, useState, useCallback } from "react";
 import { api } from "../api/client";
+import { appendPage, nextCursor } from "../lib/notificationsPage.js";
 
 function emitUnread(has) {
   // 讓 Nav 立即知道 unread 狀態變化
@@ -12,6 +13,10 @@ export function useNotifications() {
   const [loading, setLoading] = useState(false);
   const [unreadExists, setUnreadExists] = useState(false);
   const pollRef = useRef(null);
+  // The list as of the last render, for callbacks that need it without being
+  // re-created on every change.
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
 
   const setUnread = (has) => {
     setUnreadExists(has);
@@ -41,6 +46,20 @@ export function useNotifications() {
     },
     []
   );
+
+  // The next page, appended. Separate from fetchList on purpose: that one
+  // REPLACES the list and raises `loading`, which the feed treats as "nothing
+  // to show yet" — a load-more through it would blank the list mid-scroll.
+  // Returns the page so the caller can tell a full one from the last.
+  const fetchMore = useCallback(async ({ limit = 20 } = {}) => {
+    const before = nextCursor(itemsRef.current);
+    if (!before) return [];
+    const qs = new URLSearchParams({ limit: String(limit), before: String(before) });
+    const res = await api(`/notifications?${qs.toString()}`);
+    const page = Array.isArray(res) ? res : [];
+    setItems((prev) => appendPage(prev, page));
+    return page;
+  }, []);
 
   const refreshUnreadFlag = useCallback(async () => {
     try {
@@ -119,6 +138,7 @@ export function useNotifications() {
     loading,
     unreadExists,
     fetchList,
+    fetchMore,
     markRead,
     markAllRead,
     refreshUnreadFlag,

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useNotifications } from '../hooks/useNotifications'
+import { NOTIFICATIONS_PAGE_SIZE, hasMoreAfter } from '../lib/notificationsPage'
 
 function timeAgo(dateStr) {
   const diff = Math.floor((Date.now() - new Date(dateStr)) / 1000)
@@ -10,28 +11,46 @@ function timeAgo(dateStr) {
   return `${Math.floor(diff / 86400)}d ago`
 }
 
-export default function NotificationFeed({ limit = 50, className = '' }) {
+export default function NotificationFeed({ limit = NOTIFICATIONS_PAGE_SIZE, className = '' }) {
   const [showAll, setShowAll] = useState(false)
+  const [hasMore, setHasMore] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
   const {
-    items, setItems, loading, fetchList,
+    items, loading, fetchList, fetchMore,
     markRead, markAllRead,
     remove, clearRead,
   } = useNotifications()
 
-   useEffect(() => {
-    (async () => {
-      try {
-        await markAllRead();               // 進到 /my 就全數設已讀（會廣播 notif:unread=false）
-      } finally {
-        const data = await fetchList({ limit });
-        setItems(data);
-      }
-    })();
+  // Load, and leave the read state alone. This used to call mark-read-all
+  // before fetching, so simply arriving on /my cleared the unread state of
+  // everything — a failed payment or a budget request the user had not seen
+  // yet included — behind a collapsed one-line bar. A notification is read
+  // when it is opened or marked, as on mobile.
+  useEffect(() => {
+    let alive = true
+    fetchList({ limit })
+      .then((page) => { if (alive) setHasMore(hasMoreAfter(page, limit)) })
+      .catch(() => {})
+    return () => { alive = false }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [limit]);
+  }, [limit])
+
+  async function loadMore() {
+    if (loadingMore || !hasMore) return
+    setLoadingMore(true)
+    try {
+      const page = await fetchMore({ limit })
+      setHasMore(hasMoreAfter(page, limit))
+    } catch {
+      // Leave the button: a failed page is a reason to try again, not the end.
+    } finally {
+      setLoadingMore(false)
+    }
+  }
 
   const hasAny = items.length > 0
   const hasRead = items.some(n => !n.unread)
+  const hasUnread = items.some(n => n.unread)
 
   if (loading || !hasAny) return null
 
@@ -41,14 +60,15 @@ export default function NotificationFeed({ limit = 50, className = '' }) {
     <div className={className}>
       {/* Compact notification bar */}
       <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 border border-white/15">
-        <span className="w-2 h-2 rounded-full bg-red-500 shrink-0" />
+        {/* The dot means unread. It used to be drawn unconditionally. */}
+        {hasUnread && <span className="w-2 h-2 rounded-full bg-red-500 shrink-0" aria-label="Unread notifications" />}
         <span className="text-sm flex-1 truncate min-w-0">{mostRecent.title}</span>
         <span className="text-xs opacity-60 shrink-0 whitespace-nowrap">{timeAgo(mostRecent.created_at)}</span>
         <button
           className="text-xs underline opacity-80 hover:opacity-100 shrink-0 whitespace-nowrap"
           onClick={() => setShowAll(v => !v)}
         >
-          {showAll ? 'Close' : `See all (${items.length})`}
+          {showAll ? 'Close' : `See all (${items.length}${hasMore ? '+' : ''})`}
         </button>
       </div>
 
@@ -58,7 +78,7 @@ export default function NotificationFeed({ limit = 50, className = '' }) {
           <div className="flex items-center gap-2 mb-2">
             <div className="font-semibold text-sm">Notifications</div>
             <div className="ml-auto flex items-center gap-3">
-              {hasAny && (
+              {hasUnread && (
                 <button
                   className="text-xs underline opacity-80 hover:opacity-100"
                   onClick={markAllRead}
@@ -91,6 +111,8 @@ export default function NotificationFeed({ limit = 50, className = '' }) {
                     {n.task_id && (
                       <Link
                         to={`/tasks/${n.task_id}`}
+                        // Opening it is reading it.
+                        onClick={() => { if (n.unread) markRead(n.id).catch(() => {}) }}
                         className="text-xs underline opacity-80 hover:opacity-100"
                       >
                         Open
@@ -116,6 +138,15 @@ export default function NotificationFeed({ limit = 50, className = '' }) {
               </li>
             ))}
           </ul>
+          {hasMore && (
+            <button
+              className="mt-3 w-full rounded-md border border-white/20 py-1.5 text-xs hover:border-white/40 disabled:opacity-50"
+              onClick={loadMore}
+              disabled={loadingMore}
+            >
+              {loadingMore ? 'Loading…' : 'Load more'}
+            </button>
+          )}
         </div>
       )}
     </div>
