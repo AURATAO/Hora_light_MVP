@@ -828,7 +828,8 @@ Idempotent: a task already `open` answers 200.
 | requester cancels (`POST /tasks/:id/cancel`) | released; `PAYMENT_RELEASED` audit row |
 | admin cancel / admin remove | released; same audit row |
 | **reassign** | **untouched** — the hold is the requester's money for the same task at the same price |
-| task edit that would need a bigger hold | **409 `exceeds_authorized_hold`**, naming the held amount. Re-authorizing for more is Phase 2b |
+| task edit that would need a bigger hold | **409 `exceeds_authorized_hold`**, naming the held amount. The edit is priced the way the hold was: at the rate the edited task will carry, less its promo discount. Re-authorizing for more is Phase 2b |
+| task edit that moves the start across the rate boundary | the rate is re-resolved (an ASAP task that stays ASAP keeps its own). Into the evening band the price rises, so under an exact daytime hold this is the 409 above. **Known rough edge:** the requester has to cancel and repost; the better version offers to top up the hold in place |
 | `payment_intent.canceled/payment_failed` on a `pending_payment` task | both rows discarded |
 | the same on an **open** task | task stays posted; `PAYMENT_HOLD_LOST` audit row + ERROR log |
 
@@ -1156,6 +1157,11 @@ the window; `inSurgeWindow` is the range test.
 **Resolved once, at post**, from the scheduled start (posting time for ASAP),
 and stored on `tasks.rate_cents_per_min`. Estimate, ceilings, settlement and
 every line of copy read the stored value; nothing re-derives it.
+
+The one exception is the requester's own edit: `PATCH /tasks/:id` re-resolves
+the rate when it **moves the start** (ASAP ↔ scheduled, or a new scheduled
+time), because that is a new answer to the same question. An edit that leaves
+the start alone never touches it.
 
 A task starting at **20:50 bills at $0.50 for its whole run**, even if it
 finishes at 22:30. Deriving the rate at read time would re-price a task in

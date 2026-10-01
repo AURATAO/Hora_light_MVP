@@ -215,3 +215,59 @@ func TestTaskEditSavesAutoExtendConsentAndAbsentLeavesIt(t *testing.T) {
 		t.Error("an edit that omitted the field reset consent to true")
 	}
 }
+
+// A promo task's hold is the DISCOUNTED amount, so the edit guard has to
+// price the edit the same way. Comparing the undiscounted price against it
+// refused every edit on a promo task, the no-op included.
+func TestTaskEditUnderAPromoHoldComparesLikeWithLike(t *testing.T) {
+	setupStripeWebhookDB(t)
+	w := seedOpsWorld(t, "open")
+	id := seedReassignTask(t, "open", w.requesterID, requesterEmail, "", "")
+	// This fixture's tasks table is the payments slice of the schema; the
+	// edit also writes one column it does not carry.
+	mustExec(t, `alter table public.tasks add column if not exists transport_required text not null default 'none'`)
+	mustExec(t, `update public.tasks set category='delivery', estimated_minutes=30, is_immediate=true,
+	                    rate_cents_per_min=$2 where id=$1::uuid`, id, Billing.PerMinuteRateCents)
+	promoID := seedPromoCode(t, "WELCOME10", 1000, promoOpts{})
+	if err := seedRedemption(t, promoID, w.requesterID, id, 1000); err != nil {
+		t.Fatalf("seed redemption: %v", err)
+	}
+	// $19.50 less $10.00, exactly what CreatePreAuth holds for this task.
+	held := preAuthAfterPromoCents("delivery", 30, 0, Billing.PerMinuteRateCents, 1000)
+	mustExec(t, `insert into public.payments (task_id, requester_id, kind, status,
+	                                          stripe_payment_intent_id, authorized_cents)
+	             values ($1::uuid, $2::uuid, $3, 'authorized', 'pi_promo_edit', $4)`,
+		id, w.requesterID, paymentKindTaskPayment, held)
+
+	edit := func(minutes int) (int, map[string]any) {
+		gin.SetMode(gin.TestMode)
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPatch, "/tasks/"+id, strings.NewReader(
+			`{"title":"Coffee run, oat milk","category":"delivery","estimated_minutes":`+itoa(minutes)+`,"is_immediate":true}`))
+		c.Request.Header.Set("Content-Type", "application/json")
+		c.Params = gin.Params{{Key: "id", Value: id}}
+		c.Set("uid", w.requesterID)
+		c.Set("email", requesterEmail)
+		updateTask(c)
+		var out map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec.Code, out
+	}
+
+	if code, out := edit(30); code != http.StatusOK {
+		t.Errorf("an edit that changes no price was refused under a promo hold: %d (%v)", code, out["error"])
+	}
+	if code, out := edit(20); code != http.StatusOK {
+		t.Errorf("a cheaper edit was refused under a promo hold: %d (%v)", code, out["error"])
+	}
+	code, out := edit(60)
+	if code != http.StatusConflict || out["error"] != "exceeds_authorized_hold" {
+		t.Fatalf("an edit that outgrows the promo hold: %d (%v), want 409", code, out["error"])
+	}
+	// The number named is the discounted one the card would have to carry.
+	want := float64(preAuthAfterPromoCents("delivery", 60, 0, Billing.PerMinuteRateCents, 1000))
+	if out["required_cents"] != want {
+		t.Errorf("required_cents = %v, want %v", out["required_cents"], want)
+	}
+}

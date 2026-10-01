@@ -2591,8 +2591,14 @@ func updateTask(c *gin.Context) {
 	if p, err := livePaymentForTask(ctx, id); err == nil && p.AuthorizedCents != nil {
 		// Priced at the rate the edited task will carry, so a move into the
 		// evening band is measured against the hold like any other increase.
-		if want := preAuthAmountCents(in.Category, in.EstimatedMinutes, in.PrepayAmountCents,
-			rateCents); want > *p.AuthorizedCents {
+		//
+		// And less the task's promo discount, because that is how the hold
+		// itself was sized (preAuthAfterPromoCents). Measuring the undiscounted
+		// price against a discounted hold refused every edit on a promo task,
+		// a corrected typo included.
+		_, promoCents := promoDiscountForTask(ctx, id)
+		if want := preAuthAfterPromoCents(in.Category, in.EstimatedMinutes, in.PrepayAmountCents,
+			rateCents, promoCents); want > *p.AuthorizedCents {
 			c.JSON(http.StatusConflict, gin.H{
 				"error": "exceeds_authorized_hold",
 				"message": "That change needs a bigger hold than the one on your card (" +
