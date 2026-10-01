@@ -6,6 +6,7 @@ import { ScheduledTimeField } from "./ScheduledTimeField";
 import { Button, Checkbox, Input, Pill, PressableScale } from "./ui";
 import { ApiError, estimateTaskCost, type CreateTaskPayload } from "../lib/api";
 import { DISABLED_CATEGORY_NOTICE, isCategoryDisabled } from "../lib/beta-notice";
+import { estimateRequest } from "../lib/estimate-request";
 import { POST_CATEGORY_ORDER, getCategoryMeta } from "../lib/categories";
 import { highBudgetWarning, promoReservedLine, surgeRateNote } from "../lib/payment-copy";
 import { formatCost, formatMinutes, formatScheduledAt, zeroSeconds } from "../lib/task-utils";
@@ -309,30 +310,20 @@ export function TaskForm({ form, onChange, errors, promoCode }: TaskFormProps) {
   // "$12 total, 0 min" card the moment a category was picked, which read as
   // broken rather than genuinely appearing. Requiring both fields makes the
   // two paths behave identically.
+  //
+  // Keyed on the request itself, so every input the server prices from —
+  // the schedule included — re-quotes. See estimateRequest.
+  const request = estimateRequest(form, promoCode);
+  const requestKey = request ? JSON.stringify(request) : "";
   useEffect(() => {
-    const minutes = form.estimatedMinutes ? Number(form.estimatedMinutes) : NaN;
-    if (!form.category || !Number.isFinite(minutes) || minutes <= 0) {
+    if (!request) {
       setEstimate(null);
       return;
     }
     let cancelled = false;
     const id = setTimeout(async () => {
       try {
-        const budget = form.shoppingBudget ? Number(form.shoppingBudget) : 0;
-        const prepayCents = Number.isFinite(budget) && budget > 0 ? Math.round(budget * 100) : 0;
-        const result = await estimateTaskCost({
-          category: form.category as TaskCategory,
-          estimated_minutes: minutes,
-          prepay_amount_cents: prepayCents,
-          // The rate depends on when the work happens, not on when this form
-          // was opened: a 21:30 task filled in at 6pm is quoted the evening
-          // rate.
-          is_immediate: form.isImmediate,
-          scheduled_at: form.isImmediate ? "" : zeroSeconds(form.scheduledDate).toISOString(),
-          // Quoted the way the post will apply it; a refused code comes back
-          // as a sentence beside a still-correct quote.
-          promo_code: promoCode || undefined,
-        });
+        const result = await estimateTaskCost(request);
         if (cancelled) return;
         setEstimate({
           baseFeeCents: result.base_fee_cents,
@@ -340,7 +331,7 @@ export function TaskForm({ form, onChange, errors, promoCode }: TaskFormProps) {
           // backend that predates these fields — the card renders the old way
           // instead of showing "undefined min".
           includedMinutes: result.included_minutes ?? 0,
-          billableMinutes: result.billable_minutes ?? minutes,
+          billableMinutes: result.billable_minutes ?? request.estimated_minutes,
           perMinuteRateCents: result.per_minute_rate_cents ?? 50,
           timeCostCents: result.time_cost_cents,
           // The key was renamed in Stripe Phase 1; the backend sends both.
@@ -369,7 +360,7 @@ export function TaskForm({ form, onChange, errors, promoCode }: TaskFormProps) {
       clearTimeout(id);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.category, form.estimatedMinutes, form.shoppingBudget, promoCode]);
+  }, [requestKey]);
 
   function updateLocation(id: number, text: string) {
     onChange((f) => ({ ...f, locations: f.locations.map((l) => (l.id === id ? { ...l, text } : l)) }));
