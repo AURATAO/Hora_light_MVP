@@ -9,8 +9,7 @@ import TaskDetail from "./pages/TaskDetail.jsx";
 import My from "./pages/My.jsx";
 import PublicProfilePage from "./pages/PublicProfilePage.jsx";
 import OpsFeed from "./pages/OpsFeed.jsx";
-import Terms from "./pages/Terms.jsx";
-import Privacy from "./pages/Privacy.jsx";
+import ExternalRedirect from "./components/ExternalRedirect.jsx";
 import Profile from "./pages/Profile.jsx";
 import ReviewPage from "./pages/ReviewPage.jsx";
 import BecomeSupporter from "./pages/BecomeSupporter.jsx";
@@ -23,8 +22,14 @@ export default function App() {
     <Routes>
       {/* 公開頁 */}
       <Route path="/login" element={<Login />} />
-      <Route path="/terms" element={<Terms />} />
-      <Route path="/privacy" element={<Privacy />} />
+      {/* The legal documents live on my-hora.com — the copies every link in
+          both clients points at. These two paths used to render the web
+          app's own pages: nothing linked to them, and they had gone stale
+          ("Hora Light", March 2026, account deletion "by contacting us"),
+          contradicting the in-app deletion both clients ship. Kept as
+          redirects so an old link still lands on the current text. */}
+      <Route path="/terms" element={<ExternalRedirect to="https://www.my-hora.com/terms" label="Terms of Use" />} />
+      <Route path="/privacy" element={<ExternalRedirect to="https://www.my-hora.com/privacy" label="Privacy Policy" />} />
       {/* Where notification-email task links land: bounces into the mobile app
           if it is installed, offers the web task page if it isn't. Public on
           purpose — being signed out is what it exists to solve.
