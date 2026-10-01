@@ -2450,10 +2450,15 @@ func updateTask(c *gin.Context) {
 	// 多抓 requester（email）一起比
 	var requesterID, requesterEmail, status string
 	var assignedToID *string
+	// The start as it stands before the edit, to tell an edit that moves it
+	// from one that does not — see the rate below.
+	var wasImmediate bool
+	var wasScheduledAt *time.Time
 	if err := db.QueryRow(ctx,
-		`select requester_id, requester, status, assigned_to_id from public.tasks where id=$1`,
+		`select requester_id, requester, status, assigned_to_id, is_immediate, scheduled_at
+		   from public.tasks where id=$1`,
 		id,
-	).Scan(&requesterID, &requesterEmail, &status, &assignedToID); err != nil {
+	).Scan(&requesterID, &requesterEmail, &status, &assignedToID, &wasImmediate, &wasScheduledAt); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
@@ -2561,12 +2566,33 @@ func updateTask(c *gin.Context) {
 	//
 	// An edit that lowers or leaves the amount alone passes: over-holding is
 	// harmless (the remainder is released at capture, never charged).
+	// THE RATE FOLLOWS THE START. It is resolved once at post from when the
+	// work begins (resolveRateCentsPerMin) — so an edit that moves the start
+	// is a new answer to the same question, and must be asked again. Leaving
+	// the stored rate alone let a task posted for 2 PM and edited to 10 PM
+	// settle at the standard rate: the requester under-billed and the
+	// supporter under-paid for evening work, with the edit screen's own quote
+	// showing the evening rate the whole time.
+	//
+	// ONLY when the start moves. An edit that leaves it alone keeps the
+	// task's own rate: fixing a typo at 21:05 must not re-price an ASAP task
+	// posted at 20:50 into the evening band.
+	rateCents := taskRateCentsPerMin(ctx, id)
+	var newRate *int // nil leaves the column alone
+	if taskStartMoved(wasImmediate, wasScheduledAt, in.IsImmediate, when) {
+		rateStart := time.Now()
+		if when != nil {
+			rateStart = *when
+		}
+		rateCents = resolveRateCentsPerMin(rateStart)
+		newRate = &rateCents
+	}
+
 	if p, err := livePaymentForTask(ctx, id); err == nil && p.AuthorizedCents != nil {
-		// The task's OWN rate, not a freshly resolved one: an edit must not
-		// silently re-price a task into the evening band because it happens to
-		// be being edited at 21:05.
+		// Priced at the rate the edited task will carry, so a move into the
+		// evening band is measured against the hold like any other increase.
 		if want := preAuthAmountCents(in.Category, in.EstimatedMinutes, in.PrepayAmountCents,
-			taskRateCentsPerMin(ctx, id)); want > *p.AuthorizedCents {
+			rateCents); want > *p.AuthorizedCents {
 			c.JSON(http.StatusConflict, gin.H{
 				"error": "exceeds_authorized_hold",
 				"message": "That change needs a bigger hold than the one on your card (" +
@@ -2596,6 +2622,12 @@ func updateTask(c *gin.Context) {
 	// which an edit does not change. The shared createTaskInput carries the
 	// field, so leaving it out of this statement is the thing keeping it
 	// write-once.
+	//
+	// auto_extend_consent and rate_cents_per_min are coalesced for the same
+	// "absent means unchanged" reason: the consent is a pointer because web's
+	// edit form has no checkbox to send (see createTaskInput), and the rate is
+	// nil unless the start moved. Until this statement named the consent, the
+	// edit screen's checkbox was accepted and silently dropped.
 	tag, err := db.Exec(ctx, `
         update public.tasks
         set title=$1,
@@ -2614,7 +2646,9 @@ func updateTask(c *gin.Context) {
             shopping_budget_approved_cents=$6,
             is_immediate=$7,
             scheduled_at=$8,
-            transport_required=coalesce(nullif($9, ''), transport_required)
+            transport_required=coalesce(nullif($9, ''), transport_required),
+            auto_extend_consent=coalesce($11, auto_extend_consent),
+            rate_cents_per_min=coalesce($12, rate_cents_per_min)
         where id=$10
           and status='open'
           and assigned_to_id is null
@@ -2629,6 +2663,8 @@ func updateTask(c *gin.Context) {
 		when,
 		strings.TrimSpace(in.TransportRequired),
 		id,
+		in.AutoExtendConsent,
+		newRate,
 	)
 	if err != nil {
 		log.Printf("[updateTask] db error: %v", err)

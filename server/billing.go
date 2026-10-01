@@ -223,6 +223,24 @@ func resolveRateCentsPerMin(start time.Time) int {
 	return Billing.PerMinuteRateCents
 }
 
+// taskStartMoved reports whether an edit changes when a task begins — the one
+// thing the rate is resolved from, and so the one thing that re-resolves it.
+// Switching between ASAP and scheduled moves it; so does a different scheduled
+// time. An ASAP task that stays ASAP has not moved: its start was "when it was
+// posted", and editing it later does not make that later.
+func taskStartMoved(wasImmediate bool, wasAt *time.Time, isImmediate bool, at *time.Time) bool {
+	if wasImmediate != isImmediate {
+		return true
+	}
+	if isImmediate {
+		return false
+	}
+	if wasAt == nil || at == nil {
+		return wasAt != at
+	}
+	return !wasAt.Equal(*at)
+}
+
 // inSurgeWindow is the range test on a local hour, wrapping midnight when the
 // window does: with 21 and 9 that is 21..23 and 0..8. A window that does not
 // wrap (say 18 to 22) is the plain range. Start == end is an empty window.
