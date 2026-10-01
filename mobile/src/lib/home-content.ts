@@ -1,5 +1,6 @@
 import type { ImageSourcePropType } from "react-native";
 import type { Href } from "expo-router";
+import { supporterPayPitch } from "./pricing";
 
 // Hero card rotating placeholder lines, cycled ~6s (see home.tsx). Edit or add
 // lines freely — this is the single source of truth. "{name}" is replaced with
@@ -85,9 +86,8 @@ export const HOME_CARD_DETAILS: Record<string, HomeCardDetail> = {
   "pay-for-time": {
     title: "Earn on your schedule",
     body: [
-      "Every task pays a base fee plus $0.50 per minute of actual work — and you keep **80%** " +
-        "of it all. A one-hour grocery run pays **$33.60**. Errands and deliveries start at a " +
-        "$12 base, extended tasks at $18, companionship at $25.",
+      // Derived from the price schedule, never typed: see lib/pricing.
+      supporterPayPitch(),
       "You choose which tasks to accept, clock in when you start, clock out when you're done. " +
         "Paid for real minutes, never estimates.",
       "Getting started: apply in a few minutes with your basic info. Applications are reviewed " +
