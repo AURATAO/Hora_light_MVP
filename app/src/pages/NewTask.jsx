@@ -6,10 +6,12 @@ import Modal from '../components/Modal'
 import InfoModal from '../components/InfoModal'
 import DurationPicker from '../components/DurationPicker'
 import AddressInput from '../components/AddressInput'
+import CompanionPolicyModal from '../components/CompanionPolicyModal'
 import { useToast } from '../providers/ToastProvider'
 import { useTaskEstimate, formatCents } from '../hooks/useTaskEstimate'
 import { highBudgetWarning, holdPlacedMessage, promoReservedLine, surgeRateNote } from '../lib/paymentCopy'
 import { readPromoFailure, totalAfterPromo } from '../lib/promo'
+import { needsCompanionPolicy } from '../lib/companionship'
 import { completeCardAuthentication, readPaymentError, usePaymentGate } from '../hooks/usePaymentGate'
 import { betaSettlementLine } from '../lib/traction'
 import { SCHEDULE_STEP_MINUTES, defaultSchedule, localDateStr, scheduleFields } from '../lib/schedule'
@@ -85,12 +87,8 @@ export default function NewTask() {
     const cat = searchParams.get('category')
     if (cat) {
       setUrlCategory(cat)
-      if (cat === 'companionship') {
-        // open policy modal — user must agree before companion is confirmed
-        openCompanionPolicy()
-      } else {
-        setTaskType('task')
-      }
+      // A companionship link needs the policy accepted first. That is not
+      // decided here: the gate below keys on the category itself.
     }
 
     if (prefill) {
@@ -133,7 +131,6 @@ export default function NewTask() {
 
   const [compPolicyOpen, setCompPolicyOpen] = useState(false)
   const [compPolicyAgreed, setCompPolicyAgreed] = useState(false)
-  const [compPolicyChecked, setCompPolicyChecked] = useState(false)
 
   const goToPosted = () => {
   setSuccessOpen(false);
@@ -174,6 +171,17 @@ export default function NewTask() {
   // The category exactly as onSubmit will send it, so the quote prices the
   // task that will actually be posted rather than a near-miss of it.
   const effectiveCategory = taskType === 'companion' ? 'companion' : (urlCategory || category)
+
+  // THE COMPANIONSHIP GATE, keyed on the category the post will carry — so it
+  // holds for every way the form can come to hold it: the home grid's link,
+  // the Companion button, and the AI box, which used to prefill
+  // "companionship" and post with no acknowledgement at all. The modal opens
+  // when the category becomes companionship; onSubmit refuses while this is
+  // still true.
+  const policyPending = needsCompanionPolicy(effectiveCategory, { acknowledged: compPolicyAgreed })
+  useEffect(() => {
+    if (policyPending) setCompPolicyOpen(true)
+  }, [policyPending])
 
   // Declared ABOVE the estimate call that reads it. It used to sit below, and
   // because a hook's ARGUMENTS are evaluated during render — exactly like a
@@ -240,6 +248,10 @@ export default function NewTask() {
   async function onSubmit(e) {
   e.preventDefault()
   setTouched(true)
+  if (policyPending) {
+    setCompPolicyOpen(true)
+    return
+  }
   if (!canSubmit) return
   if (mode === 'schedule' && date && timeStr) {
     const selected = new Date(`${date}T${timeStr}`)
@@ -338,39 +350,22 @@ export default function NewTask() {
     return <div className="p-6">Loading…</div>
   }
 
-  //Policy for companion category 
-const COMP_POLICY_TEXT = `Companionship (Accompaniment) Policy
+  function openCompanionPolicy() {
+    setCompPolicyOpen(true)
+  }
 
-What it IS:
-• Public-route accompaniment only (e.g., walking together in public areas, escorting someone to a nearby appointment, accompanying someone to a subway/bus stop).
-• Non-medical, non-caregiving, and strictly for general presence/support in public.
+  function confirmCompanionPolicy() {
+    setCompPolicyAgreed(true)
+    setCompPolicyOpen(false)
+    setTaskType('companion')
+  }
 
-What it is NOT:
-• No medical or personal care (no medication handling, bathing, lifting, or physical assistance).
-• No services involving minors.
-• No intimate/sexual services, no dating positioning.
-• No overnight stays.
-• No staying inside a private residence.
-
-Safety & boundaries:
-• Keep the route in public places; either party can end the task anytime if uncomfortable.
-• If a request involves restricted activities, it must be declined and reported to the platform.
-`
-
-function openCompanionPolicy() {
-  setCompPolicyChecked(false)
-  setCompPolicyOpen(true)
-}
-
-function closeCompanionPolicy() {
-  setCompPolicyOpen(false)
-}
-
-function confirmCompanionPolicy() {
-  setCompPolicyAgreed(true)
-  setCompPolicyOpen(false)
-  setTaskType('companion')
-}
+  // Backing out without agreeing leaves companionship: the form falls back to
+  // an ordinary task, which is the only state the gate lets through.
+  function cancelCompanionPolicy() {
+    setCompPolicyOpen(false)
+    if (!compPolicyAgreed) { setTaskType('task'); setUrlCategory(null) }
+  }
 
   return (
     <div className="bg-linear-to-br from-primary to-primary/30 text-accent min-h-screen py-[100px] px-4">
@@ -802,7 +797,7 @@ function confirmCompanionPolicy() {
                 setAutoExtend(true); setPaymentError('');
                 setMode('now'); setDate(''); setTimeStr('');
                 removePromo();
-                setCompPolicyAgreed(false); setCompPolicyChecked(false); setCompPolicyOpen(false);
+                setCompPolicyAgreed(false); setCompPolicyOpen(false);
               }}
               className="rounded-md px-4 py-2 border border-white/20 hover:border-white/40">
               Clear
@@ -836,51 +831,11 @@ function confirmCompanionPolicy() {
           </div>
         )}
       </Modal>
-      <Modal
+      <CompanionPolicyModal
         open={compPolicyOpen}
-        onClose={() => {
-          closeCompanionPolicy()
-          if (!compPolicyAgreed) { setTaskType('task'); setUrlCategory(null) }
-        }}
-        title="Companionship Policy"
-        actions={
-          <>
-            <button
-              className="rounded-md px-4 py-2 border border-white/20 hover:border-white/40"
-              onClick={() => {
-                closeCompanionPolicy()
-                if (!compPolicyAgreed) { setTaskType('task'); setUrlCategory(null) }
-              }}
-            >
-              Cancel
-            </button>
-
-            <button
-              className="rounded-md px-4 py-2 bg-white text-black disabled:opacity-50"
-              disabled={!compPolicyChecked}
-              onClick={confirmCompanionPolicy}
-            >
-              Confirm & Continue
-            </button>
-          </>
-        }
-      >
-        <div className="space-y-3">
-          <div className="whitespace-pre-wrap rounded-md border border-white/20 p-3 max-h-[45vh] overflow-auto">
-            {COMP_POLICY_TEXT}
-          </div>
-
-          <label className="flex items-start gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={compPolicyChecked}
-              onChange={(e) => setCompPolicyChecked(e.target.checked)}
-              className="mt-1"
-            />
-            <span>I have read and agree to the companionship policy.</span>
-          </label>
-        </div>
-      </Modal>
+        onConfirm={confirmCompanionPolicy}
+        onCancel={cancelCompanionPolicy}
+      />
     </div>
   )
 }

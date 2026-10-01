@@ -38,6 +38,8 @@ import {
   timeBasisNote,
 } from '../lib/paymentCopy'
 import { totalAfterPromo } from '../lib/promo'
+import { isCompanionCategory, needsCompanionPolicy } from '../lib/companionship'
+import CompanionPolicyModal from '../components/CompanionPolicyModal'
 import { isPayoutsOnboardingRequired } from '../api/payments'
 import PhotoLightbox from '../components/PhotoLightbox'
 import { earnedBreakdownLine } from '../lib/earningsCopy'
@@ -485,6 +487,15 @@ export default function TaskDetail() {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [category, setCategory] = useState('task')
+  // The companionship policy, for an edit that turns a task INTO
+  // companionship. One posted as companionship was accepted at post and is
+  // not asked again (lib/companionship.js).
+  const [editPolicyOpen, setEditPolicyOpen] = useState(false)
+  const [editPolicyAgreed, setEditPolicyAgreed] = useState(false)
+  const editPolicyPending = (nextCategory) => needsCompanionPolicy(nextCategory, {
+    acknowledged: editPolicyAgreed,
+    preAcknowledged: isCompanionCategory(task?.category),
+  })
   const [locations, setLocations] = useState([{ label: '' }])
   const [minutes, setMinutes] = useState(30)
   const [prepay, setPrepay] = useState('')
@@ -1293,6 +1304,11 @@ export default function TaskDetail() {
     await wrap(async () => {
       try {
         // 先正規化 locations
+        // Backstop for the gate on the category select below.
+        if (editPolicyPending(category)) {
+          setEditPolicyOpen(true)
+          return
+        }
         const locItems = locations.map(normalizeLocationItem)
 
         // 1) 給人看的文字（後端/列表用）
@@ -2374,12 +2390,26 @@ export default function TaskDetail() {
                 <select
                   className="mt-1 w-full rounded-md bg-white/5 border border-white/20 px-3 py-2 text-sm"
                   value={category}
-                  onChange={(e) => setCategory(e.target.value)}
+                  onChange={(e) => {
+                    // Switching to companionship asks for the policy first;
+                    // the category only changes once it is accepted.
+                    if (editPolicyPending(e.target.value)) setEditPolicyOpen(true)
+                    else setCategory(e.target.value)
+                  }}
                 >
                   <option value="task">Task</option>
                   <option value="companion">Companion</option>
                 </select>
               </label>
+              <CompanionPolicyModal
+                open={editPolicyOpen}
+                onConfirm={() => {
+                  setEditPolicyAgreed(true)
+                  setEditPolicyOpen(false)
+                  setCategory('companion')
+                }}
+                onCancel={() => setEditPolicyOpen(false)}
+              />
 
               {/* Locations with PlaceInput */}
               <div className="grid gap-1">
