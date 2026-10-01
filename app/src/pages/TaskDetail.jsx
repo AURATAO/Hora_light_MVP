@@ -902,7 +902,7 @@ export default function TaskDetail() {
           toast('This task was just accepted by someone else.')
           await reloadWorkAndTask()
         } else {
-          toast(e?.body?.error || e.message || 'Failed to accept')
+          toast(e.message || 'Failed to accept')
         }
       }
     })

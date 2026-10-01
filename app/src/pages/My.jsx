@@ -208,8 +208,14 @@ export default function My() {
       // out of the Available list.
       toast('This task was just accepted by someone else.')
       await wrap(() => fetchPage('available', null))
+    } else if (e?.body?.error === 'payouts_onboarding_required') {
+      // Payouts aren't set up, so the server refused before claiming the task
+      // — it is still open. Say so in its words and go where that is fixed;
+      // this used to toast the bare code and leave the supporter stuck.
+      toast(e.message)
+      nav('/profile/earnings')
     } else {
-      toast(e?.body?.error || e.message || 'Failed to accept')
+      toast(e.message || 'Failed to accept')
     }
   }
 }

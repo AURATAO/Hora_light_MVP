@@ -1,5 +1,6 @@
 // src/api/client.js
 import { supabase } from "../lib/supabaseClient";
+import { apiErrorCode, apiErrorMessage } from "../lib/apiError.js";
 
 // 1) API_BASE（容錯多環境變數）
 export const API_BASE =
@@ -52,8 +53,12 @@ export async function api(path, opts = {}) {
     : await res.text();
 
   if (!res.ok) {
-    const err = new Error("HTTP " + res.status);
+    // The server's own explanation as the Error's message, so every
+    // `toast(e.message)` says why — this used to be "HTTP " + status. The
+    // status, code and whole body ride along for callers that branch.
+    const err = new Error(apiErrorMessage(res.status, body));
     err.status = res.status;
+    err.code = apiErrorCode(body);
     err.body = body;
     throw err;
   }

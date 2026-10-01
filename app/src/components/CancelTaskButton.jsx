@@ -106,7 +106,7 @@ export default function CancelTaskButton({
       setResult(res)
       onDone?.(res)
     } catch (e) {
-      const msg = e?.body?.error || e?.body?.message || (typeof e?.body === 'string' && e.body) || e?.message || 'Failed to cancel'
+      const msg = e?.message || 'Failed to cancel'
       setError(msg)
     } finally {
       setSubmitting(false)
