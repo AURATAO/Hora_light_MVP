@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { approvedBudgetCentsFor, needsReceipt } from '../lib/taskBudget'
-import { useParams, useNavigate, useLocation } from 'react-router-dom'
+import { Link, useParams, useNavigate, useLocation } from 'react-router-dom'
 import { api, API_BASE } from '../api/client'
 import UserSafetyMenu from '../components/UserSafetyMenu'
 import TaskChatBox from '../components/TaskChatBox'
@@ -39,6 +39,7 @@ import {
 } from '../lib/paymentCopy'
 import { totalAfterPromo } from '../lib/promo'
 import { supportMailto } from '../lib/support'
+import { REMOVED_GONE_BODY, REMOVED_GONE_TITLE, isTaskRemovedError, removalNotice } from '../lib/taskRemoval'
 import { isCompanionCategory, needsCompanionPolicy } from '../lib/companionship'
 import CompanionPolicyModal from '../components/CompanionPolicyModal'
 import { isPayoutsOnboardingRequired } from '../api/payments'
@@ -429,6 +430,9 @@ export default function TaskDetail() {
 
   const [error, setError] = useState('')
   const [editing, setEditing] = useState(false)
+  // Taken down and no longer readable by this viewer (a supporter detached
+  // from a removed task). Terminal: refetching keeps saying the same thing.
+  const [removedGone, setRemovedGone] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
 
   // Complete-task modal
@@ -636,7 +640,9 @@ export default function TaskDetail() {
             } catch {/* ignore */ }
           }
         }).catch((e) => {
-          if (alive) setError(e.message || 'Failed to load')
+          if (!alive) return
+          if (isTaskRemovedError(e)) setRemovedGone(true)
+          else setError(e.message || 'Failed to load')
         })
       })()
     return () => { alive = false }
@@ -866,6 +872,45 @@ export default function TaskDetail() {
       setEnrouteBusy(false)
     }
   }
+
+  // REFRESH ON RETURN. The page loaded once per mount and then only polled
+  // extension requests, so a requester who left the tab open saw no clock-in,
+  // pause, completion or cancellation until they reloaded the browser — and a
+  // supporter kept sharing location on a task that had been cancelled under
+  // them. Mobile reloads on every screen focus; this is the same thing.
+  //
+  // Quiet: no global loader (it would flash on every tab switch) and a failed
+  // read changes nothing on screen. Skipped mid-edit, and at most once every
+  // few seconds since focus and visibilitychange fire together.
+  const lastRefreshRef = useRef(0)
+  const refreshQuietlyRef = useRef(null)
+  refreshQuietlyRef.current = async () => {
+    if (!id || !task || editing || removedGone) return
+    const now = Date.now()
+    if (now - lastRefreshRef.current < 5000) return
+    lastRefreshRef.current = now
+    try {
+      const [t, w] = await Promise.all([
+        api(`/tasks/${id}`),
+        api(`/tasks/${id}/worklogs`).catch(() => null),
+      ])
+      setTask(t)
+      if (w) setWork(w)
+    } catch (e) {
+      if (isTaskRemovedError(e)) setRemovedGone(true)
+    }
+  }
+  useEffect(() => {
+    const onReturn = () => {
+      if (document.visibilityState === 'visible') refreshQuietlyRef.current?.()
+    }
+    document.addEventListener('visibilitychange', onReturn)
+    window.addEventListener('focus', onReturn)
+    return () => {
+      document.removeEventListener('visibilitychange', onReturn)
+      window.removeEventListener('focus', onReturn)
+    }
+  }, [])
 
   async function reloadWorkAndTask() {
     await wrap(async () => {
@@ -1353,6 +1398,19 @@ export default function TaskDetail() {
   }
 
 
+  if (removedGone) {
+    return (
+      <div className="bg-linear-to-br from-primary to-primary/30 text-accent min-h-screen py-[100px] px-4">
+        <div className="mx-auto max-w-md space-y-3 border border-primary/30 backdrop-blur-md p-8 rounded-lg shadow text-center">
+          <h2 className="text-lg font-semibold text-white">{REMOVED_GONE_TITLE}</h2>
+          <p className="text-sm text-white/60">{REMOVED_GONE_BODY}</p>
+          <Link to="/my" className="inline-block rounded-md border border-white/20 px-4 py-2 text-sm hover:border-white/40">
+            Back to tasks
+          </Link>
+        </div>
+      </div>
+    )
+  }
   if (error) return <div className="p-6 text-red-500">{error}</div>
   if (!task) return <div className="p-6">Task not found.</div>
 
@@ -1908,6 +1966,15 @@ export default function TaskDetail() {
                     )}
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Why it was taken down, in words — the status pill alone said
+                "REMOVED" and nothing else. */}
+            {task?.status === 'removed' && (
+              <div className="border border-red-400/30 rounded-md p-3 space-y-1 text-sm">
+                <div className="text-xs font-semibold text-red-300">Task removed</div>
+                <p className="text-white/80">{removalNotice(task.removal_reason)}</p>
               </div>
             )}
 
