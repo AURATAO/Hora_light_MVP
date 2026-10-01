@@ -8,7 +8,8 @@ import DurationPicker from '../components/DurationPicker'
 import AddressInput from '../components/AddressInput'
 import { useToast } from '../providers/ToastProvider'
 import { useTaskEstimate, formatCents } from '../hooks/useTaskEstimate'
-import { highBudgetWarning, holdPlacedMessage, surgeRateNote } from '../lib/paymentCopy'
+import { highBudgetWarning, holdPlacedMessage, promoReservedLine, surgeRateNote } from '../lib/paymentCopy'
+import { readPromoFailure, totalAfterPromo } from '../lib/promo'
 import { completeCardAuthentication, readPaymentError, usePaymentGate } from '../hooks/usePaymentGate'
 import { betaSettlementLine } from '../lib/traction'
 import { SCHEDULE_STEP_MINUTES, defaultSchedule, localDateStr, scheduleFields } from '../lib/schedule'
@@ -66,6 +67,13 @@ export default function NewTask() {
   // Set when a post is refused for a payment reason, so the message lands next
   // to the button that produced it rather than in a toast that scrolls away.
   const [paymentError, setPaymentError] = useState('')
+  // The promo code. Typed here, checked with POST /promo/validate on Apply,
+  // then sent on the estimate and on the post — where the server checks it
+  // again and has the last word. `promoApplied` is the server's own answer.
+  const [promoInput, setPromoInput] = useState('')
+  const [promoApplied, setPromoApplied] = useState(null)
+  const [promoChecking, setPromoChecking] = useState(false)
+  const [promoError, setPromoError] = useState('')
   const [taskType, setTaskType] = useState('task') // 'task' | 'companion'
   const [urlCategory, setUrlCategory] = useState(null) // locked when navigated from CategoryHome
   const [searchParams] = useSearchParams()
@@ -189,6 +197,7 @@ export default function NewTask() {
     // opened: a 21:30 task filled in at 6pm has to be quoted the evening rate.
     isImmediate: mode === 'now',
     scheduledAt: scheduledAtISO,
+    promoCode: promoApplied?.code,
   })
 
   // Advisory only — POST /tasks answers 402 regardless of what this says. It
@@ -201,6 +210,32 @@ export default function NewTask() {
   // and the line is simply omitted, so the off-platform wording can never be
   // shown on a stale or failed read.
   const settlementLine = betaSettlementLine(payments.loading ? null : payments.enforced)
+
+  async function applyPromo() {
+    const code = promoInput.trim()
+    if (!code) {
+      setPromoError('Type a promo code first.')
+      return
+    }
+    setPromoChecking(true)
+    setPromoError('')
+    try {
+      const accepted = await api('/promo/validate', { method: 'POST', body: { code }, noRedirect: true })
+      setPromoApplied(accepted)
+      setPromoInput(accepted.code)
+    } catch (err) {
+      setPromoApplied(null)
+      setPromoError(readPromoFailure(err) || "We couldn't check that code just now. Try again.")
+    } finally {
+      setPromoChecking(false)
+    }
+  }
+
+  function removePromo() {
+    setPromoApplied(null)
+    setPromoInput('')
+    setPromoError('')
+  }
 
   async function onSubmit(e) {
   e.preventDefault()
@@ -239,6 +274,7 @@ export default function NewTask() {
       scheduled_at: mode === 'schedule' ? scheduledAtISO : '',
       transport_required: transport,
       auto_extend_consent: autoExtend,
+      promo_code: promoApplied?.code,
     }
 
     const posted = await api('/tasks', { method: 'POST', body: payload, noRedirect: true })
@@ -248,6 +284,16 @@ export default function NewTask() {
     setSuccessOpen(true)
     return
   } catch (err) {
+    // The code was refused at the post — expired, or used on another device,
+    // since Apply. Nothing was posted. Drop it and say why beside the field;
+    // the next estimate is the undiscounted one.
+    const promoFailure = readPromoFailure(err)
+    if (promoFailure) {
+      setPromoApplied(null)
+      setPromoError(promoFailure)
+      return
+    }
+
     const failure = readPaymentError(err)
 
     // A bank that wants the cardholder present. The task already exists,
@@ -625,10 +671,26 @@ function confirmCompanionPolicy() {
                   <b>{formatCents(estimate.shopping_budget_cents)}</b>
                 </div>
               )}
+              {/* THE PROMO, as the server quoted it: the line, then a total
+                  that is the discounted one, then what will be reserved. */}
+              {estimate.promo_discount_cents > 0 && (
+                <div className="flex justify-between">
+                  <span>Promo{estimate.promo_code ? ` (${estimate.promo_code})` : ''}</span>
+                  <b>−{formatCents(estimate.promo_discount_cents)}</b>
+                </div>
+              )}
               <div className="flex justify-between border-t border-white/20 pt-1 mt-0.5">
                 <span>Total estimate</span>
-                <b>{formatCents(estimate.total_cents)}</b>
+                <b>{formatCents(totalAfterPromo(estimate, estimate.total_cents))}</b>
               </div>
+              {promoReservedLine(estimate) && (
+                <div className="text-white">{promoReservedLine(estimate)}</div>
+              )}
+              {/* Refused between Apply and this quote. The quote stands; the
+                  discount does not, in the server's sentence. */}
+              {estimate.promo_error && (
+                <div className="text-red-300">{estimate.promo_error}</div>
+              )}
               {/* Why this task costs more than the usual rate. The wording,
                   the rate and the included block all come from the quote. */}
               {surgeRateNote(estimate) && (
@@ -649,6 +711,41 @@ function confirmCompanionPolicy() {
               {highBudgetWarning(Math.round(advance * 100), estimate)}
             </div>
           )}
+
+          {/* Optional, and quiet: one field and one button, below the quote
+              it changes and above the post. */}
+          <div className="grid gap-1">
+            <label className="text-sm text-white/70" htmlFor="promo-code">Promo code (optional)</label>
+            <div className="flex gap-2">
+              <input
+                id="promo-code"
+                className="flex-1 rounded-md px-3 py-2 bg-transparent outline-none border border-white/20 focus:border-white/40 uppercase placeholder:normal-case disabled:opacity-60"
+                value={promoInput}
+                onChange={(e) => { setPromoInput(e.target.value); if (promoError) setPromoError('') }}
+                onKeyDown={(e) => {
+                  // Enter applies the code; it must not submit the post.
+                  if (e.key === 'Enter') { e.preventDefault(); if (!promoApplied) applyPromo() }
+                }}
+                placeholder="e.g. WELCOME10"
+                autoComplete="off"
+                autoCapitalize="characters"
+                spellCheck={false}
+                disabled={Boolean(promoApplied) || promoChecking}
+              />
+              <button
+                type="button"
+                onClick={promoApplied ? removePromo : applyPromo}
+                disabled={promoChecking}
+                className="min-w-24 rounded-md px-3 py-2 border border-white/20 hover:border-white/40 text-sm disabled:opacity-50"
+              >
+                {promoChecking ? 'Checking…' : promoApplied ? 'Remove' : 'Apply'}
+              </button>
+            </div>
+            {promoError && <div className="text-sm text-red-400">{promoError}</div>}
+            {promoApplied && !promoError && (
+              <div className="text-sm text-[#9aab3a]">{promoApplied.message}</div>
+            )}
+          </div>
 
           {/* Payments. Both of these render nothing while PAYMENTS_ENFORCED is
               off, which is the whole beta today. */}
@@ -704,6 +801,7 @@ function confirmCompanionPolicy() {
                 setTransport('none'); setTouched(false); setTaskType('task');
                 setAutoExtend(true); setPaymentError('');
                 setMode('now'); setDate(''); setTimeStr('');
+                removePromo();
                 setCompPolicyAgreed(false); setCompPolicyChecked(false); setCompPolicyOpen(false);
               }}
               className="rounded-md px-4 py-2 border border-white/20 hover:border-white/40">

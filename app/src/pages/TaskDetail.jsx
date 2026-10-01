@@ -34,8 +34,10 @@ import {
   extensionResolutionDetail,
   extensionResolutionTitle,
   holdSummary,
+  promoHoldNote,
   timeBasisNote,
 } from '../lib/paymentCopy'
+import { totalAfterPromo } from '../lib/promo'
 import { isPayoutsOnboardingRequired } from '../api/payments'
 import PhotoLightbox from '../components/PhotoLightbox'
 import { earnedBreakdownLine } from '../lib/earningsCopy'
@@ -282,9 +284,19 @@ function SettlementPanel({ cost, settlement, timeline, isOwner, taskId }) {
         onClose={() => setReceiptOpen(false)}
       />
 
+      {/* THE PROMO, on the requester's copy only — the server omits these
+          keys from the supporter's, whose pay it never touched. The total
+          below is then the discounted one; cost.total_cents stays what the
+          task cost before it (S-05: both numbers are the server's). */}
+      {settlement.promo_discount_cents > 0 && (
+        <div className="flex justify-between text-white/70">
+          <span>Promo{settlement.promo_code ? ` (${settlement.promo_code})` : ''}</span>
+          <span>−{formatCents(settlement.promo_discount_cents)}</span>
+        </div>
+      )}
       <div className="border-t border-white/10 pt-2 flex justify-between font-semibold">
         <span>{settlement.state === 'captured' ? 'Total charged' : 'Total'}</span>
-        <span>{formatCents(cost.total_cents)}</span>
+        <span>{formatCents(totalAfterPromo(settlement, cost.total_cents))}</span>
       </div>
 
       {settlement.state === 'not_charged' && (
@@ -2002,6 +2014,9 @@ export default function TaskDetail() {
                     reimbursed against the receipt.
                   </p>
                 )}
+                {promoHoldNote(task?.payment) && (
+                  <p className="text-xs text-white/40">{promoHoldNote(task.payment)}</p>
+                )}
               </Disclosure>
             )}
 
@@ -2026,6 +2041,9 @@ export default function TaskDetail() {
                     The hold also covers up to {formatCents(task.prepay_amount_cents)} of shopping,
                     reimbursed against the receipt.
                   </p>
+                )}
+                {promoHoldNote(task?.payment) && (
+                  <p className="text-xs text-white/40">{promoHoldNote(task.payment)}</p>
                 )}
               </div>
             )}

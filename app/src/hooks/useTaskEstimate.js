@@ -35,6 +35,9 @@ export function useTaskEstimate({
   // property of when the task happens, not of when the form was opened.
   isImmediate = true,
   scheduledAt = '',
+  // A promo code the requester has applied. The quote comes back with either
+  // the discount fields or `promo_error`, never both.
+  promoCode = '',
   enabled = true,
 }) {
   const [estimate, setEstimate] = useState(null)
@@ -61,6 +64,7 @@ export function useTaskEstimate({
             prepay_amount_cents: Math.max(0, Math.round(shoppingBudgetCents || 0)),
             is_immediate: isImmediate,
             scheduled_at: scheduledAt || '',
+            promo_code: promoCode || undefined,
           },
         })
         if (!cancelled) setEstimate(result)
@@ -76,7 +80,7 @@ export function useTaskEstimate({
       cancelled = true
       clearTimeout(timer)
     }
-  }, [category, estimatedMinutes, shoppingBudgetCents, isImmediate, scheduledAt, enabled])
+  }, [category, estimatedMinutes, shoppingBudgetCents, isImmediate, scheduledAt, promoCode, enabled])
 
   return estimate
 }
