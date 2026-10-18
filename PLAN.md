@@ -130,7 +130,7 @@ reasoning on by default — measure latency with it on and off.
 
 | # | Dates | Deliverable | Done |
 |---|---|---|---|
-| M0 | Oct 19 | PLAN.md; `channel` package skeleton; adapter interface; migration file (not applied) | |
+| M0 | Oct 19 | PLAN.md; `channel` package skeleton; adapter interface; migration file (not applied) | ✅ see §15 |
 | M1 | Oct 20–22 | Sendblue inbound/outbound in sandbox; identity + setup page; dedupe | |
 | M2 | Oct 23–25 | Draft → YES → hold → task; status updates via `notify.Create` hook | |
 | M3 | Oct 26–28 | Approvals YES/NO; chat relay; multi-task; ops handoff | |
@@ -155,6 +155,45 @@ The setup step is the one to watch.
 - Dani: confirm approval timeouts and copy for budget/time requests by text.
 - Does Sendblue expose threaded-reply context? If not, step 5 falls back to 6–7.
 - One number for both channels, or separate? (Default: separate.)
+- Staging: separate Render service deploying this branch, Stripe test keys,
+  Supabase dev branch (recommended) — Aura deciding.
+
+## 15. Progress log
+
+**M0 — 2026-10-19**
+- `server/internal/channel`: `Adapter` interface, `Inbound`/`Outbound`,
+  E.164 normalization + log redaction, `WebhookHandler` (verify → parse →
+  dedupe → 200 → route async), `PGStore`, `LogRouter` (records + logs ids only).
+- Sendblue adapter: secret-header check (fails closed), receive parsing incl.
+  `reply_to`, drops outbound echoes and group threads, `send-message` with
+  inline reply. **Unconfirmed:** the webhook secret header name and whether
+  it is raw or HMAC — configurable via `SENDBLUE_WEBHOOK_SECRET_HEADER`;
+  confirm against a real sandbox delivery in M1.
+- WhatsApp adapter: `X-Hub-Signature-256` HMAC check, subscribe handshake,
+  text / button / interactive replies with `context.id`, send with context.
+- `channel/llm`: `Parser` interface, `TaskDraft` (same shape as
+  `/tasks/ai-parse`), OpenAI-compatible client for Baseten. The system prompt
+  is passed in; it moves out of `ai_task_parser.go` into a shared package
+  after the review freeze so app and messaging use one prompt.
+- Routes `/webhooks/channel/{sendblue,whatsapp}` in `server/channel_webhooks.go`,
+  mounted **only** when `CHANNEL_WEBHOOKS_ENABLED=1` — inert on prod. The
+  legacy `/webhooks/whatsapp` stub is untouched.
+- Migration `20261019120000_messaging_channel.sql` (4 tables): applied to a
+  throwaway local Postgres with stub FK tables — RLS on all four, zero client
+  grants, E.164 CHECK rejects bare numbers, `(channel, provider_message_id)`
+  dedupe holds. **Not applied to Supabase.**
+- Tests: 23 in `internal/channel` + `llm` (signatures, fail-closed, parsing,
+  dedupe on retries, 500-on-store-failure, unprocessed-on-route-failure).
+  `go build`, `go vet`, `go test ./...` green.
+
+**Env vars introduced** (none required until the flag is on):
+`CHANNEL_WEBHOOKS_ENABLED`, `SENDBLUE_FROM_NUMBER`, `SENDBLUE_WEBHOOK_SECRET`,
+`SENDBLUE_WEBHOOK_SECRET_HEADER`, `SENDBLUE_BASE_URL`, `WHATSAPP_APP_SECRET`,
+`WHATSAPP_GRAPH_VERSION`. Already set on Render: `SENDBLUE_API_KEY`,
+`SENDBLUE_API_SECRET`, `BASETEN_API_KEY`.
+
+**Next (M1) needs:** a staging deployment of this branch so Sendblue can
+reach a webhook (decision pending — §13).
 
 ## 14. Paused
 

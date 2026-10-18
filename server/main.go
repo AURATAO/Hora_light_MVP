@@ -502,6 +502,9 @@ func main() {
 	// TalkJS message.sent → Expo push. Unauthenticated but HMAC-signed; see
 	// talkjs_webhook.go.
 	RegisterTalkJSWebhooks(r, sqldb)
+	// Messaging entry point (iMessage / WhatsApp). Mounts nothing unless
+	// CHANNEL_WEBHOOKS_ENABLED=1; see channel_webhooks.go and PLAN.md.
+	RegisterChannelWebhooks(r, sqldb)
 	// Stripe payment lifecycle → payments table + ops alerting. Unauthenticated
 	// but signature-verified against the raw body; see stripe_webhook.go.
 	// Registered and proven since Phase 1; since Phase 2a its events land on
