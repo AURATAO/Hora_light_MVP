@@ -155,8 +155,7 @@ The setup step is the one to watch.
 - Dani: confirm approval timeouts and copy for budget/time requests by text.
 - Does Sendblue expose threaded-reply context? If not, step 5 falls back to 6–7.
 - One number for both channels, or separate? (Default: separate.)
-- Staging: separate Render service deploying this branch, Stripe test keys,
-  Supabase dev branch (recommended) — Aura deciding.
+- ~~Staging~~ decided 2026-10-19, see §16.
 
 ## 15. Progress log
 
@@ -194,6 +193,25 @@ The setup step is the one to watch.
 
 **Next (M1) needs:** a staging deployment of this branch so Sendblue can
 reach a webhook (decision pending — §13).
+
+## 16. Staging
+
+- **Render:** `hora-staging-messaging` (srv-dbb8hrom7kps73flstl0), Starter,
+  auto-deploys `feat/messaging-channel`. https://hora-staging-messaging.onrender.com
+  No root directory (the connector can't set one): build `cd server && go build -o app .`,
+  start `cd server && ./app`, so every commit to the branch redeploys it.
+- **Supabase:** dev branch `staging-messaging` (ref `qxohqvkmzxokdyzrysgr`) of
+  the main project — S-03 holds, it is the same project. No production data.
+  All 33 migrations + `20261019120000_messaging_channel` applied; the four
+  CLAUDE.md Rule 3 queries return 3 / 0 / 0 / 0.
+- **Env set by Claude:** `CHANNEL_WEBHOOKS_ENABLED=1`, `APP_ENV=staging`,
+  `SUPABASE_PROJECT_URL`, `PAYMENTS_ENFORCED=false`, and placeholder
+  `GOOGLE_CLIENT_ID/SECRET` (Google sign-in is not used on staging).
+- **Env set by Aura (secrets):** `SUPABASE_DB_URL` (branch), `SENDBLUE_API_KEY`,
+  `SENDBLUE_API_SECRET`, `SENDBLUE_FROM_NUMBER`, `SENDBLUE_WEBHOOK_SECRET`,
+  `BASETEN_API_KEY`. Stripe **test** keys added at M2.
+- Sendblue receive webhook → `https://hora-staging-messaging.onrender.com/webhooks/channel/sendblue`.
+- Tear down after Oct 31 if unused: delete the Render service and the branch.
 
 ## 14. Paused
 
