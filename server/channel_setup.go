@@ -29,10 +29,13 @@ import (
 // Only after both does POST /channel/setup/link attach the number to the
 // session's internal user id (S-11: identity from dualAuth, never the body).
 //
-// Steps on the page: email → code → name + terms (PATCH /profile) → link →
-// card (POST /payments/setup-intent + Stripe.js). The card step is skipped
-// with a note when Stripe is not configured (503), as on staging until test
-// keys are set; posting a task asks for a card again in that case.
+// The person reaches this page only after replying YES to a priced task in the
+// chat (flow agreed 2026-10-20: help first, leave Messages once). Name and
+// Terms consent were already given in the chat and are copied onto the
+// profile at link time. Steps on the page: email → code → link → card
+// (POST /payments/setup-intent + Stripe.js; skipped when Stripe is not
+// configured, as on staging) → finish, which books the pending task through
+// the same router the chat uses and confirms it in Messages.
 
 //go:embed channel_setup.html
 var channelSetupHTML []byte
@@ -40,7 +43,7 @@ var channelSetupHTML []byte
 //go:embed channel_setup.js
 var channelSetupJS []byte
 
-func registerChannelSetupRoutes(r *gin.Engine, sqlDB *sql.DB, store *channel.PGStore, router *channel.SetupRouter) {
+func registerChannelSetupRoutes(r *gin.Engine, sqlDB *sql.DB, store *channel.PGStore, router *channel.Router) {
 	r.GET("/channel/setup", func(c *gin.Context) {
 		setupPageHeaders(c)
 		c.Data(http.StatusOK, "text/html; charset=utf-8", channelSetupHTML)
@@ -76,12 +79,17 @@ func registerChannelSetupRoutes(r *gin.Engine, sqlDB *sql.DB, store *channel.PGS
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "server_error"})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{
+		resp := gin.H{
 			"valid":      true,
 			"expires_at": expires.UTC().Format(time.RFC3339),
 			"phone_hint": phoneHint(id.Address),
 			"channel":    id.Channel,
-		})
+		}
+		// What they are about to book, so the page can say it back to them.
+		if p := router.PendingFor(c.Request.Context(), id.ID); p != nil {
+			resp["booking"] = gin.H{"title": p.Draft.Title, "estimate": channel.Dollars(p.QuoteCents)}
+		}
+		c.JSON(http.StatusOK, resp)
 	})
 	r.POST("/channel/setup/link", dualAuth(sqlDB), func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
@@ -110,18 +118,52 @@ func registerChannelSetupRoutes(r *gin.Engine, sqlDB *sql.DB, store *channel.PGS
 		}
 		log.Printf("[channel-setup] linked identity=%s channel=%s to=%s uid=%s", id.ID, id.Channel, channel.Redact(id.Address), uid)
 
-		name := profileNameForUser(ctx, sqlDB, uid)
-		// The welcome is a side effect (S-32): off the request path, best effort.
-		go func() {
-			sctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			out := channel.Outbound{Channel: id.Channel, To: id.Address, Text: channel.SetupDoneText(name)}
-			if err := router.Send(sctx, out, ""); err != nil {
-				log.Printf("[channel-setup] welcome identity=%s: %v", id.ID, err)
+		// Name and Terms consent were given in the chat; copy them onto the
+		// profile now that there is one. Blanks only.
+		if conv, err := store.GetConversation(ctx, id.ID); err == nil {
+			if err := router.Booker.ApplyChatProfile(ctx, uid, conv.PendingName, conv.TermsAcceptedAt); err != nil {
+				log.Printf("[channel-setup] apply chat profile uid=%s: %v", uid, err)
 			}
-		}()
+		}
 		c.JSON(http.StatusOK, gin.H{"linked": true, "phone_hint": phoneHint(id.Address)})
 	})
+	// The last step of the page: book what they said YES to. Runs the same
+	// claim-guarded path as a YES in the chat, so a double tap or a YES sent
+	// at the same moment books once. The chat gets the confirmation.
+	r.POST("/channel/setup/finish", dualAuth(sqlDB), func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		uid := c.GetString("uid")
+		if uid == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+			return
+		}
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
+		defer cancel()
+		booked, last, err := router.FinishSetup(ctx, uid)
+		if err != nil {
+			log.Printf("[channel-setup] finish uid=%s: %v", uid, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "server_error"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"booked": booked, "outcome": outcomeName(booked, last)})
+	})
+}
+
+func outcomeName(booked int, last channel.PostResult) string {
+	if booked > 0 {
+		return "booked"
+	}
+	switch last.Outcome {
+	case channel.PostNeedsCard:
+		return "needs_card"
+	case channel.PostDeclined:
+		return "declined"
+	case channel.PostOwesBalance:
+		return "outstanding_balance"
+	case channel.PostNeeds3DS:
+		return "needs_authentication"
+	}
+	return "nothing_to_book"
 }
 
 func setupPageHeaders(c *gin.Context) {
@@ -169,19 +211,4 @@ func phoneHint(e164 string) string {
 		return ""
 	}
 	return "•••• " + e164[len(e164)-4:]
-}
-
-// profileNameForUser is the name the person typed on the setup page (or in
-// the app). Empty when they have none; never an email prefix.
-func profileNameForUser(ctx context.Context, sqlDB *sql.DB, uid string) string {
-	var name string
-	err := sqlDB.QueryRowContext(ctx, `
-		SELECT coalesce(p.name, '')
-		FROM public.users u JOIN public.profiles p ON p.email = u.email
-		WHERE u.id = $1::uuid
-	`, uid).Scan(&name)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		log.Printf("[channel-setup] name uid=%s: %v", uid, err)
-	}
-	return strings.TrimSpace(name)
 }

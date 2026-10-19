@@ -131,8 +131,8 @@ reasoning on by default — measure latency with it on and off.
 | # | Dates | Deliverable | Done |
 |---|---|---|---|
 | M0 | Oct 19 | PLAN.md; `channel` package skeleton; adapter interface; migration file (not applied) | ✅ see §15 |
-| M1 | Oct 20–22 | Sendblue inbound/outbound in sandbox; identity + setup page; dedupe | 🟡 code done, phone test pending — §15 |
-| M2 | Oct 23–25 | Draft → YES → hold → task; status updates via `notify.Create` hook | |
+| M1 | Oct 20–22 | Sendblue inbound/outbound in sandbox; identity + setup page; dedupe | 🟡 reworked to help-first flow; phone test pending — §15 |
+| M2 | Oct 23–25 | Draft → YES → hold → task; status updates via `notify.Create` hook | 🟡 draft → YES → post done (pulled forward); status updates not started |
 | M3 | Oct 26–28 | Approvals YES/NO; chat relay; multi-task; ops handoff | |
 | M4 | Oct 29–31 | WhatsApp adapter on Meta test number; eval run; real-card E2E on both channels; demo | |
 
@@ -221,6 +221,45 @@ M0 is proven end to end on real infrastructure.
   and whether the staging branch's Supabase Auth email carries a 6-digit code
   (if it arrives as a magic link only, the branch's email template needs
   `{{ .Token }}`).
+
+**Flow change — 2026-10-20 00:23 (Aura's decision): help first, leave Messages once.**
+A new number no longer gets a link on its first message. The chat greets,
+drafts and prices the request, asks the first name in the chat, and states
+the Terms in the summary. The person leaves Messages exactly once — at their
+first YES — on a page that verifies email, saves a card and books. Every later
+task stays in Messages. Diagram updated (artifact §03).
+
+**M1 rework + M2 core — 2026-10-20 (night, unattended)**
+- `Router` (state machine, `router.go`): idle → greeting/question/request
+  (LLM intent, local fallback) → draft + quote → `awaiting_name` (first-timers
+  only) → `awaiting_confirm` → YES: linked = post now, not linked = the one
+  link (`awaiting_setup`) → page finishes → post. NO cancels; any other text
+  re-drafts with everything said so far. YES/NO matched by rule, never the model.
+- **Double-booking guard:** `ClaimForPosting` atomically moves the
+  conversation to a posting state before anything is posted; parallel YESes
+  or the page racing a YES book once. A claim abandoned by a crash is
+  recoverable after 3 minutes (routing times out at 60 s).
+- `chatBooker` (`server/channel_booker.go`): quote = `quoteTask` (same as
+  `/tasks/estimate`); post = the real `createTask` handler run in-process
+  with the linked user's id, so balance/card/decline/3DS/PAYMENTS_ENFORCED
+  behave exactly as in the app. Outcomes map to chat replies; decline keeps
+  the draft for a retry; 3DS hands off to a human (gap, see below).
+- Chat name + Terms consent are copied onto `profiles` at link (blanks only).
+- Page: email → code → link → card (or skipped when payments are off) →
+  `POST /channel/setup/finish` books; shows what is being booked.
+- Model: Baseten `zai-org/GLM-5.3-Flash` by default (`LLM_*` env to swap;
+  `LLM_DISABLE_THINKING=1` to test latency). Uses the app's existing
+  extraction prompt (`aiTaskParserSystemPrompt`, read-only).
+- Migration file gained `awaiting_name`, `pending_name`, `terms_accepted_at`
+  (unshipped file edited; staging branch altered to match).
+- Tests: 43 in `internal/channel` + 2 in `server` (booker mapping), all green
+  with `-race`, DB tests on a throwaway Postgres incl. 8-way claim race.
+
+**Known gaps (next):** shopping budget is not asked in chat (grocery tasks
+post with no budget); 3DS in chat goes to a human; returning customer who
+needs a new card re-verifies email on the page; status updates to the chat
+(accepted / arrived / done) are M2's next piece; `created_via` uses
+`ai_parse` until a `message` value can be added after the freeze.
 
 ## 16. Staging
 

@@ -6,39 +6,80 @@ import (
 	"log"
 	"strings"
 	"time"
+
+	"hora-auth/internal/channel/llm"
 )
 
-// SetupRouter is the M1 router (PLAN §6 steps 1–3):
+// Booker is the bridge to the existing task and pricing code in package main.
+// The channel never prices or posts a task itself: Quote is the same
+// arithmetic as POST /tasks/estimate and Post runs the real POST /tasks
+// handler, so holds, card checks and every refusal behave exactly as in the
+// app (PLAN §1: business rules unchanged).
+type Booker interface {
+	Quote(ctx context.Context, d llm.TaskDraft) (cents, minutes int, err error)
+	Post(ctx context.Context, userID string, d llm.TaskDraft) PostResult
+	// ApplyChatProfile writes the name and terms consent gathered in the chat
+	// onto the user's profile (fills blanks only; never overwrites).
+	ApplyChatProfile(ctx context.Context, userID, name string, termsAcceptedAt *time.Time) error
+}
+
+// PostOutcome is what happened when a confirmed draft was posted.
+type PostOutcome int
+
+const (
+	PostBooked      PostOutcome = iota // task created (and held, when payments are on)
+	PostNeedsCard                      // 402 payment_method_required
+	PostNeeds3DS                       // 402 payment_authentication_required
+	PostDeclined                       // 402 payment_required — card refused
+	PostOwesBalance                    // 403 outstanding_balance
+	PostFailed                         // anything else
+)
+
+type PostResult struct {
+	Outcome PostOutcome
+	TaskID  string
+	// Message is the server's own wording for a refusal, when it has one.
+	Message string
+}
+
+// Router is the conversation state machine (PLAN §6, flow agreed 2026-10-20):
 //
-//   - an unknown number gets a one-time setup link (and no more than one
-//     every resendAfter, however many times it texts)
-//   - a linked number gets an acknowledgement; drafting a task from the
-//     message arrives in M2 through Linked
+//	idle ──greeting/question──▶ welcome
+//	idle ──request──▶ draft + quote ──(no account, no name)──▶ awaiting_name
+//	                                 └────────────────────────▶ awaiting_confirm
+//	awaiting_confirm ──YES──▶ linked: post now │ not linked: one setup link
+//	                 ──NO───▶ idle (draft dropped)
+//	                 ──text─▶ re-draft with the added detail
+//	awaiting_setup ──(page finishes)──▶ post the draft ──▶ idle
 //
-// Every reply is sent on the channel the message came in on and recorded as
-// an outbound row, so later replies-to-a-reply resolve.
-type SetupRouter struct {
-	Messages   Store
-	Identities IdentityStore
-	Adapters   map[Channel]Adapter
-	// SetupURL builds the link for a raw token, e.g.
-	// https://<backend>/channel/setup?t=<token>.
+// Help first: nobody gets a link before they have seen a price and said YES.
+type Router struct {
+	Messages      Store
+	Identities    IdentityStore
+	Conversations ConversationStore
+	Adapters      map[Channel]Adapter
+	Parser        llm.Parser
+	Classifier    llm.Classifier
+	Booker        Booker
+	// Prompt builds the extraction prompt for "now" — the same one the app's
+	// AI posting uses (server/ai_task_parser.go).
+	Prompt   func(now time.Time) string
 	SetupURL func(token string) string
-	// Linked handles a message from a set-up number. Nil → acknowledgement.
-	Linked func(ctx context.Context, in Inbound, id Identity) error
-	Now    func() time.Time
+	Now      func() time.Time
+	// Location renders times in the requester's zone (America/New_York).
+	Location *time.Location
 }
 
 const resendAfter = 2 * time.Minute
 
-func (r *SetupRouter) now() time.Time {
+func (r *Router) now() time.Time {
 	if r.Now != nil {
 		return r.Now()
 	}
 	return time.Now()
 }
 
-func (r *SetupRouter) HandleInbound(ctx context.Context, in Inbound) error {
+func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	id, err := r.Identities.UpsertIdentity(ctx, in.Channel, in.From)
 	if err != nil {
 		return err
@@ -51,17 +92,143 @@ func (r *SetupRouter) HandleInbound(ctx context.Context, in Inbound) error {
 	if err := r.Identities.TouchConversation(ctx, id.ID, in.ReceivedAt); err != nil {
 		log.Printf("[channel] touch conversation identity=%s: %v", id.ID, err)
 	}
+	conv, err := r.Conversations.GetConversation(ctx, id.ID)
+	if err != nil {
+		return err
+	}
+	text := strings.TrimSpace(in.Text)
+	if text == "" {
+		return r.Reply(ctx, in, CopyTextOnly, "")
+	}
 
-	if !id.Linked() {
-		return r.sendSetupLink(ctx, in, id)
+	switch conv.State {
+	case StateAwaitingName:
+		return r.onName(ctx, in, id, conv, text)
+	case StateAwaitingConfirm:
+		return r.onConfirm(ctx, in, id, conv, text)
+	case StateAwaitingSetup:
+		return r.onAwaitingSetup(ctx, in, id, conv, text)
+	case StateHandoff:
+		return r.Reply(ctx, in, CopyHandoffHolding, "")
+	case StatePosting:
+		return r.Reply(ctx, in, CopyBookingInFlight, "")
+	default:
+		return r.onIdle(ctx, in, id, conv, text)
 	}
-	if r.Linked != nil {
-		return r.Linked(ctx, in, id)
-	}
-	return r.Reply(ctx, in, CopyLinkedAck, "")
 }
 
-func (r *SetupRouter) sendSetupLink(ctx context.Context, in Inbound, id Identity) error {
+func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
+	intent := llm.HeuristicIntent(text)
+	if r.Classifier != nil {
+		got, err := r.Classifier.Classify(ctx, text)
+		if err != nil {
+			log.Printf("[channel] classify (using fallback %q): %v", got, err)
+		}
+		intent = got
+	}
+	switch intent {
+	case llm.IntentNewTask:
+		return r.startDraft(ctx, in, id, conv, text)
+	case llm.IntentQuestion:
+		return r.Reply(ctx, in, CopyAbout, "")
+	default:
+		return r.Reply(ctx, in, CopyWelcome, "")
+	}
+}
+
+// startDraft parses the request, prices it and moves to the name or
+// confirmation step. source is everything the person has said about this
+// task so far.
+func (r *Router) startDraft(ctx context.Context, in Inbound, id Identity, conv Conversation, source string) error {
+	if r.Parser == nil || r.Prompt == nil || r.Booker == nil {
+		return fmt.Errorf("start draft: router not fully configured")
+	}
+	draft, usage, err := r.Parser.ParseTask(ctx, r.Prompt(r.now().In(r.loc())), source)
+	if err != nil {
+		log.Printf("[channel] parse failed model=%s latency=%s: %v", usage.Model, usage.Latency, err)
+		return r.Reply(ctx, in, CopyParseFailed, "")
+	}
+	log.Printf("[channel] parsed model=%s latency=%s in=%d out=%d category=%s", usage.Model, usage.Latency.Round(time.Millisecond), usage.InputTokens, usage.OutputTokens, draft.Category)
+	cents, minutes, err := r.Booker.Quote(ctx, draft)
+	if err != nil {
+		return fmt.Errorf("start draft: quote: %w", err)
+	}
+	conv.Pending = &PendingDraft{Draft: draft, Source: source, QuoteCents: cents, QuoteMinutes: minutes, CreatedAtUnix: r.now().Unix()}
+
+	if !id.Linked() && conv.PendingName == "" {
+		conv.State = StateAwaitingName
+		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+			return err
+		}
+		return r.Reply(ctx, in, fmt.Sprintf(CopyAskName, draft.Title), "")
+	}
+	return r.showSummary(ctx, in, conv)
+}
+
+func (r *Router) showSummary(ctx context.Context, in Inbound, conv Conversation) error {
+	summary := r.Summary(conv.Pending)
+	conv.Pending.SummaryShown = summary
+	conv.State = StateAwaitingConfirm
+	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+		return err
+	}
+	return r.Reply(ctx, in, summary, "")
+}
+
+func (r *Router) onName(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
+	if IsNo(text) {
+		return r.dropDraft(ctx, in, conv)
+	}
+	name := CleanName(text)
+	if name == "" {
+		return r.Reply(ctx, in, CopyAskNameAgain, "")
+	}
+	conv.PendingName = name
+	if conv.Pending == nil { // nothing to book; just remember the name
+		conv.State = StateIdle
+		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+			return err
+		}
+		return r.Reply(ctx, in, CopyWelcome, "")
+	}
+	return r.showSummary(ctx, in, conv)
+}
+
+func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
+	switch {
+	case IsNo(text):
+		return r.dropDraft(ctx, in, conv)
+	case IsYes(text):
+		now := r.now()
+		conv.TermsAcceptedAt = &now
+		if !id.Linked() {
+			return r.sendSetupLink(ctx, in, id, conv, CopyOneStepToBook)
+		}
+		// Persist the consent before claiming; the claim only moves state.
+		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+			return err
+		}
+		_, claimed, err := r.claimAndPost(ctx, in.Channel, id, StateAwaitingConfirm)
+		if err == nil && !claimed {
+			// A parallel YES (or the page) holds the claim and is booking it.
+			return r.Reply(ctx, in, CopyBookingInFlight, "")
+		}
+		return err
+	default:
+		// Not a yes or no: treat it as a correction ("make it 4pm") and
+		// re-draft with everything said so far.
+		source := text
+		if conv.Pending != nil {
+			source = conv.Pending.Source + "\n" + text
+		}
+		return r.startDraft(ctx, in, id, conv, source)
+	}
+}
+
+func (r *Router) onAwaitingSetup(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
+	if IsNo(text) {
+		return r.dropDraft(ctx, in, conv)
+	}
 	recent, err := r.Identities.SetupTokenIssuedSince(ctx, id.ID, r.now().Add(-resendAfter))
 	if err != nil {
 		return err
@@ -69,6 +236,19 @@ func (r *SetupRouter) sendSetupLink(ctx context.Context, in Inbound, id Identity
 	if recent {
 		return r.Reply(ctx, in, CopySetupAlreadySent, "")
 	}
+	return r.sendSetupLink(ctx, in, id, conv, CopyOneStepToBookAgain)
+}
+
+func (r *Router) dropDraft(ctx context.Context, in Inbound, conv Conversation) error {
+	conv.Pending = nil
+	conv.State = StateIdle
+	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+		return err
+	}
+	return r.Reply(ctx, in, CopyDropped, "")
+}
+
+func (r *Router) sendSetupLink(ctx context.Context, in Inbound, id Identity, conv Conversation, copyFmt string) error {
 	if r.SetupURL == nil {
 		return fmt.Errorf("send setup link: SetupURL not configured")
 	}
@@ -79,17 +259,114 @@ func (r *SetupRouter) sendSetupLink(ctx context.Context, in Inbound, id Identity
 	if err := r.Identities.CreateSetupToken(ctx, id.ID, hash, r.now().Add(SetupTokenTTL)); err != nil {
 		return err
 	}
-	return r.Reply(ctx, in, fmt.Sprintf(CopySetupLink, r.SetupURL(token)), "")
+	conv.State = StateAwaitingSetup
+	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+		return err
+	}
+	return r.Reply(ctx, in, fmt.Sprintf(copyFmt, r.SetupURL(token)), "")
+}
+
+// claimAndPost books the pending draft for a linked number exactly once and
+// tells the person. Whoever loses the claim (a second YES, the page's finish
+// step racing a YES) posts nothing.
+func (r *Router) claimAndPost(ctx context.Context, ch Channel, id Identity, from State) (res PostResult, claimed bool, err error) {
+	pending, ok, err := r.Conversations.ClaimForPosting(ctx, id.ID, from)
+	if err != nil {
+		return PostResult{Outcome: PostFailed}, false, err
+	}
+	if !ok {
+		log.Printf("[channel] claim lost identity=%s from=%s — not posting", id.ID, from)
+		return PostResult{Outcome: PostFailed}, false, nil
+	}
+	conv, err := r.Conversations.GetConversation(ctx, id.ID)
+	if err != nil {
+		return PostResult{Outcome: PostFailed}, true, err
+	}
+	conv.Pending = pending
+	res = r.Booker.Post(ctx, id.UserID, pending.Draft)
+	log.Printf("[channel] post identity=%s outcome=%d task=%s", id.ID, res.Outcome, res.TaskID)
+	return res, true, r.afterPost(ctx, ch, id, conv, res)
+}
+
+// afterPost moves the conversation out of StatePosting and replies.
+func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Conversation, res PostResult) error {
+	out := Outbound{Channel: ch, To: id.Address}
+	switch res.Outcome {
+	case PostBooked:
+		conv.Pending = nil
+		conv.State = StateIdle
+		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+			log.Printf("[channel] save after booking identity=%s: %v", id.ID, err)
+		}
+		out.Text = CopyBooked
+		return r.Send(ctx, out, res.TaskID)
+	case PostNeedsCard:
+		in := Inbound{Channel: ch, From: id.Address}
+		return r.sendSetupLink(ctx, in, id, conv, CopyNeedCard)
+	case PostOwesBalance, PostDeclined:
+		// Keep the draft: once the card or balance is sorted, YES retries.
+		conv.State = StateAwaitingConfirm
+		_ = r.Conversations.SaveConversation(ctx, conv)
+		out.Text = firstNonEmpty(res.Message, CopyCardProblem) + " " + CopyRetryYes
+		return r.Send(ctx, out, "")
+	case PostNeeds3DS:
+		conv.State = StateHandoff
+		_ = r.Conversations.SaveConversation(ctx, conv)
+		out.Text = Copy3DSHandoff
+		return r.Send(ctx, out, res.TaskID)
+	default:
+		conv.State = StateAwaitingConfirm
+		_ = r.Conversations.SaveConversation(ctx, conv)
+		out.Text = CopyPostFailed
+		return r.Send(ctx, out, "")
+	}
+}
+
+// FinishSetup runs when the setup page completes for userID: every linked
+// number waiting on setup gets its pending task posted. Returns how many
+// tasks were booked and the outcome of the last one, for the page.
+func (r *Router) FinishSetup(ctx context.Context, userID string) (booked int, last PostResult, err error) {
+	convs, ids, err := r.Conversations.ConversationsForUser(ctx, userID)
+	if err != nil {
+		return 0, PostResult{}, err
+	}
+	last = PostResult{Outcome: PostFailed}
+	for i, c := range convs {
+		if c.State != StateAwaitingSetup || c.Pending == nil {
+			continue
+		}
+		res, claimed, err := r.claimAndPost(ctx, ids[i].Channel, ids[i], StateAwaitingSetup)
+		if err != nil {
+			log.Printf("[channel] finish setup identity=%s: %v", ids[i].ID, err)
+		}
+		if !claimed {
+			continue
+		}
+		last = res
+		if res.Outcome == PostBooked {
+			booked++
+		}
+	}
+	return booked, last, nil
+}
+
+// PendingFor returns the draft a linked user is about to book, for the page.
+func (r *Router) PendingFor(ctx context.Context, identityID string) *PendingDraft {
+	c, err := r.Conversations.GetConversation(ctx, identityID)
+	if err != nil || c.Pending == nil {
+		return nil
+	}
+	return c.Pending
 }
 
 // Reply answers an inbound message on its own channel.
-func (r *SetupRouter) Reply(ctx context.Context, in Inbound, text, taskID string) error {
+func (r *Router) Reply(ctx context.Context, in Inbound, text, taskID string) error {
 	return r.Send(ctx, Outbound{Channel: in.Channel, To: in.From, Text: text}, taskID)
 }
 
 // Send delivers one message and records it. A send failure is returned so the
 // inbound row stays unprocessed for the recovery sweep.
-func (r *SetupRouter) Send(ctx context.Context, out Outbound, taskID string) error {
+func (r *Router) Send(ctx context.Context, out Outbound, taskID string) error {
 	a, ok := r.Adapters[out.Channel]
 	if !ok {
 		return fmt.Errorf("send: no adapter for channel %q", out.Channel)
@@ -107,29 +384,16 @@ func (r *SetupRouter) Send(ctx context.Context, out Outbound, taskID string) err
 	return nil
 }
 
-// ── Copy ───────────────────────────────────────────────────────────────────
-//
-// Plain, short, no emoji walls. Before a person has replied, Sendblue allows
-// at most 300 characters and no links; every message here answers a message
-// the person sent first, so links are fine — but stay well under 300 anyway.
-
-const (
-	CopySetupLink = "Hi, this is HO:RA. Real people in NYC who run your errands, from groceries to laundry.\n\n" +
-		"Set up once (about a minute): %s\n\nThe link works for 30 minutes."
-	CopySetupAlreadySent = "I just sent you a setup link. Open it to finish (it works for 30 minutes). Lost it? Text me again in a couple of minutes for a new one."
-	CopyLinkedAck        = "Got it. Posting tasks by text is almost ready here. For now you're all set up."
-	CopySetupDone        = "You're all set%s. Text me what you need and when, for example: \"pick up my laundry at 3pm, 12 Bedford Ave\"."
-)
-
-// SetupDoneText is the welcome after setup, with the person's first name when
-// we have one.
-func SetupDoneText(name string) string {
-	first := strings.TrimSpace(name)
-	if i := strings.IndexByte(first, ' '); i > 0 {
-		first = first[:i]
+func (r *Router) loc() *time.Location {
+	if r.Location != nil {
+		return r.Location
 	}
-	if first != "" {
-		first = ", " + first
+	return time.UTC
+}
+
+func firstNonEmpty(a, b string) string {
+	if strings.TrimSpace(a) != "" {
+		return a
 	}
-	return fmt.Sprintf(CopySetupDone, first)
+	return b
 }

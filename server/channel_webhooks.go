@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"hora-auth/internal/channel"
+	"hora-auth/internal/channel/llm"
 )
 
 // RegisterChannelWebhooks mounts the messaging entry point (PLAN.md):
@@ -18,13 +19,13 @@ import (
 //	POST /webhooks/channel/sendblue   iMessage via Sendblue
 //	POST /webhooks/channel/whatsapp   WhatsApp Cloud API
 //	GET  /webhooks/channel/whatsapp   Meta subscribe handshake
-//	GET  /channel/setup …             one-page setup (channel_setup.go)
+//	GET  /channel/setup …             the one page a first-time booker visits
 //
 // Nothing is mounted unless CHANNEL_WEBHOOKS_ENABLED=1, so this file is inert
 // in production until it is switched on deliberately. Auth (S-13): webhooks
 // are provider-to-server routes with no user session; each one is
 // authenticated by its adapter's VerifyRequest (shared secret / HMAC) before
-// anything is read. The setup link route is behind dualAuth.
+// anything is read. The setup link/finish routes are behind dualAuth.
 //
 // The paths are new on purpose. The legacy stub at /webhooks/whatsapp
 // (whatsapp_webhook.go) stays untouched during the App Store review freeze and
@@ -36,15 +37,24 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 	store := &channel.PGStore{DB: sqlDB}
 	sb := channel.SendblueFromEnv()
 	wa := channel.WhatsAppFromEnv()
+	model := chatModelFromEnv()
 
 	base := setupBaseURL()
 	if base == "" {
 		log.Printf("[channel] WARNING: no CHANNEL_SETUP_BASE_URL or RENDER_EXTERNAL_URL — setup links cannot be built")
 	}
-	router := &channel.SetupRouter{
-		Messages:   store,
-		Identities: store,
-		Adapters:   map[channel.Channel]channel.Adapter{channel.IMessage: sb, channel.WhatsApp: wa},
+	router := &channel.Router{
+		Messages:      store,
+		Identities:    store,
+		Conversations: store,
+		Adapters:      map[channel.Channel]channel.Adapter{channel.IMessage: sb, channel.WhatsApp: wa},
+		Parser:        model,
+		Classifier:    model,
+		Booker:        &chatBooker{sqlDB: sqlDB},
+		// The same extraction prompt as the app's AI posting
+		// (ai_task_parser.go), read-only — that file is frozen for review.
+		Prompt:   aiTaskParserSystemPrompt,
+		Location: nycLocation,
 		SetupURL: func(token string) string {
 			return base + "/channel/setup?t=" + url.QueryEscape(token)
 		},
@@ -64,7 +74,32 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		c.String(http.StatusOK, challenge)
 	})
 	registerChannelSetupRoutes(r, sqlDB, store, router)
-	log.Printf("[channel] webhooks enabled: sendblue, whatsapp; setup base=%s", base)
+	log.Printf("[channel] webhooks enabled: sendblue, whatsapp; model=%s; setup base=%s", model.Model, base)
+}
+
+// chatModelFromEnv is the language model behind the chat (PLAN §9: chosen by
+// the eval, swapped by configuration).
+//
+//	LLM_BASE_URL   default https://inference.baseten.co/v1
+//	LLM_MODEL      default zai-org/GLM-5.3-Flash
+//	LLM_API_KEY    falls back to BASETEN_API_KEY
+//	LLM_DISABLE_THINKING=1  sends chat_template_kwargs.enable_thinking=false
+func chatModelFromEnv() *llm.OpenAICompat {
+	get := func(k, def string) string {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			return v
+		}
+		return def
+	}
+	m := &llm.OpenAICompat{
+		BaseURL: get("LLM_BASE_URL", "https://inference.baseten.co/v1"),
+		Model:   get("LLM_MODEL", "zai-org/GLM-5.3-Flash"),
+		APIKey:  get("LLM_API_KEY", strings.TrimSpace(os.Getenv("BASETEN_API_KEY"))),
+	}
+	if os.Getenv("LLM_DISABLE_THINKING") == "1" {
+		m.ExtraBody = map[string]any{"chat_template_kwargs": map[string]any{"enable_thinking": false}}
+	}
+	return m
 }
 
 // setupBaseURL is the public origin of this backend, where the setup page is

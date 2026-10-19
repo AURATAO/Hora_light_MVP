@@ -9,9 +9,9 @@ import (
 	"time"
 )
 
-// Router decides what an inbound message means and acts on it (PLAN §6).
-// M0 ships LogRouter only; the real router lands in M1–M3.
-type Router interface {
+// InboundRouter decides what an inbound message means and acts on it
+// (PLAN §6). *Router is the real one; LogRouter only records arrival.
+type InboundRouter interface {
 	HandleInbound(ctx context.Context, in Inbound) error
 }
 
@@ -41,7 +41,7 @@ const maxWebhookBody = 1 << 20 // 1 MiB; both providers send a few KB
 type WebhookHandler struct {
 	Adapter Adapter
 	Store   Store
-	Router  Router
+	Router  InboundRouter
 	// RouteTimeout bounds one message's routing. Default 60s.
 	RouteTimeout time.Duration
 	// async runs routing; tests replace it to run inline.

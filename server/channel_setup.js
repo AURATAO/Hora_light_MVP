@@ -1,8 +1,10 @@
-// HO:RA one-page setup (server/channel_setup.go). Plain JS, no build step.
+// HO:RA one-time booking page (server/channel_setup.go). Plain JS, no build.
 //
-// Flow: check link → email → code (Supabase OTP) → name + terms (PATCH /profile)
-// → link number (POST /channel/setup/link) → card (SetupIntent + Stripe.js,
-// skipped when payments are unavailable) → done.
+// The person arrives here after replying YES to a priced task in Messages.
+// Name and Terms were handled in the chat. Flow: check link → email → code
+// (Supabase OTP) → link number (POST /channel/setup/link) → card (SetupIntent
+// + Stripe.js, skipped when payments are unavailable) → book
+// (POST /channel/setup/finish) → done. Messages gets the confirmation.
 //
 // Every backend call carries the Supabase access token as a Bearer token;
 // dualAuth maps it to the internal user (S-04/S-11). No session cookie needed.
@@ -10,12 +12,12 @@
   "use strict";
 
   var $ = function (id) { return document.getElementById(id); };
-  var views = ["v-loading", "v-expired", "v-email", "v-code", "v-profile", "v-card", "v-done"];
+  var views = ["v-loading", "v-expired", "v-email", "v-code", "v-card", "v-done"];
   var state = { token: "", email: "", accessToken: "", cfg: null, sb: null, stripe: null, card: null, clientSecret: "" };
 
   function show(view, step) {
     views.forEach(function (v) { $(v).hidden = v !== view; });
-    for (var i = 1; i <= 4; i++) $("s" + i).className = step && i <= step ? "on" : "";
+    for (var i = 1; i <= 3; i++) $("s" + i).className = step && i <= step ? "on" : "";
     clearError();
     var first = $(view).querySelector("input");
     if (first) setTimeout(function () { first.focus(); }, 50);
@@ -69,7 +71,7 @@
       if (!chk.ok) { show("v-expired"); return; }
       if (!cfg.ok || !cfg.data.supabase_url || !cfg.data.supabase_publishable_key || !window.supabase) {
         show("v-email", 1);
-        showError("Setup is temporarily unavailable. Please try again in a few minutes.");
+        showError("Booking is temporarily unavailable. Please try again in a few minutes.");
         $("b-email").disabled = true;
         return;
       }
@@ -78,8 +80,11 @@
         auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
       });
       $("phone-hint").textContent = chk.data.phone_hint || "your phone";
-      $("terms-link").href = cfg.data.terms_url;
-      $("privacy-link").href = cfg.data.privacy_url;
+      if (chk.data.booking) {
+        $("booking-title").textContent = chk.data.booking.title;
+        $("booking-estimate").textContent = "Estimate " + chk.data.booking.estimate + " · you pay for the time actually used";
+        $("booking").hidden = false;
+      }
       show("v-email", 1);
     }).catch(function () {
       show("v-email", 1);
@@ -103,7 +108,7 @@
     });
   });
 
-  // ── 3. Code ────────────────────────────────────────────────────────────
+  // ── 3. Code → link the number ──────────────────────────────────────────
   $("f-code").addEventListener("submit", function (ev) {
     ev.preventDefault();
     var code = $("code").value.replace(/\D/g, "");
@@ -117,32 +122,11 @@
         return;
       }
       state.accessToken = res.data.session.access_token;
-      // GET creates the profile row if it doesn't exist yet; prefill the name.
-      return api("/profile").then(function (p) {
-        busy(btn, false);
-        if (!p.ok) { showError("We couldn't load your account. Please try again."); return; }
-        if (p.data && p.data.name) $("name").value = p.data.name;
-        show("v-profile", 3);
-      });
-    });
-  });
-  $("b-back").addEventListener("click", function () { $("code").value = ""; show("v-email", 1); });
-
-  // ── 4. Name + terms → link the number ──────────────────────────────────
-  $("f-profile").addEventListener("submit", function (ev) {
-    ev.preventDefault();
-    var name = $("name").value.trim();
-    if (!name) { showError("Enter your name."); return; }
-    if (!$("terms").checked) { showError("Please agree to the Terms and Privacy Policy to continue."); return; }
-    clearError();
-    var btn = $("b-profile"); busy(btn, true, "Saving…");
-    api("/profile", { method: "PATCH", body: { name: name, terms_accepted: true } }).then(function (p) {
-      if (!p.ok) { busy(btn, false); showError("We couldn't save your name. Please try again."); return; }
       return api("/channel/setup/link", { method: "POST", body: { token: state.token } }).then(function (l) {
         busy(btn, false);
         if (l.status === 410) { show("v-expired"); return; }
         if (l.status === 409) {
-          showError("This phone number is already connected to a different HO:RA account. Sign in with that account's email, or contact info@my-hora.com.");
+          showError("This phone number is already connected to a different HO:RA account. Use that account's email, or contact info@my-hora.com.");
           return;
         }
         if (!l.ok) { showError("We couldn't connect your number. Please try again."); return; }
@@ -151,28 +135,28 @@
       });
     });
   });
+  $("b-back").addEventListener("click", function () { $("code").value = ""; show("v-email", 1); });
 
-  // ── 5. Card ────────────────────────────────────────────────────────────
+  // ── 4. Card ────────────────────────────────────────────────────────────
   function startCard() {
     api("/payments/setup-intent", { method: "POST" }).then(function (r) {
       if (!r.ok || !r.data.client_secret || !r.data.publishable_key) {
-        // 503 = payments not configured here. Linking is done; the card is
-        // asked for again before the first task is posted.
-        finish("You can add a card when you post your first task.");
+        // 503 = payments not configured here (staging). Book straight away;
+        // if the server then needs a card, finish() reports it.
+        book();
         return;
       }
       state.clientSecret = r.data.client_secret;
       loadStripe(function (ok) {
-        if (!ok) { finish("You can add a card when you post your first task."); return; }
+        if (!ok) { showError("We couldn't load the card form. Check your connection and reload."); return; }
         state.stripe = window.Stripe(r.data.publishable_key);
         state.card = state.stripe.elements().create("card", {
-          hidePostalCode: false,
           style: { base: { fontSize: "16px", color: "#222831", fontFamily: "Inter, system-ui, sans-serif" } },
         });
         state.card.mount("#card-element");
-        show("v-card", 4);
+        show("v-card", 3);
       });
-    }).catch(function () { finish("You can add a card when you post your first task."); });
+    }).catch(function () { book(); });
   }
 
   function loadStripe(cb) {
@@ -189,18 +173,41 @@
     clearError();
     var btn = $("b-card"); busy(btn, true, "Saving…");
     state.stripe.confirmCardSetup(state.clientSecret, {
-      payment_method: { card: state.card, billing_details: { name: $("name").value.trim(), email: state.email } },
+      payment_method: { card: state.card, billing_details: { email: state.email } },
     }).then(function (res) {
-      busy(btn, false);
-      if (res.error) { showError(res.error.message || "Your card couldn't be saved. Try another card."); return; }
-      finish("");
+      if (res.error) { busy(btn, false); showError(res.error.message || "Your card couldn't be saved. Try another card."); return; }
+      book(btn);
     });
   });
-  $("b-skip").addEventListener("click", function () { finish("You can add a card when you post your first task."); });
+  $("b-skip").addEventListener("click", function () { book(); });
 
-  function finish(note) {
+  // ── 5. Book ────────────────────────────────────────────────────────────
+  function book(btn) {
+    if (btn) busy(btn, true, "Booking…");
+    api("/channel/setup/finish", { method: "POST" }).then(function (r) {
+      if (btn) busy(btn, false);
+      var outcome = (r.data && r.data.outcome) || "";
+      if (outcome === "booked") {
+        done("Booked", "Go back to Messages. We'll text you when a supporter accepts.", "");
+      } else if (outcome === "needs_card") {
+        done("Almost there", "We need a card to book. Check Messages for a link to add one.", "");
+      } else if (outcome === "declined" || outcome === "outstanding_balance" || outcome === "needs_authentication") {
+        done("Almost there", "We couldn't place the booking yet. Check Messages for what to do next.", "");
+      } else {
+        done("You're all set", "Go back to Messages and tell HO:RA what you need.", "");
+      }
+    }).catch(function () {
+      if (btn) busy(btn, false);
+      showError("We couldn't finish booking. Please try again.");
+    });
+  }
+
+  function done(title, lead, note) {
+    $("done-title").textContent = title;
+    $("done-lead").textContent = lead;
     if (note) { $("done-note").textContent = note; $("done-note").hidden = false; }
-    show("v-done", 4);
+    $("done-mark").textContent = title === "Booked" ? "✓" : "→";
+    show("v-done", 3);
   }
 
   function otpMessage(err) {

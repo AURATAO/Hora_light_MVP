@@ -185,3 +185,82 @@ func TestPGConcurrentLinkOnlyOneWins(t *testing.T) {
 		t.Fatalf("%d concurrent requests used the same link", wins)
 	}
 }
+
+func TestPGConversationRoundTripAndClaim(t *testing.T) {
+	db := testDB(t)
+	s := &PGStore{DB: db}
+	ctx := context.Background()
+	a, _ := s.UpsertIdentity(ctx, IMessage, "+15552223333")
+
+	// Fresh identity reads as idle with nothing pending.
+	c, err := s.GetConversation(ctx, a.ID)
+	if err != nil || c.State != StateIdle || c.Pending != nil {
+		t.Fatalf("fresh: %+v %v", c, err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	c.State = StateAwaitingConfirm
+	c.PendingName = "Aura"
+	c.TermsAcceptedAt = &now
+	c.Pending = &PendingDraft{Source: "laundry", QuoteCents: 1200, QuoteMinutes: 30}
+	c.Pending.Draft.Title = "Laundry pickup"
+	if err := s.SaveConversation(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.GetConversation(ctx, a.ID)
+	if got.State != StateAwaitingConfirm || got.PendingName != "Aura" || got.Pending == nil ||
+		got.Pending.Draft.Title != "Laundry pickup" || got.Pending.QuoteCents != 1200 || got.TermsAcceptedAt == nil {
+		t.Fatalf("round trip: %+v", got)
+	}
+
+	// Consent is never cleared by a later save.
+	got.TermsAcceptedAt = nil
+	_ = s.SaveConversation(ctx, got)
+	again, _ := s.GetConversation(ctx, a.ID)
+	if again.TermsAcceptedAt == nil {
+		t.Fatal("terms_accepted_at was cleared")
+	}
+
+	// Eight racers, one claim.
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	wins := 0
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if p, ok, err := s.ClaimForPosting(ctx, a.ID, StateAwaitingConfirm); err == nil && ok && p.Draft.Title == "Laundry pickup" {
+				mu.Lock()
+				wins++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if wins != 1 {
+		t.Fatalf("%d claims won", wins)
+	}
+	if c2, _ := s.GetConversation(ctx, a.ID); c2.State != StatePosting {
+		t.Fatalf("state after claim: %s", c2.State)
+	}
+	// A fresh claim is not stealable; a stale one (crash mid-post) is.
+	if _, ok, _ := s.ClaimForPosting(ctx, a.ID, StateAwaitingConfirm); ok {
+		t.Fatal("claimed a conversation that is mid-post")
+	}
+	_, _ = db.Exec(`UPDATE channel_conversations SET updated_at = now() - interval '4 minutes' WHERE identity_id=$1`, a.ID)
+	if _, ok, _ := s.ClaimForPosting(ctx, a.ID, StateAwaitingConfirm); !ok {
+		t.Fatal("a stale claim should be recoverable")
+	}
+
+	// ConversationsForUser finds it once linked.
+	user := newUser(t, db)
+	_, hash, _ := NewSetupToken()
+	_ = s.CreateSetupToken(ctx, a.ID, hash, time.Now().Add(SetupTokenTTL))
+	if _, err := s.ConsumeSetupTokenAndLink(ctx, hash, user); err != nil {
+		t.Fatal(err)
+	}
+	convs, ids, err := s.ConversationsForUser(ctx, user)
+	if err != nil || len(convs) != 1 || ids[0].ID != a.ID || convs[0].Pending == nil {
+		t.Fatalf("for user: %d %v %v", len(convs), ids, err)
+	}
+}

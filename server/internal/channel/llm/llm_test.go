@@ -83,3 +83,22 @@ func TestOpenAICompatUnconfigured(t *testing.T) {
 		t.Fatal("unconfigured provider must error")
 	}
 }
+
+func TestClassifyAndFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"intent\":\"greeting\"}"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+	p := &OpenAICompat{BaseURL: srv.URL, APIKey: "k", Model: "m"}
+	if got, err := p.Classify(context.Background(), "hey"); err != nil || got != IntentGreeting {
+		t.Fatalf("%v %v", got, err)
+	}
+	// Model unavailable → local rule, and the error is still reported.
+	down := &OpenAICompat{}
+	if got, err := down.Classify(context.Background(), "hi!"); err == nil || got != IntentGreeting {
+		t.Fatalf("fallback greeting: %v %v", got, err)
+	}
+	if got, _ := down.Classify(context.Background(), "need my dry cleaning picked up"); got != IntentNewTask {
+		t.Fatalf("fallback request: %v", got)
+	}
+}

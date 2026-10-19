@@ -4,18 +4,21 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"hora-auth/internal/channel/llm"
 )
 
 // ── fakes ──────────────────────────────────────────────────────────────────
 
 type memIdentities struct {
-	ids       map[string]Identity // key channel|address
-	tokens    []memToken
-	attached  map[string]string
-	touched   map[string]time.Time
-	failUpser error
+	mu       sync.Mutex
+	ids      map[string]Identity // key channel|address
+	tokens   []memToken
+	attached map[string]string
+	touched  map[string]time.Time
 }
 
 type memToken struct {
@@ -29,9 +32,8 @@ func newMemIdentities() *memIdentities {
 }
 
 func (m *memIdentities) UpsertIdentity(_ context.Context, ch Channel, addr string) (Identity, error) {
-	if m.failUpser != nil {
-		return Identity{}, m.failUpser
-	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	k := string(ch) + "|" + addr
 	if id, ok := m.ids[k]; ok {
 		return id, nil
@@ -40,15 +42,32 @@ func (m *memIdentities) UpsertIdentity(_ context.Context, ch Channel, addr strin
 	m.ids[k] = id
 	return id, nil
 }
+func (m *memIdentities) link(addr, user string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := "imessage|" + addr
+	id := m.ids[k]
+	if id.ID == "" {
+		id = Identity{ID: "id-" + addr, Channel: IMessage, Address: addr}
+	}
+	id.UserID = user
+	m.ids[k] = id
+}
 func (m *memIdentities) AttachMessage(_ context.Context, _ Channel, pid, iid string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.attached[pid] = iid
 	return nil
 }
 func (m *memIdentities) TouchConversation(_ context.Context, iid string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.touched[iid] = at
 	return nil
 }
 func (m *memIdentities) SetupTokenIssuedSince(_ context.Context, iid string, since time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	for _, t := range m.tokens {
 		if t.identityID == iid && t.created.After(since) && !t.used {
 			return true, nil
@@ -57,6 +76,8 @@ func (m *memIdentities) SetupTokenIssuedSince(_ context.Context, iid string, sin
 	return false, nil
 }
 func (m *memIdentities) CreateSetupToken(_ context.Context, iid, hash string, exp time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.tokens = append(m.tokens, memToken{identityID: iid, hash: hash, created: time.Now(), expires: exp})
 	return nil
 }
@@ -67,136 +88,397 @@ func (m *memIdentities) ConsumeSetupTokenAndLink(context.Context, string, string
 	return Identity{}, ErrTokenInvalid
 }
 
-// fakeSendAdapter records sends and returns sequential provider ids.
+// memConversations mirrors PGStore's semantics, including the atomic claim.
+type memConversations struct {
+	mu    sync.Mutex
+	convs map[string]Conversation
+	ids   *memIdentities
+}
+
+func (m *memConversations) GetConversation(_ context.Context, iid string) (Conversation, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.convs[iid]
+	if !ok {
+		return Conversation{IdentityID: iid, State: StateIdle}, nil
+	}
+	if c.Pending != nil {
+		p := *c.Pending
+		c.Pending = &p
+	}
+	return c, nil
+}
+func (m *memConversations) SaveConversation(_ context.Context, c Conversation) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if old, ok := m.convs[c.IdentityID]; ok && old.TermsAcceptedAt != nil {
+		c.TermsAcceptedAt = old.TermsAcceptedAt // COALESCE, like the SQL
+	}
+	m.convs[c.IdentityID] = c
+	return nil
+}
+func (m *memConversations) ConversationsForUser(_ context.Context, user string) ([]Conversation, []Identity, error) {
+	m.ids.mu.Lock()
+	var ids []Identity
+	for _, id := range m.ids.ids {
+		if id.UserID == user {
+			ids = append(ids, id)
+		}
+	}
+	m.ids.mu.Unlock()
+	var cs []Conversation
+	for _, id := range ids {
+		c, _ := m.GetConversation(context.Background(), id.ID)
+		cs = append(cs, c)
+	}
+	return cs, ids, nil
+}
+func (m *memConversations) ClaimForPosting(_ context.Context, iid string, from State) (*PendingDraft, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.convs[iid]
+	if !ok || c.State != from || c.Pending == nil {
+		return nil, false, nil
+	}
+	c.State = StatePosting
+	m.convs[iid] = c
+	p := *c.Pending
+	return &p, true, nil
+}
+
+type fakeParser struct {
+	draft   llm.TaskDraft
+	err     error
+	sources []string
+}
+
+func (f *fakeParser) ParseTask(_ context.Context, _ string, text string) (llm.TaskDraft, llm.Usage, error) {
+	f.sources = append(f.sources, text)
+	return f.draft, llm.Usage{Model: "fake"}, f.err
+}
+
+type fakeClassifier struct{ intent llm.Intent }
+
+func (f fakeClassifier) Classify(context.Context, string) (llm.Intent, error) { return f.intent, nil }
+
+type fakeBooker struct {
+	mu      sync.Mutex
+	posts   int
+	result  PostResult
+	delay   time.Duration
+	applied []string
+}
+
+func (b *fakeBooker) Quote(context.Context, llm.TaskDraft) (int, int, error) { return 1200, 30, nil }
+func (b *fakeBooker) Post(context.Context, string, llm.TaskDraft) PostResult {
+	time.Sleep(b.delay)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.posts++
+	return b.result
+}
+func (b *fakeBooker) ApplyChatProfile(_ context.Context, user, name string, _ *time.Time) error {
+	b.applied = append(b.applied, user+":"+name)
+	return nil
+}
+
+// fakeSendAdapter records sends.
 type fakeSendAdapter struct {
 	fakeAdapter
+	mu   sync.Mutex
 	sent []Outbound
 	err  error
 }
 
 func (a *fakeSendAdapter) Send(_ context.Context, o Outbound) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.err != nil {
 		return "", a.err
 	}
 	a.sent = append(a.sent, o)
 	return "out-" + string(rune('a'+len(a.sent))), nil
 }
+func (a *fakeSendAdapter) last() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.sent) == 0 {
+		return ""
+	}
+	return a.sent[len(a.sent)-1].Text
+}
 
-// ── tests ──────────────────────────────────────────────────────────────────
+type rig struct {
+	r      *Router
+	ids    *memIdentities
+	convs  *memConversations
+	ad     *fakeSendAdapter
+	st     *fakeStore
+	parser *fakeParser
+	booker *fakeBooker
+}
 
-func newTestRouter() (*SetupRouter, *memIdentities, *fakeSendAdapter, *fakeStore) {
+var laundry = llm.TaskDraft{Title: "Laundry pickup", Category: "laundry", Location1: "12 Bedford Ave", DurationMinutes: 30}
+
+func newRig(intent llm.Intent) *rig {
 	ids := newMemIdentities()
+	convs := &memConversations{convs: map[string]Conversation{}, ids: ids}
 	ad := &fakeSendAdapter{}
 	st := &fakeStore{}
-	r := &SetupRouter{
-		Messages:   st,
-		Identities: ids,
+	p := &fakeParser{draft: laundry}
+	b := &fakeBooker{result: PostResult{Outcome: PostBooked, TaskID: "task-1"}}
+	nyc, _ := time.LoadLocation("America/New_York")
+	r := &Router{
+		Messages: st, Identities: ids, Conversations: convs,
 		Adapters:   map[Channel]Adapter{IMessage: ad},
+		Parser:     p,
+		Classifier: fakeClassifier{intent: intent},
+		Booker:     b,
+		Prompt:     func(time.Time) string { return "prompt" },
 		SetupURL:   func(t string) string { return "https://example.test/channel/setup?t=" + t },
+		Location:   nyc,
 	}
-	return r, ids, ad, st
+	return &rig{r: r, ids: ids, convs: convs, ad: ad, st: st, parser: p, booker: b}
 }
 
-func inbound(id string) Inbound {
-	return Inbound{Channel: IMessage, ProviderMessageID: id, From: "+15551234567", Text: "hi", ReceivedAt: time.Now()}
+const me = "+15551234567"
+
+func (g *rig) say(t *testing.T, text string) string {
+	t.Helper()
+	in := Inbound{Channel: IMessage, ProviderMessageID: text + time.Now().String(), From: me, Text: text, ReceivedAt: time.Now()}
+	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+		t.Fatalf("say %q: %v", text, err)
+	}
+	return g.ad.last()
 }
 
-func TestRouterUnknownNumberGetsOneSetupLink(t *testing.T) {
-	r, ids, ad, _ := newTestRouter()
-	if err := r.HandleInbound(context.Background(), inbound("m1")); err != nil {
-		t.Fatal(err)
-	}
-	if len(ad.sent) != 1 || !strings.Contains(ad.sent[0].Text, "https://example.test/channel/setup?t=") {
-		t.Fatalf("expected one setup link, got %+v", ad.sent)
-	}
-	if ad.sent[0].To != "+15551234567" || ad.sent[0].Channel != IMessage {
-		t.Fatalf("reply went to the wrong place: %+v", ad.sent[0])
-	}
-	if len(ids.tokens) != 1 {
-		t.Fatalf("tokens stored: %d", len(ids.tokens))
-	}
-	// The raw token in the link must hash to what was stored, and the raw
-	// token itself must never be stored.
-	raw := ad.sent[0].Text[strings.Index(ad.sent[0].Text, "?t=")+3:]
-	raw = strings.Fields(raw)[0]
-	if HashSetupToken(raw) != ids.tokens[0].hash || ids.tokens[0].hash == raw {
-		t.Fatal("stored hash does not match the link token, or the raw token was stored")
-	}
-	if ids.attached["m1"] == "" || ids.touched["id-+15551234567"].IsZero() {
-		t.Fatal("message not attached to identity or conversation not touched")
-	}
+func (g *rig) state() State {
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	return c.State
+}
 
-	// Texting again right away does not mint a second link.
-	if err := r.HandleInbound(context.Background(), inbound("m2")); err != nil {
-		t.Fatal(err)
+// ── flow ───────────────────────────────────────────────────────────────────
+
+func TestGreetingGetsHelpNotALink(t *testing.T) {
+	g := newRig(llm.IntentGreeting)
+	if got := g.say(t, "hi"); got != CopyWelcome {
+		t.Fatalf("reply %q", got)
 	}
-	if len(ids.tokens) != 1 || len(ad.sent) != 2 || ad.sent[1].Text != CopySetupAlreadySent {
-		t.Fatalf("second message: tokens=%d sent=%+v", len(ids.tokens), ad.sent)
+	if len(g.ids.tokens) != 0 {
+		t.Fatal("a greeting must never produce a setup link")
 	}
 }
 
-func TestRouterNewLinkAfterResendWindow(t *testing.T) {
-	r, ids, _, _ := newTestRouter()
-	clock := time.Now()
-	r.Now = func() time.Time { return clock }
-	_ = r.HandleInbound(context.Background(), inbound("m1"))
-	ids.tokens[0].created = clock.Add(-3 * time.Minute) // first link is old now
-	_ = r.HandleInbound(context.Background(), inbound("m2"))
-	if len(ids.tokens) != 2 {
-		t.Fatalf("expected a fresh link after %v, tokens=%d", resendAfter, len(ids.tokens))
+func TestFirstTimerFullFlow(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+
+	// Request → asks the name, no link yet.
+	if got := g.say(t, "pick up my laundry at 12 Bedford Ave"); !strings.Contains(got, "Laundry pickup") || !strings.Contains(got, "first name") {
+		t.Fatalf("expected name question, got %q", got)
+	}
+	if g.state() != StateAwaitingName || len(g.ids.tokens) != 0 {
+		t.Fatalf("state %s tokens %d", g.state(), len(g.ids.tokens))
+	}
+
+	// Name → priced summary with terms.
+	got := g.say(t, "I'm Aura")
+	for _, want := range []string{"Laundry pickup", "Estimate: $12", "Reply YES", "Terms: " + TermsURL, "12 Bedford Ave"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("summary missing %q:\n%s", want, got)
+		}
+	}
+	if g.state() != StateAwaitingConfirm {
+		t.Fatalf("state %s", g.state())
+	}
+
+	// YES → the one link; consent recorded; nothing posted yet.
+	got = g.say(t, "YES")
+	if !strings.Contains(got, "https://example.test/channel/setup?t=") || len(g.ids.tokens) != 1 {
+		t.Fatalf("expected one setup link, got %q (tokens %d)", got, len(g.ids.tokens))
+	}
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.State != StateAwaitingSetup || c.TermsAcceptedAt == nil || c.PendingName != "Aura" || c.Pending == nil {
+		t.Fatalf("conversation after YES: %+v", c)
+	}
+	if g.booker.posts != 0 {
+		t.Fatal("posted before the person had an account")
+	}
+
+	// Texting again right away: no second link.
+	if got := g.say(t, "hello?"); got != CopySetupAlreadySent || len(g.ids.tokens) != 1 {
+		t.Fatalf("got %q tokens %d", got, len(g.ids.tokens))
+	}
+
+	// Page finishes → booked once, confirmation in the chat.
+	g.ids.link(me, "user-1")
+	booked, _, err := g.r.FinishSetup(context.Background(), "user-1")
+	if err != nil || booked != 1 || g.booker.posts != 1 || g.ad.last() != CopyBooked || g.state() != StateIdle {
+		t.Fatalf("finish: booked=%d posts=%d last=%q state=%s err=%v", booked, g.booker.posts, g.ad.last(), g.state(), err)
+	}
+	// A second tap on the page books nothing more.
+	booked, _, _ = g.r.FinishSetup(context.Background(), "user-1")
+	if booked != 0 || g.booker.posts != 1 {
+		t.Fatalf("second finish posted again: booked=%d posts=%d", booked, g.booker.posts)
 	}
 }
 
-func TestRouterLinkedNumberIsAcknowledged(t *testing.T) {
-	r, ids, ad, _ := newTestRouter()
-	ids.ids["imessage|+15551234567"] = Identity{ID: "id-1", Channel: IMessage, Address: "+15551234567", UserID: "user-1"}
-	if err := r.HandleInbound(context.Background(), inbound("m1")); err != nil {
-		t.Fatal(err)
+func TestLinkedCustomerBooksInChat(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	if got := g.say(t, "laundry pickup"); !strings.Contains(got, "Reply YES") {
+		t.Fatalf("returning customer should go straight to the summary, got %q", got)
 	}
-	if len(ids.tokens) != 0 {
-		t.Fatal("a linked number must not get a setup link")
+	if got := g.say(t, "yes"); got != CopyBooked {
+		t.Fatalf("got %q", got)
 	}
-	if len(ad.sent) != 1 || ad.sent[0].Text != CopyLinkedAck {
-		t.Fatalf("sent %+v", ad.sent)
-	}
-}
-
-func TestRouterLinkedHookTakesOver(t *testing.T) {
-	r, ids, ad, _ := newTestRouter()
-	ids.ids["imessage|+15551234567"] = Identity{ID: "id-1", Channel: IMessage, Address: "+15551234567", UserID: "user-1"}
-	var got Identity
-	r.Linked = func(_ context.Context, _ Inbound, id Identity) error { got = id; return nil }
-	_ = r.HandleInbound(context.Background(), inbound("m1"))
-	if got.UserID != "user-1" || len(ad.sent) != 0 {
-		t.Fatalf("hook not used: got=%+v sent=%d", got, len(ad.sent))
+	if g.booker.posts != 1 || len(g.ids.tokens) != 0 || g.state() != StateIdle {
+		t.Fatalf("posts=%d tokens=%d state=%s", g.booker.posts, len(g.ids.tokens), g.state())
 	}
 }
 
-func TestRouterSendFailureIsReturned(t *testing.T) {
-	r, _, ad, st := newTestRouter()
-	ad.err = errors.New("sendblue 400")
-	if err := r.HandleInbound(context.Background(), inbound("m1")); err == nil {
-		t.Fatal("send failure must surface so the message stays unprocessed")
+func TestParallelYesBooksOnce(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.say(t, "laundry pickup")
+	g.booker.delay = 50 * time.Millisecond // the first YES is still posting
+
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			in := Inbound{Channel: IMessage, ProviderMessageID: "yes-" + string(rune('a'+i)), From: me, Text: "YES", ReceivedAt: time.Now()}
+			_ = g.r.HandleInbound(context.Background(), in)
+		}(i)
 	}
-	if st.outbound != 0 {
+	wg.Wait()
+	if g.booker.posts != 1 {
+		t.Fatalf("%d parallel YESes posted %d times", 5, g.booker.posts)
+	}
+}
+
+func TestNoDropsTheDraft(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.say(t, "laundry pickup")
+	if got := g.say(t, "cancel"); got != CopyDropped || g.state() != StateIdle {
+		t.Fatalf("got %q state %s", got, g.state())
+	}
+	if g.booker.posts != 0 {
+		t.Fatal("cancel posted a task")
+	}
+}
+
+func TestCorrectionRedraftsWithContext(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.say(t, "laundry pickup at 3pm")
+	g.say(t, "actually make it 4pm")
+	last := g.parser.sources[len(g.parser.sources)-1]
+	if !strings.Contains(last, "laundry pickup at 3pm") || !strings.Contains(last, "make it 4pm") {
+		t.Fatalf("re-draft lost context: %q", last)
+	}
+	if g.state() != StateAwaitingConfirm || g.booker.posts != 0 {
+		t.Fatal("a correction must re-ask, never book")
+	}
+}
+
+func TestNeedsCardSendsLink(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.booker.result = PostResult{Outcome: PostNeedsCard}
+	g.say(t, "laundry pickup")
+	got := g.say(t, "yes")
+	if !strings.Contains(got, "add a card") || g.state() != StateAwaitingSetup || len(g.ids.tokens) != 1 {
+		t.Fatalf("got %q state %s", got, g.state())
+	}
+}
+
+func TestDeclineKeepsDraftForRetry(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.booker.result = PostResult{Outcome: PostDeclined, Message: "Your card was declined."}
+	g.say(t, "laundry pickup")
+	got := g.say(t, "yes")
+	if !strings.Contains(got, "Your card was declined.") || g.state() != StateAwaitingConfirm {
+		t.Fatalf("got %q state %s", got, g.state())
+	}
+}
+
+func TestParseFailureAsksAgain(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.parser.err = errors.New("model down")
+	if got := g.say(t, "blah"); got != CopyParseFailed || g.state() != StateIdle {
+		t.Fatalf("got %q state %s", got, g.state())
+	}
+}
+
+func TestSendFailureIsReturned(t *testing.T) {
+	g := newRig(llm.IntentGreeting)
+	g.ad.err = errors.New("sendblue 400")
+	in := Inbound{Channel: IMessage, ProviderMessageID: "m1", From: me, Text: "hi", ReceivedAt: time.Now()}
+	if err := g.r.HandleInbound(context.Background(), in); err == nil {
+		t.Fatal("a failed send must surface so the message stays unprocessed")
+	}
+	if g.st.outbound != 0 {
 		t.Fatal("a failed send was recorded as outbound")
 	}
 }
 
-func TestRouterRecordsOutbound(t *testing.T) {
-	r, _, _, st := newTestRouter()
-	_ = r.HandleInbound(context.Background(), inbound("m1"))
-	if st.outbound != 1 {
-		t.Fatalf("outbound recorded %d times", st.outbound)
+// ── deterministic matchers ─────────────────────────────────────────────────
+
+func TestYesNoAreStrict(t *testing.T) {
+	for _, s := range []string{"yes", "YES", "Yes!", "y", "ok", "okay", "book it", "👍", "好", "sure"} {
+		if !IsYes(s) {
+			t.Errorf("%q should be yes", s)
+		}
+	}
+	for _, s := range []string{"yes but cheaper", "maybe", "not yet", "yes?? how much", "yesterday", "ok but 4pm"} {
+		if IsYes(s) {
+			t.Errorf("%q must not be read as a yes", s)
+		}
+	}
+	for _, s := range []string{"no", "NO", "cancel", "never mind", "取消"} {
+		if !IsNo(s) {
+			t.Errorf("%q should be no", s)
+		}
 	}
 }
 
-func TestSetupDoneText(t *testing.T) {
-	if got := SetupDoneText("Aura Tao"); !strings.HasPrefix(got, "You're all set, Aura.") {
-		t.Fatalf("%q", got)
+func TestCleanName(t *testing.T) {
+	cases := map[string]string{"Aura": "Aura", "I'm Aura": "Aura", "my name is Aura Tao": "Aura Tao", "aura.": "aura"}
+	for in, want := range cases {
+		if got := CleanName(in); got != want {
+			t.Errorf("CleanName(%q) = %q, want %q", in, got, want)
+		}
 	}
-	if got := SetupDoneText(""); !strings.HasPrefix(got, "You're all set.") {
-		t.Fatalf("%q", got)
+	for _, in := range []string{"pick up my laundry at 3pm please thanks", "555-1234", "https://x.y", ""} {
+		if got := CleanName(in); got != "" {
+			t.Errorf("CleanName(%q) = %q, want empty", in, got)
+		}
+	}
+}
+
+func TestSummaryTimeFormatting(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	nyc := g.r.Location
+	now := time.Date(2026, 10, 20, 10, 0, 0, 0, nyc)
+	g.r.Now = func() time.Time { return now }
+	cases := map[string]string{
+		time.Date(2026, 10, 20, 15, 0, 0, 0, nyc).Format(time.RFC3339): "Today, 3:00 PM",
+		time.Date(2026, 10, 21, 9, 30, 0, 0, nyc).Format(time.RFC3339): "Tomorrow, 9:30 AM",
+		time.Date(2026, 10, 24, 18, 0, 0, 0, nyc).Format(time.RFC3339): "Sat, Oct 24, 6:00 PM",
+	}
+	for rfc, want := range cases {
+		if got := g.r.when(true, rfc); got != want {
+			t.Errorf("when(%s) = %q, want %q", rfc, got, want)
+		}
+	}
+	if got := g.r.when(false, ""); got != "As soon as possible" {
+		t.Errorf("asap: %q", got)
+	}
+	if Dollars(1200) != "$12" || Dollars(1250) != "$12.50" || Dollars(5) != "$0.05" {
+		t.Error("Dollars formatting")
 	}
 }
 
@@ -214,15 +496,10 @@ func TestSetupTokensAreUniqueAndUnguessable(t *testing.T) {
 	}
 }
 
-func TestCopyFitsBeforeReplyLimit(t *testing.T) {
-	// Sendblue caps pre-reply messages at 300 chars. Ours always answer the
-	// person, but keep the setup message under it with a realistic URL.
-	url := "https://hora-staging-messaging.onrender.com/channel/setup?t=" + strings.Repeat("x", 43)
-	for _, s := range []string{fmtSetup(url), CopySetupAlreadySent, CopyLinkedAck, SetupDoneText("Alexandra")} {
+func TestFirstRepliesStayShort(t *testing.T) {
+	for _, s := range []string{CopyWelcome, CopyAbout, CopyParseFailed, CopyAskNameAgain, CopySetupAlreadySent} {
 		if n := len([]rune(s)); n > 300 {
 			t.Errorf("%d chars: %q", n, s)
 		}
 	}
 }
-
-func fmtSetup(url string) string { return strings.Replace(CopySetupLink, "%s", url, 1) }

@@ -120,14 +120,22 @@ CREATE TABLE IF NOT EXISTS public.channel_conversations (
   state                  text NOT NULL DEFAULT 'idle' CHECK (state IN (
                            'idle',
                            'drafting',
+                           'awaiting_name',
                            'awaiting_confirm',
                            'awaiting_setup',
                            'awaiting_approval',
                            'awaiting_task_choice',
                            'handoff'
                          )),
-  -- The task draft awaiting the person's YES (llm.TaskDraft JSON).
+  -- The task draft awaiting the person's YES: the parsed draft, the text it
+  -- came from, and the quote shown (channel.PendingDraft JSON).
   pending_draft          jsonb,
+  -- First name given in the chat before an account exists; written to the
+  -- profile when the number is linked.
+  pending_name           text,
+  -- When the person replied YES to a summary that stated "by booking you
+  -- agree to our Terms". Stamped onto profiles.terms_accepted_at at link.
+  terms_accepted_at      timestamp with time zone,
   -- The budget/time request awaiting the person's YES/NO. Its own expiry
   -- (extension_requests) still decides the default outcome.
   pending_extension_id   uuid REFERENCES public.extension_requests(id),

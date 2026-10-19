@@ -19,10 +19,10 @@ type OpenAICompat struct {
 	BaseURL string // e.g. https://inference.baseten.co/v1
 	APIKey  string // BASETEN_API_KEY
 	Model   string // e.g. zai-org/GLM-5.3-Flash
-	// MaxTokens caps the reply. A draft is ~150 tokens; reasoning models
+	// MaxTokens caps a parse reply. A draft is ~150 tokens; reasoning models
 	// spend more before answering, hence the headroom.
 	MaxTokens int
-	// ExtraBody is merged into the request, for provider switches such as
+	// ExtraBody is merged into every request, for provider switches such as
 	// turning reasoning off ({"chat_template_kwargs":{"enable_thinking":false}})
 	// when the eval shows it costs latency without buying accuracy.
 	ExtraBody map[string]any
@@ -35,28 +35,42 @@ type chatMessage struct {
 }
 
 func (o *OpenAICompat) ParseTask(ctx context.Context, systemPrompt, text string) (TaskDraft, Usage, error) {
-	u := Usage{Model: o.Model}
-	if o.BaseURL == "" || o.APIKey == "" || o.Model == "" {
-		return TaskDraft{}, u, fmt.Errorf("llm parse: provider not configured")
-	}
 	maxTokens := o.MaxTokens
 	if maxTokens == 0 {
 		maxTokens = 2048
 	}
+	out, u, err := o.completeJSON(ctx, systemPrompt, text, "task_draft", TaskDraftSchema(), maxTokens)
+	if err != nil {
+		return TaskDraft{}, u, fmt.Errorf("llm parse: %w", err)
+	}
+	d, err := decodeDraft(out)
+	return d, u, err
+}
+
+// completeJSON runs one schema-constrained completion and returns the raw
+// message content.
+func (o *OpenAICompat) completeJSON(ctx context.Context, system, user, schemaName string, schema map[string]any, maxTokens int) (string, Usage, error) {
+	u := Usage{Model: o.Model}
+	if o.BaseURL == "" || o.APIKey == "" || o.Model == "" {
+		return "", u, fmt.Errorf("provider not configured")
+	}
+	if maxTokens <= 0 {
+		maxTokens = 1024
+	}
 	req := map[string]any{
 		"model": o.Model,
 		"messages": []chatMessage{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: text},
+			{Role: "system", Content: system},
+			{Role: "user", Content: user},
 		},
 		"max_tokens":  maxTokens,
 		"temperature": 0,
 		"response_format": map[string]any{
 			"type": "json_schema",
 			"json_schema": map[string]any{
-				"name":   "task_draft",
+				"name":   schemaName,
 				"strict": true,
-				"schema": TaskDraftSchema(),
+				"schema": schema,
 			},
 		},
 	}
@@ -65,12 +79,12 @@ func (o *OpenAICompat) ParseTask(ctx context.Context, systemPrompt, text string)
 	}
 	body, err := json.Marshal(req)
 	if err != nil {
-		return TaskDraft{}, u, fmt.Errorf("llm parse marshal: %w", err)
+		return "", u, fmt.Errorf("marshal: %w", err)
 	}
 	hr, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		strings.TrimRight(o.BaseURL, "/")+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return TaskDraft{}, u, fmt.Errorf("llm parse request: %w", err)
+		return "", u, fmt.Errorf("request: %w", err)
 	}
 	hr.Header.Set("Content-Type", "application/json")
 	hr.Header.Set("Authorization", "Bearer "+o.APIKey)
@@ -83,7 +97,7 @@ func (o *OpenAICompat) ParseTask(ctx context.Context, systemPrompt, text string)
 	resp, err := client.Do(hr)
 	u.Latency = time.Since(start)
 	if err != nil {
-		return TaskDraft{}, u, fmt.Errorf("llm parse: %w", err)
+		return "", u, err
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -92,7 +106,7 @@ func (o *OpenAICompat) ParseTask(ctx context.Context, systemPrompt, text string)
 		if len(msg) > 300 {
 			msg = msg[:300]
 		}
-		return TaskDraft{}, u, fmt.Errorf("llm parse: status %d: %s", resp.StatusCode, msg)
+		return "", u, fmt.Errorf("status %d: %s", resp.StatusCode, msg)
 	}
 	var r struct {
 		Choices []struct {
@@ -107,15 +121,14 @@ func (o *OpenAICompat) ParseTask(ctx context.Context, systemPrompt, text string)
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(respBody, &r); err != nil {
-		return TaskDraft{}, u, fmt.Errorf("llm parse decode: %w", err)
+		return "", u, fmt.Errorf("decode: %w", err)
 	}
 	u.InputTokens, u.OutputTokens = r.Usage.PromptTokens, r.Usage.CompletionTokens
 	if len(r.Choices) == 0 {
-		return TaskDraft{}, u, fmt.Errorf("llm parse: no choices")
+		return "", u, fmt.Errorf("no choices")
 	}
 	if r.Choices[0].FinishReason == "length" {
-		return TaskDraft{}, u, fmt.Errorf("llm parse: output truncated (max_tokens %d)", maxTokens)
+		return "", u, fmt.Errorf("output truncated (max_tokens %d)", maxTokens)
 	}
-	d, err := decodeDraft(r.Choices[0].Message.Content)
-	return d, u, err
+	return r.Choices[0].Message.Content, u, nil
 }

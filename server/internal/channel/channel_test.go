@@ -308,7 +308,7 @@ func (r *fakeRouter) HandleInbound(_ context.Context, in Inbound) error {
 	return r.err
 }
 
-func newHandler(a Adapter, s Store, r Router) *WebhookHandler {
+func newHandler(a Adapter, s Store, r InboundRouter) *WebhookHandler {
 	return &WebhookHandler{Adapter: a, Store: s, Router: r, async: func(f func()) { f() }}
 }
 
