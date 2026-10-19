@@ -165,9 +165,8 @@ The setup step is the one to watch.
   dedupe → 200 → route async), `PGStore`, `LogRouter` (records + logs ids only).
 - Sendblue adapter: secret-header check (fails closed), receive parsing incl.
   `reply_to`, drops outbound echoes and group threads, `send-message` with
-  inline reply. **Unconfirmed:** the webhook secret header name and whether
-  it is raw or HMAC — configurable via `SENDBLUE_WEBHOOK_SECRET_HEADER`;
-  confirm against a real sandbox delivery in M1.
+  inline reply. Webhook auth **confirmed** 2026-10-19: raw signing secret in
+  the `sb-signing-secret` header.
 - WhatsApp adapter: `X-Hub-Signature-256` HMAC check, subscribe handshake,
   text / button / interactive replies with `context.id`, send with context.
 - `channel/llm`: `Parser` interface, `TaskDraft` (same shape as
@@ -191,8 +190,11 @@ The setup step is the one to watch.
 `WHATSAPP_GRAPH_VERSION`. Already set on Render: `SENDBLUE_API_KEY`,
 `SENDBLUE_API_SECRET`, `BASETEN_API_KEY`.
 
-**Next (M1) needs:** a staging deployment of this branch so Sendblue can
-reach a webhook (decision pending — §13).
+**First real message — 2026-10-19 22:02 UTC (staging):** iPhone → Sendblue
+shared line → `POST /webhooks/channel/sendblue` 200 in 295 ms → verified →
+parsed (service iMessage) → stored in `channel_messages` → routed →
+`processed_at` set. Log line carries the message id and a redacted number only.
+M0 is proven end to end on real infrastructure.
 
 ## 16. Staging
 

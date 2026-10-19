@@ -17,11 +17,11 @@ import (
 // Docs: https://docs.sendblue.com/getting-started/webhooks/ (receive payload,
 // retries, idempotency on message_handle) and /guides/inline-replies/ (reply_to).
 //
-// Webhook auth: Sendblue puts the configured secret in a request header. The
-// docs do not name the header or say whether it is the raw secret or an HMAC,
-// so the header name is configuration (SENDBLUE_WEBHOOK_SECRET_HEADER) and the
-// check is a constant-time comparison of the raw value. CONFIRM both against a
-// real sandbox delivery in M1 and update this comment.
+// Webhook auth: Sendblue sends the dashboard's "Signing secret" verbatim in
+// the sb-signing-secret request header; the check is a constant-time
+// comparison of that raw value. Confirmed 2026-10-19 against a real delivery on
+// staging (a wrong or missing secret would have answered 401). The header name
+// stays overridable via SENDBLUE_WEBHOOK_SECRET_HEADER in case Sendblue changes it.
 type SendblueAdapter struct {
 	APIKey    string // SENDBLUE_API_KEY    → header sb-api-key-id
 	APISecret string // SENDBLUE_API_SECRET → header sb-api-secret-key
