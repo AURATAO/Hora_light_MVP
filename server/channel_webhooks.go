@@ -4,6 +4,9 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
+	"net/url"
+	"os"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -15,11 +18,13 @@ import (
 //	POST /webhooks/channel/sendblue   iMessage via Sendblue
 //	POST /webhooks/channel/whatsapp   WhatsApp Cloud API
 //	GET  /webhooks/channel/whatsapp   Meta subscribe handshake
+//	GET  /channel/setup …             one-page setup (channel_setup.go)
 //
 // Nothing is mounted unless CHANNEL_WEBHOOKS_ENABLED=1, so this file is inert
-// in production until it is switched on deliberately. Auth (S-13): these are
-// provider-to-server routes with no user session; each one is authenticated by
-// its adapter's VerifyRequest (shared secret / HMAC) before anything is read.
+// in production until it is switched on deliberately. Auth (S-13): webhooks
+// are provider-to-server routes with no user session; each one is
+// authenticated by its adapter's VerifyRequest (shared secret / HMAC) before
+// anything is read. The setup link route is behind dualAuth.
 //
 // The paths are new on purpose. The legacy stub at /webhooks/whatsapp
 // (whatsapp_webhook.go) stays untouched during the App Store review freeze and
@@ -29,13 +34,26 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		return
 	}
 	store := &channel.PGStore{DB: sqlDB}
-	router := channel.LogRouter{} // M0: record + log only; real router in M1–M3
-
-	sb := &channel.WebhookHandler{Adapter: channel.SendblueFromEnv(), Store: store, Router: router}
+	sb := channel.SendblueFromEnv()
 	wa := channel.WhatsAppFromEnv()
+
+	base := setupBaseURL()
+	if base == "" {
+		log.Printf("[channel] WARNING: no CHANNEL_SETUP_BASE_URL or RENDER_EXTERNAL_URL — setup links cannot be built")
+	}
+	router := &channel.SetupRouter{
+		Messages:   store,
+		Identities: store,
+		Adapters:   map[channel.Channel]channel.Adapter{channel.IMessage: sb, channel.WhatsApp: wa},
+		SetupURL: func(token string) string {
+			return base + "/channel/setup?t=" + url.QueryEscape(token)
+		},
+	}
+
+	sbHandler := &channel.WebhookHandler{Adapter: sb, Store: store, Router: router}
 	waHandler := &channel.WebhookHandler{Adapter: wa, Store: store, Router: router}
 
-	r.POST("/webhooks/channel/sendblue", gin.WrapH(sb))
+	r.POST("/webhooks/channel/sendblue", gin.WrapH(sbHandler))
 	r.POST("/webhooks/channel/whatsapp", gin.WrapH(waHandler))
 	r.GET("/webhooks/channel/whatsapp", func(c *gin.Context) {
 		challenge, ok := wa.VerifySubscribe(c.Query("hub.mode"), c.Query("hub.verify_token"), c.Query("hub.challenge"))
@@ -45,5 +63,17 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		}
 		c.String(http.StatusOK, challenge)
 	})
-	log.Printf("[channel] webhooks enabled: sendblue, whatsapp")
+	registerChannelSetupRoutes(r, sqlDB, store, router)
+	log.Printf("[channel] webhooks enabled: sendblue, whatsapp; setup base=%s", base)
+}
+
+// setupBaseURL is the public origin of this backend, where the setup page is
+// served. Render sets RENDER_EXTERNAL_URL on every web service.
+func setupBaseURL() string {
+	for _, k := range []string{"CHANNEL_SETUP_BASE_URL", "RENDER_EXTERNAL_URL"} {
+		if v := strings.TrimRight(strings.TrimSpace(os.Getenv(k)), "/"); v != "" {
+			return v
+		}
+	}
+	return ""
 }

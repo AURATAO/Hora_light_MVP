@@ -131,7 +131,7 @@ reasoning on by default — measure latency with it on and off.
 | # | Dates | Deliverable | Done |
 |---|---|---|---|
 | M0 | Oct 19 | PLAN.md; `channel` package skeleton; adapter interface; migration file (not applied) | ✅ see §15 |
-| M1 | Oct 20–22 | Sendblue inbound/outbound in sandbox; identity + setup page; dedupe | |
+| M1 | Oct 20–22 | Sendblue inbound/outbound in sandbox; identity + setup page; dedupe | 🟡 code done, phone test pending — §15 |
 | M2 | Oct 23–25 | Draft → YES → hold → task; status updates via `notify.Create` hook | |
 | M3 | Oct 26–28 | Approvals YES/NO; chat relay; multi-task; ops handoff | |
 | M4 | Oct 29–31 | WhatsApp adapter on Meta test number; eval run; real-card E2E on both channels; demo | |
@@ -195,6 +195,32 @@ shared line → `POST /webhooks/channel/sendblue` 200 in 295 ms → verified →
 parsed (service iMessage) → stored in `channel_messages` → routed →
 `processed_at` set. Log line carries the message id and a redacted number only.
 M0 is proven end to end on real infrastructure.
+
+**M1 — 2026-10-20 (night, unattended; awaiting Aura's phone test)**
+- `SetupRouter` replaces `LogRouter`: unknown number → one setup link (no
+  second link within 2 min, "already sent" reply instead); linked number →
+  acknowledgement (M2 replaces it with drafting via the `Linked` hook). Every
+  reply is sent on the inbound channel and recorded as an outbound row.
+- Identity store (`identity.go`): upsert by (channel, E.164), attach inbound
+  rows, conversation `last_inbound_at` (monotonic), setup tokens = 32 random
+  bytes, SHA-256 stored, 30 min, single use. `ConsumeSetupTokenAndLink` is one
+  transaction: consume → link (refuses a number already linked to another
+  account, rolls back so the token survives) → retire older links.
+- Setup page `GET /channel/setup` (Go-served, `channel_setup.html/.js`
+  embedded): link check → email → 6-digit Supabase OTP → name + terms
+  (`PATCH /profile`) → `POST /channel/setup/link` (dualAuth, Bearer) → card via
+  existing `POST /payments/setup-intent` + Stripe.js, skipped with a note when
+  payments are off (staging today). Welcome iMessage on link. Token removed
+  from the address bar on load; `Referrer-Policy: no-referrer`, strict CSP,
+  supabase-js pinned with SRI. `profiles.phone` never used.
+- Tests: 30 in `internal/channel` incl. 3 against real Postgres
+  (`CHANNEL_TEST_DATABASE_URL`, throwaway DB only): lifecycle, expiry,
+  takeover refused, 8 concurrent link attempts → exactly 1 wins. Page rendered
+  at 390 px in headless Chromium against a mock backend: no console errors.
+- **Not yet verified on a phone:** Sendblue outbound (`/api/send-message`),
+  and whether the staging branch's Supabase Auth email carries a 6-digit code
+  (if it arrives as a magic link only, the branch's email template needs
+  `{{ .Token }}`).
 
 ## 16. Staging
 

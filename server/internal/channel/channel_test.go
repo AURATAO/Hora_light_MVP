@@ -266,6 +266,7 @@ type fakeStore struct {
 	mu        sync.Mutex
 	seen      map[string]bool
 	processed []string
+	outbound  int
 	err       error
 }
 
@@ -290,7 +291,12 @@ func (s *fakeStore) MarkProcessed(_ context.Context, _ Channel, id string) error
 	s.processed = append(s.processed, id)
 	return nil
 }
-func (s *fakeStore) RecordOutbound(context.Context, Outbound, string, string) error { return nil }
+func (s *fakeStore) RecordOutbound(context.Context, Outbound, string, string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.outbound++
+	return nil
+}
 
 type fakeRouter struct {
 	got []string
