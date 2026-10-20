@@ -80,6 +80,13 @@ func initStripe() {
 			log.Printf("[payments] STRIPE_SECRET_KEY not set — payment endpoints will answer 503")
 			return
 		}
+		// Staging never charges a real card (PLAN §16 key rule). Only an
+		// explicit APP_ENV=staging trips this, so production is untouched.
+		isTest := strings.HasPrefix(key, "sk_test_") || strings.HasPrefix(key, "rk_test_")
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "staging") && !isTest {
+			log.Printf("[payments] REFUSING a live Stripe key on APP_ENV=staging — payment endpoints will answer 503")
+			return
+		}
 		stripe.Key = key
 		mode := "LIVE"
 		if strings.HasPrefix(key, "sk_test_") || strings.HasPrefix(key, "rk_test_") {
