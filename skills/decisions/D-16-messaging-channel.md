@@ -1,7 +1,7 @@
 # D-16: Requesters book over iMessage and WhatsApp through the Go backend
 
 **Date:** 2026-10-20
-**Status:** Proposed — awaiting Arbiter (Aura). Tier 3.
+**Status:** Accepted with amendments (Arbiter: Aura, 2026-10-20) — S-11 and S-20 amended; review round 2 pending. Tier 3.
 **Trigger:** Product pivot (Aura, 2026-10-16): requesters order through an AI agent over iMessage (Sendblue) and WhatsApp (Meta Cloud API); the mobile app becomes a supporter-only dashboard. Business rules unchanged. Built on `feat/messaging-channel`; nothing merges to `main` during the App Store review freeze. Plan and progress: `PLAN.md`.
 
 ## Decision
@@ -61,4 +61,14 @@ S-31 discarded errors and unwrapped returns (code and tests); S-12 `?t=` still a
 - **R-4 · S-02 / S-30** — the setup page is HTML + hand-written CSS served by Go (`server/`), not a page in `app/` with Tailwind. Reason it was built this way: `app/` deploys from `main` (Vercel) and cannot ship during the review freeze; the page must be reachable from staging now. *Options:* (a) accept as a declared exception until go-live, then move it to `app/` (Tailwind) in the go-live change; (b) move it now to `app/` and test via a Vercel preview of the branch.
 - **R-5 · I-05 red** — the only red in `verify.sh` is the missing Supabase CLI. Per INVARIANTS, a pre-existing claim needs the same check on the base branch side by side; the Builder has not shown that. *Options:* (a) install the CLI + link credentials in the build environment and re-run; (b) decision record scoping I-05 to environments that have the CLI (it was "dormant" by design until the baseline existed).
 
-**Arbiter (Aura):** _pending._
+**Arbiter (Aura), 2026-10-20 — rulings:**
+
+- **R-1 → amend S-11, no code change.** The chat principal's trust chain is written into S-11 as five conditions (provider signature per message; binding only through `dualAuth`; binding needs the single-use setup token; one number one account; money only on a rule-matched YES). **Post-freeze refactor #1:** `createTask` takes the principal as an argument; the synthetic request context goes away.
+- **R-2 → named middleware.** Done in `30b9e19`: `providerSignatureAuth`, `whatsappSubscribeAuth`, `setupTokenAuth`, `publicByDesign` (`server/channel_auth.go`), each named on its route. No standard amended.
+- **R-3 → amend S-20, with three conditions:** E.164 only (CHECK on every such column — `channel_messages.address` gained it in `20261020120000`), unique per active binding, treated as personal data (S-12; purged with the account — `channel.PurgeUserTx` in account deletion, `4cb3e60`; Privacy Policy before launch).
+- **R-4 → declared exception until go-live.** The setup page stays Go-served with hand-written CSS on the branch; the go-live change moves it to `app/` with Tailwind. Tracked in PLAN §11.
+- **R-5 → report honestly; make the failure mode impossible to misread.**
+  - Evidence (same environment, same step, side by side): base `541f5e9` → `supabase: command not found` / `RED: schema drift detected`; branch `30b9e19` → identical. **Base also red → environment issue**, ticket opened (PLAN §11), not a regression.
+  - The old step ran `supabase db diff --linked`, and the committed `supabase/.temp/project-ref` is **production** (`akxsdkerudurzcemurrb`). With the CLI installed it would have diffed against production. It was not run that way.
+  - No CI exists, so there is no CI CLI version to match; the version recorded in the repo is **v2.118.0** and that is what was installed for this check. `db diff` also needs a Docker daemon, which this environment does not have.
+  - `verify.sh` now: preflight lists missing tools/settings as `缺少相依套件 / MISSING DEPENDENCY`; a check that cannot run reports `INCOMPLETE` and the run exits **2** (not green, not a test failure); I-05 uses `--db-url "$VERIFY_DB_URL"` (local/branch only) and **refuses a URL containing the production ref** (exit 1). Exercised: no CLI → exit 2; CLI 2.118.0 without Docker → exit 2; production URL → exit 1. INVARIANTS I-05 updated to match.

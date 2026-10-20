@@ -42,6 +42,13 @@ All reads/writes to Hora tables (`users`, `profiles`, `tasks`, `worklogs`, `noti
 ### S-11: No endpoint trusts a client-supplied user ID as the acting principal. Identity comes from `dualAuth`/`tryAuth` middleware (cookie or validated Bearer), always.
 **Rationale:** Acting-as-someone-else is the worst bug class in a two-sided marketplace. **Permission checks use UUID columns (`requester_id`, `assigned_to_id`), never the legacy email columns.**
 **Verification:** Reviewer checklist on every diff touching `server/` handlers; grep new handlers for authorization comparisons against email columns → nothing.
+**Amended by D-16 (2026-10-20) — the chat-booking principal.** A message that arrives over iMessage/WhatsApp acts as a user only when ALL FIVE hold, and the code that acts on it must not weaken any of them:
+1. **Provider signature on every message** — Sendblue shared secret / Meta HMAC, verified by `providerSignatureAuth` before anything is parsed; fail-closed when unconfigured.
+2. **The number was bound through `dualAuth`** — `channel_identities.user_id` is written only by `POST /channel/setup/link`, which runs `dualAuth` (email OTP session) and takes the uid from the session, never the body.
+3. **Binding needed proof of the number** — a single-use, 30-minute, SHA-256-hashed setup token delivered to that number (`setupTokenAuth` + `ConsumeSetupTokenAndLink` in one transaction).
+4. **One number, one account** — `(channel, address)` is unique; re-binding a number linked to another account is refused (`ErrIdentityTaken`). Unlinking is account deletion (`PurgeUserTx`).
+5. **Money moves only on a rule-matched YES** — never on a model's reading; booking runs the production handler for that uid, so every payment gate applies.
+The synthetic request context in `chatBooker.Post` is permitted only under these five. **Post-freeze refactor #1:** `createTask` takes the principal as an argument and both the HTTP handler and the chat call it (removes the synthetic context).
 
 ### S-12: Sensitive personal data — credentials, phone numbers, precise GPS coordinates, background-check/identity data (future Checkr), payment details — never appears in logs, error messages, or analytics events.
 **Rationale:** `task_gps_pings` is live user location; `profiles.phone` is PII. One leaked log line outlasts the company.
@@ -60,6 +67,7 @@ All reads/writes to Hora tables (`users`, `profiles`, `tasks`, `worklogs`, `noti
 ### S-20: New tables/columns: snake_case; store identity as internal-UUID columns named `*_id` with FKs to `users.id`. **Never add email-as-identity columns** — that pattern is retired legacy (S-60.1/60.2).
 **Rationale:** New schema converges on the reformed convention; the email-column era is closed.
 **Verification:** Reviewer checks every new identifier in schema changes; any new `text` column semantically holding an identity is a FAIL.
+**Amended by D-16 (2026-10-20) — channel endpoints are not HO:RA identity.** A phone number used as a messaging address (`channel_identities.address`, `channel_messages.address`) is an external endpoint, like an email address handed to Postmark; the HO:RA identity is `user_id` → `users.id`. Permitted only with all three: (1) **E.164 only**, enforced by a CHECK on every such column; (2) **unique per active binding** — `(channel, address)` unique, one account per number; (3) **personal data** — never in logs, errors or analytics (S-12), purged with the account (`PurgeUserTx`), listed in the Privacy Policy before launch.
 
 ### S-21: Schema changes require committed migration files. Since no migration files currently exist (schema was built via dashboard and is only inferred from Go queries), the first schema task is a **baseline pull** (`supabase db pull` → committed baseline migration). After the baseline: forward-only migration files, dry-run against a branch/staging DB, no production dashboard SQL. Ever.
 **Rationale:** An un-versioned schema means every AI session and every new engineer works from inference, and drift is undetectable. The baseline converts the schema from folklore to fact.

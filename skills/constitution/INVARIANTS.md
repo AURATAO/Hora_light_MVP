@@ -39,7 +39,8 @@ select tablename, policyname from pg_policies where schemaname = 'public';
 **On violation:** block merge.
 
 ### I-05: Schema matches committed migrations — zero drift. **(Dormant until the S-21 baseline migration lands; activating this is a D-01 open item.)**
-**Check:** `supabase db diff --linked` → empty diff.
+**Check:** `supabase db diff --db-url "$VERIFY_DB_URL"` → empty diff, where `VERIFY_DB_URL` is a **local or branch** database. **Never `--linked`** — `supabase/.temp/project-ref` is committed and names production; `verify.sh` refuses a URL containing the production ref (D-16 R-5). Needs the supabase CLI (record the version used — results from a different version are not evidence) and a Docker daemon (shadow database).
+**When it cannot run:** a missing CLI / Docker / `VERIFY_DB_URL` is reported by `verify.sh`'s preflight as `缺少相依套件 / MISSING DEPENDENCY` and the run ends `INCOMPLETE` (exit 2) — not green, and not a drift finding. If base and branch are both red/incomplete for the same reason, it is an environment ticket; red only on the branch is a regression and blocks.
 **On violation:** block merge; reconcile before any new migration.
 
 ### I-06: The mobile app builds. **ACTIVE (D-03: `mobile/` scaffolded 2026-07-11).**
