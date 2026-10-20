@@ -127,3 +127,8 @@ PASS + INCOMPLETE may be conditionally approved only if (a) every check that did
 **Declared interpretations (Builder) for the Arbiter:**
 - I-I. The ops handoff email contains the recent message text and the linked account's email, with a last-four-digit phone hint. S-12 names phone numbers, credentials, GPS, identity data and payment details; message text and account email are what ops act on, as in every existing ops email. The full number never appears anywhere.
 - I-J. Ops routes exist before an ops UI does; they are reachable with the existing ops session (curl or the ops panel). A panel page is a follow-up, not a condition.
+
+### M3.3 + M3.4 — review rounds 2–3 — 2026-10-21
+**Round 2 (at `f7f665f`):** Reviewer FAIL ×1 — S-32: the 3DS ops notice ran on the setup page's request path; fixed in `058b39e` (inside `dispatch`). Reviewer explicitly traced all six posting outcomes: no double booking, nothing beyond the summary.
+**Round 3 (at `058b39e`):** Reviewer **PASS** (S-11/5, S-12, S-13, S-14, S-21, S-31, S-32, S-33, S-60 each traced). Verifier (at `9575493` + fixes): EXIT=1 — only red is the inherited gitleaks finding (C-2); branch-only 0; full server suite with DB green; I-05 INCOMPLETE (C-1).
+**Arbiter (Aura):** _pending_ — same conditional approval as D-16 (C-1..C-3); I-I and I-J to confirm; no merge.

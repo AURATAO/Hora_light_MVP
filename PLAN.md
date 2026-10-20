@@ -133,7 +133,7 @@ reasoning on by default — measure latency with it on and off.
 | M0 | Oct 19 | PLAN.md; `channel` package skeleton; adapter interface; migration file (not applied) | ✅ see §15 |
 | M1 | Oct 20–22 | Sendblue inbound/outbound in sandbox; identity + setup page; dedupe | ✅ help-first flow booked a real task from an iPhone, Oct 20 — §15 |
 | M2 | Oct 23–25 | Draft → YES → hold → task; status updates via `notify.Create` hook | ✅ Oct 20 — booking + accepted/clock in/out/done all seen on an iPhone (staging, payments off) |
-| M3 | Oct 26–28 | Approvals YES/NO; chat relay; multi-task; ops handoff | 🟡 approvals ✅ reviewed; multi-task + handoff built Oct 21 (review round 2 pending); chat relay next (needs TalkJS staging keys — set) |
+| M3 | Oct 26–28 | Approvals YES/NO; chat relay; multi-task; ops handoff | 🟡 approvals ✅ reviewed; multi-task + handoff built Oct 21, review PASS (round 3); chat relay next (needs TalkJS staging keys — set) |
 | M4 | Oct 29–31 | WhatsApp adapter on Meta test number; eval run; real-card E2E on both channels; demo | |
 
 ## 11. External dependencies (owner: Aura)
@@ -403,8 +403,8 @@ for the settle-after-completion path.
   id + actor, never text or number. No ops UI yet: curl / the ops panel can
   call them; a panel page is a follow-up.
 - Review: round 1 FAIL (3DS item re-offered after release — a second charge;
-  ops send/release blocked on the provider) → fixed `f7f665f`; round 2
-  pending at hand-over.
+  ops send/release blocked on the provider) → `f7f665f`; round 2 FAIL (3DS
+  ops notice on the request path) → `058b39e`; **round 3 PASS.**
 
 **Known gaps (next):** shopping budget is not asked in chat (grocery tasks
 post with no budget); 3DS in chat goes to a human; returning customer who
