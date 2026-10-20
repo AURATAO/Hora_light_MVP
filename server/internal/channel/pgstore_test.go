@@ -47,6 +47,13 @@ func testDB(t *testing.T) *sql.DB {
 	if _, err := db.Exec(string(mig)); err != nil {
 		t.Fatalf("migration: %v", err)
 	}
+	mig2, err := os.ReadFile(filepath.Join("..", "..", "..", "supabase", "migrations", "20261020120000_channel_messages_address_e164.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(string(mig2)); err != nil {
+		t.Fatalf("migration e164: %v", err)
+	}
 	t.Cleanup(func() { db.Close() })
 	return db
 }
@@ -356,5 +363,115 @@ func TestPGStatusTargetPrefersTheBookingThread(t *testing.T) {
 	got, ok, err = s.StatusTargetFor(ctx, user, task)
 	if err != nil || !ok || got.Identity.Channel != IMessage || got.Identity.Address != "+15550000001" {
 		t.Fatalf("booking thread should win: %+v ok=%v err=%v", got, ok, err)
+	}
+}
+
+// D-16 R-3: account deletion removes the person's numbers and everything said
+// over them — and nobody else's.
+func TestPGPurgeUserRemovesOnlyThatPersonsChatData(t *testing.T) {
+	db := testDB(t)
+	s := &PGStore{DB: db}
+	ctx := context.Background()
+	me, other := newUser(t, db), newUser(t, db)
+
+	mine, err := s.UpsertIdentity(ctx, IMessage, "+15550000101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	theirs, err := s.UpsertIdentity(ctx, IMessage, "+15550000202")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, u := range map[string]string{mine.ID: me, theirs.ID: other} {
+		if _, err := db.Exec(`UPDATE channel_identities SET user_id = $2, verified_at = now() WHERE id = $1`, id, u); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.TouchConversation(ctx, id, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		_, hash, err := NewSetupToken()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.CreateSetupToken(ctx, id, hash, time.Now().Add(SetupTokenTTL)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// One inbound attached to my identity, one outbound to my number with no
+	// identity_id (how outbound rows are stored), one for the other person.
+	for _, m := range []Inbound{
+		{Channel: IMessage, ProviderMessageID: "in-mine", From: "+15550000101", Text: "hi", ReceivedAt: time.Now()},
+		{Channel: IMessage, ProviderMessageID: "in-theirs", From: "+15550000202", Text: "hi", ReceivedAt: time.Now()},
+	} {
+		if _, err := s.RecordInbound(ctx, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.AttachMessage(ctx, IMessage, "in-mine", mine.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordOutbound(ctx, Outbound{Channel: IMessage, To: "+15550000101", Text: "Booked."}, "out-mine", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := PurgeUserTx(ctx, tx, me)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("numbers purged = %d, want 1", n)
+	}
+	count := func(q string, args ...any) int {
+		var c int
+		if err := db.QueryRow(q, args...).Scan(&c); err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	if c := count(`SELECT count(*) FROM channel_messages WHERE address = '+15550000101'`); c != 0 {
+		t.Fatalf("%d of my messages survived", c)
+	}
+	if c := count(`SELECT count(*) FROM channel_identities WHERE user_id = $1`, me); c != 0 {
+		t.Fatal("my number survived")
+	}
+	if c := count(`SELECT count(*) FROM channel_conversations WHERE identity_id = $1`, mine.ID); c != 0 {
+		t.Fatal("my conversation survived")
+	}
+	if c := count(`SELECT count(*) FROM channel_setup_tokens WHERE identity_id = $1`, mine.ID); c != 0 {
+		t.Fatal("my setup link survived")
+	}
+	if c := count(`SELECT count(*) FROM channel_messages WHERE address = '+15550000202'`); c != 1 {
+		t.Fatal("someone else's message was deleted")
+	}
+	if c := count(`SELECT count(*) FROM channel_identities WHERE user_id = $1`, other); c != 1 {
+		t.Fatal("someone else's number was deleted")
+	}
+}
+
+// Account deletion must keep working on a database that predates the channel
+// tables (production before go-live).
+func TestPGPurgeUserWithoutChannelTablesIsANoop(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`DROP TABLE channel_setup_tokens, channel_conversations, channel_messages, channel_identities`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+			t.Error(err)
+		}
+	}()
+	if n, err := PurgeUserTx(context.Background(), tx, newUser(t, db)); err != nil || n != 0 {
+		t.Fatalf("n=%d err=%v", n, err)
 	}
 }
