@@ -30,7 +30,9 @@ need go "Go toolchain"
 need node "Node.js"
 need npm "npm"
 need supabase "supabase CLI (I-05 schema drift)"
-if have supabase; then echo "   supabase CLI version: $(supabase --version 2>/dev/null)"; fi
+# Run from outside the repo: the CLI rewrites supabase/.temp/cli-latest when
+# invoked inside it, and verification must leave the working tree untouched.
+if have supabase; then echo "   supabase CLI version: $(cd /tmp && supabase --version 2>/dev/null)"; fi
 if have docker && docker info >/dev/null 2>&1; then echo "ok: docker daemon (supabase db diff shadow database)"
 else echo "缺少相依套件 / MISSING DEPENDENCY: docker daemon (supabase db diff needs a shadow database)"; MISSING=1; fi
 if [ -n "${VERIFY_DB_URL:-}" ]; then echo "ok: VERIFY_DB_URL is set (target for I-05)"
