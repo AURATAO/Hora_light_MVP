@@ -133,6 +133,19 @@ func (m *memConversations) ConversationsForUser(_ context.Context, user string) 
 	}
 	return cs, ids, nil
 }
+func (m *memConversations) AcceptTerms(_ context.Context, iid string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.convs[iid]
+	if !ok {
+		c = Conversation{IdentityID: iid, State: StateIdle}
+	}
+	if c.TermsAcceptedAt == nil {
+		c.TermsAcceptedAt = &at
+	}
+	m.convs[iid] = c
+	return nil
+}
 func (m *memConversations) ClaimForPosting(_ context.Context, iid string, from State) (*PendingDraft, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -501,5 +514,24 @@ func TestFirstRepliesStayShort(t *testing.T) {
 		if n := len([]rune(s)); n > 300 {
 			t.Errorf("%d chars: %q", n, s)
 		}
+	}
+}
+
+// A customer reacting to a status update ("good", "thanks") or saying hi is
+// not re-introduced to the service; a stranger still is.
+func TestLinkedCustomerIsNotReintroduced(t *testing.T) {
+	g := newRig(llm.IntentOther)
+	g.ids.link(me, "user-1")
+	if got := g.say(t, "good"); got != CopyAck {
+		t.Fatalf("linked + other: %q", got)
+	}
+	g = newRig(llm.IntentGreeting)
+	g.ids.link(me, "user-1")
+	if got := g.say(t, "hi"); got != CopyHelloAgain {
+		t.Fatalf("linked + greeting: %q", got)
+	}
+	g = newRig(llm.IntentOther)
+	if got := g.say(t, "good"); got != CopyWelcome {
+		t.Fatalf("stranger + other: %q", got)
 	}
 }

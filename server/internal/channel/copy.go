@@ -15,6 +15,9 @@ const (
 		"What do you need, and when?"
 	CopyAbout = "HO:RA sends a vetted local supporter to do the errand for you. You see the estimate before anything is booked, " +
 		"and you pay for the time actually used.\n\nTell me what you need and when, and I'll price it."
+	CopyHelloAgain         = "Hi again! What do you need, and when?"
+	CopyAck                = "Got it. Text me anytime you need something done."
+	CopyOnMyWay            = "%s is on the way for %s. I'll text you when they arrive."
 	CopyTextOnly           = "I can only read text for now. Tell me what you need and when."
 	CopyParseFailed        = "Sorry, I couldn't work that out. Could you say what you need, where, and when?"
 	CopyAskName            = "Got it: %s.\n\nBefore I price it, what's your first name?"

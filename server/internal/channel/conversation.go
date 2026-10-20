@@ -61,6 +61,24 @@ type ConversationStore interface {
 	// caller must not post. This is the double-booking guard — two quick
 	// "YES"es, or the page's finish step racing a YES, book once.
 	ClaimForPosting(ctx context.Context, identityID string, from State) (*PendingDraft, bool, error)
+	// AcceptTerms records the consent a YES carries and touches NOTHING
+	// else. It must not be a full save: a YES that loaded the conversation
+	// before a parallel YES finished booking would otherwise write the old
+	// state and draft back over the finished one and book it twice.
+	AcceptTerms(ctx context.Context, identityID string, at time.Time) error
+}
+
+func (s *PGStore) AcceptTerms(ctx context.Context, identityID string, at time.Time) error {
+	_, err := s.DB.ExecContext(ctx, `
+		INSERT INTO channel_conversations (identity_id, terms_accepted_at, updated_at)
+		VALUES ($1, $2, now())
+		ON CONFLICT (identity_id) DO UPDATE
+		  SET terms_accepted_at = COALESCE(channel_conversations.terms_accepted_at, EXCLUDED.terms_accepted_at)
+	`, identityID, at)
+	if err != nil {
+		return fmt.Errorf("accept terms: %w", err)
+	}
+	return nil
 }
 
 func (s *PGStore) ClaimForPosting(ctx context.Context, identityID string, from State) (*PendingDraft, bool, error) {

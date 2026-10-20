@@ -213,13 +213,16 @@ func postEnroute(c *gin.Context) {
 		return
 	}
 
+	firstTap := false
 	if enrouteAt == nil {
 		// Guarded so two taps racing each other still produce one timestamp.
 		if err := db.QueryRow(ctx, `
 			update public.tasks set enroute_at = now()
 			where id = $1::uuid and enroute_at is null
 			returning enroute_at
-		`, taskID).Scan(&enrouteAt); err != nil {
+		`, taskID).Scan(&enrouteAt); err == nil {
+			firstTap = true
+		} else {
 			// Lost the race: somebody else's UPDATE matched first. Read theirs.
 			if err := db.QueryRow(ctx,
 				`select enroute_at from public.tasks where id = $1::uuid`, taskID).Scan(&enrouteAt); err != nil {
@@ -231,7 +234,36 @@ func postEnroute(c *gin.Context) {
 	}
 
 	log.Printf("[enroute] task=%s supporter=%s at=%v", taskID, uid, enrouteAt)
+	if firstTap {
+		notifyChatOnMyWay(ctx, taskID, uid)
+	}
 	c.JSON(http.StatusOK, gin.H{"enroute_at": enrouteAt})
+}
+
+// notifyChatOnMyWay tells a requester who books by text that their supporter
+// has set off. Chat-only: app users get the live map at this moment and no
+// notification, and that stays as it is. The hook is nil unless messaging is
+// on (notify.ChatHook), so this is inert in production.
+func notifyChatOnMyWay(ctx context.Context, taskID, supporterUID string) {
+	hook := notify.ChatHook
+	if hook == nil {
+		return
+	}
+	var requesterID, title string
+	if err := db.QueryRow(ctx,
+		`select requester_id::text, coalesce(title,'') from public.tasks where id = $1::uuid`, taskID,
+	).Scan(&requesterID, &title); err != nil {
+		return
+	}
+	var supporterEmail string
+	_ = db.QueryRow(ctx, `select coalesce(email,'') from public.users where id = $1::uuid`, supporterUID).Scan(&supporterEmail)
+	go hook(notify.CreateNotificationInput{
+		UserID:        requesterID,
+		TaskID:        taskID,
+		Type:          "ON_MY_WAY",
+		TaskTitle:     title,
+		SupporterName: resolveDisplayName(ctx, supporterEmail),
+	})
 }
 
 // ── The arrival notification ───────────────────────────────────────────────

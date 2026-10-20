@@ -44,6 +44,10 @@ func StatusText(ev StatusEvent) (string, bool) {
 	switch ev.Type {
 	case "ORDER_ACCEPTED":
 		return fmt.Sprintf("%s accepted %s. I'll text you when they arrive.", who, task), true
+	case "ON_MY_WAY":
+		// Chat-only. App users watch the live map from this moment; a chat
+		// customer has no map, so this line is the substitute.
+		return fmt.Sprintf(CopyOnMyWay, who, task), true
 	case "SUPPORTER_ARRIVED":
 		return fmt.Sprintf("%s has arrived for %s.", who, task), true
 	case "CLOCK_IN":

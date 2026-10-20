@@ -121,6 +121,15 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 }
 
 func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
+	// A bare YES/NO with nothing pending (a late duplicate YES after the
+	// booking went through, a NO to nothing) never starts a draft: "YES" is
+	// not an errand, and parsing it as one would book nonsense.
+	if IsYes(text) || IsNo(text) {
+		if id.Linked() {
+			return r.Reply(ctx, in, CopyAck, "")
+		}
+		return r.Reply(ctx, in, CopyWelcome, "")
+	}
 	intent := llm.HeuristicIntent(text)
 	if r.Classifier != nil {
 		got, err := r.Classifier.Classify(ctx, text)
@@ -134,7 +143,17 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 		return r.startDraft(ctx, in, id, conv, text)
 	case llm.IntentQuestion:
 		return r.Reply(ctx, in, CopyAbout, "")
+	case llm.IntentGreeting:
+		if id.Linked() {
+			return r.Reply(ctx, in, CopyHelloAgain, "")
+		}
+		return r.Reply(ctx, in, CopyWelcome, "")
 	default:
+		// "good", "thanks", "ok" — typically a reaction to a status update.
+		// A customer is not re-introduced to the service; a stranger is.
+		if id.Linked() {
+			return r.Reply(ctx, in, CopyAck, "")
+		}
 		return r.Reply(ctx, in, CopyWelcome, "")
 	}
 }
@@ -207,8 +226,9 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 		if !id.Linked() {
 			return r.sendSetupLink(ctx, in, id, conv, CopyOneStepToBook)
 		}
-		// Persist the consent before claiming; the claim only moves state.
-		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+		// Persist the consent before claiming — narrowly. A full save here
+		// could resurrect a draft a parallel YES has already booked.
+		if err := r.Conversations.AcceptTerms(ctx, id.ID, now); err != nil {
 			return err
 		}
 		_, claimed, err := r.claimAndPost(ctx, in.Channel, id, StateAwaitingConfirm)

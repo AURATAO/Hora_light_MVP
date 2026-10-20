@@ -139,13 +139,13 @@ func (b *chatBooker) ApplyChatProfile(ctx context.Context, userID, name string, 
 		terms = *termsAt
 	}
 	_, err := b.sqlDB.ExecContext(ctx, `
-		INSERT INTO public.profiles (email, name, terms_accepted_at)
-		VALUES ($1, $2, $3)
+		INSERT INTO public.profiles (id, email, name, phone, city, avatar_url, bio, terms_accepted_at, created_at, updated_at)
+		VALUES ($4::uuid, $1, $2, '', '', '', '', $3, now(), now())
 		ON CONFLICT (email) DO UPDATE SET
 		  name = CASE WHEN coalesce(profiles.name, '') = '' THEN EXCLUDED.name ELSE profiles.name END,
 		  terms_accepted_at = COALESCE(profiles.terms_accepted_at, EXCLUDED.terms_accepted_at),
 		  updated_at = now()
-	`, email, strings.TrimSpace(name), terms)
+	`, email, strings.TrimSpace(name), terms, userID)
 	if err != nil {
 		return fmt.Errorf("apply chat profile: %w", err)
 	}

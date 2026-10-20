@@ -102,3 +102,10 @@ func TestNotifyStatusRespectsWhatsAppWindow(t *testing.T) {
 		t.Fatal("inside the window it should send")
 	}
 }
+
+func TestStatusTextOnMyWayIsChatOnlyCopy(t *testing.T) {
+	got, ok := StatusText(StatusEvent{Type: "ON_MY_WAY", SupporterName: "Maya", TaskTitle: "Laundry"})
+	if !ok || !strings.HasPrefix(got, "Maya is on the way for “Laundry”") {
+		t.Fatalf("%q %v", got, ok)
+	}
+}

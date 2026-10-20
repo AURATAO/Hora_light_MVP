@@ -143,6 +143,7 @@ reasoning on by default — measure latency with it on and off.
 - [ ] Meta developer app + WhatsApp product → test number id + temp token (set on Render, never in chat or git)
 - [ ] New US number for production WhatsApp (not the supporter number)
 - [ ] Baseten API key
+- [ ] TalkJS test-mode app id + secret on the staging Render service (M3 chat relay cannot be tested without it)
 - [ ] Privacy Policy: add Sendblue, Meta (WhatsApp), Baseten to the provider list before launch
 
 ## 12. Funnel metrics (from day one)
@@ -289,6 +290,32 @@ own Postmark server and token (§16 key rule).
   message states the total).
 - Tests: 5 in `channel/status_test.go`, 1 DB test (booking thread wins over
   most recent), 1 in `server` (requester-only guard). All green with `-race`.
+
+**Status updates verified on a phone — 2026-10-20 21:07 CEST (Aura):**
+accepted ✅, clock in ✅, clock out ✅ arrived on the iPhone from the web app
+(local, pointed at staging) acting as supporter. Found and fixed in the same
+session:
+- **Double-booking bug (real, not a flaky test):** a second YES that loaded
+  the conversation before the first YES finished booking re-saved the old
+  `awaiting_confirm` + draft over the finished `idle`, then claimed and booked
+  again. The consent write on YES is now `AcceptTerms` (touches only
+  `terms_accepted_at`), never a full save. Caught by `TestParallelYesBooksOnce`
+  under `-race`; 5/5 green after.
+- A bare YES/NO with nothing pending never starts a draft (it was being parsed
+  as an errand).
+- "On my way" now texts the chat customer (`ON_MY_WAY`, chat-only: app users
+  get the live map at that moment, and that is unchanged).
+- A linked customer saying "good"/"thanks"/"hi" after an update gets a short
+  acknowledgement, not the welcome pitch (Aura's point 5).
+- Name + Terms consent from the chat were not landing on `profiles`
+  (FK: `profiles.id` must be the user id) — fixed.
+- Staging gaps closed: the Supabase branch had **no storage buckets**
+  (branches don't copy storage) so completion photos 404'd — `avatars` and
+  `task-completions` created on the branch; `CORS_ALLOW_ORIGINS` and
+  `COOKIE_SECURE=true` set on the Render service so a local web app can log
+  in against it; `AvatarUploader` now reads `VITE_API_BASE_URL` too.
+- Not verifiable on staging yet: chat relay (TalkJS keys are prod-only — a
+  TalkJS test app is an Aura item, §11) and `COMPLETED` (photo retest pending).
 
 **Known gaps (next):** shopping budget is not asked in chat (grocery tasks
 post with no budget); 3DS in chat goes to a human; returning customer who
