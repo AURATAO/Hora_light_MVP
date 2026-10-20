@@ -129,9 +129,10 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 	}
 	if len(pending) > 0 && string(pending) != "null" {
 		var p PendingDraft
-		if err := json.Unmarshal(pending, &p); err == nil {
-			c.Pending = &p
+		if err := json.Unmarshal(pending, &p); err != nil {
+			return c, fmt.Errorf("get conversation: decode pending draft: %w", err)
 		}
+		c.Pending = &p
 	}
 	return c, nil
 }

@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -192,10 +191,13 @@ func (a *WhatsAppAdapter) Send(ctx context.Context, o Outbound) (string, error) 
 		return "", fmt.Errorf("whatsapp send: %w", err)
 	}
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	respBody, err := readProviderBody(resp.Body, 64<<10)
+	if err != nil {
+		return "", fmt.Errorf("whatsapp send: status %d: %w", resp.StatusCode, err)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		// Error 131047 = outside the 24h window; the caller must use a template.
-		return "", fmt.Errorf("whatsapp send: status %d: %s", resp.StatusCode, truncate(respBody, 300))
+		return "", fmt.Errorf("whatsapp send: status %d: %s", resp.StatusCode, ProviderErrorText(respBody))
 	}
 	var r struct {
 		Messages []struct {

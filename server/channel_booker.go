@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -77,11 +78,17 @@ func draftToCreateInput(d llm.TaskDraft) createTaskInput {
 func (b *chatBooker) Post(ctx context.Context, userID string, d llm.TaskDraft) channel.PostResult {
 	var email string
 	if err := b.sqlDB.QueryRowContext(ctx,
-		`select coalesce(email,'') from public.users where id = $1::uuid`, userID).Scan(&email); err != nil || email == "" {
-		return channel.PostResult{Outcome: channel.PostFailed, Message: ""}
+		`select coalesce(email,'') from public.users where id = $1::uuid`, userID).Scan(&email); err != nil {
+		log.Printf("[channel-booker] post uid=%s: %v", userID, fmt.Errorf("load user: %w", err))
+		return channel.PostResult{Outcome: channel.PostFailed}
+	}
+	if email == "" {
+		log.Printf("[channel-booker] post uid=%s: user has no email", userID)
+		return channel.PostResult{Outcome: channel.PostFailed}
 	}
 	body, err := json.Marshal(draftToCreateInput(d))
 	if err != nil {
+		log.Printf("[channel-booker] post uid=%s: %v", userID, fmt.Errorf("encode task: %w", err))
 		return channel.PostResult{Outcome: channel.PostFailed}
 	}
 
@@ -105,7 +112,11 @@ func postResultFrom(status int, raw []byte) channel.PostResult {
 		Message string `json:"message"`
 		TaskID  string `json:"task_id"`
 	}
-	_ = json.Unmarshal(raw, &r)
+	if err := json.Unmarshal(raw, &r); err != nil {
+		// createTask always answers JSON; anything else is a server fault.
+		log.Printf("[channel-booker] createTask status=%d: %v", status, fmt.Errorf("decode response: %w", err))
+		return channel.PostResult{Outcome: channel.PostFailed}
+	}
 	switch {
 	case status == http.StatusCreated && r.ID != "":
 		return channel.PostResult{Outcome: channel.PostBooked, TaskID: r.ID}

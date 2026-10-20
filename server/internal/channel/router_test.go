@@ -128,7 +128,10 @@ func (m *memConversations) ConversationsForUser(_ context.Context, user string) 
 	m.ids.mu.Unlock()
 	var cs []Conversation
 	for _, id := range ids {
-		c, _ := m.GetConversation(context.Background(), id.ID)
+		c, err := m.GetConversation(context.Background(), id.ID)
+		if err != nil {
+			return nil, nil, err
+		}
 		cs = append(cs, c)
 	}
 	return cs, ids, nil
@@ -240,7 +243,10 @@ func newRig(intent llm.Intent) *rig {
 	st := &fakeStore{}
 	p := &fakeParser{draft: laundry}
 	b := &fakeBooker{result: PostResult{Outcome: PostBooked, TaskID: "task-1"}}
-	nyc, _ := time.LoadLocation("America/New_York")
+	nyc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		panic(err)
+	}
 	r := &Router{
 		Messages: st, Identities: ids, Conversations: convs,
 		Adapters:   map[Channel]Adapter{IMessage: ad},
@@ -250,6 +256,7 @@ func newRig(intent llm.Intent) *rig {
 		Prompt:     func(time.Time) string { return "prompt" },
 		SetupURL:   func(t string) string { return "https://example.test/channel/setup#t=" + t },
 		Location:   nyc,
+		Go:         func(f func()) { f() },
 	}
 	return &rig{r: r, ids: ids, convs: convs, ad: ad, st: st, parser: p, booker: b}
 }
@@ -266,7 +273,10 @@ func (g *rig) say(t *testing.T, text string) string {
 }
 
 func (g *rig) state() State {
-	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	c, err := g.convs.GetConversation(context.Background(), "id-"+me)
+	if err != nil {
+		panic(err)
+	}
 	return c.State
 }
 
@@ -309,7 +319,10 @@ func TestFirstTimerFullFlow(t *testing.T) {
 	if !strings.Contains(got, "https://example.test/channel/setup#t=") || len(g.ids.tokens) != 1 {
 		t.Fatalf("expected one setup link, got %q (tokens %d)", got, len(g.ids.tokens))
 	}
-	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	c, err := g.convs.GetConversation(context.Background(), "id-"+me)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if c.State != StateAwaitingSetup || c.TermsAcceptedAt == nil || c.PendingName != "Aura" || c.Pending == nil {
 		t.Fatalf("conversation after YES: %+v", c)
 	}
@@ -329,7 +342,10 @@ func TestFirstTimerFullFlow(t *testing.T) {
 		t.Fatalf("finish: booked=%d posts=%d last=%q state=%s err=%v", booked, g.booker.posts, g.ad.last(), g.state(), err)
 	}
 	// A second tap on the page books nothing more.
-	booked, _, _ = g.r.FinishSetup(context.Background(), "user-1")
+	booked, _, err = g.r.FinishSetup(context.Background(), "user-1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if booked != 0 || g.booker.posts != 1 {
 		t.Fatalf("second finish posted again: booked=%d posts=%d", booked, g.booker.posts)
 	}
@@ -361,7 +377,9 @@ func TestParallelYesBooksOnce(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			in := Inbound{Channel: IMessage, ProviderMessageID: "yes-" + string(rune('a'+i)), From: me, Text: "YES", ReceivedAt: time.Now()}
-			_ = g.r.HandleInbound(context.Background(), in)
+			if err := g.r.HandleInbound(context.Background(), in); err != nil {
+				t.Error(err)
+			}
 		}(i)
 	}
 	wg.Wait()

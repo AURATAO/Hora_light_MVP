@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -147,11 +148,14 @@ func (a *SendblueAdapter) Send(ctx context.Context, out Outbound) (string, error
 		return "", fmt.Errorf("sendblue send: %w", err)
 	}
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	respBody, err := readProviderBody(resp.Body, 64<<10)
+	if err != nil {
+		return "", fmt.Errorf("sendblue send: status %d: %w", resp.StatusCode, err)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		// Sendblue answers 400 (not 429) for plan-limit declines; never retry
-		// those blindly. The body names the reason and carries no PII of ours.
-		return "", fmt.Errorf("sendblue send: status %d: %s", resp.StatusCode, truncate(respBody, 300))
+		// those blindly. The body may echo the recipient: scrubbed (S-12).
+		return "", fmt.Errorf("sendblue send: status %d: %s", resp.StatusCode, ProviderErrorText(respBody))
 	}
 	var r struct {
 		MessageHandle string `json:"message_handle"`
@@ -186,4 +190,22 @@ func truncate(b []byte, n int) string {
 		return string(b)
 	}
 	return string(b[:n]) + "…"
+}
+
+var digitRun = regexp.MustCompile(`\+?\d[\d\s().-]{5,}\d`)
+
+// ProviderErrorText is a provider's error body made safe for an error string
+// that will be logged: phone-number-shaped digit runs masked (a provider may
+// echo the recipient back, S-12) and the length capped.
+func ProviderErrorText(b []byte) string {
+	return truncate(digitRun.ReplaceAll(b, []byte("[number]")), 200)
+}
+
+// readProviderBody reads at most limit bytes of a provider response body.
+func readProviderBody(r io.Reader, limit int64) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, limit))
+	if err != nil {
+		return nil, fmt.Errorf("read response body: %w", err)
+	}
+	return b, nil
 }

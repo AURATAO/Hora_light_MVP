@@ -44,7 +44,7 @@ func (o *OpenAICompat) ParseTask(ctx context.Context, systemPrompt, text string)
 		return TaskDraft{}, u, fmt.Errorf("llm parse: %w", err)
 	}
 	d, err := decodeDraft(out)
-	return d, u, err
+	return d, u, wrapErr("ParseTask", err)
 }
 
 // completeJSON runs one schema-constrained completion and returns the raw
@@ -97,16 +97,17 @@ func (o *OpenAICompat) completeJSON(ctx context.Context, system, user, schemaNam
 	resp, err := client.Do(hr)
 	u.Latency = time.Since(start)
 	if err != nil {
-		return "", u, err
+		return "", u, fmt.Errorf("llm request: %w", err)
 	}
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", u, fmt.Errorf("llm read response: status %d: %w", resp.StatusCode, err)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		msg := string(respBody)
-		if len(msg) > 300 {
-			msg = msg[:300]
-		}
-		return "", u, fmt.Errorf("status %d: %s", resp.StatusCode, msg)
+		// Status only: an error body can echo the prompt, i.e. the person's
+		// message (S-12).
+		return "", u, fmt.Errorf("llm: status %d", resp.StatusCode)
 	}
 	var r struct {
 		Choices []struct {

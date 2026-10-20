@@ -120,7 +120,7 @@ func decodeDraft(text string) (TaskDraft, error) {
 		return TaskDraft{}, fmt.Errorf("decode draft: %w", err)
 	}
 	if err := d.Validate(); err != nil {
-		return TaskDraft{}, err
+		return TaskDraft{}, fmt.Errorf("decodeDraft: %w", err)
 	}
 	return d, nil
 }
@@ -152,4 +152,12 @@ func extractJSONObject(s string) string {
 		}
 	}
 	return ""
+}
+
+// wrapErr adds context to err and keeps nil as nil (S-31).
+func wrapErr(where string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", where, err)
 }

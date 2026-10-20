@@ -50,12 +50,11 @@
 
   // ── 1. Link ────────────────────────────────────────────────────────────
   function readToken() {
-    // The token travels in the URL fragment (#t=…): a fragment is never sent
-    // to any server, so it cannot reach request logs, proxies, or the link
-    // preview fetch iMessage/WhatsApp make (S-12). ?t= is still read for
-    // links sent before this change.
-    var t = new URLSearchParams(location.hash.replace(/^#/, "")).get("t") ||
-            new URLSearchParams(location.search).get("t") || "";
+    // The token travels only in the URL fragment (#t=…): a fragment is never
+    // sent to any server, so it cannot reach request logs, proxies, or the
+    // link-preview fetch iMessage/WhatsApp make (S-12). A query-string token
+    // is deliberately NOT accepted.
+    var t = new URLSearchParams(location.hash.replace(/^#/, "")).get("t") || "";
     try {
       if (t) sessionStorage.setItem("hora_setup_t", t);
       else t = sessionStorage.getItem("hora_setup_t") || "";

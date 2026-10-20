@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -120,10 +121,10 @@ func registerChannelSetupRoutes(r *gin.Engine, sqlDB *sql.DB, store *channel.PGS
 
 		// Name and Terms consent were given in the chat; copy them onto the
 		// profile now that there is one. Blanks only.
-		if conv, err := store.GetConversation(ctx, id.ID); err == nil {
-			if err := router.Booker.ApplyChatProfile(ctx, uid, conv.PendingName, conv.TermsAcceptedAt); err != nil {
-				log.Printf("[channel-setup] apply chat profile uid=%s: %v", uid, err)
-			}
+		if conv, err := store.GetConversation(ctx, id.ID); err != nil {
+			log.Printf("[channel-setup] apply chat profile uid=%s: %v", uid, fmt.Errorf("load conversation: %w", err))
+		} else if err := router.Booker.ApplyChatProfile(ctx, uid, conv.PendingName, conv.TermsAcceptedAt); err != nil {
+			log.Printf("[channel-setup] apply chat profile uid=%s: %v", uid, err)
 		}
 		c.JSON(http.StatusOK, gin.H{"linked": true, "phone_hint": phoneHint(id.Address)})
 	})
@@ -168,8 +169,8 @@ func outcomeName(booked int, last channel.PostResult) string {
 
 func setupPageHeaders(c *gin.Context) {
 	h := c.Writer.Header()
-	// The token rides in the query string: keep it out of caches and out of
-	// the Referer sent to Stripe/Supabase/CDNs.
+	// Defence in depth: the token rides in the fragment (never sent), and
+	// the page is still kept out of caches and out of any Referer.
 	h.Set("Cache-Control", "no-store")
 	h.Set("Referrer-Policy", "no-referrer")
 	h.Set("X-Content-Type-Options", "nosniff")

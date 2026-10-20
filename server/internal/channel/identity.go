@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 )
 
@@ -175,7 +176,12 @@ func (s *PGStore) ConsumeSetupTokenAndLink(ctx context.Context, tokenHash, userI
 	if err != nil {
 		return Identity{}, fmt.Errorf("link: begin: %w", err)
 	}
-	defer tx.Rollback() //nolint:errcheck // no-op after Commit
+	defer func() {
+		// After Commit, Rollback returns sql.ErrTxDone; anything else is real.
+		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+			log.Printf("[channel] link: rollback: %v", err)
+		}
+	}()
 
 	// Use the token up first. The WHERE makes this the single gate: a second
 	// tab, a replayed request or an expired link all find no row.

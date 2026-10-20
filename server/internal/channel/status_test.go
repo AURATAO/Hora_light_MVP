@@ -71,11 +71,17 @@ func TestNotifyStatusSendsToTheBookingThread(t *testing.T) {
 func TestNotifyStatusQuietWhenNoThreadOrNotAChatEvent(t *testing.T) {
 	g := newRig("")
 	g.r.Status = &memStatus{found: false}
-	_ = g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: "ORDER_ACCEPTED", TaskID: "t"})
+	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: "ORDER_ACCEPTED", TaskID: "t"}); err != nil {
+		t.Fatal(err)
+	}
 	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{Channel: IMessage, Address: me}}}
-	_ = g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: "PAYOUT_SENT", TaskID: "t"})
+	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: "PAYOUT_SENT", TaskID: "t"}); err != nil {
+		t.Fatal(err)
+	}
 	g.r.Status = nil
-	_ = g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: "ORDER_ACCEPTED", TaskID: "t"})
+	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: "ORDER_ACCEPTED", TaskID: "t"}); err != nil {
+		t.Fatal(err)
+	}
 	if len(g.ad.sent) != 0 {
 		t.Fatalf("nothing should be sent, got %+v", g.ad.sent)
 	}
@@ -90,14 +96,18 @@ func TestNotifyStatusRespectsWhatsAppWindow(t *testing.T) {
 
 	stale := now.Add(-25 * time.Hour)
 	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{Channel: WhatsApp, Address: me}, LastInboundAt: &stale}}
-	_ = g.r.NotifyStatus(context.Background(), "u", StatusEvent{Type: "CLOCK_IN", TaskID: "t"})
+	if err := g.r.NotifyStatus(context.Background(), "u", StatusEvent{Type: "CLOCK_IN", TaskID: "t"}); err != nil {
+		t.Fatal(err)
+	}
 	if len(wa.sent) != 0 {
 		t.Fatal("outside the 24h window a free-form WhatsApp message must not be sent")
 	}
 
 	fresh := now.Add(-2 * time.Hour)
 	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{Channel: WhatsApp, Address: me}, LastInboundAt: &fresh}}
-	_ = g.r.NotifyStatus(context.Background(), "u", StatusEvent{Type: "CLOCK_IN", TaskID: "t"})
+	if err := g.r.NotifyStatus(context.Background(), "u", StatusEvent{Type: "CLOCK_IN", TaskID: "t"}); err != nil {
+		t.Fatal(err)
+	}
 	if len(wa.sent) != 1 {
 		t.Fatal("inside the window it should send")
 	}

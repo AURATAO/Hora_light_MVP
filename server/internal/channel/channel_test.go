@@ -111,9 +111,14 @@ func TestSendblueParseDropsOutboundAndGroups(t *testing.T) {
 		func(p map[string]any) { p["group_id"] = "g-1" },
 	} {
 		var p map[string]any
-		_ = json.Unmarshal([]byte(sendblueInbound), &p)
+		if err := json.Unmarshal([]byte(sendblueInbound), &p); err != nil {
+			t.Fatal(err)
+		}
 		mut(p)
-		b, _ := json.Marshal(p)
+		b, err := json.Marshal(p)
+		if err != nil {
+			t.Fatal(err)
+		}
 		msgs, err := a.ParseInbound(b)
 		if err != nil || len(msgs) != 0 {
 			t.Fatalf("expected drop, got %v %+v", err, msgs)
@@ -129,9 +134,16 @@ func TestSendblueSend(t *testing.T) {
 			http.Error(w, "bad", 401)
 			return
 		}
-		b, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(b, &got)
-		_, _ = w.Write([]byte(`{"message_handle":"out-1","status":"QUEUED"}`))
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+		}
+		if err := json.Unmarshal(b, &got); err != nil {
+			t.Error(err)
+		}
+		if _, err := w.Write([]byte(`{"message_handle":"out-1","status":"QUEUED"}`)); err != nil {
+			t.Error(err)
+		}
 	}))
 	defer srv.Close()
 
@@ -231,9 +243,16 @@ func TestWhatsAppSend(t *testing.T) {
 			http.Error(w, "bad", 401)
 			return
 		}
-		b, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(b, &got)
-		_, _ = w.Write([]byte(`{"messaging_product":"whatsapp","messages":[{"id":"wamid.NEW"}]}`))
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+		}
+		if err := json.Unmarshal(b, &got); err != nil {
+			t.Error(err)
+		}
+		if _, err := w.Write([]byte(`{"messaging_product":"whatsapp","messages":[{"id":"wamid.NEW"}]}`)); err != nil {
+			t.Error(err)
+		}
 	}))
 	defer srv.Close()
 	a := &WhatsAppAdapter{AccessToken: "tok", PhoneNumberID: "111", BaseURL: srv.URL}

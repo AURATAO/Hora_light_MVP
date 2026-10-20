@@ -234,8 +234,9 @@ func postEnroute(c *gin.Context) {
 	}
 
 	log.Printf("[enroute] task=%s supporter=%s at=%v", taskID, uid, enrouteAt)
-	if firstTap {
-		notifyChatOnMyWay(ctx, taskID, uid)
+	if firstTap && notify.ChatHook != nil {
+		// Lookups and send both off the request path (S-32).
+		go notifyChatOnMyWay(taskID, uid)
 	}
 	c.JSON(http.StatusOK, gin.H{"enroute_at": enrouteAt})
 }
@@ -244,20 +245,28 @@ func postEnroute(c *gin.Context) {
 // has set off. Chat-only: app users get the live map at this moment and no
 // notification, and that stays as it is. The hook is nil unless messaging is
 // on (notify.ChatHook), so this is inert in production.
-func notifyChatOnMyWay(ctx context.Context, taskID, supporterUID string) {
+func notifyChatOnMyWay(taskID, supporterUID string) {
 	hook := notify.ChatHook
 	if hook == nil {
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	var requesterID, title string
 	if err := db.QueryRow(ctx,
 		`select requester_id::text, coalesce(title,'') from public.tasks where id = $1::uuid`, taskID,
 	).Scan(&requesterID, &title); err != nil {
+		log.Printf("[enroute] chat notice task=%s: %v", taskID, fmt.Errorf("load task: %w", err))
 		return
 	}
 	var supporterEmail string
-	_ = db.QueryRow(ctx, `select coalesce(email,'') from public.users where id = $1::uuid`, supporterUID).Scan(&supporterEmail)
-	go hook(notify.CreateNotificationInput{
+	if err := db.QueryRow(ctx,
+		`select coalesce(email,'') from public.users where id = $1::uuid`, supporterUID,
+	).Scan(&supporterEmail); err != nil {
+		log.Printf("[enroute] chat notice task=%s: %v", taskID, fmt.Errorf("load supporter: %w", err))
+		return
+	}
+	hook(notify.CreateNotificationInput{
 		UserID:        requesterID,
 		TaskID:        taskID,
 		Type:          "ON_MY_WAY",

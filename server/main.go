@@ -476,7 +476,7 @@ func main() {
 	// handshake sends hub.verify_token in the query. Every other path is
 	// logged exactly as before.
 	r := gin.New()
-	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{SkipPaths: []string{"/webhooks/channel/whatsapp", "/webhooks/whatsapp"}}), gin.Recovery())
+	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{SkipPaths: []string{"/webhooks/channel/whatsapp", "/webhooks/whatsapp", "/channel/setup"}}), gin.Recovery())
 	r.SetTrustedProxies(nil)
 	origins := os.Getenv("CORS_ALLOW_ORIGINS") // comma-separated exact origins
 	exactOrigins := strings.Split(origins, ",")

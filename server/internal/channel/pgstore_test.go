@@ -92,17 +92,22 @@ func TestPGIdentityLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	var last time.Time
-	_ = db.QueryRow(`SELECT last_inbound_at FROM channel_conversations WHERE identity_id=$1`, a.ID).Scan(&last)
+	if err := db.QueryRow(`SELECT last_inbound_at FROM channel_conversations WHERE identity_id=$1`, a.ID).Scan(&last); err != nil {
+		t.Fatal(err)
+	}
 	if !last.Equal(later.Truncate(time.Microsecond)) && last.Sub(later).Abs() > time.Millisecond {
 		t.Fatalf("last_inbound_at went backwards: %v", last)
 	}
 
 	// Token: peek does not consume; consume links once.
-	tok, hash, _ := NewSetupToken()
+	tok, hash, err := NewSetupToken()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := s.CreateSetupToken(ctx, a.ID, hash, time.Now().Add(SetupTokenTTL)); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := s.SetupTokenIssuedSince(ctx, a.ID, time.Now().Add(-time.Minute)); !ok {
+	if ok, err := s.SetupTokenIssuedSince(ctx, a.ID, time.Now().Add(-time.Minute)); err != nil || !ok {
 		t.Fatal("fresh token not seen")
 	}
 	if id, _, err := s.PeekSetupToken(ctx, HashSetupToken(tok)); err != nil || id.ID != a.ID {
@@ -120,15 +125,22 @@ func TestPGIdentityLifecycle(t *testing.T) {
 		t.Fatalf("peek after use: %v", err)
 	}
 	var verified sql.NullTime
-	_ = db.QueryRow(`SELECT verified_at FROM channel_identities WHERE id=$1`, a.ID).Scan(&verified)
+	if err := db.QueryRow(`SELECT verified_at FROM channel_identities WHERE id=$1`, a.ID).Scan(&verified); err != nil {
+		t.Fatal(err)
+	}
 	if !verified.Valid {
 		t.Fatal("verified_at not set on link")
 	}
 
 	// The same number can't be taken over by a different account, and the
 	// failed attempt leaves its token unused (transaction rolled back).
-	_, hash2, _ := NewSetupToken()
-	_ = s.CreateSetupToken(ctx, a.ID, hash2, time.Now().Add(SetupTokenTTL))
+	_, hash2, err := NewSetupToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSetupToken(ctx, a.ID, hash2, time.Now().Add(SetupTokenTTL)); err != nil {
+		t.Fatal(err)
+	}
 	other := newUser(t, db)
 	if _, err := s.ConsumeSetupTokenAndLink(ctx, hash2, other); !errors.Is(err, ErrIdentityTaken) {
 		t.Fatalf("takeover: %v", err)
@@ -146,9 +158,17 @@ func TestPGExpiredTokenRejected(t *testing.T) {
 	db := testDB(t)
 	s := &PGStore{DB: db}
 	ctx := context.Background()
-	a, _ := s.UpsertIdentity(ctx, IMessage, "+15559876543")
-	_, hash, _ := NewSetupToken()
-	_ = s.CreateSetupToken(ctx, a.ID, hash, time.Now().Add(-time.Second))
+	a, err := s.UpsertIdentity(ctx, IMessage, "+15559876543")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, hash, err := NewSetupToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSetupToken(ctx, a.ID, hash, time.Now().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, err := s.PeekSetupToken(ctx, hash); !errors.Is(err, ErrTokenInvalid) {
 		t.Fatalf("peek expired: %v", err)
 	}
@@ -161,9 +181,17 @@ func TestPGConcurrentLinkOnlyOneWins(t *testing.T) {
 	db := testDB(t)
 	s := &PGStore{DB: db}
 	ctx := context.Background()
-	a, _ := s.UpsertIdentity(ctx, IMessage, "+15550001111")
-	_, hash, _ := NewSetupToken()
-	_ = s.CreateSetupToken(ctx, a.ID, hash, time.Now().Add(SetupTokenTTL))
+	a, err := s.UpsertIdentity(ctx, IMessage, "+15550001111")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, hash, err := NewSetupToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSetupToken(ctx, a.ID, hash, time.Now().Add(SetupTokenTTL)); err != nil {
+		t.Fatal(err)
+	}
 	user := newUser(t, db)
 
 	var wg sync.WaitGroup
@@ -190,7 +218,10 @@ func TestPGConversationRoundTripAndClaim(t *testing.T) {
 	db := testDB(t)
 	s := &PGStore{DB: db}
 	ctx := context.Background()
-	a, _ := s.UpsertIdentity(ctx, IMessage, "+15552223333")
+	a, err := s.UpsertIdentity(ctx, IMessage, "+15552223333")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Fresh identity reads as idle with nothing pending.
 	c, err := s.GetConversation(ctx, a.ID)
@@ -207,7 +238,10 @@ func TestPGConversationRoundTripAndClaim(t *testing.T) {
 	if err := s.SaveConversation(ctx, c); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := s.GetConversation(ctx, a.ID)
+	got, err := s.GetConversation(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.State != StateAwaitingConfirm || got.PendingName != "Aura" || got.Pending == nil ||
 		got.Pending.Draft.Title != "Laundry pickup" || got.Pending.QuoteCents != 1200 || got.TermsAcceptedAt == nil {
 		t.Fatalf("round trip: %+v", got)
@@ -215,8 +249,13 @@ func TestPGConversationRoundTripAndClaim(t *testing.T) {
 
 	// Consent is never cleared by a later save.
 	got.TermsAcceptedAt = nil
-	_ = s.SaveConversation(ctx, got)
-	again, _ := s.GetConversation(ctx, a.ID)
+	if err := s.SaveConversation(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.GetConversation(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if again.TermsAcceptedAt == nil {
 		t.Fatal("terms_accepted_at was cleared")
 	}
@@ -240,22 +279,29 @@ func TestPGConversationRoundTripAndClaim(t *testing.T) {
 	if wins != 1 {
 		t.Fatalf("%d claims won", wins)
 	}
-	if c2, _ := s.GetConversation(ctx, a.ID); c2.State != StatePosting {
+	if c2, err := s.GetConversation(ctx, a.ID); err != nil || c2.State != StatePosting {
 		t.Fatalf("state after claim: %s", c2.State)
 	}
 	// A fresh claim is not stealable; a stale one (crash mid-post) is.
-	if _, ok, _ := s.ClaimForPosting(ctx, a.ID, StateAwaitingConfirm); ok {
+	if _, ok, err := s.ClaimForPosting(ctx, a.ID, StateAwaitingConfirm); err != nil || ok {
 		t.Fatal("claimed a conversation that is mid-post")
 	}
-	_, _ = db.Exec(`UPDATE channel_conversations SET updated_at = now() - interval '4 minutes' WHERE identity_id=$1`, a.ID)
-	if _, ok, _ := s.ClaimForPosting(ctx, a.ID, StateAwaitingConfirm); !ok {
+	if _, err := db.Exec(`UPDATE channel_conversations SET updated_at = now() - interval '4 minutes' WHERE identity_id=$1`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.ClaimForPosting(ctx, a.ID, StateAwaitingConfirm); err != nil || !ok {
 		t.Fatal("a stale claim should be recoverable")
 	}
 
 	// ConversationsForUser finds it once linked.
 	user := newUser(t, db)
-	_, hash, _ := NewSetupToken()
-	_ = s.CreateSetupToken(ctx, a.ID, hash, time.Now().Add(SetupTokenTTL))
+	_, hash, err := NewSetupToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSetupToken(ctx, a.ID, hash, time.Now().Add(SetupTokenTTL)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.ConsumeSetupTokenAndLink(ctx, hash, user); err != nil {
 		t.Fatal(err)
 	}
@@ -279,14 +325,24 @@ func TestPGStatusTargetPrefersTheBookingThread(t *testing.T) {
 		t.Fatalf("app-only user must have no target: ok=%v err=%v", ok, err)
 	}
 
-	im, _ := s.UpsertIdentity(ctx, IMessage, "+15550000001")
-	wa, _ := s.UpsertIdentity(ctx, WhatsApp, "+15550000002")
+	im, err := s.UpsertIdentity(ctx, IMessage, "+15550000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wa, err := s.UpsertIdentity(ctx, WhatsApp, "+15550000002")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.Exec(`UPDATE channel_identities SET user_id = $1, verified_at = now()`, user); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	_ = s.TouchConversation(ctx, im.ID, now.Add(-time.Hour))
-	_ = s.TouchConversation(ctx, wa.ID, now) // WhatsApp is the most recent
+	if err := s.TouchConversation(ctx, im.ID, now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TouchConversation(ctx, wa.ID, now); err != nil {
+		t.Fatal(err)
+	} // WhatsApp is the most recent
 
 	got, ok, err := s.StatusTargetFor(ctx, user, task)
 	if err != nil || !ok || got.Identity.Channel != WhatsApp || got.LastInboundAt == nil {

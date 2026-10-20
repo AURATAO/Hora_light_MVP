@@ -40,9 +40,16 @@ func TestOpenAICompatParseTask(t *testing.T) {
 			http.Error(w, "bad", 401)
 			return
 		}
-		b, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(b, &got)
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"title\":\"Grocery run\",\"category\":\"grocery\",\"description\":\"Peanut allergy: check labels.\",\"location_1\":\"Whole Foods on 3rd\",\"location_2\":null,\"duration_minutes\":60,\"scheduled\":false,\"scheduled_time\":null}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1200,"completion_tokens":80}}`))
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+		}
+		if err := json.Unmarshal(b, &got); err != nil {
+			t.Error(err)
+		}
+		if _, err := w.Write([]byte(`{"choices":[{"message":{"content":"{\"title\":\"Grocery run\",\"category\":\"grocery\",\"description\":\"Peanut allergy: check labels.\",\"location_1\":\"Whole Foods on 3rd\",\"location_2\":null,\"duration_minutes\":60,\"scheduled\":false,\"scheduled_time\":null}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1200,"completion_tokens":80}}`)); err != nil {
+			t.Error(err)
+		}
 	}))
 	defer srv.Close()
 
@@ -69,7 +76,9 @@ func TestOpenAICompatParseTask(t *testing.T) {
 
 func TestOpenAICompatTruncationIsError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"title\":"},"finish_reason":"length"}]}`))
+		if _, err := w.Write([]byte(`{"choices":[{"message":{"content":"{\"title\":"},"finish_reason":"length"}]}`)); err != nil {
+			t.Error(err)
+		}
 	}))
 	defer srv.Close()
 	p := &OpenAICompat{BaseURL: srv.URL, APIKey: "k", Model: "m"}
@@ -86,7 +95,9 @@ func TestOpenAICompatUnconfigured(t *testing.T) {
 
 func TestClassifyAndFallback(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"intent\":\"greeting\"}"},"finish_reason":"stop"}]}`))
+		if _, err := w.Write([]byte(`{"choices":[{"message":{"content":"{\"intent\":\"greeting\"}"},"finish_reason":"stop"}]}`)); err != nil {
+			t.Error(err)
+		}
 	}))
 	defer srv.Close()
 	p := &OpenAICompat{BaseURL: srv.URL, APIKey: "k", Model: "m"}
@@ -98,7 +109,7 @@ func TestClassifyAndFallback(t *testing.T) {
 	if got, err := down.Classify(context.Background(), "hi!"); err == nil || got != IntentGreeting {
 		t.Fatalf("fallback greeting: %v %v", got, err)
 	}
-	if got, _ := down.Classify(context.Background(), "need my dry cleaning picked up"); got != IntentNewTask {
+	if got, err := down.Classify(context.Background(), "need my dry cleaning picked up"); err == nil || got != IntentNewTask {
 		t.Fatalf("fallback request: %v", got)
 	}
 }

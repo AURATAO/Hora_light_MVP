@@ -71,6 +71,31 @@ type Router struct {
 	// Status finds the thread for task status updates (status.go). Nil turns
 	// them off.
 	Status StatusStore
+	// Go runs a reply off the request path when the caller is an HTTP
+	// request (S-32: the setup page's finish step must not wait on
+	// Sendblue/Meta). Default `go f()`; tests run it inline.
+	Go func(f func())
+}
+
+// dispatch runs a reply: inline when routing a webhook message (already off
+// any request path), on its own goroutine when async — the booking result is
+// decided and saved before this is called; only the message waits.
+func (r *Router) dispatch(ctx context.Context, async bool, f func(context.Context) error) error {
+	if !async {
+		return f(ctx)
+	}
+	run := r.Go
+	if run == nil {
+		run = func(fn func()) { go fn() }
+	}
+	run(func() {
+		c, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		if err := f(c); err != nil {
+			log.Printf("[channel] async reply: %v", err)
+		}
+	})
+	return nil
 }
 
 const resendAfter = 2 * time.Minute
@@ -85,7 +110,7 @@ func (r *Router) now() time.Time {
 func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	id, err := r.Identities.UpsertIdentity(ctx, in.Channel, in.From)
 	if err != nil {
-		return err
+		return fmt.Errorf("HandleInbound: %w", err)
 	}
 	// Bookkeeping failures are logged, not fatal: the person still deserves
 	// an answer, and neither row gates anything money-related.
@@ -97,7 +122,7 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	}
 	conv, err := r.Conversations.GetConversation(ctx, id.ID)
 	if err != nil {
-		return err
+		return fmt.Errorf("HandleInbound: %w", err)
 	}
 	text := strings.TrimSpace(in.Text)
 	if text == "" {
@@ -180,7 +205,7 @@ func (r *Router) startDraft(ctx context.Context, in Inbound, id Identity, conv C
 	if !id.Linked() && conv.PendingName == "" {
 		conv.State = StateAwaitingName
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
-			return err
+			return fmt.Errorf("startDraft: %w", err)
 		}
 		return r.Reply(ctx, in, fmt.Sprintf(CopyAskName, draft.Title), "")
 	}
@@ -192,7 +217,7 @@ func (r *Router) showSummary(ctx context.Context, in Inbound, conv Conversation)
 	conv.Pending.SummaryShown = summary
 	conv.State = StateAwaitingConfirm
 	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
-		return err
+		return fmt.Errorf("showSummary: %w", err)
 	}
 	return r.Reply(ctx, in, summary, "")
 }
@@ -209,7 +234,7 @@ func (r *Router) onName(ctx context.Context, in Inbound, id Identity, conv Conve
 	if conv.Pending == nil { // nothing to book; just remember the name
 		conv.State = StateIdle
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
-			return err
+			return fmt.Errorf("onName: %w", err)
 		}
 		return r.Reply(ctx, in, CopyWelcome, "")
 	}
@@ -229,14 +254,14 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 		// Persist the consent before claiming — narrowly. A full save here
 		// could resurrect a draft a parallel YES has already booked.
 		if err := r.Conversations.AcceptTerms(ctx, id.ID, now); err != nil {
-			return err
+			return fmt.Errorf("onConfirm: %w", err)
 		}
-		_, claimed, err := r.claimAndPost(ctx, in.Channel, id, StateAwaitingConfirm)
+		_, claimed, err := r.claimAndPost(ctx, in.Channel, id, StateAwaitingConfirm, false)
 		if err == nil && !claimed {
 			// A parallel YES (or the page) holds the claim and is booking it.
 			return r.Reply(ctx, in, CopyBookingInFlight, "")
 		}
-		return err
+		return wrapErr("onConfirm", err)
 	default:
 		// Not a yes or no: treat it as a correction ("make it 4pm") and
 		// re-draft with everything said so far.
@@ -254,7 +279,7 @@ func (r *Router) onAwaitingSetup(ctx context.Context, in Inbound, id Identity, c
 	}
 	recent, err := r.Identities.SetupTokenIssuedSince(ctx, id.ID, r.now().Add(-resendAfter))
 	if err != nil {
-		return err
+		return fmt.Errorf("onAwaitingSetup: %w", err)
 	}
 	if recent {
 		return r.Reply(ctx, in, CopySetupAlreadySent, "")
@@ -266,7 +291,7 @@ func (r *Router) dropDraft(ctx context.Context, in Inbound, conv Conversation) e
 	conv.Pending = nil
 	conv.State = StateIdle
 	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
-		return err
+		return fmt.Errorf("dropDraft: %w", err)
 	}
 	return r.Reply(ctx, in, CopyDropped, "")
 }
@@ -277,14 +302,14 @@ func (r *Router) sendSetupLink(ctx context.Context, in Inbound, id Identity, con
 	}
 	token, hash, err := NewSetupToken()
 	if err != nil {
-		return err
+		return fmt.Errorf("sendSetupLink: %w", err)
 	}
 	if err := r.Identities.CreateSetupToken(ctx, id.ID, hash, r.now().Add(SetupTokenTTL)); err != nil {
-		return err
+		return fmt.Errorf("sendSetupLink: %w", err)
 	}
 	conv.State = StateAwaitingSetup
 	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
-		return err
+		return fmt.Errorf("sendSetupLink: %w", err)
 	}
 	return r.Reply(ctx, in, fmt.Sprintf(copyFmt, r.SetupURL(token)), "")
 }
@@ -292,10 +317,10 @@ func (r *Router) sendSetupLink(ctx context.Context, in Inbound, id Identity, con
 // claimAndPost books the pending draft for a linked number exactly once and
 // tells the person. Whoever loses the claim (a second YES, the page's finish
 // step racing a YES) posts nothing.
-func (r *Router) claimAndPost(ctx context.Context, ch Channel, id Identity, from State) (res PostResult, claimed bool, err error) {
+func (r *Router) claimAndPost(ctx context.Context, ch Channel, id Identity, from State, async bool) (res PostResult, claimed bool, err error) {
 	pending, ok, err := r.Conversations.ClaimForPosting(ctx, id.ID, from)
 	if err != nil {
-		return PostResult{Outcome: PostFailed}, false, err
+		return PostResult{Outcome: PostFailed}, false, fmt.Errorf("claimAndPost: %w", err)
 	}
 	if !ok {
 		log.Printf("[channel] claim lost identity=%s from=%s — not posting", id.ID, from)
@@ -303,16 +328,16 @@ func (r *Router) claimAndPost(ctx context.Context, ch Channel, id Identity, from
 	}
 	conv, err := r.Conversations.GetConversation(ctx, id.ID)
 	if err != nil {
-		return PostResult{Outcome: PostFailed}, true, err
+		return PostResult{Outcome: PostFailed}, true, fmt.Errorf("claimAndPost: %w", err)
 	}
 	conv.Pending = pending
 	res = r.Booker.Post(ctx, id.UserID, pending.Draft)
 	log.Printf("[channel] post identity=%s outcome=%d task=%s", id.ID, res.Outcome, res.TaskID)
-	return res, true, r.afterPost(ctx, ch, id, conv, res)
+	return res, true, r.afterPost(ctx, ch, id, conv, res, async)
 }
 
 // afterPost moves the conversation out of StatePosting and replies.
-func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Conversation, res PostResult) error {
+func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Conversation, res PostResult, async bool) error {
 	out := Outbound{Channel: ch, To: id.Address}
 	switch res.Outcome {
 	case PostBooked:
@@ -322,26 +347,32 @@ func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Co
 			log.Printf("[channel] save after booking identity=%s: %v", id.ID, err)
 		}
 		out.Text = CopyBooked
-		return r.Send(ctx, out, res.TaskID)
+		return r.dispatch(ctx, async, func(c context.Context) error { return r.Send(c, out, res.TaskID) })
 	case PostNeedsCard:
 		in := Inbound{Channel: ch, From: id.Address}
-		return r.sendSetupLink(ctx, in, id, conv, CopyNeedCard)
+		return r.dispatch(ctx, async, func(c context.Context) error { return r.sendSetupLink(c, in, id, conv, CopyNeedCard) })
 	case PostOwesBalance, PostDeclined:
 		// Keep the draft: once the card or balance is sorted, YES retries.
 		conv.State = StateAwaitingConfirm
-		_ = r.Conversations.SaveConversation(ctx, conv)
+		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+			log.Printf("[channel] save after post identity=%s: %v", id.ID, err)
+		}
 		out.Text = firstNonEmpty(res.Message, CopyCardProblem) + " " + CopyRetryYes
-		return r.Send(ctx, out, "")
+		return r.dispatch(ctx, async, func(c context.Context) error { return r.Send(c, out, "") })
 	case PostNeeds3DS:
 		conv.State = StateHandoff
-		_ = r.Conversations.SaveConversation(ctx, conv)
+		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+			log.Printf("[channel] save after post identity=%s: %v", id.ID, err)
+		}
 		out.Text = Copy3DSHandoff
-		return r.Send(ctx, out, res.TaskID)
+		return r.dispatch(ctx, async, func(c context.Context) error { return r.Send(c, out, res.TaskID) })
 	default:
 		conv.State = StateAwaitingConfirm
-		_ = r.Conversations.SaveConversation(ctx, conv)
+		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+			log.Printf("[channel] save after post identity=%s: %v", id.ID, err)
+		}
 		out.Text = CopyPostFailed
-		return r.Send(ctx, out, "")
+		return r.dispatch(ctx, async, func(c context.Context) error { return r.Send(c, out, "") })
 	}
 }
 
@@ -351,14 +382,14 @@ func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Co
 func (r *Router) FinishSetup(ctx context.Context, userID string) (booked int, last PostResult, err error) {
 	convs, ids, err := r.Conversations.ConversationsForUser(ctx, userID)
 	if err != nil {
-		return 0, PostResult{}, err
+		return 0, PostResult{}, fmt.Errorf("FinishSetup: %w", err)
 	}
 	last = PostResult{Outcome: PostFailed}
 	for i, c := range convs {
 		if c.State != StateAwaitingSetup || c.Pending == nil {
 			continue
 		}
-		res, claimed, err := r.claimAndPost(ctx, ids[i].Channel, ids[i], StateAwaitingSetup)
+		res, claimed, err := r.claimAndPost(ctx, ids[i].Channel, ids[i], StateAwaitingSetup, true)
 		if err != nil {
 			log.Printf("[channel] finish setup identity=%s: %v", ids[i].ID, err)
 		}

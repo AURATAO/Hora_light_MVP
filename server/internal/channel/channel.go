@@ -13,6 +13,7 @@ package channel
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 )
@@ -83,3 +84,12 @@ var ErrUnverified = errors.New("channel: webhook failed verification")
 
 // ErrNotConfigured means the adapter is missing credentials it needs.
 var ErrNotConfigured = errors.New("channel: adapter not configured")
+
+// wrapErr adds context to err and keeps nil as nil (S-31), for returns where
+// err may legitimately be nil.
+func wrapErr(where string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", where, err)
+}
