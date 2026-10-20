@@ -12,6 +12,7 @@ import (
 
 	"hora-auth/internal/channel"
 	"hora-auth/internal/channel/llm"
+	"hora-auth/internal/notify"
 )
 
 // RegisterChannelWebhooks mounts the messaging entry point (PLAN.md):
@@ -58,7 +59,11 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		SetupURL: func(token string) string {
 			return base + "/channel/setup?t=" + url.QueryEscape(token)
 		},
+		Status: store,
 	}
+	// Task status updates to the chat (channel_status.go). Set here, before
+	// the server starts, and only when the flag is on.
+	notify.ChatHook = chatStatusHook(sqlDB, router)
 
 	sbHandler := &channel.WebhookHandler{Adapter: sb, Store: store, Router: router}
 	waHandler := &channel.WebhookHandler{Adapter: wa, Store: store, Router: router}

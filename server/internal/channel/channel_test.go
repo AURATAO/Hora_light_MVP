@@ -267,6 +267,7 @@ type fakeStore struct {
 	seen      map[string]bool
 	processed []string
 	outbound  int
+	lastTask  string
 	err       error
 }
 
@@ -291,11 +292,17 @@ func (s *fakeStore) MarkProcessed(_ context.Context, _ Channel, id string) error
 	s.processed = append(s.processed, id)
 	return nil
 }
-func (s *fakeStore) RecordOutbound(context.Context, Outbound, string, string) error {
+func (s *fakeStore) RecordOutbound(_ context.Context, _ Outbound, _ string, taskID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.outbound++
+	s.lastTask = taskID
 	return nil
+}
+func (s *fakeStore) lastOutboundTask() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastTask
 }
 
 type fakeRouter struct {

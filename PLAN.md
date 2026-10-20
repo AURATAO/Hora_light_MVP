@@ -131,8 +131,8 @@ reasoning on by default — measure latency with it on and off.
 | # | Dates | Deliverable | Done |
 |---|---|---|---|
 | M0 | Oct 19 | PLAN.md; `channel` package skeleton; adapter interface; migration file (not applied) | ✅ see §15 |
-| M1 | Oct 20–22 | Sendblue inbound/outbound in sandbox; identity + setup page; dedupe | 🟡 reworked to help-first flow; phone test pending — §15 |
-| M2 | Oct 23–25 | Draft → YES → hold → task; status updates via `notify.Create` hook | 🟡 draft → YES → post done (pulled forward); status updates not started |
+| M1 | Oct 20–22 | Sendblue inbound/outbound in sandbox; identity + setup page; dedupe | ✅ help-first flow booked a real task from an iPhone, Oct 20 — §15 |
+| M2 | Oct 23–25 | Draft → YES → hold → task; status updates via `notify.Create` hook | 🟡 first booking proven on a phone (Oct 20); status updates built, phone test pending |
 | M3 | Oct 26–28 | Approvals YES/NO; chat relay; multi-task; ops handoff | |
 | M4 | Oct 29–31 | WhatsApp adapter on Meta test number; eval run; real-card E2E on both channels; demo | |
 
@@ -156,6 +156,12 @@ The setup step is the one to watch.
 - Does Sendblue expose threaded-reply context? If not, step 5 falls back to 6–7.
 - One number for both channels, or separate? (Default: separate.)
 - ~~Staging~~ decided 2026-10-19, see §16.
+- **Adjustment to make after the flow is complete (Aura, 2026-10-20):** someone
+  who wants three tasks at once has to go through the whole round for each one,
+  which is tedious. To design: one message listing several errands → several
+  drafts → one summary → one YES. (From the second task on, a linked number
+  already books with just YES — no link, no code — so the remaining friction is
+  the one-task-per-round chat itself.) Fits M3 "multi-task".
 
 ## 15. Progress log
 
@@ -255,6 +261,35 @@ task stays in Messages. Diagram updated (artifact §03).
 - Tests: 43 in `internal/channel` + 2 in `server` (booker mapping), all green
   with `-race`, DB tests on a throwaway Postgres incl. 8-way claim race.
 
+**First real booking — 2026-10-20 18:18 UTC (staging, Aura's iPhone):** new
+number → help → draft → name → summary → YES → page (email code via the
+staging Postmark server → link) → booked. Task `open` in the branch DB,
+conversation back to `idle`, number linked and verified, 12 messages, none
+left unprocessed. Fix on the way: the Supabase branch inherited main's custom
+SMTP settings without the password (535 from Postmark); staging now uses its
+own Postmark server and token (§16 key rule).
+
+**M2 status updates — 2026-10-20**
+- `notify.ChatHook` (one nil-by-default variable in `internal/notify`): every
+  `notify.Create` also hands the event to the chat, alongside the in-app row,
+  email and push — never instead of them. Set only by
+  `RegisterChannelWebhooks`, so production is unchanged until the flag is on.
+- `server/channel_status.go`: sends only when the recipient is the task's
+  **requester** (supporter-side notifications for the same task never reach a
+  chat), only for users with a linked number, on its own goroutine.
+- `channel/status.go`: chat copy for accepted, arrived, clock in/out, done
+  (time + total), cancelled, reassigned, removed, nearing the estimate. Goes to
+  the thread the task was booked from (the "Booked" message carries the task
+  id), else the most recent number; recorded against the task so M3 can route
+  replies. WhatsApp outside 24 h is skipped (template needed, M4).
+- **Deliberately not sent yet:** anything that asks for an action in the app —
+  more time/budget approvals, time cap reached, balance due — because "do it in
+  the app" is a dead end for a chat-only customer. Email and push still carry
+  them; M3 adds YES/NO by text for them. Receipt stays email-only (done
+  message states the total).
+- Tests: 5 in `channel/status_test.go`, 1 DB test (booking thread wins over
+  most recent), 1 in `server` (requester-only guard). All green with `-race`.
+
 **Known gaps (next):** shopping budget is not asked in chat (grocery tasks
 post with no budget); 3DS in chat goes to a human; returning customer who
 needs a new card re-verifies email on the page; status updates to the chat
@@ -278,6 +313,15 @@ needs a new card re-verifies email on the page; status updates to the chat
   `SENDBLUE_API_SECRET`, `SENDBLUE_FROM_NUMBER`, `SENDBLUE_WEBHOOK_SECRET`,
   `BASETEN_API_KEY`. Stripe **test** keys added at M2.
 - Sendblue receive webhook → `https://hora-staging-messaging.onrender.com/webhooks/channel/sendblue`.
+- **Keys (rule, 2026-10-20): staging never reuses a production secret.**
+  Must be separate (money / real data): DB password and Supabase secret key
+  (branch has its own ✅), Stripe (**test mode only**). Should be separate (a
+  staging accident would hit prod): Postmark — own server "HO:RA Staging",
+  its Server API Token as both SMTP username and password on the branch ✅;
+  Baseten — own `hora-staging` key (to do, swap `BASETEN_API_KEY` on Render).
+  Shared for now: Sendblue sandbox line (prod doesn't use it; prod gets its own
+  keys with the paid line). Note: a Supabase branch inherits main's custom SMTP
+  host/user but not the password — set it per branch.
 - Tear down after Oct 31 if unused: delete the Render service and the branch.
 
 ## 14. Paused

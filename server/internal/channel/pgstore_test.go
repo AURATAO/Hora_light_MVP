@@ -264,3 +264,41 @@ func TestPGConversationRoundTripAndClaim(t *testing.T) {
 		t.Fatalf("for user: %d %v %v", len(convs), ids, err)
 	}
 }
+
+func TestPGStatusTargetPrefersTheBookingThread(t *testing.T) {
+	db := testDB(t)
+	s := &PGStore{DB: db}
+	ctx := context.Background()
+	user := newUser(t, db)
+	var task string
+	if err := db.QueryRow(`INSERT INTO tasks DEFAULT VALUES RETURNING id`).Scan(&task); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok, err := s.StatusTargetFor(ctx, user, task); err != nil || ok {
+		t.Fatalf("app-only user must have no target: ok=%v err=%v", ok, err)
+	}
+
+	im, _ := s.UpsertIdentity(ctx, IMessage, "+15550000001")
+	wa, _ := s.UpsertIdentity(ctx, WhatsApp, "+15550000002")
+	if _, err := db.Exec(`UPDATE channel_identities SET user_id = $1, verified_at = now()`, user); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	_ = s.TouchConversation(ctx, im.ID, now.Add(-time.Hour))
+	_ = s.TouchConversation(ctx, wa.ID, now) // WhatsApp is the most recent
+
+	got, ok, err := s.StatusTargetFor(ctx, user, task)
+	if err != nil || !ok || got.Identity.Channel != WhatsApp || got.LastInboundAt == nil {
+		t.Fatalf("no booking thread yet → most recent number: %+v ok=%v err=%v", got, ok, err)
+	}
+
+	// The task was booked over iMessage → updates go there.
+	if err := s.RecordOutbound(ctx, Outbound{Channel: IMessage, To: "+15550000001", Text: "Booked."}, "out-1", task); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err = s.StatusTargetFor(ctx, user, task)
+	if err != nil || !ok || got.Identity.Channel != IMessage || got.Identity.Address != "+15550000001" {
+		t.Fatalf("booking thread should win: %+v ok=%v err=%v", got, ok, err)
+	}
+}

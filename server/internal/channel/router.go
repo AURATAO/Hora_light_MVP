@@ -68,6 +68,9 @@ type Router struct {
 	Now      func() time.Time
 	// Location renders times in the requester's zone (America/New_York).
 	Location *time.Location
+	// Status finds the thread for task status updates (status.go). Nil turns
+	// them off.
+	Status StatusStore
 }
 
 const resendAfter = 2 * time.Minute
