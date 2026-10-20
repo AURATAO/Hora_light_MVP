@@ -118,3 +118,12 @@ PASS + INCOMPLETE may be conditionally approved only if (a) every check that did
 **Reviewer:** **PASS.** Noted without failing (no standard covers it): the refactored handler now answers 500 instead of 404 when the "already resolved" read fails for a reason other than no-row. Builder's declared interpretation: a database failure IS a server error; the old 404 hid it unlogged (an S-31 defect), so this is the correction, not a regression.
 **Verifier:** EXIT=1 RED — the only red is the secret scan, now actually running: the one finding is the inherited `payments_phase3_test.go:1109` on `main` (C-2); branch-only commits: 0. Everything else green; I-05 INCOMPLETE (Docker, C-1). The `git status` entries in that run were the round-1 fixes being written at the same time; committed in `c79cc62`.
 **Arbiter (Aura):** _pending_ — M3.1 is under the same conditional approval as D-16 (C-1..C-3); no merge.
+
+### M3.3 + M3.4 (several errands / ops handoff) — review round 1 — 2026-10-21 at `9575493`
+**Reviewer:** FAIL ×3, all fixed in `f7f665f`, no argument offered:
+- **S-11 condition 5 — real defect:** a 3DS outcome creates the task (parked until the bank confirms) but the item stayed pending; the new `Release` re-showed it with "Reply YES to book" — a second booking and charge. The pre-existing single-draft code had the same latent flaw, masked only because handoff had no release. Now a 3DS item is spent (removed from the pending set); regression test `TestThreeDSItemIsSpentNotRetried`.
+- S-32 ×2: ops send and release waited on Sendblue/Meta inside the admin request; now the state change is synchronous and the message is queued (send answers 202).
+**Verifier:** EXIT=1 — the only red is gitleaks (the inherited `main` finding, C-2); branch-only commits 0 (re-checked). Everything else green incl. full server suite with DB; I-05 INCOMPLETE (C-1).
+**Declared interpretations (Builder) for the Arbiter:**
+- I-I. The ops handoff email contains the recent message text and the linked account's email, with a last-four-digit phone hint. S-12 names phone numbers, credentials, GPS, identity data and payment details; message text and account email are what ops act on, as in every existing ops email. The full number never appears anywhere.
+- I-J. Ops routes exist before an ops UI does; they are reachable with the existing ops session (curl or the ops panel). A panel page is a follow-up, not a condition.
