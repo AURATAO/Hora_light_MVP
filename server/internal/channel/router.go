@@ -483,11 +483,15 @@ func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Co
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 			log.Printf("[channel] save after post identity=%s: %v", id.ID, err)
 		}
-		if err := r.notifyOps(ctx, id, HandoffPayment3DS, false); err != nil {
-			log.Printf("[channel] 3ds handoff identity=%s: %v", id.ID, err)
-		}
 		out.Text = partial + Copy3DSHandoff
-		return r.dispatch(ctx, async, func(c context.Context) error { return r.Send(c, out, res.TaskID) })
+		// Ops notice and the person's reply both off the request path when
+		// the caller is an HTTP request (S-32).
+		return r.dispatch(ctx, async, func(c context.Context) error {
+			if err := r.notifyOps(c, id, HandoffPayment3DS, false); err != nil {
+				log.Printf("[channel] 3ds handoff identity=%s: %v", id.ID, err)
+			}
+			return r.Send(c, out, res.TaskID)
+		})
 	default:
 		conv.State = StateAwaitingConfirm
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
