@@ -400,7 +400,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("pgx ParseConfig error: %v", err)
 	}
-	cfg.MaxConns = 8
+	cfg.MaxConns = int32(dbMaxConns())
 	cfg.MinConns = 1
 	cfg.MaxConnLifetime = time.Hour
 	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
@@ -443,8 +443,8 @@ func main() {
 	if err := sqldb.Ping(); err != nil {
 		log.Fatalf("sqldb ping failed: %v", err)
 	}
-	sqldb.SetMaxOpenConns(8)
-	sqldb.SetMaxIdleConns(8)
+	sqldb.SetMaxOpenConns(dbMaxConns())
+	sqldb.SetMaxIdleConns(dbMaxConns())
 	sqldb.SetConnMaxLifetime(time.Hour)
 	log.Println("[sqldb] connected (simple protocol)")
 
@@ -4863,6 +4863,18 @@ func listProfileReviews(c *gin.Context) {
 		"count":     len(items),
 		"avg_stars": avgStars,
 	})
+}
+
+// dbMaxConns is the size of EACH of the two pools (pgx + database/sql), so a
+// process holds up to twice this. Default 8 (production, unchanged). A
+// Supabase branch's session-mode pooler allows 15 clients in total, and a
+// zero-downtime deploy runs two processes at once — staging sets
+// DB_MAX_CONNS=3 so both fit.
+func dbMaxConns() int {
+	if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv("DB_MAX_CONNS"))); err == nil && v > 0 {
+		return v
+	}
+	return 8
 }
 
 // -------- Notifications --------
