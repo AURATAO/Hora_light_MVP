@@ -140,7 +140,9 @@ reasoning on by default — measure latency with it on and off.
 
 - [ ] Sendblue: plan allows outbound to users who texted first + price; webhook carries reply-to / reacted-message id; dedicated line
 - [x] Meta Business portfolio created, verification submitted (2026-10-18)
-- [ ] Meta developer app + WhatsApp product → test number id + temp token (set on Render, never in chat or git)
+- [x] Meta developer app + WhatsApp test number on staging (2026-10-20)
+- [ ] WhatsApp System User permanent token (temp token dies every 24 h)
+- [ ] Rotate `WHATSAPP_VERIFY_TOKEN` before prod (the GIN request log printed the staging one; prod route must not log query strings)
 - [ ] New US number for production WhatsApp (not the supporter number)
 - [ ] Baseten API key
 - [ ] TalkJS test-mode app id + secret on the staging Render service (M3 chat relay cannot be tested without it)
@@ -333,6 +335,22 @@ its buckets). M2 is fully verified on real infrastructure.
 pooler allows 15 clients; one process holds up to 16 (two pools × 8) and a
 zero-downtime deploy runs two. `DB_MAX_CONNS` (new, default 8 = production
 unchanged) is 3 on staging; stuck idle sessions were terminated once. See §16.
+
+**WhatsApp test number live on staging — 2026-10-20 22:41 CEST:** Meta app +
+test number (+1 555 630 2033), webhook verified, `messages` subscribed, a real
+WhatsApp message from Aura's phone answered. Pitfalls hit (for the prod
+setup): Render "Save only" does not redeploy; env names must match exactly
+(`WHATSAPP_APP_SECRET` missing → every webhook 401 "adapter not configured",
+fail-closed as designed); recipients go in API Setup → To → "Manage phone
+number list", NOT "Add phone number" (that registers a sender). The temporary
+access token expires every 24 h — a System User permanent token is needed
+before any demo.
+
+**Stripe test mode on staging — 2026-10-20:** own Stripe sandbox keys (not the
+App Review sandbox); startup logs "Stripe initialized in test mode";
+`PAYMENTS_ENFORCED=true` on staging. `APP_ENV=staging` now refuses a live key
+outright (`payments.go`). Stripe webhook for staging not set yet — needed only
+for the settle-after-completion path.
 
 **Known gaps (next):** shopping budget is not asked in chat (grocery tasks
 post with no budget); 3DS in chat goes to a human; returning customer who
