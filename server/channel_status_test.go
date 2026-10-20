@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"hora-auth/internal/channel"
@@ -35,5 +36,14 @@ func TestChatStatusHookOnlyTellsTheRequester(t *testing.T) {
 	}
 	if lookups != 2 {
 		t.Fatalf("non-chat events must skip the DB lookup; lookups=%d", lookups)
+	}
+}
+
+// Regression (S-12): the setup token must never be in the query string, which
+// request logs record. It travels in the fragment.
+func TestSetupLinkKeepsTokenOutOfTheQuery(t *testing.T) {
+	got := setupLink("https://x.test", "tok/en+")
+	if strings.Contains(got, "?") || !strings.Contains(got, "/channel/setup#t=") {
+		t.Fatalf("setup link exposes the token to the server: %s", got)
 	}
 }

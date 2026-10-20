@@ -56,10 +56,8 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		// (ai_task_parser.go), read-only — that file is frozen for review.
 		Prompt:   aiTaskParserSystemPrompt,
 		Location: nycLocation,
-		SetupURL: func(token string) string {
-			return base + "/channel/setup?t=" + url.QueryEscape(token)
-		},
-		Status: store,
+		SetupURL: func(token string) string { return setupLink(base, token) },
+		Status:   store,
 	}
 	// Task status updates to the chat (channel_status.go). Set here, before
 	// the server starts, and only when the flag is on.
@@ -116,4 +114,11 @@ func setupBaseURL() string {
 		}
 	}
 	return ""
+}
+
+// setupLink puts the token in the URL fragment, not the query: a fragment is
+// never sent to a server, so the token cannot land in a request log, a proxy
+// or the link-preview fetch iMessage and WhatsApp make (S-12).
+func setupLink(base, token string) string {
+	return base + "/channel/setup#t=" + url.QueryEscape(token)
 }

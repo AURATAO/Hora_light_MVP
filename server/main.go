@@ -471,7 +471,12 @@ func main() {
 	log.Println("[auth] DB injected")
 
 	// --- Gin & CORS ---
-	r := gin.Default()
+	// gin.Default() = Logger + Recovery. Built by hand so the request log can
+	// skip paths whose query string carries a secret (S-12): Meta's webhook
+	// handshake sends hub.verify_token in the query. Every other path is
+	// logged exactly as before.
+	r := gin.New()
+	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{SkipPaths: []string{"/webhooks/channel/whatsapp", "/webhooks/whatsapp"}}), gin.Recovery())
 	r.SetTrustedProxies(nil)
 	origins := os.Getenv("CORS_ALLOW_ORIGINS") // comma-separated exact origins
 	exactOrigins := strings.Split(origins, ",")

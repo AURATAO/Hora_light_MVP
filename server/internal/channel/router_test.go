@@ -248,7 +248,7 @@ func newRig(intent llm.Intent) *rig {
 		Classifier: fakeClassifier{intent: intent},
 		Booker:     b,
 		Prompt:     func(time.Time) string { return "prompt" },
-		SetupURL:   func(t string) string { return "https://example.test/channel/setup?t=" + t },
+		SetupURL:   func(t string) string { return "https://example.test/channel/setup#t=" + t },
 		Location:   nyc,
 	}
 	return &rig{r: r, ids: ids, convs: convs, ad: ad, st: st, parser: p, booker: b}
@@ -306,7 +306,7 @@ func TestFirstTimerFullFlow(t *testing.T) {
 
 	// YES → the one link; consent recorded; nothing posted yet.
 	got = g.say(t, "YES")
-	if !strings.Contains(got, "https://example.test/channel/setup?t=") || len(g.ids.tokens) != 1 {
+	if !strings.Contains(got, "https://example.test/channel/setup#t=") || len(g.ids.tokens) != 1 {
 		t.Fatalf("expected one setup link, got %q (tokens %d)", got, len(g.ids.tokens))
 	}
 	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)

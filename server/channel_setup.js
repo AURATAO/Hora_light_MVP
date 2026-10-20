@@ -50,13 +50,18 @@
 
   // ── 1. Link ────────────────────────────────────────────────────────────
   function readToken() {
-    var t = new URLSearchParams(location.search).get("t") || "";
+    // The token travels in the URL fragment (#t=…): a fragment is never sent
+    // to any server, so it cannot reach request logs, proxies, or the link
+    // preview fetch iMessage/WhatsApp make (S-12). ?t= is still read for
+    // links sent before this change.
+    var t = new URLSearchParams(location.hash.replace(/^#/, "")).get("t") ||
+            new URLSearchParams(location.search).get("t") || "";
     try {
       if (t) sessionStorage.setItem("hora_setup_t", t);
       else t = sessionStorage.getItem("hora_setup_t") || "";
     } catch (e) { /* storage blocked: keep it in memory only */ }
     // Take the token out of the address bar (screenshots, history, sharing).
-    if (location.search) history.replaceState(null, "", location.pathname);
+    if (location.search || location.hash) history.replaceState(null, "", location.pathname);
     return t;
   }
 
