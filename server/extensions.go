@@ -592,7 +592,8 @@ var (
 func decideExtension(ctx context.Context, taskID, extID, requesterUID, decision string) (extensionResolution, error) {
 	t, err := loadAdminTask(ctx, taskID)
 	if err != nil {
-		return extensionResolution{}, errExtensionTaskNotFound
+		// Sentinel for the caller's status code, cause kept for the log.
+		return extensionResolution{}, errors.Join(errExtensionTaskNotFound, fmt.Errorf("load task %s: %w", taskID, err))
 	}
 	// The requester alone. They are the one being asked to pay.
 	if t.RequesterID != requesterUID {
@@ -623,8 +624,11 @@ func decideExtension(ctx context.Context, taskID, extID, requesterUID, decision 
 		// already approved this" are different facts to the person tapping.
 		current, readErr := scanExtension(db.QueryRow(ctx,
 			extensionSelect+` where id = $1::uuid and task_id = $2::uuid`, extID, taskID))
-		if readErr != nil {
+		if errors.Is(readErr, pgx.ErrNoRows) {
 			return extensionResolution{}, errExtensionNotFound
+		}
+		if readErr != nil {
+			return extensionResolution{}, fmt.Errorf("read extension %s on task %s: %w", extID, taskID, readErr)
 		}
 		return extensionResolution{Already: &current}, nil
 	}
@@ -672,6 +676,7 @@ func resolveExtension(c *gin.Context, decision string) {
 	res, err := decideExtension(ctx, taskID, extID, meUID, decision)
 	switch {
 	case errors.Is(err, errExtensionTaskNotFound), errors.Is(err, errExtensionNotFound):
+		log.Printf("[extensions][resolve] id=%s task=%s: %v", extID, taskID, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	case errors.Is(err, errExtensionNotRequester):

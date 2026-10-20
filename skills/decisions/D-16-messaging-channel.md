@@ -107,3 +107,9 @@ PASS + INCOMPLETE may be conditionally approved only if (a) every check that did
 - **C-3 · merge gate:** no merge to `main` until C-1 and C-2 are green **and** the App Store review freeze (PLAN §2) has ended. The go-live change also carries the R-4 page move (S-02 exception expiry).
 
 `verify.sh` now treats a missing gitleaks like a missing CLI: `缺少相依套件 / MISSING DEPENDENCY: gitleaks` in the preflight and `INCOMPLETE` for the step (previously `SKIP`, which did not affect the exit code).
+
+### M3.1 (approvals by text) — review round 1 — 2026-10-21 (Reviewer: Sonnet; Verifier: Haiku) at `6f33779`
+**Reviewer:** FAIL ×4. Fixed, no argument offered, except where noted:
+- **S-11 condition 5 — real defect:** the hook armed "the newest pending request on the task"; time and budget requests can both be pending, so a YES to one question could have approved the other. Now the lookup is by `(task, kind)`, the kind taken from the notification type; the app's partial unique index guarantees one pending per kind, so the armed request is exactly the one the question describes. Regression test `TestChatStatusHookArmsTheRequestOfTheRightKind`.
+- S-31 ×2: `decideExtension` keeps the sentinel for the status code and the cause for the log (`errors.Join`); a non-`ErrNoRows` read failure is no longer reported as "not found"; the handler logs 404 causes.
+- **S-21 (no migration in the diff) — Builder note for the Arbiter:** `awaiting_approval` and `pending_extension_id` already exist in `20261019120000_messaging_channel.sql` on this branch (unshipped; I-G). The Reviewer saw only this change's diff, so the finding is correct for its inputs and needs no code change.
