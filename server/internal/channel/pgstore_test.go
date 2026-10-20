@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -212,10 +213,16 @@ func TestPGConcurrentLinkOnlyOneWins(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := s.ConsumeSetupTokenAndLink(ctx, hash, user); err == nil {
+			_, err := s.ConsumeSetupTokenAndLink(ctx, hash, user)
+			switch {
+			case err == nil:
 				mu.Lock()
 				wins++
 				mu.Unlock()
+			case errors.Is(err, ErrTokenInvalid):
+				// the expected loss: the link was already used
+			default:
+				t.Errorf("unexpected error from a losing racer: %v", err)
 			}
 		}()
 	}
@@ -279,7 +286,12 @@ func TestPGConversationRoundTripAndClaim(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if p, ok, err := s.ClaimForPosting(ctx, a.ID, StateAwaitingConfirm); err == nil && ok && p.Draft.Title == "Laundry pickup" {
+			p, ok, err := s.ClaimForPosting(ctx, a.ID, StateAwaitingConfirm)
+			if err != nil {
+				t.Errorf("claim racer: %v", err)
+				return
+			}
+			if ok && p.Draft.Title == "Laundry pickup" {
 				mu.Lock()
 				wins++
 				mu.Unlock()
@@ -477,5 +489,23 @@ func TestPGPurgeUserWithoutChannelTablesIsANoop(t *testing.T) {
 	}()
 	if n, err := PurgeUserTx(context.Background(), tx, newUser(t, db)); err != nil || n != 0 {
 		t.Fatalf("n=%d err=%v", n, err)
+	}
+}
+
+// The stored body is StoredText when it is set (setup links), Text otherwise.
+func TestPGRecordOutboundStoresTheRedactedBody(t *testing.T) {
+	db := testDB(t)
+	s := &PGStore{DB: db}
+	ctx := context.Background()
+	out := Outbound{Channel: IMessage, To: "+15550000303", Text: "link https://x.test/channel/setup#t=SECRETTOKEN", StoredText: "link " + SetupLinkPlaceholder}
+	if err := s.RecordOutbound(ctx, out, "out-redact", ""); err != nil {
+		t.Fatal(err)
+	}
+	var body string
+	if err := db.QueryRow(`SELECT body FROM channel_messages WHERE provider_message_id = 'out-redact'`).Scan(&body); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(body, "SECRETTOKEN") || body != "link "+SetupLinkPlaceholder {
+		t.Fatalf("stored %q", body)
 	}
 }

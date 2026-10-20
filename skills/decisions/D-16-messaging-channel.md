@@ -72,3 +72,14 @@ S-31 discarded errors and unwrapped returns (code and tests); S-12 `?t=` still a
   - The old step ran `supabase db diff --linked`, and the committed `supabase/.temp/project-ref` is **production** (`akxsdkerudurzcemurrb`). With the CLI installed it would have diffed against production. It was not run that way.
   - No CI exists, so there is no CI CLI version to match; the version recorded in the repo is **v2.118.0** and that is what was installed for this check. `db diff` also needs a Docker daemon, which this environment does not have.
   - `verify.sh` now: preflight lists missing tools/settings as `缺少相依套件 / MISSING DEPENDENCY`; a check that cannot run reports `INCOMPLETE` and the run exits **2** (not green, not a test failure); I-05 uses `--db-url "$VERIFY_DB_URL"` (local/branch only) and **refuses a URL containing the production ref** (exit 1). Exercised: no CLI → exit 2; CLI 2.118.0 without Docker → exit 2; production URL → exit 1. INVARIANTS I-05 updated to match.
+
+### Round 2 — 2026-10-20 (Reviewer: new Sonnet session; Verifier: Haiku)
+**Verifier:** EXIT=2 INCOMPLETE — no red, no failing test; only I-05 not run (no Docker daemon; env ticket). Working tree clean after the run (the CLI version check no longer rewrites `supabase/.temp/cli-latest` — fixed in the same round).
+**Reviewer:** FAIL, S-31 only (PendingFor dropped an error; HMAC `Write` unchecked; `rows.Close` / body `Close` unchecked). Explicitly checked and passing: S-01, S-10, S-11 conditions 1–5, S-12, S-13, S-20 conditions 1–3, S-21, S-32, S-33, S-60, Rule 3. Fixed in `c6f0876`.
+
+### Round 3 — 2026-10-20 (Reviewer: new Sonnet session; Verifier: Haiku)
+**Verifier:** EXIT=2 INCOMPLETE — identical to round 2 (no red, no failing test, tree clean).
+**Reviewer:** FAIL. Fixed by the Builder, no argument offered:
+- **S-11 condition 3 — a real defect missed by rounds 1 and 2:** the setup-link message was recorded in `channel_messages.body` with the raw token. Now the stored copy carries `[setup link]` (`Outbound.StoredText`); only the hash exists anywhere. The three existing staging rows were scrubbed (0 raw tokens left; 0 live tokens at the time). Regression tests: `TestSetupLinkTokenIsNeverStored`, `TestPGRecordOutboundStoresTheRedactedBody`.
+- **S-31:** `FinishSetup` returned success when the claim itself failed, so the page could say "all set" for a booking never attempted — now an error (500). Regression: `TestFinishSetupClaimFailureIsAnError`. The two race tests now fail on any error other than the expected loss.
+- **I-05 wording:** INVARIANTS now names both preflight labels (`MISSING DEPENDENCY` for tools, `MISSING SETTING` for `VERIFY_DB_URL`).

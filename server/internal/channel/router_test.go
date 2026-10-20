@@ -90,9 +90,10 @@ func (m *memIdentities) ConsumeSetupTokenAndLink(context.Context, string, string
 
 // memConversations mirrors PGStore's semantics, including the atomic claim.
 type memConversations struct {
-	mu    sync.Mutex
-	convs map[string]Conversation
-	ids   *memIdentities
+	mu       sync.Mutex
+	convs    map[string]Conversation
+	ids      *memIdentities
+	claimErr error // when set, ClaimForPosting fails like a database would
 }
 
 func (m *memConversations) GetConversation(_ context.Context, iid string) (Conversation, error) {
@@ -152,6 +153,9 @@ func (m *memConversations) AcceptTerms(_ context.Context, iid string, at time.Ti
 func (m *memConversations) ClaimForPosting(_ context.Context, iid string, from State) (*PendingDraft, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.claimErr != nil {
+		return nil, false, m.claimErr
+	}
 	c, ok := m.convs[iid]
 	if !ok || c.State != from || c.Pending == nil {
 		return nil, false, nil
@@ -551,5 +555,56 @@ func TestLinkedCustomerIsNotReintroduced(t *testing.T) {
 	g = newRig(llm.IntentOther)
 	if got := g.say(t, "good"); got != CopyWelcome {
 		t.Fatalf("stranger + other: %q", got)
+	}
+}
+
+// Regression (D-16 review round 3, S-11 condition 3): the person receives the
+// real setup link, but the stored copy of that message never holds the raw
+// token — only its hash exists, in channel_setup_tokens.
+func TestSetupLinkTokenIsNeverStored(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.say(t, "laundry pickup at 12 Bedford Ave")
+	g.say(t, "Aura")
+	sent := g.say(t, "YES")
+	i := strings.Index(sent, "#t=")
+	if i < 0 {
+		t.Fatalf("no link sent: %q", sent)
+	}
+	token := strings.Fields(sent[i+3:])[0]
+	if len(token) < 32 {
+		t.Fatalf("token looks wrong: %q", token)
+	}
+	for _, body := range g.st.storedBodies() {
+		if strings.Contains(body, token) || strings.Contains(body, "#t=") {
+			t.Fatalf("raw setup token stored: %q", body)
+		}
+	}
+	found := false
+	for _, body := range g.st.storedBodies() {
+		if strings.Contains(body, SetupLinkPlaceholder) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the stored copy should keep the message with a placeholder")
+	}
+}
+
+// Regression (D-16 review round 3, S-31): a database failure while claiming
+// the booking is an error for the setup page, never "nothing to book".
+func TestFinishSetupClaimFailureIsAnError(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.say(t, "laundry pickup at 12 Bedford Ave")
+	g.say(t, "Aura")
+	g.say(t, "YES") // → awaiting_setup with a draft
+	g.ids.link(me, "user-1")
+	g.convs.mu.Lock()
+	g.convs.claimErr = errors.New("db down")
+	g.convs.mu.Unlock()
+	if _, _, err := g.r.FinishSetup(context.Background(), "user-1"); err == nil {
+		t.Fatal("a claim failure must surface as an error")
+	}
+	if g.booker.posts != 0 {
+		t.Fatal("nothing may be posted when the claim failed")
 	}
 }

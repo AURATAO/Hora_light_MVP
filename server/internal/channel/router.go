@@ -311,8 +311,18 @@ func (r *Router) sendSetupLink(ctx context.Context, in Inbound, id Identity, con
 	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 		return fmt.Errorf("sendSetupLink: %w", err)
 	}
-	return r.Reply(ctx, in, fmt.Sprintf(copyFmt, r.SetupURL(token)), "")
+	// The person gets the real link; the stored copy of the message never
+	// holds the raw token (only its hash exists, in channel_setup_tokens).
+	return r.Send(ctx, Outbound{
+		Channel:    in.Channel,
+		To:         in.From,
+		Text:       fmt.Sprintf(copyFmt, r.SetupURL(token)),
+		StoredText: fmt.Sprintf(copyFmt, SetupLinkPlaceholder),
+	}, "")
 }
+
+// SetupLinkPlaceholder stands in for a setup link in stored messages.
+const SetupLinkPlaceholder = "[setup link]"
 
 // claimAndPost books the pending draft for a linked number exactly once and
 // tells the person. Whoever loses the claim (a second YES, the page's finish
@@ -390,7 +400,13 @@ func (r *Router) FinishSetup(ctx context.Context, userID string) (booked int, la
 			continue
 		}
 		res, claimed, err := r.claimAndPost(ctx, ids[i].Channel, ids[i], StateAwaitingSetup, true)
+		if err != nil && !claimed {
+			// Could not even claim (a database failure): the page must not
+			// say "all set" for a booking that was never attempted.
+			return booked, last, fmt.Errorf("FinishSetup: identity %s: %w", ids[i].ID, err)
+		}
 		if err != nil {
+			// Claimed and posted; only the follow-up (save/reply) failed.
 			log.Printf("[channel] finish setup identity=%s: %v", ids[i].ID, err)
 		}
 		if !claimed {

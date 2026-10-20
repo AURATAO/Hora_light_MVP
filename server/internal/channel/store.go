@@ -68,7 +68,7 @@ func (s *PGStore) RecordOutbound(ctx context.Context, out Outbound, providerMess
 		   reply_to_provider_id, received_at, processed_at)
 		VALUES ($1, $2, 'outbound', $3, $4, NULLIF($5, '')::uuid, NULLIF($6, ''), now(), now())
 		ON CONFLICT (channel, provider_message_id) DO NOTHING
-	`, string(out.Channel), providerMessageID, out.To, out.Text, taskID, out.ReplyToProviderID)
+	`, string(out.Channel), providerMessageID, out.To, out.RecordedText(), taskID, out.ReplyToProviderID)
 	if err != nil {
 		return fmt.Errorf("record outbound: %w", err)
 	}

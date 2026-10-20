@@ -289,6 +289,7 @@ type fakeStore struct {
 	processed []string
 	outbound  int
 	lastTask  string
+	stored    []string
 	err       error
 }
 
@@ -313,12 +314,18 @@ func (s *fakeStore) MarkProcessed(_ context.Context, _ Channel, id string) error
 	s.processed = append(s.processed, id)
 	return nil
 }
-func (s *fakeStore) RecordOutbound(_ context.Context, _ Outbound, _ string, taskID string) error {
+func (s *fakeStore) RecordOutbound(_ context.Context, o Outbound, _ string, taskID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.outbound++
 	s.lastTask = taskID
+	s.stored = append(s.stored, o.RecordedText())
 	return nil
+}
+func (s *fakeStore) storedBodies() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.stored...)
 }
 func (s *fakeStore) lastOutboundTask() string {
 	s.mu.Lock()

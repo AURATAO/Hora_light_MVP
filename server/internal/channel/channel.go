@@ -60,6 +60,18 @@ type Outbound struct {
 	// ReplyToProviderID, when set, sends this as an inline reply to that
 	// message (iMessage V2 lines and WhatsApp only).
 	ReplyToProviderID string
+	// StoredText, when set, is what channel_messages.body records instead of
+	// Text. A setup link carries a raw token that must never be stored
+	// (S-11 amended, condition 3: only its SHA-256 hash is kept).
+	StoredText string
+}
+
+// RecordedText is the body to store for o.
+func (o Outbound) RecordedText() string {
+	if o.StoredText != "" {
+		return o.StoredText
+	}
+	return o.Text
 }
 
 // Adapter is one provider. Implementations must be safe for concurrent use.
