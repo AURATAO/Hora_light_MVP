@@ -145,7 +145,8 @@ reasoning on by default — measure latency with it on and off.
 - [ ] Rotate `WHATSAPP_VERIFY_TOKEN` before prod (the GIN request log printed the staging one; prod route must not log query strings)
 - [ ] New US number for production WhatsApp (not the supporter number)
 - [ ] Baseten API key
-- [ ] TalkJS test-mode app id + secret on the staging Render service (M3 chat relay cannot be tested without it)
+- [ ] TalkJS: a **separate app** "HO:RA Staging" (its Test env) on the staging Render service — not a second key on the production app: TalkJS webhooks are per app, so a shared app would deliver production chat events to staging and vice versa (key rule, §16). Then its webhook → staging `/webhooks/talkjs` for M3 relay.
+- [ ] TalkJS production: confirm whether prod runs on the app's Test or Live environment; switch to Live before launch if needed
 - [ ] **D-16 merge conditions (deadline 2026-10-30, before any merge to main):** C-1 I-05 green on a Docker machine with CLI v2.118.0 against the staging branch; C-2 gitleaks green on a full clone (resolve inherited `payments_phase3_test.go:1109` placeholder by decision); C-3 review freeze over.
 - [ ] **Env ticket (D-16 R-5):** a verification machine with Docker + supabase CLI v2.118.0 and a `VERIFY_DB_URL` for the staging branch, so I-05 can actually run (today: INCOMPLETE everywhere, base and branch alike). Optional: stop committing `supabase/.temp/`.
 - [ ] **Go-live change (D-16 R-4):** move the setup page from `server/` to `app/` (Tailwind) — declared exception until then.
