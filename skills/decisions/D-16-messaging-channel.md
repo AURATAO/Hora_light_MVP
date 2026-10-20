@@ -45,4 +45,20 @@
 - Verify and review evidence: appended below by the Verifier and Reviewer, not by the Builder.
 
 ## Review log
-<!-- Verifier raw output, Reviewer PASS/FAIL, Arbiter ruling — appended here. -->
+
+### Round 1 — 2026-10-20 (Builder: Claude Opus/Fable sessions; Reviewer: Sonnet, isolated; Verifier: Haiku, isolated)
+
+**Verifier:** `verify.sh` EXIT=1. Only red step: `schema drift (I-05)` — `supabase: command not found` (CLI absent in the build environment). Go build/vet/test green (incl. `-race ./internal/channel/...`), web build green, web guards 131/131, mobile typecheck + export green, I-01b/I-02/I-07 ok, gitleaks SKIP (not installed). Rule 3 queries on the staging branch (Builder evidence): 3 / 0 / 0 / 0.
+
+**Reviewer:** FAIL. Fixed by the Builder in `0028025` (no argument offered):
+S-31 discarded errors and unwrapped returns (code and tests); S-12 `?t=` still accepted by the page; S-32 chat send on the setup page's request path and on-my-way lookups on the enroute request path.
+
+**Reviewer findings that need an Arbiter ruling** (the Builder may not overrule them; each either becomes a code change or a constitution amendment recorded here):
+
+- **R-1 · S-11** — `chatBooker.Post` sets `uid` on a synthetic gin context and calls `createTask`. Identity there comes from a provider-signed webhook → `channel_identities.user_id`, which was itself set only through `dualAuth` on `/channel/setup/link`. *Options:* (a) amend S-11: "or a server-verified channel identity linked through dualAuth (D-16)"; (b) refactor `createTask` so its core takes a uid argument and both callers pass it (touches frozen code).
+- **R-2 · S-13** — `/webhooks/channel/*`, `/channel/setup/config`, `/channel/setup/check` have no auth middleware. Webhooks are authenticated inside the handler (Sendblue shared secret, Meta HMAC, fail-closed) — the same pattern as the existing Stripe and TalkJS webhooks; `/check` is authorised by the setup token itself; `/config` serves only public values (Supabase URL + publishable key). *Options:* (a) amend S-13: "or a provider-signature / single-use-capability check in the handler, declared in a decision record"; (b) wrap each in a named middleware so the control is visible at the route.
+- **R-3 · S-20** — `channel_identities.address` / `channel_messages.address` hold phone numbers as text. The HO:RA identity is `user_id` (FK to `users.id`); the address is the external channel endpoint, like an email address for Postmark. *Options:* (a) amend S-20 to say channel endpoints are not HO:RA identity; (b) none practical — a phone number must be stored to send to it.
+- **R-4 · S-02 / S-30** — the setup page is HTML + hand-written CSS served by Go (`server/`), not a page in `app/` with Tailwind. Reason it was built this way: `app/` deploys from `main` (Vercel) and cannot ship during the review freeze; the page must be reachable from staging now. *Options:* (a) accept as a declared exception until go-live, then move it to `app/` (Tailwind) in the go-live change; (b) move it now to `app/` and test via a Vercel preview of the branch.
+- **R-5 · I-05 red** — the only red in `verify.sh` is the missing Supabase CLI. Per INVARIANTS, a pre-existing claim needs the same check on the base branch side by side; the Builder has not shown that. *Options:* (a) install the CLI + link credentials in the build environment and re-run; (b) decision record scoping I-05 to environments that have the CLI (it was "dormant" by design until the baseline existed).
+
+**Arbiter (Aura):** _pending._
