@@ -4876,10 +4876,16 @@ func listProfileReviews(c *gin.Context) {
 // zero-downtime deploy runs two processes at once — staging sets
 // DB_MAX_CONNS=3 so both fit.
 func dbMaxConns() int {
-	if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv("DB_MAX_CONNS"))); err == nil && v > 0 {
-		return v
+	raw := strings.TrimSpace(os.Getenv("DB_MAX_CONNS"))
+	if raw == "" {
+		return 8
 	}
-	return 8
+	v, err := strconv.Atoi(raw)
+	if err != nil || v <= 0 {
+		log.Printf("[db] DB_MAX_CONNS=%q is not a positive integer (%v); using 8", raw, err)
+		return 8
+	}
+	return v
 }
 
 // -------- Notifications --------

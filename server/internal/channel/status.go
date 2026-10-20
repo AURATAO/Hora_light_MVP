@@ -144,8 +144,11 @@ func (r *Router) NotifyStatus(ctx context.Context, userID string, ev StatusEvent
 		return nil
 	}
 	t, found, err := r.Status.StatusTargetFor(ctx, userID, ev.TaskID)
-	if err != nil || !found {
-		return err
+	if err != nil {
+		return fmt.Errorf("NotifyStatus: %w", err)
+	}
+	if !found {
+		return nil // an app-only user: nothing to send
 	}
 	if t.Identity.Channel == WhatsApp {
 		if t.LastInboundAt == nil || r.now().Sub(*t.LastInboundAt) > WhatsAppWindow {

@@ -96,6 +96,8 @@ func (a *SendblueAdapter) ParseInbound(body []byte) ([]Inbound, error) {
 	if n, err := NormalizeE164(to); err == nil {
 		to = n
 	} else {
+		// Our own line, informational only; logged without the value.
+		log.Printf("[channel] sendblue parse id=%s: our number unreadable: %v", p.MessageHandle, fmt.Errorf("normalize: %w", err))
 		to = ""
 	}
 	in := Inbound{
@@ -177,11 +179,15 @@ func httpClient(c *http.Client) *http.Client {
 	return &http.Client{Timeout: 15 * time.Second}
 }
 
+// parseTimeOrNow reads the provider's timestamp; an unreadable one falls back
+// to the receive time (ordering only — nothing is decided on it) and is logged.
 func parseTimeOrNow(s string) time.Time {
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
-		if t, err := time.Parse(layout, s); err == nil {
-			return t
-		}
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err == nil {
+		return t
+	}
+	if s != "" {
+		log.Printf("[channel] sendblue parse: unreadable timestamp, using receive time: %v", fmt.Errorf("parse date_sent: %w", err))
 	}
 	return time.Now().UTC()
 }

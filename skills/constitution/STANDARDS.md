@@ -20,6 +20,7 @@ All reads/writes to Hora tables (`users`, `profiles`, `tasks`, `worklogs`, `noti
 ### S-02: Directory layout is settled: web → `app/`, Go backend → `server/`, schema artifacts → `supabase/`, mobile → `mobile/` (Expo/React Native, EAS Build). No new deployable services.
 **Rationale:** Solo technical maintainer; minimal operational surface.
 **Verification:** New code lands in its designated directory; reviewer flags any new top-level service or deploy target.
+**Time-boxed exception — D-16 R-4 (Arbiter, 2026-10-20):** exactly two files, `server/channel_setup.html` and `server/channel_setup.js` (the chat-booking setup page), may live in `server/`, embedded and served by the Go backend, **only on `feat/messaging-channel` and only until the D-16 go-live change**, which moves the page to `app/`. Reason: `app/` deploys from `main`, which is frozen during the App Store review, and the page must be reachable from staging. No other web UI may use this exception; it expires at go-live, not later.
 
 ### S-03: This repo touches exactly ONE Supabase project: Hora MVP (`akxsdkerudurzcemurrb`). The birthday-card project (`aemwljralqsegrwivbub`) is out of scope for all Hora code.
 **Rationale:** Two live projects with separate auth/storage/DB exist under the same account; cross-wiring credentials or tables would corrupt both. (BACKEND_REFERENCE §0.)
@@ -78,6 +79,7 @@ The synthetic request context in `chatBooker.Post` is permitted only under these
 ### S-30: Styling — web (`app/`) uses Tailwind utilities exclusively; mobile (`mobile/`) uses NativeWind with shared design tokens. No new CSS/SCSS files, no styled-components; inline StyleSheet only where NativeWind cannot express it (declare in self-report). `TODO(confirm: shared token location)`
 **Rationale:** One styling system per platform, shared tokens, solo maintainer (D-01).
 **Verification:** diff adds no `.css`/`.scss`/styled-components imports.
+**Time-boxed exception — D-16 R-4:** the `<style>` block in `server/channel_setup.html` (the S-02 exception page above) is permitted under the same terms and expires with it; the page is rebuilt with Tailwind when it moves to `app/`.
 
 ### S-31: TypeScript strict; `any` requires an inline justification comment. Go errors wrapped with context (`fmt.Errorf("...: %w", err)`), never discarded with `_`.
 **Rationale:** Discarded errors are the top source of silent marketplace-state corruption.

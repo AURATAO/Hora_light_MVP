@@ -83,3 +83,9 @@ S-31 discarded errors and unwrapped returns (code and tests); S-12 `?t=` still a
 - **S-11 condition 3 — a real defect missed by rounds 1 and 2:** the setup-link message was recorded in `channel_messages.body` with the raw token. Now the stored copy carries `[setup link]` (`Outbound.StoredText`); only the hash exists anywhere. The three existing staging rows were scrubbed (0 raw tokens left; 0 live tokens at the time). Regression tests: `TestSetupLinkTokenIsNeverStored`, `TestPGRecordOutboundStoresTheRedactedBody`.
 - **S-31:** `FinishSetup` returned success when the claim itself failed, so the page could say "all set" for a booking never attempted — now an error (500). Regression: `TestFinishSetupClaimFailureIsAnError`. The two race tests now fail on any error other than the expected loss.
 - **I-05 wording:** INVARIANTS now names both preflight labels (`MISSING DEPENDENCY` for tools, `MISSING SETTING` for `VERIFY_DB_URL`).
+
+### Round 4 — 2026-10-20 (Reviewer: new Sonnet session; Verifier: Haiku)
+**Verifier:** EXIT=2 INCOMPLETE — no red, no failing test, tree clean (unchanged from rounds 2–3).
+**Reviewer:** FAIL.
+- S-31 ×3, fixed: a WhatsApp message with an unreadable sender was dropped silently (now logged by message id, never the number); `SENDBLUE_FROM_NUMBER` invalid was silently unset (now logged without the value); `DB_MAX_CONNS` invalid silently became 8 (now logged). The Builder also fixed the same pattern where the Reviewer had not pointed (our own number in both parsers, both timestamp fallbacks, a raw `return err` in `NotifyStatus`).
+- S-02 (page in `server/`): already ruled by the Arbiter as R-4 (time-boxed exception), but the ruling lived only in D-16, which the Reviewer cannot see — so the Reviewer correctly failed it. Per the workflow the Arbiter cannot overrule a FAIL; the ruling is now written into STANDARDS S-02 and S-30 as a named, time-boxed exception (two files, this branch, expires at go-live).

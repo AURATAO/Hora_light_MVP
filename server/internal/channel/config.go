@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"log"
 	"os"
 	"strings"
 )
@@ -42,8 +43,12 @@ func normalizedEnv(k string) string {
 	if v == "" {
 		return ""
 	}
-	if n, err := NormalizeE164(v); err == nil {
-		return n
+	n, err := NormalizeE164(v)
+	if err != nil {
+		// Fail closed (sends refuse with ErrNotConfigured), but say why —
+		// without echoing the value.
+		log.Printf("[channel] config: %s is not a valid E.164 number (%v); treating it as unset", k, err)
+		return ""
 	}
-	return ""
+	return n
 }

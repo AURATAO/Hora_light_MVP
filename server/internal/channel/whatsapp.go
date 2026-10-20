@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -119,6 +120,10 @@ func (a *WhatsAppAdapter) ParseInbound(body []byte) ([]Inbound, error) {
 			to := ""
 			if n, err := NormalizeE164(ch.Value.Metadata.DisplayPhoneNumber); err == nil {
 				to = n
+			} else {
+				// Our own business number, informational only; logged
+				// without the value.
+				log.Printf("[channel] whatsapp parse: business number unreadable: %v", fmt.Errorf("normalize: %w", err))
 			}
 			for _, m := range ch.Value.Messages {
 				text := ""
@@ -133,8 +138,15 @@ func (a *WhatsAppAdapter) ParseInbound(body []byte) ([]Inbound, error) {
 					// media, location, stickers: not handled in v1; the
 					// router answers with a "text only" hint.
 				}
+				if m.ID == "" {
+					log.Printf("[channel] whatsapp parse: dropping a message with no id")
+					continue
+				}
 				from, err := NormalizeE164(m.From)
-				if err != nil || m.ID == "" {
+				if err != nil {
+					// Unanswerable without a valid sender. Logged by message
+					// id only — never the number (S-12).
+					log.Printf("[channel] whatsapp parse: dropping id=%s: sender %v", m.ID, fmt.Errorf("normalize: %w", err))
 					continue
 				}
 				in := Inbound{
@@ -215,9 +227,15 @@ func (a *WhatsAppAdapter) Send(ctx context.Context, o Outbound) (string, error) 
 	return r.Messages[0].ID, nil
 }
 
+// unixOrNow reads Meta's unix timestamp; an unreadable one falls back to the
+// receive time (ordering only — nothing is decided on it) and is logged.
 func unixOrNow(s string) time.Time {
-	if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err == nil && n > 0 {
 		return time.Unix(n, 0).UTC()
+	}
+	if s != "" {
+		log.Printf("[channel] whatsapp parse: unreadable timestamp, using receive time: %v", fmt.Errorf("parse timestamp: %w", err))
 	}
 	return time.Now().UTC()
 }
