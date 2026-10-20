@@ -59,6 +59,8 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		Location: nycLocation,
 		SetupURL: func(token string) string { return setupLink(base, token) },
 		Status:   store,
+		Ops:      opsEmailNotifier{sqlDB: sqlDB},
+		Thread:   store,
 	}
 	// Task status updates to the chat (channel_status.go). Set here, before
 	// the server starts, and only when the flag is on.
@@ -75,6 +77,7 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		c.String(http.StatusOK, c.GetString(ctxHubChallenge))
 	})
 	registerChannelSetupRoutes(r, sqlDB, store, router)
+	registerChannelAdminRoutes(r, sqlDB, store, router)
 	log.Printf("[channel] webhooks enabled: sendblue, whatsapp; model=%s; setup base=%s", model.Model, base)
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -540,5 +541,44 @@ func TestPGPendingExtensionRoundTrip(t *testing.T) {
 	again, err := s.GetConversation(ctx, a.ID)
 	if err != nil || again.State != StateIdle || again.PendingExtensionID != "" {
 		t.Fatalf("%+v %v", again, err)
+	}
+}
+
+// Handoff reads: the thread comes back oldest first and bounded; held
+// conversations are listed with a hint, never the number.
+func TestPGThreadAndHandedOff(t *testing.T) {
+	db := testDB(t)
+	s := &PGStore{DB: db}
+	ctx := context.Background()
+	a, err := s.UpsertIdentity(ctx, WhatsApp, "+15550000505")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().Add(-time.Hour)
+	for i, text := range []string{"hi", "laundry please", "talk to a human"} {
+		if _, err := s.RecordInbound(ctx, Inbound{Channel: WhatsApp, ProviderMessageID: fmt.Sprintf("in-%d", i), From: "+15550000505", Text: text, ReceivedAt: base.Add(time.Duration(i) * time.Minute)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.RecordOutbound(ctx, Outbound{Channel: WhatsApp, To: "+15550000505", Text: "Let me get a teammate"}, "out-1", ""); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := s.RecentMessages(ctx, WhatsApp, "+15550000505", 2)
+	if err != nil || len(msgs) != 2 || msgs[0].Text != "talk to a human" || msgs[1].Direction != "outbound" {
+		t.Fatalf("%+v %v", msgs, err)
+	}
+	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateHandoff}); err != nil {
+		t.Fatal(err)
+	}
+	held, err := s.HandedOff(ctx)
+	if err != nil || len(held) != 1 || held[0].IdentityID != a.ID || held[0].PhoneHint != "•••• 0505" {
+		t.Fatalf("%+v %v", held, err)
+	}
+	got, err := s.IdentityByID(ctx, a.ID)
+	if err != nil || got.Address != "+15550000505" {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if _, err := s.IdentityByID(ctx, "00000000-0000-0000-0000-000000000009"); !errors.Is(err, ErrIdentityNotFound) {
+		t.Fatalf("want ErrIdentityNotFound, got %v", err)
 	}
 }

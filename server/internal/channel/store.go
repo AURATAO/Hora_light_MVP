@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 )
 
 // Store persists every message in channel_messages. Its first job is dedupe:
@@ -73,4 +74,40 @@ func (s *PGStore) RecordOutbound(ctx context.Context, out Outbound, providerMess
 		return fmt.Errorf("record outbound: %w", err)
 	}
 	return nil
+}
+
+// RecentMessages returns up to limit messages exchanged with the number,
+// oldest first (ThreadReader, for ops handoffs).
+func (s *PGStore) RecentMessages(ctx context.Context, ch Channel, address string, limit int) ([]ThreadMessage, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT direction, COALESCE(body, ''), received_at
+		FROM channel_messages
+		WHERE channel = $1 AND address = $2
+		ORDER BY received_at DESC
+		LIMIT $3
+	`, string(ch), address, limit)
+	if err != nil {
+		return nil, fmt.Errorf("recent messages: %w", err)
+	}
+	var out []ThreadMessage
+	for rows.Next() {
+		var m ThreadMessage
+		if err := rows.Scan(&m.Direction, &m.Text, &m.At); err != nil {
+			if cerr := rows.Close(); cerr != nil {
+				log.Printf("[channel] recent messages: close rows: %v", cerr)
+			}
+			return nil, fmt.Errorf("recent messages: scan: %w", err)
+		}
+		out = append(out, m)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("recent messages: close rows: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("recent messages: %w", err)
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
 }

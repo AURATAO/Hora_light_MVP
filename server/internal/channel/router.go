@@ -98,6 +98,11 @@ type Router struct {
 	// Status finds the thread for task status updates (status.go). Nil turns
 	// them off.
 	Status StatusStore
+	// Ops receives handoffs (handoff.go); Thread supplies the recent
+	// conversation for them. Both nil = handoff not configured (a human
+	// request then gets the holding copy and an error in the log).
+	Ops    OpsNotifier
+	Thread ThreadReader
 	// Go runs a reply off the request path when the caller is an HTTP
 	// request (S-32: the setup page's finish step must not wait on
 	// Sendblue/Meta). Default `go f()`; tests run it inline.
@@ -157,6 +162,17 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	}
 
 	switch conv.State {
+	case StateHandoff:
+		return r.onHandoff(ctx, in, id)
+	case StatePosting:
+		return r.Reply(ctx, in, CopyBookingInFlight, "")
+	}
+	// Any state where the next message is the person's to use: an explicit
+	// ask for a human wins over the flow (rule-matched, never the model).
+	if IsHumanRequest(text) {
+		return r.handOff(ctx, in, id, conv, HandoffHumanRequested)
+	}
+	switch conv.State {
 	case StateAwaitingName:
 		return r.onName(ctx, in, id, conv, text)
 	case StateAwaitingConfirm:
@@ -165,10 +181,6 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 		return r.onAwaitingSetup(ctx, in, id, conv, text)
 	case StateAwaitingApproval:
 		return r.onAwaitingApproval(ctx, in, id, conv, text)
-	case StateHandoff:
-		return r.Reply(ctx, in, CopyHandoffHolding, "")
-	case StatePosting:
-		return r.Reply(ctx, in, CopyBookingInFlight, "")
 	default:
 		return r.onIdle(ctx, in, id, conv, text)
 	}
@@ -254,6 +266,9 @@ func (r *Router) startDraft(ctx context.Context, in Inbound, id Identity, conv C
 		items = append(items, DraftItem{Draft: draft, QuoteCents: cents, QuoteMinutes: minutes})
 	}
 	if len(items) == 0 {
+		if r.lastReplyWasParseFailure(ctx, id) {
+			return r.handOff(ctx, in, id, conv, HandoffNotUnderstood)
+		}
 		return r.Reply(ctx, in, CopyParseFailed, "")
 	}
 	p := &PendingDraft{Source: source, CreatedAtUnix: r.now().Unix(), Unparsed: unparsed}
@@ -449,8 +464,12 @@ func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Co
 		return r.dispatch(ctx, async, func(c context.Context) error { return r.Send(c, out, "") })
 	case PostNeeds3DS:
 		conv.State = StateHandoff
+		conv.PendingExtensionID = ""
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 			log.Printf("[channel] save after post identity=%s: %v", id.ID, err)
+		}
+		if err := r.notifyOps(ctx, id, HandoffPayment3DS, false); err != nil {
+			log.Printf("[channel] 3ds handoff identity=%s: %v", id.ID, err)
 		}
 		out.Text = partial + Copy3DSHandoff
 		return r.dispatch(ctx, async, func(c context.Context) error { return r.Send(c, out, res.TaskID) })

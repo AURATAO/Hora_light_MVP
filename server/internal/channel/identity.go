@@ -228,3 +228,70 @@ func (s *PGStore) ConsumeSetupTokenAndLink(ctx context.Context, tokenHash, userI
 	}
 	return id, nil
 }
+
+// IdentityByID loads one identity (ops routes). ErrIdentityNotFound when
+// there is none.
+func (s *PGStore) IdentityByID(ctx context.Context, identityID string) (Identity, error) {
+	var id Identity
+	var user sql.NullString
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT id, channel, address, user_id FROM channel_identities WHERE id = $1::uuid
+	`, identityID).Scan(&id.ID, &id.Channel, &id.Address, &user)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Identity{}, ErrIdentityNotFound
+	}
+	if err != nil {
+		return Identity{}, fmt.Errorf("identity by id: %w", err)
+	}
+	id.UserID = user.String
+	return id, nil
+}
+
+// HandedOff lists the conversations ops currently hold, oldest first.
+func (s *PGStore) HandedOff(ctx context.Context) ([]HandoffRow, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT i.id, i.channel, i.address, COALESCE(i.user_id::text, ''), c.updated_at, c.last_inbound_at
+		FROM channel_conversations c JOIN channel_identities i ON i.id = c.identity_id
+		WHERE c.state = $1 ORDER BY c.updated_at ASC
+	`, string(StateHandoff))
+	if err != nil {
+		return nil, fmt.Errorf("handed off: %w", err)
+	}
+	var out []HandoffRow
+	for rows.Next() {
+		var h HandoffRow
+		var last sql.NullTime
+		if err := rows.Scan(&h.IdentityID, &h.Channel, &h.address, &h.UserID, &h.Since, &last); err != nil {
+			if cerr := rows.Close(); cerr != nil {
+				log.Printf("[channel] handed off: close rows: %v", cerr)
+			}
+			return nil, fmt.Errorf("handed off: scan: %w", err)
+		}
+		h.PhoneHint = PhoneHint(h.address)
+		if last.Valid {
+			t := last.Time
+			h.LastInboundAt = &t
+		}
+		out = append(out, h)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("handed off: close rows: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("handed off: %w", err)
+	}
+	return out, nil
+}
+
+// HandoffRow is one held conversation as ops see it: no full number (S-12).
+type HandoffRow struct {
+	IdentityID    string     `json:"identity_id"`
+	Channel       Channel    `json:"channel"`
+	PhoneHint     string     `json:"phone_hint"`
+	UserID        string     `json:"user_id,omitempty"`
+	Since         time.Time  `json:"since"`
+	LastInboundAt *time.Time `json:"last_inbound_at,omitempty"`
+	address       string
+}
+
+var ErrIdentityNotFound = errors.New("channel: identity not found")
