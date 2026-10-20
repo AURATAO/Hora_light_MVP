@@ -89,3 +89,9 @@ S-31 discarded errors and unwrapped returns (code and tests); S-12 `?t=` still a
 **Reviewer:** FAIL.
 - S-31 ×3, fixed: a WhatsApp message with an unreadable sender was dropped silently (now logged by message id, never the number); `SENDBLUE_FROM_NUMBER` invalid was silently unset (now logged without the value); `DB_MAX_CONNS` invalid silently became 8 (now logged). The Builder also fixed the same pattern where the Reviewer had not pointed (our own number in both parsers, both timestamp fallbacks, a raw `return err` in `NotifyStatus`).
 - S-02 (page in `server/`): already ruled by the Arbiter as R-4 (time-boxed exception), but the ruling lived only in D-16, which the Reviewer cannot see — so the Reviewer correctly failed it. Per the workflow the Arbiter cannot overrule a FAIL; the ruling is now written into STANDARDS S-02 and S-30 as a named, time-boxed exception (two files, this branch, expires at go-live).
+
+### Round 5 — 2026-10-20 (Reviewer: new Sonnet session; Verifier: Haiku) — at `0e75971`
+**Reviewer:** **PASS.**
+**Verifier:** EXIT=2 **INCOMPLETE** — no red line, no failing test (Go incl. `-race` and DB tests, web build, 131/131 web guards, mobile typecheck + export, I-01b, I-02, I-07, design checks all ok); working tree clean. Not run: I-05 (no Docker daemon, no `VERIFY_DB_URL` — env ticket, identical on base per R-5) and gitleaks (not installed — pre-existing SKIP on base). I-01a: Builder evidence on the staging branch, 3 / 0 / 0 / 0.
+
+**Arbiter ruling for the round-5 state (Aura):** _pending._ The decision table has no row for PASS + INCOMPLETE; R-5 classifies the cause as environment, not regression.
