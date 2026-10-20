@@ -184,7 +184,9 @@ const waInbound = `{"object":"whatsapp_business_account","entry":[{"id":"1","cha
 
 func sign(secret, body string) string {
 	m := hmac.New(sha256.New, []byte(secret))
-	m.Write([]byte(body))
+	if _, err := m.Write([]byte(body)); err != nil {
+		panic(err) // test helper: a failed in-memory hash is a broken test
+	}
 	return "sha256=" + hex.EncodeToString(m.Sum(nil))
 }
 

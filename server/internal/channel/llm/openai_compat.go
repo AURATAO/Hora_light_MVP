@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -99,7 +100,11 @@ func (o *OpenAICompat) completeJSON(ctx context.Context, system, user, schemaNam
 	if err != nil {
 		return "", u, fmt.Errorf("llm request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			log.Printf("[llm] close response body: %v", cerr)
+		}
+	}()
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return "", u, fmt.Errorf("llm read response: status %d: %w", resp.StatusCode, err)

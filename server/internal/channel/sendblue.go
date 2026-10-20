@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -147,7 +148,7 @@ func (a *SendblueAdapter) Send(ctx context.Context, out Outbound) (string, error
 	if err != nil {
 		return "", fmt.Errorf("sendblue send: %w", err)
 	}
-	defer resp.Body.Close()
+	defer closeBody("sendblue send", resp.Body)
 	respBody, err := readProviderBody(resp.Body, 64<<10)
 	if err != nil {
 		return "", fmt.Errorf("sendblue send: status %d: %w", resp.StatusCode, err)
@@ -199,6 +200,13 @@ var digitRun = regexp.MustCompile(`\+?\d[\d\s().-]{5,}\d`)
 // echo the recipient back, S-12) and the length capped.
 func ProviderErrorText(b []byte) string {
 	return truncate(digitRun.ReplaceAll(b, []byte("[number]")), 200)
+}
+
+// closeBody closes a provider response body and logs a close failure (S-31).
+func closeBody(what string, c io.Closer) {
+	if err := c.Close(); err != nil {
+		log.Printf("[channel] %s: close response body: %v", what, err)
+	}
 }
 
 // readProviderBody reads at most limit bytes of a provider response body.

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 	"time"
@@ -179,13 +180,17 @@ func (s *PGStore) ConversationsForUser(ctx context.Context, userID string) ([]Co
 	for rows.Next() {
 		var id Identity
 		if err := rows.Scan(&id.ID, &id.Channel, &id.Address); err != nil {
-			rows.Close()
+			if cerr := rows.Close(); cerr != nil {
+				log.Printf("[channel] conversations for user: close rows: %v", cerr)
+			}
 			return nil, nil, fmt.Errorf("conversations for user: scan: %w", err)
 		}
 		id.UserID = userID
 		ids = append(ids, id)
 	}
-	rows.Close()
+	if err := rows.Close(); err != nil {
+		return nil, nil, fmt.Errorf("conversations for user: close rows: %w", err)
+	}
 	if err := rows.Err(); err != nil {
 		return nil, nil, fmt.Errorf("conversations for user: %w", err)
 	}

@@ -49,7 +49,9 @@ func (a *WhatsAppAdapter) VerifyRequest(r *http.Request, body []byte) error {
 		return ErrUnverified
 	}
 	mac := hmac.New(sha256.New, []byte(a.AppSecret))
-	mac.Write(body)
+	if _, err := mac.Write(body); err != nil {
+		return fmt.Errorf("whatsapp verify: hmac: %w", err)
+	}
 	if !hmac.Equal(got, mac.Sum(nil)) {
 		return ErrUnverified
 	}
@@ -190,7 +192,7 @@ func (a *WhatsAppAdapter) Send(ctx context.Context, o Outbound) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("whatsapp send: %w", err)
 	}
-	defer resp.Body.Close()
+	defer closeBody("whatsapp send", resp.Body)
 	respBody, err := readProviderBody(resp.Body, 64<<10)
 	if err != nil {
 		return "", fmt.Errorf("whatsapp send: status %d: %w", resp.StatusCode, err)

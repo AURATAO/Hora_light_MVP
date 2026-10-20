@@ -407,7 +407,9 @@ func (r *Router) FinishSetup(ctx context.Context, userID string) (booked int, la
 // PendingFor returns the draft a linked user is about to book, for the page.
 func (r *Router) PendingFor(ctx context.Context, identityID string) *PendingDraft {
 	c, err := r.Conversations.GetConversation(ctx, identityID)
-	if err != nil || c.Pending == nil {
+	if err != nil {
+		// The page still works without the booking line; the failure is logged.
+		log.Printf("[channel] pending for identity=%s: %v", identityID, fmt.Errorf("PendingFor: %w", err))
 		return nil
 	}
 	return c.Pending
