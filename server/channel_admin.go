@@ -20,7 +20,7 @@ import (
 //
 //	GET  /admin/channel/handoffs            the conversations ops hold
 //	GET  /admin/channel/:identity/thread    recent messages of one
-//	POST /admin/channel/:identity/send      {text} → the person
+//	POST /admin/channel/:identity/send      {text} → the person (queued, 202)
 //	POST /admin/channel/:identity/release   back to the bot
 //
 // Auth (S-13): dualAuth + requireOpsAdmin on every route, the same control
@@ -150,13 +150,14 @@ func registerChannelAdminRoutes(r *gin.Engine, sqlDB *sql.DB, store *channel.PGS
 			return
 		case err != nil:
 			log.Printf("[channel-admin] send identity=%s by=%s: %v", id.ID, c.GetString("uid"), err)
-			c.JSON(http.StatusBadGateway, gin.H{"error": "send_failed", "message": "The message could not be delivered."})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "server_error"})
 			return
 		}
 		writeAudit(ctx, systemActorUID, c.GetString("uid"), "CHANNEL_OPS_SEND", "", map[string]any{
 			"identity_id": id.ID, "channel": id.Channel, "chars": len(text),
 		})
-		c.JSON(http.StatusOK, gin.H{"sent": true})
+		// Queued: delivery runs off the request path (S-32).
+		c.JSON(http.StatusAccepted, gin.H{"queued": true})
 	})
 	r.POST("/admin/channel/:identity/release", dualAuth(sqlDB), requireOpsAdmin(), func(c *gin.Context) {
 		id, ok := loadIdentityParam(c, store)

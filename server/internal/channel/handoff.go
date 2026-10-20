@@ -170,10 +170,14 @@ func (r *Router) Release(ctx context.Context, id Identity) error {
 	if conv.Pending != nil {
 		text += "\n\n" + CopyBackToDraft + "\n" + r.Summary(conv.Pending)
 	}
-	return r.Send(ctx, Outbound{Channel: id.Channel, To: id.Address, Text: text}, "")
+	// The state change is the action; the message goes off the request
+	// path (S-32).
+	return r.dispatch(ctx, true, func(c context.Context) error {
+		return r.Send(c, Outbound{Channel: id.Channel, To: id.Address, Text: text}, "")
+	})
 }
 
-// OpsSend delivers a message from ops to the person, recorded like any
+// OpsSend queues a message from ops to the person, recorded like any
 // outbound. The thread must be in handoff: ops do not speak over the bot.
 func (r *Router) OpsSend(ctx context.Context, id Identity, text string) error {
 	conv, err := r.Conversations.GetConversation(ctx, id.ID)
@@ -183,7 +187,11 @@ func (r *Router) OpsSend(ctx context.Context, id Identity, text string) error {
 	if conv.State != StateHandoff {
 		return ErrNotInHandoff
 	}
-	return r.Send(ctx, Outbound{Channel: id.Channel, To: id.Address, Text: text}, "")
+	// Queued, not awaited (S-32): a slow provider must not hold the ops
+	// request open. Delivery failures are logged by dispatch.
+	return r.dispatch(ctx, true, func(c context.Context) error {
+		return r.Send(c, Outbound{Channel: id.Channel, To: id.Address, Text: text}, "")
+	})
 }
 
 // ErrNotInHandoff: ops may only write to a thread they hold.

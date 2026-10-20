@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -133,5 +134,40 @@ func TestPendingDraftBackwardCompatible(t *testing.T) {
 	p.SetItems([]DraftItem{{Draft: groceryD, QuoteCents: 1}, {Draft: returnD, QuoteCents: 2}})
 	if p.Draft.Title != "Grocery run" || len(p.More) != 1 || p.TotalCents() != 3 || p.Headline() != "2 errands" {
 		t.Fatalf("%+v", p)
+	}
+}
+
+// A 3DS outcome means the task already exists, parked until the bank
+// confirms. That item must never be re-booked: only the ones after it stay
+// pending, and a single 3DS item leaves nothing pending.
+func TestThreeDSItemIsSpentNotRetried(t *testing.T) {
+	g := multiRig(t)
+	g.say(t, "pick up my laundry and then get groceries")
+	g.booker.results = []PostResult{{Outcome: PostNeeds3DS, TaskID: "t1", Message: "bank check"}}
+	g.say(t, "YES")
+	c, err := g.convs.GetConversation(context.Background(), "id-"+me)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.State != StateHandoff || c.Pending == nil || len(c.Pending.Items()) != 1 || c.Pending.Draft.Title != "Grocery run" {
+		t.Fatalf("state %s pending %+v", c.State, c.Pending)
+	}
+
+	g = multiRig(t)
+	g.say(t, "pick up my laundry")
+	g.booker.results = []PostResult{{Outcome: PostNeeds3DS, TaskID: "t1"}}
+	g.say(t, "YES")
+	c, err = g.convs.GetConversation(context.Background(), "id-"+me)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.State != StateHandoff || c.Pending != nil {
+		t.Fatalf("a single 3DS item must leave nothing to re-book: %+v", c.Pending)
+	}
+	if err := g.r.Release(context.Background(), Identity{ID: "id-" + me, Channel: IMessage, Address: me, UserID: "user-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(g.ad.last(), "Reply YES to book") {
+		t.Fatal("release must not offer to book the task that already exists")
 	}
 }

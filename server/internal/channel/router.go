@@ -422,11 +422,26 @@ func (r *Router) claimAndPost(ctx context.Context, ch Channel, id Identity, from
 	for i, it := range items {
 		res = r.Booker.Post(ctx, id.UserID, it.Draft)
 		log.Printf("[channel] post identity=%s item=%d/%d outcome=%d task=%s", id.ID, i+1, len(items), res.Outcome, res.TaskID)
-		if res.Outcome != PostBooked {
+		switch res.Outcome {
+		case PostBooked:
+			booked++
+			continue
+		case PostNeeds3DS:
+			// The task EXISTS (parked until the bank confirms), so this item
+			// is spent: a later YES must never book it again. Only the items
+			// after it stay pending.
+			if i+1 < len(items) {
+				pending.SetItems(items[i+1:])
+			} else {
+				conv.Pending = nil
+			}
+		default:
+			// Declined / no card / balance / failure: no task was created
+			// (createTask discards it), so this item and the rest wait for
+			// a retry.
 			pending.SetItems(items[i:])
-			break
 		}
-		booked++
+		break
 	}
 	return res, true, r.afterPost(ctx, ch, id, conv, res, booked, len(items), async)
 }
