@@ -45,18 +45,15 @@ var channelSetupHTML []byte
 var channelSetupJS []byte
 
 func registerChannelSetupRoutes(r *gin.Engine, sqlDB *sql.DB, store *channel.PGStore, router *channel.Router) {
-	r.GET("/channel/setup", func(c *gin.Context) {
+	r.GET("/channel/setup", publicByDesign, func(c *gin.Context) {
 		setupPageHeaders(c)
 		c.Data(http.StatusOK, "text/html; charset=utf-8", channelSetupHTML)
 	})
-	r.GET("/channel/setup.js", func(c *gin.Context) {
-		c.Header("Cache-Control", "no-cache")
-		c.Header("X-Content-Type-Options", "nosniff")
+	r.GET("/channel/setup.js", publicByDesign, func(c *gin.Context) {
 		c.Data(http.StatusOK, "text/javascript; charset=utf-8", channelSetupJS)
 	})
 	// Public values the page needs to start Supabase email sign-in.
-	r.GET("/channel/setup/config", func(c *gin.Context) {
-		c.Header("Cache-Control", "no-store")
+	r.GET("/channel/setup/config", publicByDesign, func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"supabase_url":             strings.TrimSuffix(os.Getenv("SUPABASE_PROJECT_URL"), "/"),
 			"supabase_publishable_key": strings.TrimSpace(os.Getenv("SUPABASE_PUBLISHABLE_KEY")),
@@ -64,22 +61,9 @@ func registerChannelSetupRoutes(r *gin.Engine, sqlDB *sql.DB, store *channel.PGS
 			"privacy_url":              "https://www.my-hora.com/privacy",
 		})
 	})
-	r.POST("/channel/setup/check", func(c *gin.Context) {
-		c.Header("Cache-Control", "no-store")
-		token, ok := bindSetupToken(c)
-		if !ok {
-			return
-		}
-		id, expires, err := store.PeekSetupToken(c.Request.Context(), channel.HashSetupToken(token))
-		if errors.Is(err, channel.ErrTokenInvalid) {
-			c.JSON(http.StatusGone, gin.H{"error": "link_expired"})
-			return
-		}
-		if err != nil {
-			log.Printf("[channel-setup] check: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "server_error"})
-			return
-		}
+	r.POST("/channel/setup/check", setupTokenAuth(store), func(c *gin.Context) {
+		id := c.MustGet(ctxSetupIdentity).(channel.Identity)
+		expires := c.MustGet(ctxSetupExpires).(time.Time)
 		resp := gin.H{
 			"valid":      true,
 			"expires_at": expires.UTC().Format(time.RFC3339),
@@ -92,17 +76,14 @@ func registerChannelSetupRoutes(r *gin.Engine, sqlDB *sql.DB, store *channel.PGS
 		}
 		c.JSON(http.StatusOK, resp)
 	})
-	r.POST("/channel/setup/link", dualAuth(sqlDB), func(c *gin.Context) {
-		c.Header("Cache-Control", "no-store")
+	// Two controls: the session (who) and the setup link (which number).
+	r.POST("/channel/setup/link", dualAuth(sqlDB), setupTokenAuth(store), func(c *gin.Context) {
 		uid := c.GetString("uid")
 		if uid == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
 			return
 		}
-		token, ok := bindSetupToken(c)
-		if !ok {
-			return
-		}
+		token := c.GetString(ctxSetupToken)
 		ctx := c.Request.Context()
 		id, err := store.ConsumeSetupTokenAndLink(ctx, channel.HashSetupToken(token), uid)
 		switch {
@@ -187,23 +168,6 @@ func setupPageHeaders(c *gin.Context) {
 		"form-action 'none'",
 		"frame-ancestors 'none'",
 	}, "; "))
-}
-
-func bindSetupToken(c *gin.Context) (string, bool) {
-	var body struct {
-		Token string `json:"token"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "missing_token"})
-		return "", false
-	}
-	t := strings.TrimSpace(body.Token)
-	// A real token is 43 base64url characters; anything else is not ours.
-	if len(t) < 32 || len(t) > 128 {
-		c.JSON(http.StatusGone, gin.H{"error": "link_expired"})
-		return "", false
-	}
-	return t, true
 }
 
 // phoneHint shows enough for a person to recognise their own number.

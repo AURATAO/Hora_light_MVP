@@ -66,15 +66,12 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 	sbHandler := &channel.WebhookHandler{Adapter: sb, Store: store, Router: router}
 	waHandler := &channel.WebhookHandler{Adapter: wa, Store: store, Router: router}
 
-	r.POST("/webhooks/channel/sendblue", gin.WrapH(sbHandler))
-	r.POST("/webhooks/channel/whatsapp", gin.WrapH(waHandler))
-	r.GET("/webhooks/channel/whatsapp", func(c *gin.Context) {
-		challenge, ok := wa.VerifySubscribe(c.Query("hub.mode"), c.Query("hub.verify_token"), c.Query("hub.challenge"))
-		if !ok {
-			c.Status(http.StatusForbidden)
-			return
-		}
-		c.String(http.StatusOK, challenge)
+	// Auth (S-13): each route names its control (channel_auth.go). The
+	// handler verifies again (WebhookHandler) as defence in depth.
+	r.POST("/webhooks/channel/sendblue", providerSignatureAuth(sb), gin.WrapH(sbHandler))
+	r.POST("/webhooks/channel/whatsapp", providerSignatureAuth(wa), gin.WrapH(waHandler))
+	r.GET("/webhooks/channel/whatsapp", whatsappSubscribeAuth(wa), func(c *gin.Context) {
+		c.String(http.StatusOK, c.GetString(ctxHubChallenge))
 	})
 	registerChannelSetupRoutes(r, sqlDB, store, router)
 	log.Printf("[channel] webhooks enabled: sendblue, whatsapp; model=%s; setup base=%s", model.Model, base)
