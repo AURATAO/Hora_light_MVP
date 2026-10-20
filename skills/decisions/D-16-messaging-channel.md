@@ -1,7 +1,7 @@
 # D-16: Requesters book over iMessage and WhatsApp through the Go backend
 
 **Date:** 2026-10-20
-**Status:** Accepted with amendments (Arbiter: Aura, 2026-10-20) — S-11 and S-20 amended; review round 2 pending. Tier 3.
+**Status:** Accepted with amendments; review CONDITIONALLY APPROVED at round 5 (Arbiter: Aura, 2026-10-20) — conditions C-1..C-3, deadline 2026-10-30, no merge to main before. Tier 3.
 **Trigger:** Product pivot (Aura, 2026-10-16): requesters order through an AI agent over iMessage (Sendblue) and WhatsApp (Meta Cloud API); the mobile app becomes a supporter-only dashboard. Business rules unchanged. Built on `feat/messaging-channel`; nothing merges to `main` during the App Store review freeze. Plan and progress: `PLAN.md`.
 
 ## Decision
@@ -94,4 +94,16 @@ S-31 discarded errors and unwrapped returns (code and tests); S-12 `?t=` still a
 **Reviewer:** **PASS.**
 **Verifier:** EXIT=2 **INCOMPLETE** — no red line, no failing test (Go incl. `-race` and DB tests, web build, 131/131 web guards, mobile typecheck + export, I-01b, I-02, I-07, design checks all ok); working tree clean. Not run: I-05 (no Docker daemon, no `VERIFY_DB_URL` — env ticket, identical on base per R-5) and gitleaks (not installed — pre-existing SKIP on base). I-01a: Builder evidence on the staging branch, 3 / 0 / 0 / 0.
 
-**Arbiter ruling for the round-5 state (Aura):** _pending._ The decision table has no row for PASS + INCOMPLETE; R-5 classifies the cause as environment, not regression.
+**Arbiter ruling for the round-5 state (Aura, 2026-10-20): CONDITIONALLY APPROVED.**
+PASS + INCOMPLETE may be conditionally approved only if (a) every check that did not run is shown to be environmental, with a base comparison; (b) the conditions and their deadline are written here; (c) nothing merges to `main` until every condition is met. M3 may start on the branch.
+
+(a) Evidence, base vs branch, same environment:
+- **I-05:** base `541f5e9` and branch both `supabase: command not found` (R-5). With CLI v2.118.0 installed, both stop at the missing Docker daemon. Environmental.
+- **I-02 secret scan:** gitleaks v8.21.2 (release binary) was installed and actually run, `--redact`. **Branch-only commits (`origin/main..HEAD`): 0 findings.** Base `origin/main`: 1 finding, also present on the branch because it is inherited: `stripe-access-token` at `server/payments_phase3_test.go:1109` (commit `0bf9d39`, on `main`). The literal is an `sk_test_` value with an 11-character suffix; real Stripe secret keys are far longer, so it is almost certainly a test placeholder. It is still pre-existing, not introduced here. Caveat: this clone is shallow (27 commits scanned), so the full history has not been scanned.
+
+(b) **Conditions — deadline 2026-10-30, and in any case before any merge to `main`:**
+- **C-1 · I-05 green for real:** run on a machine with a Docker daemon and supabase CLI **v2.118.0** (record the version actually used), `VERIFY_DB_URL` = the staging branch (`qxohqvkmzxokdyzrysgr`), never production. Expected: empty diff. A red here is a regression and blocks.
+- **C-2 · secret scan green for real:** gitleaks run on a **full** (non-shallow) clone: zero findings in this branch's commits, and the inherited `payments_phase3_test.go:1109` finding resolved by a separate decision (replace the literal with an obviously fake value, or allowlist its fingerprint), not by skipping the scan.
+- **C-3 · merge gate:** no merge to `main` until C-1 and C-2 are green **and** the App Store review freeze (PLAN §2) has ended. The go-live change also carries the R-4 page move (S-02 exception expiry).
+
+`verify.sh` now treats a missing gitleaks like a missing CLI: `缺少相依套件 / MISSING DEPENDENCY: gitleaks` in the preflight and `INCOMPLETE` for the step (previously `SKIP`, which did not affect the exit code).

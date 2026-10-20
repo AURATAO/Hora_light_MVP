@@ -27,7 +27,7 @@ select tablename, policyname from pg_policies where schemaname = 'public';
 **On violation:** block merge (this is an unprotected access path — S-01).
 
 ### I-02: No privileged keys in client code or tracked files. `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_DB_URL`, `SESSION_JWT_SECRET` exist only in server-side env.
-**Check:** `grep -rn "service_role\|SUPABASE_DB_URL\|SESSION_JWT_SECRET" app/src mobile/src 2>/dev/null` → no matches; secret scanner (gitleaks) → no findings. (D-04: same `mobile/src` scoping fix as I-01b — `mobile/node_modules/@supabase/*` ships files with `service_role` in comments/types.)
+**Check:** `grep -rn "service_role\|SUPABASE_DB_URL\|SESSION_JWT_SECRET" app/src mobile/src 2>/dev/null` → no matches; secret scanner (gitleaks) → no findings. A missing gitleaks is `INCOMPLETE`, never a pass (D-16). (D-04: same `mobile/src` scoping fix as I-01b — `mobile/node_modules/@supabase/*` ships files with `service_role` in comments/types.)
 **On violation:** block merge + rotate the exposed credential immediately.
 
 ### I-03: Backend compiles, vets, tests green.

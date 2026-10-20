@@ -30,6 +30,7 @@ need go "Go toolchain"
 need node "Node.js"
 need npm "npm"
 need supabase "supabase CLI (I-05 schema drift)"
+need gitleaks "gitleaks (I-02 secret scan)"
 # Run from outside the repo: the CLI rewrites supabase/.temp/cli-latest when
 # invoked inside it, and verification must leave the working tree untouched.
 if have supabase; then echo "   supabase CLI version: $(cd /tmp && supabase --version 2>/dev/null)"; fi
@@ -73,9 +74,10 @@ else echo "ok"; fi
 
 step "secret scan (I-02)"
 if command -v gitleaks >/dev/null 2>&1; then
-  gitleaks detect --source . --no-banner || red "gitleaks findings"
+  # --redact: a finding must never print the secret itself into verify output (S-12).
+  gitleaks detect --source . --no-banner --redact || red "gitleaks findings"
 else
-  echo "SKIP: gitleaks not installed (TODO(confirm): install or choose scanner)"
+  incomplete "I-02 secret scan not run — 缺少相依套件: gitleaks"
 fi
 
 # --- I-07: cross-project isolation --------------------------------------------

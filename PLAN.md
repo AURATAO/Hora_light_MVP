@@ -146,6 +146,7 @@ reasoning on by default — measure latency with it on and off.
 - [ ] New US number for production WhatsApp (not the supporter number)
 - [ ] Baseten API key
 - [ ] TalkJS test-mode app id + secret on the staging Render service (M3 chat relay cannot be tested without it)
+- [ ] **D-16 merge conditions (deadline 2026-10-30, before any merge to main):** C-1 I-05 green on a Docker machine with CLI v2.118.0 against the staging branch; C-2 gitleaks green on a full clone (resolve inherited `payments_phase3_test.go:1109` placeholder by decision); C-3 review freeze over.
 - [ ] **Env ticket (D-16 R-5):** a verification machine with Docker + supabase CLI v2.118.0 and a `VERIFY_DB_URL` for the staging branch, so I-05 can actually run (today: INCOMPLETE everywhere, base and branch alike). Optional: stop committing `supabase/.temp/`.
 - [ ] **Go-live change (D-16 R-4):** move the setup page from `server/` to `app/` (Tailwind) — declared exception until then.
 - [ ] **Post-freeze refactor #1 (D-16 R-1):** `createTask` takes the principal as an argument; drop the synthetic context in `chatBooker.Post`.
