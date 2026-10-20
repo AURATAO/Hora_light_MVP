@@ -171,11 +171,31 @@ type fakeParser struct {
 	draft   llm.TaskDraft
 	err     error
 	sources []string
+	// byText, when set, answers per errand text (multi-errand tests); a
+	// text with no entry fails to parse.
+	byText map[string]llm.TaskDraft
 }
 
 func (f *fakeParser) ParseTask(_ context.Context, _ string, text string) (llm.TaskDraft, llm.Usage, error) {
 	f.sources = append(f.sources, text)
+	if f.byText != nil {
+		d, ok := f.byText[text]
+		if !ok {
+			return llm.TaskDraft{}, llm.Usage{Model: "fake"}, errors.New("cannot parse")
+		}
+		return d, llm.Usage{Model: "fake"}, nil
+	}
 	return f.draft, llm.Usage{Model: "fake"}, f.err
+}
+
+// fakeSplitter splits on " and then ".
+type fakeSplitter struct{ err error }
+
+func (s fakeSplitter) SplitErrands(_ context.Context, text string) ([]string, llm.Usage, error) {
+	if s.err != nil {
+		return []string{text}, llm.Usage{Model: "fake"}, s.err
+	}
+	return strings.Split(text, " and then "), llm.Usage{Model: "fake"}, nil
 }
 
 type fakeClassifier struct{ intent llm.Intent }
@@ -191,14 +211,23 @@ type fakeBooker struct {
 	// approvals (M3)
 	extResult ExtensionResult
 	resolved  []string
+	// multi-errand (M3): titles posted in order; per-call results when set
+	posted  []string
+	results []PostResult
 }
 
 func (b *fakeBooker) Quote(context.Context, llm.TaskDraft) (int, int, error) { return 1200, 30, nil }
-func (b *fakeBooker) Post(context.Context, string, llm.TaskDraft) PostResult {
+func (b *fakeBooker) Post(_ context.Context, _ string, d llm.TaskDraft) PostResult {
 	time.Sleep(b.delay)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.posts++
+	b.posted = append(b.posted, d.Title)
+	if len(b.results) > 0 {
+		r := b.results[0]
+		b.results = b.results[1:]
+		return r
+	}
 	return b.result
 }
 func (b *fakeBooker) ResolveExtension(_ context.Context, user, ext string, approve bool) ExtensionResult {

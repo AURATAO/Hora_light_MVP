@@ -21,6 +21,7 @@ const (
 	CopyTextOnly           = "I can only read text for now. Tell me what you need and when."
 	CopyParseFailed        = "Sorry, I couldn't work that out. Could you say what you need, where, and when?"
 	CopyAskName            = "Got it: %s.\n\nBefore I price it, what's your first name?"
+	CopyTooManyErrands     = "That's more than I can book in one go (up to %d at a time). Send me the first few and we'll take it from there."
 	CopyAskNameAgain       = "Just your first name is fine."
 	CopyOneStepToBook      = "One step to book, about a minute: confirm your email and add a card. Nothing is charged until the task is done.\n\n%s\n\nI'll book it as soon as you finish."
 	CopyOneStepToBookAgain = "Here's a fresh link to finish booking:\n\n%s"
@@ -28,6 +29,8 @@ const (
 	CopyNeedCard           = "To book, add a card first (nothing is charged until the task is done):\n\n%s"
 	CopyDropped            = "No problem, I won't book that. Text me anytime."
 	CopyBooked             = "Booked. I'm finding a supporter now and will text you when someone accepts."
+	CopyBookedAll          = "Booked all %d. I'm finding supporters now and will text you as each one is accepted."
+	CopyBookedSome         = "Booked %d of %d so far. "
 	CopyBookingInFlight    = "One moment, I'm booking it now."
 	CopyCardProblem        = "Your card couldn't be used for this booking."
 	CopyRetryYes           = "Once that's sorted, reply YES to book."
@@ -50,21 +53,45 @@ const (
 // Summary is the message that asks for the YES. It states the price and the
 // terms in the same breath because the YES that answers it is the consent.
 func (r *Router) Summary(p *PendingDraft) string {
-	d := p.Draft
+	items := p.Items()
 	var b strings.Builder
+	if len(items) == 1 {
+		b.WriteString(r.itemLines(items[0], ""))
+		fmt.Fprintf(&b, "\nEstimate: %s (you pay for the time actually used)", Dollars(p.QuoteCents))
+		b.WriteString("\n\nReply YES to book, or tell me what to change.")
+	} else {
+		for i, it := range items {
+			if i > 0 {
+				b.WriteString("\n\n")
+			}
+			b.WriteString(r.itemLines(it, fmt.Sprintf("%d. ", i+1)))
+			fmt.Fprintf(&b, "\nEstimate: %s", Dollars(it.QuoteCents))
+		}
+		fmt.Fprintf(&b, "\n\nTotal estimate: %s (you pay for the time actually used)", Dollars(p.TotalCents()))
+		fmt.Fprintf(&b, "\n\nReply YES to book all %d, or tell me what to change.", len(items))
+	}
+	for _, u := range p.Unparsed {
+		fmt.Fprintf(&b, "\n\nI couldn't work out \u201c%s\u201d — tell me a bit more and I'll add it.", u)
+	}
+	b.WriteString("\nBy booking you agree to our Terms: " + TermsURL)
+	return b.String()
+}
+
+// itemLines is one errand: title, when, where.
+func (r *Router) itemLines(it DraftItem, prefix string) string {
+	d := it.Draft
+	var b strings.Builder
+	b.WriteString(prefix)
 	b.WriteString(d.Title)
 	b.WriteString("\n")
 	b.WriteString(r.when(d.Scheduled, d.ScheduledTime))
-	if p.QuoteMinutes > 0 {
-		fmt.Fprintf(&b, " · about %d min", p.QuoteMinutes)
+	if it.QuoteMinutes > 0 {
+		fmt.Fprintf(&b, " · about %d min", it.QuoteMinutes)
 	}
 	if where := where(d.Location1, d.Location2); where != "" {
 		b.WriteString("\n")
 		b.WriteString(where)
 	}
-	fmt.Fprintf(&b, "\nEstimate: %s (you pay for the time actually used)", Dollars(p.QuoteCents))
-	b.WriteString("\n\nReply YES to book, or tell me what to change.")
-	b.WriteString("\nBy booking you agree to our Terms: " + TermsURL)
 	return b.String()
 }
 

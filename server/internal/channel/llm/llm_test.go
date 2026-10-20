@@ -113,3 +113,23 @@ func TestClassifyAndFallback(t *testing.T) {
 		t.Fatalf("fallback request: %v", got)
 	}
 }
+
+func TestSplitErrandsAndFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := w.Write([]byte(`{"choices":[{"message":{"content":"{\"errands\":[\"pick up my laundry tomorrow 10am\",\"  \",\"get groceries tomorrow 10am\"]}"},"finish_reason":"stop"}]}`)); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer srv.Close()
+	p := &OpenAICompat{BaseURL: srv.URL, APIKey: "k", Model: "m"}
+	got, _, err := p.SplitErrands(context.Background(), "tomorrow 10am pick up my laundry and get groceries")
+	if err != nil || len(got) != 2 || got[0] != "pick up my laundry tomorrow 10am" {
+		t.Fatalf("%v %v", got, err)
+	}
+	// Model unavailable → the whole message is one errand, and the error is reported.
+	down := &OpenAICompat{}
+	got, _, err = down.SplitErrands(context.Background(), "just one thing")
+	if err == nil || len(got) != 1 || got[0] != "just one thing" {
+		t.Fatalf("fallback: %v %v", got, err)
+	}
+}

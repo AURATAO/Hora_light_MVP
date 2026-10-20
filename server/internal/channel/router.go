@@ -83,8 +83,11 @@ type Router struct {
 	Conversations ConversationStore
 	Adapters      map[Channel]Adapter
 	Parser        llm.Parser
-	Classifier    llm.Classifier
-	Booker        Booker
+	// Splitter separates a message asking for several errands (M3). Nil
+	// means every message is one errand.
+	Splitter   llm.Splitter
+	Classifier llm.Classifier
+	Booker     Booker
 	// Prompt builds the extraction prompt for "now" — the same one the app's
 	// AI posting uses (server/ai_task_parser.go).
 	Prompt   func(now time.Time) string
@@ -216,24 +219,53 @@ func (r *Router) startDraft(ctx context.Context, in Inbound, id Identity, conv C
 	if r.Parser == nil || r.Prompt == nil || r.Booker == nil {
 		return fmt.Errorf("start draft: router not fully configured")
 	}
-	draft, usage, err := r.Parser.ParseTask(ctx, r.Prompt(r.now().In(r.loc())), source)
-	if err != nil {
-		log.Printf("[channel] parse failed model=%s latency=%s: %v", usage.Model, usage.Latency, err)
+	// One message may ask for several errands (M3). Each is parsed and priced
+	// on its own; all of them wait on the one YES.
+	errands := []string{source}
+	if r.Splitter != nil {
+		got, usage, err := r.Splitter.SplitErrands(ctx, source)
+		if err != nil {
+			// The whole message is one errand (SplitErrands' own fallback).
+			log.Printf("[channel] split fell back to one errand model=%s: %v", usage.Model, err)
+		}
+		if len(got) > 0 {
+			errands = got
+		}
+		log.Printf("[channel] split model=%s latency=%s errands=%d", usage.Model, usage.Latency.Round(time.Millisecond), len(errands))
+	}
+	if len(errands) > llm.MaxErrands {
+		return r.Reply(ctx, in, fmt.Sprintf(CopyTooManyErrands, llm.MaxErrands), "")
+	}
+	prompt := r.Prompt(r.now().In(r.loc()))
+	var items []DraftItem
+	var unparsed []string
+	for _, text := range errands {
+		draft, usage, err := r.Parser.ParseTask(ctx, prompt, text)
+		if err != nil {
+			log.Printf("[channel] parse failed model=%s latency=%s: %v", usage.Model, usage.Latency, err)
+			unparsed = append(unparsed, text)
+			continue
+		}
+		log.Printf("[channel] parsed model=%s latency=%s in=%d out=%d category=%s", usage.Model, usage.Latency.Round(time.Millisecond), usage.InputTokens, usage.OutputTokens, draft.Category)
+		cents, minutes, err := r.Booker.Quote(ctx, draft)
+		if err != nil {
+			return fmt.Errorf("start draft: quote: %w", err)
+		}
+		items = append(items, DraftItem{Draft: draft, QuoteCents: cents, QuoteMinutes: minutes})
+	}
+	if len(items) == 0 {
 		return r.Reply(ctx, in, CopyParseFailed, "")
 	}
-	log.Printf("[channel] parsed model=%s latency=%s in=%d out=%d category=%s", usage.Model, usage.Latency.Round(time.Millisecond), usage.InputTokens, usage.OutputTokens, draft.Category)
-	cents, minutes, err := r.Booker.Quote(ctx, draft)
-	if err != nil {
-		return fmt.Errorf("start draft: quote: %w", err)
-	}
-	conv.Pending = &PendingDraft{Draft: draft, Source: source, QuoteCents: cents, QuoteMinutes: minutes, CreatedAtUnix: r.now().Unix()}
+	p := &PendingDraft{Source: source, CreatedAtUnix: r.now().Unix(), Unparsed: unparsed}
+	p.SetItems(items)
+	conv.Pending = p
 
 	if !id.Linked() && conv.PendingName == "" {
 		conv.State = StateAwaitingName
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 			return fmt.Errorf("startDraft: %w", err)
 		}
-		return r.Reply(ctx, in, fmt.Sprintf(CopyAskName, draft.Title), "")
+		return r.Reply(ctx, in, fmt.Sprintf(CopyAskName, p.Headline()), "")
 	}
 	return r.showSummary(ctx, in, conv)
 }
@@ -367,14 +399,31 @@ func (r *Router) claimAndPost(ctx context.Context, ch Channel, id Identity, from
 		return PostResult{Outcome: PostFailed}, true, fmt.Errorf("claimAndPost: %w", err)
 	}
 	conv.Pending = pending
-	res = r.Booker.Post(ctx, id.UserID, pending.Draft)
-	log.Printf("[channel] post identity=%s outcome=%d task=%s", id.ID, res.Outcome, res.TaskID)
-	return res, true, r.afterPost(ctx, ch, id, conv, res, async)
+	// Every errand in order. The first one that does not book stops the run;
+	// it and the ones after it stay pending so a later YES retries exactly
+	// those — never the ones already booked.
+	items := pending.Items()
+	booked := 0
+	for i, it := range items {
+		res = r.Booker.Post(ctx, id.UserID, it.Draft)
+		log.Printf("[channel] post identity=%s item=%d/%d outcome=%d task=%s", id.ID, i+1, len(items), res.Outcome, res.TaskID)
+		if res.Outcome != PostBooked {
+			pending.SetItems(items[i:])
+			break
+		}
+		booked++
+	}
+	return res, true, r.afterPost(ctx, ch, id, conv, res, booked, len(items), async)
 }
 
 // afterPost moves the conversation out of StatePosting and replies.
-func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Conversation, res PostResult, async bool) error {
+func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Conversation, res PostResult, booked, total int, async bool) error {
 	out := Outbound{Channel: ch, To: id.Address}
+	// Some of several booked before one failed: say so before the problem.
+	partial := ""
+	if booked > 0 && booked < total {
+		partial = fmt.Sprintf(CopyBookedSome, booked, total)
+	}
 	switch res.Outcome {
 	case PostBooked:
 		conv.Pending = nil
@@ -383,31 +432,34 @@ func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Co
 			log.Printf("[channel] save after booking identity=%s: %v", id.ID, err)
 		}
 		out.Text = CopyBooked
+		if total > 1 {
+			out.Text = fmt.Sprintf(CopyBookedAll, total)
+		}
 		return r.dispatch(ctx, async, func(c context.Context) error { return r.Send(c, out, res.TaskID) })
 	case PostNeedsCard:
 		in := Inbound{Channel: ch, From: id.Address}
-		return r.dispatch(ctx, async, func(c context.Context) error { return r.sendSetupLink(c, in, id, conv, CopyNeedCard) })
+		return r.dispatch(ctx, async, func(c context.Context) error { return r.sendSetupLink(c, in, id, conv, partial+CopyNeedCard) })
 	case PostOwesBalance, PostDeclined:
 		// Keep the draft: once the card or balance is sorted, YES retries.
 		conv.State = StateAwaitingConfirm
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 			log.Printf("[channel] save after post identity=%s: %v", id.ID, err)
 		}
-		out.Text = firstNonEmpty(res.Message, CopyCardProblem) + " " + CopyRetryYes
+		out.Text = partial + firstNonEmpty(res.Message, CopyCardProblem) + " " + CopyRetryYes
 		return r.dispatch(ctx, async, func(c context.Context) error { return r.Send(c, out, "") })
 	case PostNeeds3DS:
 		conv.State = StateHandoff
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 			log.Printf("[channel] save after post identity=%s: %v", id.ID, err)
 		}
-		out.Text = Copy3DSHandoff
+		out.Text = partial + Copy3DSHandoff
 		return r.dispatch(ctx, async, func(c context.Context) error { return r.Send(c, out, res.TaskID) })
 	default:
 		conv.State = StateAwaitingConfirm
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 			log.Printf("[channel] save after post identity=%s: %v", id.ID, err)
 		}
-		out.Text = CopyPostFailed
+		out.Text = partial + CopyPostFailed
 		return r.dispatch(ctx, async, func(c context.Context) error { return r.Send(c, out, "") })
 	}
 }

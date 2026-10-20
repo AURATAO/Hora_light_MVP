@@ -42,6 +42,50 @@ type PendingDraft struct {
 	QuoteMinutes  int           `json:"quote_minutes"`
 	SummaryShown  string        `json:"summary_shown"`
 	CreatedAtUnix int64         `json:"created_at"`
+	// More holds the second and later errands of a message that asked for
+	// several (M3). The first stays in Draft/QuoteCents/QuoteMinutes so older
+	// stored rows still decode. All of them wait on the one YES.
+	More []DraftItem `json:"more,omitempty"`
+	// Unparsed is the part of the message no draft could be made from, kept
+	// so the summary can say so instead of silently dropping it.
+	Unparsed []string `json:"unparsed,omitempty"`
+}
+
+// DraftItem is one errand with its estimate.
+type DraftItem struct {
+	Draft        llm.TaskDraft `json:"draft"`
+	QuoteCents   int           `json:"quote_cents"`
+	QuoteMinutes int           `json:"quote_minutes"`
+}
+
+// Items is every errand in order, the first included.
+func (p *PendingDraft) Items() []DraftItem {
+	items := make([]DraftItem, 0, 1+len(p.More))
+	items = append(items, DraftItem{Draft: p.Draft, QuoteCents: p.QuoteCents, QuoteMinutes: p.QuoteMinutes})
+	return append(items, p.More...)
+}
+
+// SetItems stores items (at least one) in the same shape.
+func (p *PendingDraft) SetItems(items []DraftItem) {
+	p.Draft, p.QuoteCents, p.QuoteMinutes = items[0].Draft, items[0].QuoteCents, items[0].QuoteMinutes
+	p.More = append([]DraftItem(nil), items[1:]...)
+}
+
+// TotalCents is the sum of the estimates.
+func (p *PendingDraft) TotalCents() int {
+	total := 0
+	for _, it := range p.Items() {
+		total += it.QuoteCents
+	}
+	return total
+}
+
+// Headline names the booking in a few words: the title, or "3 errands".
+func (p *PendingDraft) Headline() string {
+	if n := 1 + len(p.More); n > 1 {
+		return fmt.Sprintf("%d errands", n)
+	}
+	return p.Draft.Title
 }
 
 // Conversation is one identity's chat state.

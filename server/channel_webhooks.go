@@ -50,6 +50,7 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		Conversations: store,
 		Adapters:      map[channel.Channel]channel.Adapter{channel.IMessage: sb, channel.WhatsApp: wa},
 		Parser:        model,
+		Splitter:      model,
 		Classifier:    model,
 		Booker:        &chatBooker{sqlDB: sqlDB},
 		// The same extraction prompt as the app's AI posting

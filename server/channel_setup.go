@@ -72,7 +72,7 @@ func registerChannelSetupRoutes(r *gin.Engine, sqlDB *sql.DB, store *channel.PGS
 		}
 		// What they are about to book, so the page can say it back to them.
 		if p := router.PendingFor(c.Request.Context(), id.ID); p != nil {
-			resp["booking"] = gin.H{"title": p.Draft.Title, "estimate": channel.Dollars(p.QuoteCents)}
+			resp["booking"] = gin.H{"title": p.Headline(), "estimate": channel.Dollars(p.TotalCents())}
 		}
 		c.JSON(http.StatusOK, resp)
 	})
