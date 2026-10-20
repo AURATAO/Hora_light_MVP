@@ -132,7 +132,7 @@ reasoning on by default — measure latency with it on and off.
 |---|---|---|---|
 | M0 | Oct 19 | PLAN.md; `channel` package skeleton; adapter interface; migration file (not applied) | ✅ see §15 |
 | M1 | Oct 20–22 | Sendblue inbound/outbound in sandbox; identity + setup page; dedupe | ✅ help-first flow booked a real task from an iPhone, Oct 20 — §15 |
-| M2 | Oct 23–25 | Draft → YES → hold → task; status updates via `notify.Create` hook | 🟡 first booking proven on a phone (Oct 20); status updates built, phone test pending |
+| M2 | Oct 23–25 | Draft → YES → hold → task; status updates via `notify.Create` hook | ✅ Oct 20 — booking + accepted/clock in/out/done all seen on an iPhone (staging, payments off) |
 | M3 | Oct 26–28 | Approvals YES/NO; chat relay; multi-task; ops handoff | |
 | M4 | Oct 29–31 | WhatsApp adapter on Meta test number; eval run; real-card E2E on both channels; demo | |
 
@@ -163,6 +163,14 @@ The setup step is the one to watch.
   drafts → one summary → one YES. (From the second task on, a linked number
   already books with just YES — no link, no code — so the remaining friction is
   the one-task-per-round chat itself.) Fits M3 "multi-task".
+- **Tone (Aura, 2026-10-20):** replies are canned. "Thank you" after a
+  completed task gets "Got it. Text me anytime…" — wrong register. To do, M3:
+  (a) context-aware acknowledgements — after COMPLETED → "You're welcome, hope
+  it went well"; after a booking → something that references the task;
+  (b) let the model write the small-talk replies (greeting / thanks / other)
+  from a short persona prompt with the conversation's last few turns, while
+  everything that touches money or state stays rule-based copy (YES/NO,
+  summary, price, link). Eval the persona on the §9 set before switching.
 
 ## 15. Progress log
 
@@ -317,6 +325,15 @@ session:
 - Not verifiable on staging yet: chat relay (TalkJS keys are prod-only — a
   TalkJS test app is an Aura item, §11) and `COMPLETED` (photo retest pending).
 
+**COMPLETED verified on a phone — 2026-10-20 21:34 CEST:** the Done message
+arrived after the web-app completion (photo upload worked once the branch had
+its buckets). M2 is fully verified on real infrastructure.
+
+**Staging deploys were failing (fixed 2026-10-20):** the branch's session-mode
+pooler allows 15 clients; one process holds up to 16 (two pools × 8) and a
+zero-downtime deploy runs two. `DB_MAX_CONNS` (new, default 8 = production
+unchanged) is 3 on staging; stuck idle sessions were terminated once. See §16.
+
 **Known gaps (next):** shopping budget is not asked in chat (grocery tasks
 post with no budget); 3DS in chat goes to a human; returning customer who
 needs a new card re-verifies email on the page; status updates to the chat
@@ -349,6 +366,11 @@ needs a new card re-verifies email on the page; status updates to the chat
   Shared for now: Sendblue sandbox line (prod doesn't use it; prod gets its own
   keys with the paid line). Note: a Supabase branch inherits main's custom SMTP
   host/user but not the password — set it per branch.
+- `DB_MAX_CONNS=3` on the Render service: the branch pooler caps at 15 sessions
+  and a deploy runs two processes. If a deploy fails with `EMAXCONNSESSION`,
+  terminate idle `Supavisor` sessions (`pg_terminate_backend`) and redeploy.
+- Storage buckets are NOT copied to a branch: `avatars` (public) and
+  `task-completions` (private) were created by hand on this one.
 - Tear down after Oct 31 if unused: delete the Render service and the branch.
 
 ## 14. Paused
