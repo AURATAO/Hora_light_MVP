@@ -23,6 +23,10 @@ const (
 	StateAwaitingConfirm State = "awaiting_confirm"
 	StateAwaitingSetup   State = "awaiting_setup"
 	StateHandoff         State = "handoff"
+	// StateAwaitingApproval: the supporter asked for more time or budget and
+	// the next YES/NO answers that (M3). A pending draft is kept underneath
+	// and resumed afterwards.
+	StateAwaitingApproval State = "awaiting_approval"
 	// StatePosting means a booking is in flight (stored as 'drafting'). Only
 	// one caller can move a conversation into it — see ClaimForPosting.
 	StatePosting State = "drafting"
@@ -47,6 +51,18 @@ type Conversation struct {
 	Pending         *PendingDraft
 	PendingName     string
 	TermsAcceptedAt *time.Time
+	// PendingExtensionID is the extension request the next YES/NO answers
+	// (StateAwaitingApproval).
+	PendingExtensionID string
+}
+
+// ResumeState is where a conversation goes once an approval is answered:
+// back to the draft that was waiting, or idle.
+func (c Conversation) ResumeState() State {
+	if c.Pending != nil {
+		return StateAwaitingConfirm
+	}
+	return StateIdle
 }
 
 // ConversationStore loads and saves conversation state.
@@ -110,12 +126,12 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 	c := Conversation{IdentityID: identityID, State: StateIdle}
 	var state string
 	var pending []byte
-	var name sql.NullString
+	var name, ext sql.NullString
 	var terms sql.NullTime
 	err := s.DB.QueryRowContext(ctx, `
-		SELECT state, pending_draft, pending_name, terms_accepted_at
+		SELECT state, pending_draft, pending_name, terms_accepted_at, pending_extension_id::text
 		FROM channel_conversations WHERE identity_id = $1
-	`, identityID).Scan(&state, &pending, &name, &terms)
+	`, identityID).Scan(&state, &pending, &name, &terms, &ext)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, nil
 	}
@@ -124,6 +140,7 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 	}
 	c.State = State(state)
 	c.PendingName = name.String
+	c.PendingExtensionID = ext.String
 	if terms.Valid {
 		t := terms.Time
 		c.TermsAcceptedAt = &t
@@ -153,15 +170,16 @@ func (s *PGStore) SaveConversation(ctx context.Context, c Conversation) error {
 	}
 	_, err := s.DB.ExecContext(ctx, `
 		INSERT INTO channel_conversations
-		  (identity_id, state, pending_draft, pending_name, terms_accepted_at, updated_at)
-		VALUES ($1, $2, $3::jsonb, NULLIF($4, ''), $5, now())
+		  (identity_id, state, pending_draft, pending_name, terms_accepted_at, pending_extension_id, updated_at)
+		VALUES ($1, $2, $3::jsonb, NULLIF($4, ''), $5, NULLIF($6, '')::uuid, now())
 		ON CONFLICT (identity_id) DO UPDATE SET
 		  state = EXCLUDED.state,
 		  pending_draft = EXCLUDED.pending_draft,
 		  pending_name = EXCLUDED.pending_name,
 		  terms_accepted_at = COALESCE(channel_conversations.terms_accepted_at, EXCLUDED.terms_accepted_at),
+		  pending_extension_id = EXCLUDED.pending_extension_id,
 		  updated_at = now()
-	`, c.IdentityID, string(c.State), pending, c.PendingName, terms)
+	`, c.IdentityID, string(c.State), pending, c.PendingName, terms, c.PendingExtensionID)
 	if err != nil {
 		return fmt.Errorf("save conversation: %w", err)
 	}

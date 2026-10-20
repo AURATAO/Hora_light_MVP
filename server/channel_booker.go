@@ -162,3 +162,59 @@ func (b *chatBooker) ApplyChatProfile(ctx context.Context, userID, name string, 
 	}
 	return nil
 }
+
+// ResolveExtension answers a supporter's request as the chat's requester
+// (M3). The decision runs through decideExtension — the same code the app's
+// Approve/Decline buttons call — so the requester-only check, expiry-first,
+// double-answer safety, ceiling move, audit row and announcements are
+// production's. The chat only carries the YES/NO.
+func (b *chatBooker) ResolveExtension(ctx context.Context, userID, extensionID string, approve bool) channel.ExtensionResult {
+	var taskID string
+	err := b.sqlDB.QueryRowContext(ctx,
+		`select task_id::text from public.extension_requests where id = $1::uuid`, extensionID).Scan(&taskID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return channel.ExtensionResult{Outcome: channel.ExtNotFound}
+	}
+	if err != nil {
+		log.Printf("[channel-booker] resolve ext=%s: %v", extensionID, fmt.Errorf("load request: %w", err))
+		return channel.ExtensionResult{Outcome: channel.ExtFailed}
+	}
+	decision := extensionStatusDenied
+	if approve {
+		decision = extensionStatusApproved
+	}
+	res, err := decideExtension(ctx, taskID, extensionID, userID, decision)
+	switch {
+	case errors.Is(err, errExtensionTaskNotFound), errors.Is(err, errExtensionNotFound), errors.Is(err, errExtensionNotRequester):
+		// Not this person's to answer, or gone. The chat gets one neutral
+		// line; the reason stays in the log (S-33).
+		log.Printf("[channel-booker] resolve ext=%s uid=%s: %v", extensionID, userID, err)
+		return channel.ExtensionResult{Outcome: channel.ExtNotFound, TaskID: taskID}
+	case err != nil:
+		log.Printf("[channel-booker] resolve ext=%s uid=%s: %v", extensionID, userID, err)
+		return channel.ExtensionResult{Outcome: channel.ExtFailed, TaskID: taskID}
+	}
+	if res.Already != nil {
+		return channel.ExtensionResult{Outcome: channel.ExtAlready, Status: res.Already.Status, Ask: b.extensionAsk(ctx, *res.Already), TaskID: taskID}
+	}
+	return channel.ExtensionResult{Outcome: channel.ExtResolved, Status: res.Resolved.Status, Ask: b.extensionAsk(ctx, res.Resolved), TaskID: taskID}
+}
+
+// extensionAsk is the request in words, the same way the app's
+// announcements phrase it: "15 more minutes on “Laundry pickup”".
+func (b *chatBooker) extensionAsk(ctx context.Context, e ExtensionRequest) string {
+	ask := fmt.Sprintf("%d more minutes", derefInt(e.RequestedMinutes))
+	if e.Kind == extensionKindBudget {
+		ask = formatCentsUSD(derefInt(e.RequestedCents)) + " more budget"
+	}
+	var title string
+	if err := b.sqlDB.QueryRowContext(ctx,
+		`select coalesce(title,'') from public.tasks where id = $1::uuid`, e.TaskID).Scan(&title); err != nil {
+		log.Printf("[channel-booker] ask ext=%s: %v", e.ID, fmt.Errorf("load title: %w", err))
+		return ask
+	}
+	if title == "" {
+		return ask
+	}
+	return ask + " on \u201c" + title + "\u201d"
+}

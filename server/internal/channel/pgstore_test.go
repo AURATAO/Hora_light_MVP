@@ -509,3 +509,36 @@ func TestPGRecordOutboundStoresTheRedactedBody(t *testing.T) {
 		t.Fatalf("stored %q", body)
 	}
 }
+
+// M3: the pending approval round-trips, and clearing it stores NULL (the
+// column is a FK, so an empty string must never reach it).
+func TestPGPendingExtensionRoundTrip(t *testing.T) {
+	db := testDB(t)
+	s := &PGStore{DB: db}
+	ctx := context.Background()
+	a, err := s.UpsertIdentity(ctx, IMessage, "+15550000404")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ext string
+	if err := db.QueryRow(`INSERT INTO extension_requests DEFAULT VALUES RETURNING id`).Scan(&ext); err != nil {
+		t.Fatal(err)
+	}
+	c := Conversation{IdentityID: a.ID, State: StateAwaitingApproval, PendingExtensionID: ext}
+	if err := s.SaveConversation(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetConversation(ctx, a.ID)
+	if err != nil || got.State != StateAwaitingApproval || got.PendingExtensionID != ext {
+		t.Fatalf("%+v %v", got, err)
+	}
+	got.PendingExtensionID = ""
+	got.State = got.ResumeState()
+	if err := s.SaveConversation(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.GetConversation(ctx, a.ID)
+	if err != nil || again.State != StateIdle || again.PendingExtensionID != "" {
+		t.Fatalf("%+v %v", again, err)
+	}
+}

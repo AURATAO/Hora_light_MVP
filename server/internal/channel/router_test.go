@@ -3,6 +3,7 @@ package channel
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -187,6 +188,9 @@ type fakeBooker struct {
 	result  PostResult
 	delay   time.Duration
 	applied []string
+	// approvals (M3)
+	extResult ExtensionResult
+	resolved  []string
 }
 
 func (b *fakeBooker) Quote(context.Context, llm.TaskDraft) (int, int, error) { return 1200, 30, nil }
@@ -196,6 +200,21 @@ func (b *fakeBooker) Post(context.Context, string, llm.TaskDraft) PostResult {
 	defer b.mu.Unlock()
 	b.posts++
 	return b.result
+}
+func (b *fakeBooker) ResolveExtension(_ context.Context, user, ext string, approve bool) ExtensionResult {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.resolved = append(b.resolved, fmt.Sprintf("%s:%s:%t", user, ext, approve))
+	if b.extResult.Outcome == ExtResolved && b.extResult.Status == "" {
+		r := b.extResult
+		if approve {
+			r.Status = "approved"
+		} else {
+			r.Status = "denied"
+		}
+		return r
+	}
+	return b.extResult
 }
 func (b *fakeBooker) ApplyChatProfile(_ context.Context, user, name string, _ *time.Time) error {
 	b.applied = append(b.applied, user+":"+name)
@@ -246,7 +265,8 @@ func newRig(intent llm.Intent) *rig {
 	ad := &fakeSendAdapter{}
 	st := &fakeStore{}
 	p := &fakeParser{draft: laundry}
-	b := &fakeBooker{result: PostResult{Outcome: PostBooked, TaskID: "task-1"}}
+	b := &fakeBooker{result: PostResult{Outcome: PostBooked, TaskID: "task-1"},
+		extResult: ExtensionResult{Outcome: ExtResolved, Ask: "15 more minutes on \u201cLaundry pickup\u201d", TaskID: "task-1"}}
 	nyc, err := time.LoadLocation("America/New_York")
 	if err != nil {
 		panic(err)

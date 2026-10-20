@@ -24,7 +24,7 @@ func TestChatStatusHookOnlyTellsTheRequester(t *testing.T) {
 	hook := statusHook(func(context.Context, string) (string, error) {
 		lookups++
 		return "requester-1", nil
-	}, rec)
+	}, func(context.Context, string) (string, error) { return "ext-1", nil }, rec)
 
 	hook(notify.CreateNotificationInput{UserID: "requester-1", TaskID: "t1", Type: "ORDER_ACCEPTED"})
 	hook(notify.CreateNotificationInput{UserID: "supporter-9", TaskID: "t1", Type: "CANCELLED", Body: "x"})

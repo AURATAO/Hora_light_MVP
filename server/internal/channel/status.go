@@ -28,6 +28,10 @@ type StatusEvent struct {
 	SupporterName string
 	TotalLogged   string
 	FinalCost     string
+	// Approval requests (M3): the request the YES/NO will answer and the
+	// auto-decline window the app applies.
+	ExtensionID     string
+	ApprovalMinutes int
 }
 
 // StatusText is the chat message for an event, and false for events the chat
@@ -68,6 +72,16 @@ func StatusText(ev StatusEvent) (string, bool) {
 		}
 		b.WriteString("\n\nYour receipt is on its way by email. Need something else? Just text me.")
 		return b.String(), true
+	case evTimeRequested, evBudgetRequested:
+		return approvalText(ev)
+	case evResolved:
+		// The person's own answer was confirmed when they gave it (here or
+		// in the app); only the timeout is news. Deterministic on the app's
+		// own title.
+		if strings.HasPrefix(ev.Title, "A request timed out") && strings.TrimSpace(ev.Body) != "" {
+			return fmt.Sprintf(CopyApprovalTimedOut, strings.TrimSpace(ev.Body)), true
+		}
+		return "", false
 	case "CANCELLED", "TASK_REASSIGNED", "TASK_REMOVED", "TIME_CAP_WARNING":
 		// The app's own requester copy is already plain and self-contained.
 		if strings.TrimSpace(ev.Body) == "" {
@@ -139,8 +153,12 @@ const WhatsAppWindow = 24 * time.Hour
 // best-effort: the email and push for the same event have already gone, so a
 // failure here is logged and returned, never retried into a duplicate.
 func (r *Router) NotifyStatus(ctx context.Context, userID string, ev StatusEvent) error {
+	if userID == "" || r.Status == nil {
+		return nil
+	}
 	text, ok := StatusText(ev)
-	if !ok || userID == "" || r.Status == nil {
+	// A resolution clears a pending question even when it sends no text.
+	if !ok && ev.Type != evResolved {
 		return nil
 	}
 	t, found, err := r.Status.StatusTargetFor(ctx, userID, ev.TaskID)
@@ -150,6 +168,14 @@ func (r *Router) NotifyStatus(ctx context.Context, userID string, ev StatusEvent
 	if !found {
 		return nil // an app-only user: nothing to send
 	}
+	if ev.Type == evResolved {
+		if err := r.clearApproval(ctx, t.Identity.ID); err != nil {
+			return fmt.Errorf("NotifyStatus: %w", err)
+		}
+		if !ok {
+			return nil
+		}
+	}
 	if t.Identity.Channel == WhatsApp {
 		if t.LastInboundAt == nil || r.now().Sub(*t.LastInboundAt) > WhatsAppWindow {
 			// Needs an approved template (M4). Email and push still carried it.
@@ -157,5 +183,14 @@ func (r *Router) NotifyStatus(ctx context.Context, userID string, ev StatusEvent
 			return nil
 		}
 	}
-	return r.Send(ctx, Outbound{Channel: t.Identity.Channel, To: t.Identity.Address, Text: text}, ev.TaskID)
+	if err := r.Send(ctx, Outbound{Channel: t.Identity.Channel, To: t.Identity.Address, Text: text}, ev.TaskID); err != nil {
+		return fmt.Errorf("NotifyStatus: %w", err)
+	}
+	if isApprovalRequest(ev.Type) && ev.ExtensionID != "" {
+		// Armed only after the question was actually delivered.
+		if err := r.askApproval(ctx, t.Identity.ID, ev.ExtensionID); err != nil {
+			return fmt.Errorf("NotifyStatus: %w", err)
+		}
+	}
+	return nil
 }

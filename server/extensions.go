@@ -567,25 +567,36 @@ func approveExtension(c *gin.Context) { resolveExtension(c, extensionStatusAppro
 // POST /tasks/:id/extensions/:eid/deny
 func denyExtension(c *gin.Context) { resolveExtension(c, extensionStatusDenied) }
 
-func resolveExtension(c *gin.Context, decision string) {
-	taskID := c.Param("id")
-	extID := c.Param("eid")
-	meUID := c.GetString("uid")
-	if meUID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
-		return
-	}
-	ctx := c.Request.Context()
+// extensionResolution is what answering a request produced, for whichever
+// surface asked (the app's HTTP handler, the chat's YES/NO — D-16 M3).
+type extensionResolution struct {
+	// Resolved is the request after this decision was applied.
+	Resolved ExtensionRequest
+	// Already is set instead when the request had already been answered,
+	// had expired, or is not on this task: the row as it stands.
+	Already *ExtensionRequest
+}
 
+var (
+	errExtensionTaskNotFound = errors.New("extension: task not found")
+	errExtensionNotRequester = errors.New("extension: only the requester may answer")
+	errExtensionNotFound     = errors.New("extension: request not found")
+)
+
+// resolveExtensionAs applies decision to extension extID on taskID on behalf
+// of requesterUID — the acting principal, which the caller has already
+// established (dualAuth for HTTP; S-11's five chat conditions for the
+// chat). Everything that decides money lives here, once: the requester
+// check, expiry-first, the status-guarded UPDATE that makes a double-tap
+// safe, the ceiling move on approval, the audit row, the announcements.
+func decideExtension(ctx context.Context, taskID, extID, requesterUID, decision string) (extensionResolution, error) {
 	t, err := loadAdminTask(ctx, taskID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
-		return
+		return extensionResolution{}, errExtensionTaskNotFound
 	}
 	// The requester alone. They are the one being asked to pay.
-	if t.RequesterID != meUID {
-		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
-		return
+	if t.RequesterID != requesterUID {
+		return extensionResolution{}, errExtensionNotRequester
 	}
 
 	// Expire first, so a tap that lands a second after the deadline is honestly
@@ -603,7 +614,7 @@ func resolveExtension(c *gin.Context, decision string) {
 		          requested_cents, requested_minutes,
 		          coalesce(reason,''), coalesce(fallback,''), coalesce(fallback_note,''),
 		          status, created_at, resolved_at
-	`, extID, taskID, decision, meUID, extensionStatusPending)
+	`, extID, taskID, decision, requesterUID, extensionStatusPending)
 
 	e, err := scanExtension(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -613,21 +624,12 @@ func resolveExtension(c *gin.Context, decision string) {
 		current, readErr := scanExtension(db.QueryRow(ctx,
 			extensionSelect+` where id = $1::uuid and task_id = $2::uuid`, extID, taskID))
 		if readErr != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
-			return
+			return extensionResolution{}, errExtensionNotFound
 		}
-		c.JSON(http.StatusConflict, gin.H{
-			"error":   "request_already_resolved",
-			"status":  current.Status,
-			"message": extensionResolvedMessage(current.Status),
-			"request": current,
-		})
-		return
+		return extensionResolution{Already: &current}, nil
 	}
 	if err != nil {
-		log.Printf("[extensions][resolve] id=%s task=%s: %v", extID, taskID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
-		return
+		return extensionResolution{}, fmt.Errorf("resolve extension %s on task %s: %w", extID, taskID, err)
 	}
 
 	// The ceiling moves only on an approval, and ONLY the ceiling. Nothing is
@@ -650,14 +652,49 @@ func resolveExtension(c *gin.Context, decision string) {
 		"requested_cents":   e.RequestedCents,
 		"requested_minutes": e.RequestedMinutes,
 	}
-	writeAudit(ctx, taskID, meUID, "EXTENSION_"+strings.ToUpper(decision), e.Kind, meta)
-	log.Printf("[extensions] %s id=%s task=%s kind=%s by=%s", decision, e.ID, taskID, e.Kind, meUID)
+	writeAudit(ctx, taskID, requesterUID, "EXTENSION_"+strings.ToUpper(decision), e.Kind, meta)
+	log.Printf("[extensions] %s id=%s task=%s kind=%s by=%s", decision, e.ID, taskID, e.Kind, requesterUID)
 
 	go announceExtensionResolution(context.Background(), e)
+	return extensionResolution{Resolved: e}, nil
+}
+
+func resolveExtension(c *gin.Context, decision string) {
+	taskID := c.Param("id")
+	extID := c.Param("eid")
+	meUID := c.GetString("uid")
+	if meUID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+		return
+	}
+	ctx := c.Request.Context()
+
+	res, err := decideExtension(ctx, taskID, extID, meUID, decision)
+	switch {
+	case errors.Is(err, errExtensionTaskNotFound), errors.Is(err, errExtensionNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	case errors.Is(err, errExtensionNotRequester):
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	case err != nil:
+		log.Printf("[extensions][resolve] id=%s task=%s: %v", extID, taskID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+	if res.Already != nil {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":   "request_already_resolved",
+			"status":  res.Already.Status,
+			"message": extensionResolvedMessage(res.Already.Status),
+			"request": res.Already,
+		})
+		return
+	}
 
 	approvedBudget, capDetail := postResolutionState(ctx, taskID)
 	c.JSON(http.StatusOK, gin.H{
-		"request":               e,
+		"request":               res.Resolved,
 		"approved_budget_cents": approvedBudget,
 		"time_cap":              capDetail,
 	})

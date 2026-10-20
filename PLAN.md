@@ -133,7 +133,7 @@ reasoning on by default — measure latency with it on and off.
 | M0 | Oct 19 | PLAN.md; `channel` package skeleton; adapter interface; migration file (not applied) | ✅ see §15 |
 | M1 | Oct 20–22 | Sendblue inbound/outbound in sandbox; identity + setup page; dedupe | ✅ help-first flow booked a real task from an iPhone, Oct 20 — §15 |
 | M2 | Oct 23–25 | Draft → YES → hold → task; status updates via `notify.Create` hook | ✅ Oct 20 — booking + accepted/clock in/out/done all seen on an iPhone (staging, payments off) |
-| M3 | Oct 26–28 | Approvals YES/NO; chat relay; multi-task; ops handoff | |
+| M3 | Oct 26–28 | Approvals YES/NO; chat relay; multi-task; ops handoff | 🟡 approvals built (Oct 20); phone test + review pending |
 | M4 | Oct 29–31 | WhatsApp adapter on Meta test number; eval run; real-card E2E on both channels; demo | |
 
 ## 11. External dependencies (owner: Aura)
@@ -355,6 +355,29 @@ App Review sandbox); startup logs "Stripe initialized in test mode";
 `PAYMENTS_ENFORCED=true` on staging. `APP_ENV=staging` now refuses a live key
 outright (`payments.go`). Stripe webhook for staging not set yet — needed only
 for the settle-after-completion path.
+
+**M3.1 — approvals by text — 2026-10-20 (night)**
+- A supporter's request for more time or budget reaches the requester's
+  thread as a question ("…Reply YES to approve or NO to decline. No answer
+  within 5 minutes counts as a no."); the next YES/NO answers it. YES/NO by
+  rule only (money rule); anything else re-asks and decides nothing.
+- **The decision is the app's own code.** `resolveExtension` (HTTP) was
+  refactored into `decideExtension(ctx, taskID, extID, requesterUID,
+  decision)` — a pure function taking the principal — and the handler now
+  wraps it. The chat calls the same function. No synthetic request context,
+  so S-11 needed no further amendment for this; all existing DB-backed
+  extension tests (approved / denied / expired / authorization / double
+  pending / audit trail) pass unchanged against the refactor.
+- Priority: the approval clock beats a draft being confirmed — the question
+  interrupts, the draft is kept and re-shown afterwards ("Back to your new
+  request:"). Not armed mid-booking, mid-setup or in handoff.
+- Resolved elsewhere (app tap, timeout) clears the question; only the timeout
+  is told in the chat (the person's own answer was confirmed when given).
+- `pending_extension_id` (existing column) now round-trips.
+- Tests: 9 in `approval_test.go` (incl. ambiguous replies decide nothing, a
+  stale YES resolves nothing, late YES on an expired request), 1 DB test.
+- Not yet verified on a phone: needs a supporter to request time/budget on
+  the web app against staging.
 
 **Known gaps (next):** shopping budget is not asked in chat (grocery tasks
 post with no budget); 3DS in chat goes to a human; returning customer who

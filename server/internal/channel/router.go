@@ -21,6 +21,30 @@ type Booker interface {
 	// ApplyChatProfile writes the name and terms consent gathered in the chat
 	// onto the user's profile (fills blanks only; never overwrites).
 	ApplyChatProfile(ctx context.Context, userID, name string, termsAcceptedAt *time.Time) error
+	// ResolveExtension answers a supporter's request for more time or
+	// budget as userID (the requester). The decision itself is made by the
+	// app's own extension code; this only carries the YES/NO (M3).
+	ResolveExtension(ctx context.Context, userID, extensionID string, approve bool) ExtensionResult
+}
+
+// ExtensionOutcome is what answering an extension request produced.
+type ExtensionOutcome int
+
+const (
+	ExtResolved ExtensionOutcome = iota // this answer decided it
+	ExtAlready                          // already answered or expired (see Status)
+	ExtNotFound                         // unknown, or not this person's to answer
+	ExtFailed                           // server fault
+)
+
+type ExtensionResult struct {
+	Outcome ExtensionOutcome
+	// Status of the request after the call: approved / denied / expired.
+	Status string
+	// Ask is the request in words: "15 more minutes on “Laundry pickup”".
+	Ask string
+	// TaskID the request belongs to, for threading the reply.
+	TaskID string
 }
 
 // PostOutcome is what happened when a confirmed draft was posted.
@@ -136,6 +160,8 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 		return r.onConfirm(ctx, in, id, conv, text)
 	case StateAwaitingSetup:
 		return r.onAwaitingSetup(ctx, in, id, conv, text)
+	case StateAwaitingApproval:
+		return r.onAwaitingApproval(ctx, in, id, conv, text)
 	case StateHandoff:
 		return r.Reply(ctx, in, CopyHandoffHolding, "")
 	case StatePosting:

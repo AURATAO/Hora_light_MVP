@@ -24,6 +24,16 @@ func chatStatusHook(sqlDB *sql.DB, router *channel.Router) func(notify.CreateNot
 		err := sqlDB.QueryRowContext(ctx,
 			`SELECT requester_id::text FROM public.tasks WHERE id = $1::uuid`, taskID).Scan(&requesterID)
 		return requesterID, err
+	}, func(ctx context.Context, taskID string) (string, error) {
+		// The request the question is about: the newest pending one on the
+		// task (the app allows one pending per kind; the chat asks one at a
+		// time, newest first).
+		var id string
+		err := sqlDB.QueryRowContext(ctx, `
+			SELECT id::text FROM public.extension_requests
+			 WHERE task_id = $1::uuid AND status = $2
+			 ORDER BY created_at DESC LIMIT 1`, taskID, extensionStatusPending).Scan(&id)
+		return id, err
 	}, router)
 }
 
@@ -31,9 +41,29 @@ type statusNotifier interface {
 	NotifyStatus(ctx context.Context, userID string, ev channel.StatusEvent) error
 }
 
-func statusHook(requesterOf func(context.Context, string) (string, error), n statusNotifier) func(notify.CreateNotificationInput) {
+// chatEvent reports whether an app notification concerns the chat at all:
+// one with text, or an extension resolution (which clears a pending question
+// even when it says nothing).
+func chatEvent(ev channel.StatusEvent) bool {
+	if ev.TaskID == "" {
+		return false
+	}
+	if ev.Type == "EXTENSION_RESOLVED" {
+		return true
+	}
+	_, ok := channel.StatusText(ev)
+	return ok
+}
+
+func statusHook(requesterOf func(context.Context, string) (string, error), pendingExtensionOf func(context.Context, string) (string, error), n statusNotifier) func(notify.CreateNotificationInput) {
 	return func(in notify.CreateNotificationInput) {
-		if _, ok := channel.StatusText(statusEvent(in)); !ok || in.TaskID == "" {
+		ev := statusEvent(in)
+		if in.Type == "TIME_EXTENSION_REQUESTED" || in.Type == "BUDGET_INCREASE_REQUESTED" {
+			// Only now does StatusText have what it needs; the lookup is cheap
+			// and happens only for these two types.
+			ev.ApprovalMinutes = Billing.ApprovalTimeoutMinutes
+		}
+		if !chatEvent(ev) && ev.ExtensionID == "" && !(in.Type == "TIME_EXTENSION_REQUESTED" || in.Type == "BUDGET_INCREASE_REQUESTED") {
 			return // not a chat event; skip the lookups
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -47,7 +77,15 @@ func statusHook(requesterOf func(context.Context, string) (string, error), n sta
 		if requesterID != in.UserID {
 			return
 		}
-		if err := n.NotifyStatus(ctx, in.UserID, statusEvent(in)); err != nil {
+		if in.Type == "TIME_EXTENSION_REQUESTED" || in.Type == "BUDGET_INCREASE_REQUESTED" {
+			extID, err := pendingExtensionOf(ctx, in.TaskID)
+			if err != nil {
+				log.Printf("[channel] status %s task=%s: pending request lookup: %v", in.Type, in.TaskID, err)
+				return
+			}
+			ev.ExtensionID = extID
+		}
+		if err := n.NotifyStatus(ctx, in.UserID, ev); err != nil {
 			log.Printf("[channel] status %s task=%s: %v", in.Type, in.TaskID, err)
 		}
 	}

@@ -34,6 +34,16 @@ const (
 	Copy3DSHandoff         = "Your bank wants to confirm this payment. A HO:RA teammate will text you shortly to finish it."
 	CopyPostFailed         = "Something went wrong on our side while booking. Reply YES to try again."
 	CopyHandoffHolding     = "A HO:RA teammate will get back to you shortly."
+	CopyApprovalAsk        = "Reply YES to approve or NO to decline."
+	CopyApprovalAskTimed   = "Reply YES to approve or NO to decline. No answer within %d minutes counts as a no."
+	CopyApprovalReask      = "Your supporter is waiting on an answer: reply YES to approve or NO to decline."
+	CopyApproved           = "Approved: %s. Your supporter can go ahead."
+	CopyDeclined           = "Declined: %s. Your supporter has been told."
+	CopyApprovalExpired    = "That request already timed out and was declined automatically."
+	CopyApprovalAlready    = "That request was already %s."
+	CopyApprovalGone       = "I couldn't find that request anymore — nothing was changed."
+	CopyApprovalTimedOut   = "%s"
+	CopyBackToDraft        = "Back to your new request:"
 	TermsURL               = "my-hora.com/terms"
 )
 
