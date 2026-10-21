@@ -35,6 +35,9 @@ type Booker interface {
 	// budget as userID (the requester). The decision itself is made by the
 	// app's own extension code; this only carries the YES/NO (M3).
 	ResolveExtension(ctx context.Context, userID, extensionID string, approve bool) ExtensionResult
+	// ExtensionPending: the request still awaits the requester's answer
+	// (a deferred question is sent only then — D-17 I-O).
+	ExtensionPending(ctx context.Context, userID, extensionID string) (bool, error)
 }
 
 // ExtensionOutcome is what answering an extension request produced.
@@ -201,6 +204,14 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	// swiped on a supporter's words never books; a YES on our prompt does.
 	if handled, err := r.routeReply(ctx, in, id, conv, text); handled {
 		return err
+	}
+	// D-17 I-P (version B): with a supporter writing in the last minutes,
+	// only an explicit YES/NO answers a question of ours; "ok", "sure",
+	// "👍" go to the supporter, and the person is told what still waits.
+	if awaitingAnswer(conv.State) && (IsYes(text) || IsNo(text)) && !IsStrictYesNo(text) {
+		if handled, err := r.casualToSupporter(ctx, in, id, conv, text); handled {
+			return err
+		}
 	}
 	switch conv.State {
 	case StateAwaitingName:
@@ -585,7 +596,13 @@ func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Co
 		if total > 1 {
 			out.Text = fmt.Sprintf(CopyBookedAll, total)
 		}
-		return r.dispatch(ctx, async, func(c context.Context) error { return r.Send(c, out, res.TaskID) })
+		return r.dispatch(ctx, async, func(c context.Context) error {
+			if err := r.Send(c, out, res.TaskID); err != nil {
+				return err
+			}
+			r.resumeDeferred(c, id) // a question held while the booking was in flight / setup
+			return nil
+		})
 	case PostNeedsCard:
 		in := Inbound{Channel: ch, From: id.Address}
 		return r.dispatch(ctx, async, func(c context.Context) error { return r.sendSetupLink(c, in, id, conv, partial+CopyNeedCard) })
@@ -596,7 +613,13 @@ func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Co
 			log.Printf("[channel] save after post identity=%s: %v", id.ID, err)
 		}
 		out.Text = partial + firstNonEmpty(res.Message, CopyCardProblem) + " " + CopyRetryYes
-		return r.dispatch(ctx, async, func(c context.Context) error { return r.Send(c, out, "") })
+		return r.dispatch(ctx, async, func(c context.Context) error {
+			if err := r.Send(c, out, ""); err != nil {
+				return err
+			}
+			r.resumeDeferred(c, id)
+			return nil
+		})
 	case PostNeeds3DS:
 		conv.State = StateHandoff
 		conv.PendingExtensionID = ""
@@ -618,7 +641,13 @@ func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Co
 			log.Printf("[channel] save after post identity=%s: %v", id.ID, err)
 		}
 		out.Text = partial + CopyPostFailed
-		return r.dispatch(ctx, async, func(c context.Context) error { return r.Send(c, out, "") })
+		return r.dispatch(ctx, async, func(c context.Context) error {
+			if err := r.Send(c, out, ""); err != nil {
+				return err
+			}
+			r.resumeDeferred(c, id)
+			return nil
+		})
 	}
 }
 

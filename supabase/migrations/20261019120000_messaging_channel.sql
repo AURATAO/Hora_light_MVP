@@ -149,6 +149,11 @@ CREATE TABLE IF NOT EXISTS public.channel_conversations (
   -- The message held while asking which task it is for (M3.2), relayed on
   -- the pick. Message text, like pending_draft; purged with the identity.
   pending_relay_text     text,
+  -- An approval question the thread could not take when it arrived
+  -- (handoff, booking in flight, card setup) — sent and armed as soon as it
+  -- can be, if the request is still pending (D-17 I-O). {task_id,
+  -- extension_id, text, user_id}; purged with the identity.
+  deferred_approval      jsonb,
   -- Last message FROM the person. WhatsApp free-form replies are allowed for
   -- 24h after this; later messages need an approved template.
   last_inbound_at        timestamp with time zone,
@@ -191,7 +196,8 @@ NOTIFY pgrst, 'reload schema';
 -- they are added here as well, idempotently.
 ALTER TABLE public.channel_conversations
   ADD COLUMN IF NOT EXISTS pending_task_choices uuid[],
-  ADD COLUMN IF NOT EXISTS pending_relay_text   text;
+  ADD COLUMN IF NOT EXISTS pending_relay_text   text,
+  ADD COLUMN IF NOT EXISTS deferred_approval    jsonb;
 ALTER TABLE public.channel_messages
   ADD COLUMN IF NOT EXISTS relay boolean NOT NULL DEFAULT false;
 -- The state set grew the same way; re-assert the CHECK so an older table

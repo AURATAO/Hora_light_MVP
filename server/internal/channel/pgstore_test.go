@@ -714,3 +714,30 @@ func TestPGLastRelayed(t *testing.T) {
 		t.Fatalf("any other inbound after it does: %+v", rl)
 	}
 }
+
+// M3.2c: the held approval question round-trips and clears to NULL.
+func TestPGDeferredApprovalRoundTrip(t *testing.T) {
+	db := testDB(t)
+	s := &PGStore{DB: db}
+	ctx := context.Background()
+	a, err := s.UpsertIdentity(ctx, IMessage, "+15550000707")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := Conversation{IdentityID: a.ID, State: StateHandoff, DeferredApproval: &DeferredApproval{UserID: "u", TaskID: "t", ExtensionID: "e", Text: "Sam is asking…", AtUnix: 1}}
+	if err := s.SaveConversation(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetConversation(ctx, a.ID)
+	if err != nil || got.DeferredApproval == nil || got.DeferredApproval.ExtensionID != "e" || got.DeferredApproval.Text != "Sam is asking…" {
+		t.Fatalf("%+v %v", got, err)
+	}
+	got.DeferredApproval, got.State = nil, StateIdle
+	if err := s.SaveConversation(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	var isNull bool
+	if err := db.QueryRow(`SELECT deferred_approval IS NULL FROM channel_conversations WHERE identity_id = $1`, a.ID).Scan(&isNull); err != nil || !isNull {
+		t.Fatalf("cleared field must be NULL: %v %v", isNull, err)
+	}
+}

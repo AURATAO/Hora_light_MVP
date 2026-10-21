@@ -232,3 +232,58 @@ func (r *Router) clearApproval(ctx context.Context, identityID string) error {
 	}
 	return nil
 }
+
+// resumeDeferred sends and arms a held approval question once the thread
+// can take it (after a handoff ends, a booking completes, setup finishes),
+// if the request is still pending; otherwise it is dropped. Called off the
+// request path by the resume points. Errors are logged: the person's
+// own flow must not fail over the supporter's question.
+func (r *Router) resumeDeferred(ctx context.Context, id Identity) {
+	conv, err := r.Conversations.GetConversation(ctx, id.ID)
+	if err != nil {
+		log.Printf("[channel] resume deferred identity=%s: %v", id.ID, err)
+		return
+	}
+	d := conv.DeferredApproval
+	if d == nil || !canArmApproval(conv.State) {
+		return
+	}
+	pending := false
+	if r.Booker != nil {
+		pending, err = r.Booker.ExtensionPending(ctx, d.UserID, d.ExtensionID)
+		if err != nil {
+			log.Printf("[channel] resume deferred ext=%s: %v", d.ExtensionID, err)
+			return // retried at the next resume point; the question stays held
+		}
+	}
+	conv.DeferredApproval = nil
+	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+		log.Printf("[channel] resume deferred identity=%s: %v", id.ID, err)
+		return
+	}
+	if !pending {
+		log.Printf("[channel] deferred approval ext=%s dropped: no longer pending", d.ExtensionID)
+		return
+	}
+	if err := r.Send(ctx, Outbound{Channel: id.Channel, To: id.Address, Text: d.Text}, d.TaskID); err != nil {
+		log.Printf("[channel] resume deferred ext=%s: %v", d.ExtensionID, err)
+		return
+	}
+	if err := r.askApproval(ctx, id.ID, d.ExtensionID); err != nil {
+		log.Printf("[channel] resume deferred ext=%s: %v", d.ExtensionID, err)
+	}
+}
+
+// clearDeferred drops a held question for the task (the request resolved
+// elsewhere, or timed out).
+func (r *Router) clearDeferred(ctx context.Context, identityID, taskID string) error {
+	conv, err := r.Conversations.GetConversation(ctx, identityID)
+	if err != nil {
+		return fmt.Errorf("clearDeferred: %w", err)
+	}
+	if conv.DeferredApproval == nil || (taskID != "" && conv.DeferredApproval.TaskID != taskID) {
+		return nil
+	}
+	conv.DeferredApproval = nil
+	return r.Conversations.SaveConversation(ctx, conv)
+}

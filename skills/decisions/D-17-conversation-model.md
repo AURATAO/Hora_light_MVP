@@ -154,3 +154,24 @@ structured composition (M3.2 R6); authorization in both directions.
 - accepted, recorded: duplicate first names make the mid-question escape unusable (answer our question first; rare); a burst of messages recorded before any is routed may see a later one as "the answer" (benign: defaults to the supporter); P7 on a classifier outage can relay a worded "yes, approve it" to the supporter while the request stays pending — the person is told it is pending, and the supporter's human reading of it is the I-M class; the supporter's chat line now flows to the model provider — **privacy-policy list (S-20(3)): add the LLM provider as a processor of chat text** (PLAN §11).
 **Verifier (round 3, at `e68b6db`):** EXIT=1 — inherited gitleaks (C-2); I-05 INCOMPLETE (docker, C-1); everything else green.
 **Status:** accepted by review; Arbiter (Aura) to confirm I-M..I-Q. Staging evidence owed: the bagel flow end to end (supporter asks → bare/short answer relayed; "for Sam"; approval during the budget question).
+
+## M3.2c — the Arbiter's amendments, built (2026-10-21/22)
+
+- **I-O, defer-don't-drop:** `NotifyStatus` holds an approval question the
+  thread cannot take (`channel_conversations.deferred_approval`, unshipped
+  migration + staging ALTER) and `resumeDeferred` sends and arms it at the
+  resume points — handoff release, after a booking completes (every
+  outcome that leaves `posting`) — if `Booker.ExtensionPending` says the
+  request is still the requester's to answer; otherwise it is dropped. A
+  resolution while held clears it. Tests: held during handoff → sent+armed
+  on release → NO resolves; expired → dropped silently; resolved elsewhere
+  → cleared; held while posting → follows the booking confirmation.
+- **I-P version B:** `IsStrictYesNo` (yes/y/no/n and translations,
+  cancel/stop). In any awaiting state, a casual affirmative (ok, sure, 👍,
+  book it…) with a supporter line in the last 10 minutes on an active task
+  is relayed to that supporter and answered "(Passed “ok” to Sam.) Still
+  waiting on your YES or NO — book “Laundry pickup” for $27." (per-state
+  variants). The footers on relayed lines now say "send YES or NO on its
+  own; anything else, ok and sure included, goes to Sam". With no supporter
+  line in the last 10 minutes the regex is unchanged. Tests: booking,
+  approval, the 11-minute boundary.

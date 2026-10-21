@@ -134,6 +134,9 @@ type Conversation struct {
 	// a message is for; PendingRelayText is that message, relayed on pick.
 	PendingTaskChoices []string
 	PendingRelayText   string
+	// DeferredApproval: an approval question held until the thread can
+	// take it (D-17 I-O). nil when none.
+	DeferredApproval *DeferredApproval
 }
 
 // ResumeState is where a conversation goes once an approval is answered:
@@ -152,6 +155,17 @@ func (c Conversation) ResumeState() State {
 		return StateAwaitingTaskChoice
 	}
 	return StateIdle
+}
+
+// DeferredApproval is an approval question that arrived while the thread
+// could not take it. Sent, armed and cleared by Router.resumeDeferred once
+// the state allows, if the request is still pending.
+type DeferredApproval struct {
+	UserID      string `json:"user_id"`
+	TaskID      string `json:"task_id"`
+	ExtensionID string `json:"extension_id"`
+	Text        string `json:"text"`
+	AtUnix      int64  `json:"at_unix"`
 }
 
 // ConversationStore loads and saves conversation state.
@@ -218,11 +232,13 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 	var name, ext, relay sql.NullString
 	var terms sql.NullTime
 	var choicesJSON string
+	var deferred sql.NullString
 	err := s.DB.QueryRowContext(ctx, `
 		SELECT state, pending_draft, pending_name, terms_accepted_at, pending_extension_id::text,
-		       COALESCE(array_to_json(pending_task_choices)::text, '[]'), pending_relay_text
+		       COALESCE(array_to_json(pending_task_choices)::text, '[]'), pending_relay_text,
+		       deferred_approval::text
 		FROM channel_conversations WHERE identity_id = $1
-	`, identityID).Scan(&state, &pending, &name, &terms, &ext, &choicesJSON, &relay)
+	`, identityID).Scan(&state, &pending, &name, &terms, &ext, &choicesJSON, &relay, &deferred)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, nil
 	}
@@ -233,6 +249,13 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 	c.PendingName = name.String
 	c.PendingExtensionID = ext.String
 	c.PendingRelayText = relay.String
+	if deferred.Valid && deferred.String != "" && deferred.String != "null" {
+		var d DeferredApproval
+		if err := json.Unmarshal([]byte(deferred.String), &d); err != nil {
+			return c, fmt.Errorf("get conversation: decode deferred approval: %w", err)
+		}
+		c.DeferredApproval = &d
+	}
 	if choicesJSON != "" && choicesJSON != "null" {
 		if err := json.Unmarshal([]byte(choicesJSON), &c.PendingTaskChoices); err != nil {
 			return c, fmt.Errorf("get conversation: decode task choices: %w", err)
@@ -265,12 +288,20 @@ func (s *PGStore) SaveConversation(ctx context.Context, c Conversation) error {
 	if c.TermsAcceptedAt != nil {
 		terms = *c.TermsAcceptedAt
 	}
+	var deferredJSON any // NULL when none
+	if c.DeferredApproval != nil {
+		b, err := json.Marshal(c.DeferredApproval)
+		if err != nil {
+			return fmt.Errorf("save conversation: encode deferred approval: %w", err)
+		}
+		deferredJSON = string(b)
+	}
 	_, err := s.DB.ExecContext(ctx, `
 		INSERT INTO channel_conversations
 		  (identity_id, state, pending_draft, pending_name, terms_accepted_at, pending_extension_id,
-		   pending_task_choices, pending_relay_text, updated_at)
+		   pending_task_choices, pending_relay_text, deferred_approval, updated_at)
 		VALUES ($1, $2, $3::jsonb, NULLIF($4, ''), $5, NULLIF($6, '')::uuid,
-		        NULLIF($7, '{}')::uuid[], NULLIF($8, ''), now())
+		        NULLIF($7, '{}')::uuid[], NULLIF($8, ''), $9::jsonb, now())
 		ON CONFLICT (identity_id) DO UPDATE SET
 		  state = EXCLUDED.state,
 		  pending_draft = EXCLUDED.pending_draft,
@@ -279,9 +310,10 @@ func (s *PGStore) SaveConversation(ctx context.Context, c Conversation) error {
 		  pending_extension_id = EXCLUDED.pending_extension_id,
 		  pending_task_choices = EXCLUDED.pending_task_choices,
 		  pending_relay_text = EXCLUDED.pending_relay_text,
+		  deferred_approval = EXCLUDED.deferred_approval,
 		  updated_at = now()
 	`, c.IdentityID, string(c.State), pending, c.PendingName, terms, c.PendingExtensionID,
-		pgUUIDArray(c.PendingTaskChoices), c.PendingRelayText)
+		pgUUIDArray(c.PendingTaskChoices), c.PendingRelayText, deferredJSON)
 	if err != nil {
 		return fmt.Errorf("save conversation: %w", err)
 	}
@@ -331,13 +363,23 @@ func (s *PGStore) ConversationsForUser(ctx context.Context, userID string) ([]Co
 // never by the model: anything not clearly yes is not yes.
 
 var (
-	yesRE    = regexp.MustCompile(`(?i)^\s*(yes|y|yep|yeah|yup|yes please|ok|okay|confirm|confirmed|book it|book|do it|go ahead|sure|👍|✅|是|好|好的|確認|sí|si)[\s!.]*$`)
-	noRE     = regexp.MustCompile(`(?i)^\s*(no|n|nope|nah|cancel|stop|never ?mind|don'?t|不要|取消|不用)[\s!.]*$`)
-	nameBadR = regexp.MustCompile(`[0-9@/:]`)
+	// strictYesRE / strictNoRE: the explicit words. With a supporter writing
+	// in the last minutes only these answer a question of ours; the casual
+	// affirmatives in yesRE go to the supporter (D-17 I-P, version B).
+	strictYesRE = regexp.MustCompile(`(?i)^\s*(yes|y|是|sí|si|confirm|confirmed)[\s!.]*$`)
+	strictNoRE  = regexp.MustCompile(`(?i)^\s*(no|n|不要|取消|cancel|stop)[\s!.]*$`)
+	yesRE       = regexp.MustCompile(`(?i)^\s*(yes|y|yep|yeah|yup|yes please|ok|okay|confirm|confirmed|book it|book|do it|go ahead|sure|👍|✅|是|好|好的|確認|sí|si)[\s!.]*$`)
+	noRE        = regexp.MustCompile(`(?i)^\s*(no|n|nope|nah|cancel|stop|never ?mind|don'?t|不要|取消|不用)[\s!.]*$`)
+	nameBadR    = regexp.MustCompile(`[0-9@/:]`)
 )
 
 // IsYes reports an explicit confirmation.
 func IsYes(text string) bool { return yesRE.MatchString(text) }
+
+// IsStrictYesNo: the explicit YES/NO words only (I-P version B).
+func IsStrictYesNo(text string) bool {
+	return strictYesRE.MatchString(text) || strictNoRE.MatchString(text)
+}
 
 // IsNo reports an explicit refusal or cancel.
 func IsNo(text string) bool { return noRE.MatchString(text) }

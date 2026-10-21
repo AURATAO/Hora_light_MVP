@@ -979,3 +979,48 @@ func (r *Router) classifyActive(ctx context.Context, text string, active []Activ
 	}
 	return got
 }
+
+// casualToSupporter (D-17 I-P, version B): a casual affirmative while a
+// question of ours is open goes to the supporter who wrote in the last
+// minutes — and the person is told the question still waits. handled=false
+// when no supporter wrote recently (the word then answers us, as before).
+func (r *Router) casualToSupporter(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) (bool, error) {
+	if r.Chat == nil || !id.Linked() {
+		return false, nil
+	}
+	last, lastTask, lastAt, _ := r.lastSupporterLine(ctx, in, id)
+	if last == "" || r.now().Sub(lastAt) > supporterQuestionWindow {
+		return false, nil
+	}
+	active, err := r.Chat.ActiveTasks(ctx, id.UserID)
+	if err != nil {
+		return true, fmt.Errorf("casualToSupporter: %w", err)
+	}
+	t, ok := taskIn(active, lastTask)
+	if !ok {
+		return false, nil
+	}
+	sent, err := r.relaySent(ctx, in, id, t.ID, text)
+	if err != nil || !sent {
+		return true, err
+	}
+	who := firstNonEmpty(DisplayName(FirstName(t.SupporterName)), "your supporter")
+	return true, r.Reply(ctx, in, fmt.Sprintf(CopyPassedOn, strings.TrimSpace(text), who)+" "+stillWaiting(conv), "")
+}
+
+// stillWaiting names what a plain YES/NO (or amount) still answers.
+func stillWaiting(conv Conversation) string {
+	switch conv.State {
+	case StateAwaitingConfirm:
+		if conv.Pending != nil {
+			return fmt.Sprintf(CopyStillWaitingBooking, conv.Pending.Headline(), Dollars(conv.Pending.TotalCents()))
+		}
+	case StateAwaitingApproval:
+		return CopyStillWaitingApproval
+	case StateAwaitingBudget:
+		return CopyStillWaitingBudget
+	case StateAwaitingName:
+		return CopyStillWaitingName
+	}
+	return CopyStillWaitingGeneric
+}

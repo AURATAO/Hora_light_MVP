@@ -203,12 +203,14 @@ type fakeClassifier struct{ intent llm.Intent }
 func (f fakeClassifier) Classify(context.Context, string) (llm.Intent, error) { return f.intent, nil }
 
 type fakeBooker struct {
-	mu      sync.Mutex
-	quotes  int
-	posts   int
-	result  PostResult
-	delay   time.Duration
-	applied []string
+	mu         sync.Mutex
+	pendingExt map[string]bool // ExtensionPending answers
+	pendingErr error
+	quotes     int
+	posts      int
+	result     PostResult
+	delay      time.Duration
+	applied    []string
 	// approvals (M3)
 	extResult ExtensionResult
 	resolved  []string
@@ -252,6 +254,14 @@ func (b *fakeBooker) ResolveExtension(_ context.Context, user, ext string, appro
 		return r
 	}
 	return b.extResult
+}
+func (b *fakeBooker) ExtensionPending(_ context.Context, _, ext string) (bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.pendingErr != nil {
+		return false, b.pendingErr
+	}
+	return b.pendingExt[ext], nil
 }
 func (b *fakeBooker) ApplyChatProfile(_ context.Context, user, name string, _ *time.Time) error {
 	b.applied = append(b.applied, user+":"+name)

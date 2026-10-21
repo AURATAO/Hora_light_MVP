@@ -274,7 +274,7 @@ func TestRelayDuringPendingYesIsDisambiguated(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := g.ad.last()
-	if !strings.HasPrefix(got, "Maya · Laundry pickup: Want the large bag too?") || !strings.Contains(got, "A YES, OK or NO sent on its own answers my question above") || !strings.Contains(got, "Laundry pickup") {
+	if !strings.HasPrefix(got, "Maya · Laundry pickup: Want the large bag too?") || !strings.Contains(got, "send YES or NO on its own") || !strings.Contains(got, "Laundry pickup") {
 		t.Fatalf("%q", got)
 	}
 	if !g.st.lastOutboundRelay() {
@@ -316,7 +316,7 @@ func TestRelayDuringPendingApprovalIsDisambiguated(t *testing.T) {
 	if err := g.r.RelayToChat(context.Background(), "user-1", "task-1", "Maya", "Laundry pickup", "ok if I take 15 more?", ""); err != nil {
 		t.Fatal(err)
 	}
-	if got := g.ad.last(); !strings.Contains(got, "answers my question above about Maya’s request") {
+	if got := g.ad.last(); !strings.Contains(got, "To answer me about Maya’s request, send YES or NO on its own") {
 		t.Fatalf("%q", got)
 	}
 }

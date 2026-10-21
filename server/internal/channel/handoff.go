@@ -176,7 +176,11 @@ func (r *Router) Release(ctx context.Context, id Identity) error {
 	// The state change is the action; the message goes off the request
 	// path (S-32).
 	return r.dispatch(ctx, true, func(c context.Context) error {
-		return r.Send(c, Outbound{Channel: id.Channel, To: id.Address, Text: text}, "")
+		if err := r.Send(c, Outbound{Channel: id.Channel, To: id.Address, Text: text}, ""); err != nil {
+			return err
+		}
+		r.resumeDeferred(c, id) // a supporter's question held during the handoff
+		return nil
 	})
 }
 

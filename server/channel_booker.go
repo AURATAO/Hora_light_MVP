@@ -233,3 +233,19 @@ func (b *chatBooker) extensionAsk(ctx context.Context, e ExtensionRequest) strin
 func (b *chatBooker) NeedsPurchase(ctx context.Context, text string) (bool, error) {
 	return b.model.NeedsPurchase(ctx, text)
 }
+
+// ExtensionPending: the request still awaits the requester's answer, and
+// is theirs to answer.
+func (b *chatBooker) ExtensionPending(ctx context.Context, userID, extensionID string) (bool, error) {
+	var pending bool
+	err := b.sqlDB.QueryRowContext(ctx, `
+		SELECT EXISTS (
+		  SELECT 1 FROM public.extension_requests e
+		    JOIN public.tasks t ON t.id = e.task_id
+		   WHERE e.id = $1::uuid AND e.status = $2 AND t.requester_id = $3::uuid)`,
+		extensionID, extensionStatusPending, userID).Scan(&pending)
+	if err != nil {
+		return false, fmt.Errorf("extension pending: %w", err)
+	}
+	return pending, nil
+}

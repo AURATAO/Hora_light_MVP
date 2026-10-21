@@ -189,11 +189,20 @@ func (r *Router) NotifyStatus(ctx context.Context, userID string, ev StatusEvent
 			return fmt.Errorf("NotifyStatus: %w", err)
 		}
 		if !canArmApproval(conv.State) {
-			log.Printf("[channel] approval ext=%s not sent: conversation in state %s", ev.ExtensionID, conv.State)
+			// Held, not dropped (D-17 I-O): sent and armed as soon as the
+			// thread can take it, if the request is still pending then.
+			conv.DeferredApproval = &DeferredApproval{UserID: userID, TaskID: ev.TaskID, ExtensionID: ev.ExtensionID, Text: text, AtUnix: r.now().Unix()}
+			if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+				return fmt.Errorf("NotifyStatus: %w", err)
+			}
+			log.Printf("[channel] approval ext=%s deferred: conversation in state %s", ev.ExtensionID, conv.State)
 			return nil
 		}
 	}
 	if ev.Type == evResolved {
+		if err := r.clearDeferred(ctx, t.Identity.ID, ev.TaskID); err != nil {
+			return fmt.Errorf("NotifyStatus: %w", err)
+		}
 		if err := r.clearApproval(ctx, t.Identity.ID); err != nil {
 			return fmt.Errorf("NotifyStatus: %w", err)
 		}
