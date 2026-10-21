@@ -195,6 +195,15 @@ The setup step is the one to watch.
 - **M3.2 staging evidence still owed (R3-4):** one real requester→supporter
   message (chat-only requester, supporter who never opened the chat) and one
   supporter→requester message with a photo, on the staging number.
+- **Web app has no new-chat-message notification (Aura, 2026-10-21 staging):**
+  the TalkJS webhook is push-only by design (mobile gets the push; no
+  `notifications` row, so the web app's list and bell never show a chat
+  message; TalkJS's own offline email still goes). To decide: (a) write a
+  `NEW_MESSAGE` notifications row too (the web list then shows "Sam sent you
+  a message" with a link to the chat; the mobile list would show it as
+  well), or (b) a web-only unread badge on the chat button polled from
+  TalkJS. (a) is a server change (small, but notifications are frozen-area
+  code shared with mobile); (b) is `app/` only, post-freeze.
 - **M3.6 — completion photo + receipt to the requester's chat (Aura, 2026-10-21):**
   after COMPLETED, send the completion photo with the done message; if the task
   had purchases, a second message "Receipt: $XX" with the receipt photo.
