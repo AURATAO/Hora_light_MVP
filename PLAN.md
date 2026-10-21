@@ -161,6 +161,7 @@ The setup step is the one to watch.
 ## 13. Open questions
 
 - Dani: confirm approval timeouts and copy for budget/time requests by text.
+- **Post-freeze mobile change:** supporter task screen shows "Ask for a budget" at budget 0 (today gated on `hasBudget`), so a misread chat task is recoverable (see incident 2026-10-21).
 - Does Sendblue expose threaded-reply context? If not, step 5 falls back to 6–7.
 - One number for both channels, or separate? (Default: separate.)
 - ~~Staging~~ decided 2026-10-19, see §16.
@@ -405,6 +406,25 @@ for the settle-after-completion path.
 - Review: round 1 FAIL (3DS item re-offered after release — a second charge;
   ops send/release blocked on the provider) → `f7f665f`; round 2 FAIL (3DS
   ops notice on the request path) → `058b39e`; **round 3 PASS.**
+
+**Incident, 2026-10-21 (Aura's test): "bring me a Russ & Daughters bagel"
+parsed as `delivery`, budget 0 → the supporter app shows no receipt step and
+no "Ask for more budget" (both gated on budget > 0), so the supporter would
+pay out of pocket with no way to claim.** Root cause is not the category:
+money follows the *budget*, and the chat never asks for one (M2 known gap).
+Decision (CTO view): NO universal reimbursement — the requester must agree
+to a ceiling before money moves (money rule); the budget IS that consent.
+Fix in two layers:
+1. **Chat (M3.5, now):** after parsing, a second rule+model check "will the
+   supporter have to pay for something?" (purchase words, food/items, shops;
+   model as tiebreak). If yes and no amount was given → ask in chat "Will
+   your supporter be buying this? About how much should I set aside?" →
+   amount parsed by rule (`$20`, `20 dollars`, `twenty`) → shopping budget on
+   the task, shown in the summary, covered by the hold. An amount in the
+   original message ("budget 60") is taken directly.
+2. **Supporter app (post-freeze):** show "Ask for a budget" even at 0 — the
+   server already accepts it, and the requester now approves by YES in the
+   chat (M3.1). This is the safety net when the chat misreads.
 
 **Known gaps (next):** shopping budget is not asked in chat (grocery tasks
 post with no budget); 3DS in chat goes to a human; returning customer who
