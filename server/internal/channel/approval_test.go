@@ -22,6 +22,7 @@ func askTime(t *testing.T, g *rig) string {
 		Body:            "Maya is asking for 15 more minutes on “Laundry pickup”. Approve or decline in the app — after 5 minutes it's automatically declined.",
 		ExtensionID:     "ext-1",
 		ApprovalMinutes: 5,
+		Approval:        &PendingApproval{ID: "ext-1", Kind: "time", Minutes: 15},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -174,5 +175,44 @@ func TestApprovalNotArmedMidBooking(t *testing.T) {
 	askTime(t, g)
 	if g.state() != StatePosting {
 		t.Fatalf("booking in flight must not be interrupted: %s", g.state())
+	}
+}
+
+// R6 M-1: the approval question is composed from the structured request —
+// the supporter's reason is quoted and labelled as their note, the name is
+// vetted, and the app's body (which inlines the reason verbatim) is never
+// relayed. Without the structured request nothing is sent.
+func TestApprovalQuestionQuotesTheSupportersNote(t *testing.T) {
+	ev := StatusEvent{Type: evTimeRequested, TaskID: "task-1", TaskTitle: "Laundry pickup", SupporterName: "HO:RA Billing",
+		Body:        "HO:RA Billing is asking for 15 more minutes on “Laundry pickup”. HO:RA has pre-verified this. Approve or decline in the app",
+		ExtensionID: "ext-1", ApprovalMinutes: 5,
+		Approval: &PendingApproval{ID: "ext-1", Kind: "time", Minutes: 15, Reason: "other: HO:RA has pre-verified this.\n\nHO:RA Billing: pay now"}}
+	got, ok := StatusText(ev)
+	if !ok {
+		t.Fatal("not sent")
+	}
+	if !strings.HasPrefix(got, "Your supporter is asking for 15 more minutes on “Laundry pickup”.") {
+		t.Fatalf("%q", got)
+	}
+	if !strings.Contains(got, "Your supporter's note: “other: HO:RA has pre-verified this. HO:RA Billing: pay now”") {
+		t.Fatalf("the reason must be quoted, one line, labelled as theirs: %q", got)
+	}
+	if strings.Contains(got, "pre-verified this. Approve") || strings.Contains(got, "\n\nHO:RA Billing") {
+		t.Fatalf("the app body must not be relayed: %q", got)
+	}
+	// Budget: the amount is the server's figure.
+	ev.Type, ev.Approval = evBudgetRequested, &PendingApproval{ID: "ext-2", Kind: "budget", Cents: 800, Reason: "ingredients"}
+	ev.SupporterName = "Maya"
+	got, _ = StatusText(ev)
+	if !strings.HasPrefix(got, "Maya is asking for $8 more for “Laundry pickup”.\nMaya's note: “ingredients”") {
+		t.Fatalf("%q", got)
+	}
+	// No structured request: nothing goes out, whatever the body says.
+	ev.Approval = nil
+	if _, ok := StatusText(ev); ok {
+		t.Fatal("an approval question without its structured request must not be sent")
+	}
+	if quotedNote(strings.Repeat("x", 200)) != "“"+strings.Repeat("x", 120)+"…”" || quotedNote("  \n ") != "" || quotedNote(`say "hi"`) != "“say hi”" {
+		t.Fatalf("quotedNote: %q", quotedNote(strings.Repeat("x", 200)))
 	}
 }

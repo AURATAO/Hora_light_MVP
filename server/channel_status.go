@@ -24,17 +24,22 @@ func chatStatusHook(sqlDB *sql.DB, router *channel.Router) func(notify.CreateNot
 		err := sqlDB.QueryRowContext(ctx,
 			`SELECT requester_id::text FROM public.tasks WHERE id = $1::uuid`, taskID).Scan(&requesterID)
 		return requesterID, err
-	}, func(ctx context.Context, taskID, kind string) (string, error) {
+	}, func(ctx context.Context, taskID, kind string) (channel.PendingApproval, error) {
 		// The request the question describes, and no other: the app allows
 		// exactly one pending request per (task, kind) — the partial unique
 		// index in extension_requests — so this lookup is unambiguous. The
-		// kind comes from the notification type (time vs budget).
-		var id string
+		// kind comes from the notification type (time vs budget). The
+		// structured fields let the chat compose its own question.
+		var a channel.PendingApproval
+		var mins, cents sql.NullInt64
+		var reason sql.NullString
 		err := sqlDB.QueryRowContext(ctx, `
-			SELECT id::text FROM public.extension_requests
+			SELECT id::text, kind, requested_minutes, requested_cents, reason
+			  FROM public.extension_requests
 			 WHERE task_id = $1::uuid AND kind = $2 AND status = $3`,
-			taskID, kind, extensionStatusPending).Scan(&id)
-		return id, err
+			taskID, kind, extensionStatusPending).Scan(&a.ID, &a.Kind, &mins, &cents, &reason)
+		a.Minutes, a.Cents, a.Reason = int(mins.Int64), int(cents.Int64), reasonLabel(reason.String)
+		return a, err
 	}, router)
 }
 
@@ -68,7 +73,7 @@ func approvalKind(notifType string) string {
 	return ""
 }
 
-func statusHook(requesterOf func(context.Context, string) (string, error), pendingExtensionOf func(ctx context.Context, taskID, kind string) (string, error), n statusNotifier) func(notify.CreateNotificationInput) {
+func statusHook(requesterOf func(context.Context, string) (string, error), pendingExtensionOf func(ctx context.Context, taskID, kind string) (channel.PendingApproval, error), n statusNotifier) func(notify.CreateNotificationInput) {
 	return func(in notify.CreateNotificationInput) {
 		ev := statusEvent(in)
 		if in.Type == "TIME_EXTENSION_REQUESTED" || in.Type == "BUDGET_INCREASE_REQUESTED" {
@@ -91,12 +96,13 @@ func statusHook(requesterOf func(context.Context, string) (string, error), pendi
 			return
 		}
 		if kind := approvalKind(in.Type); kind != "" {
-			extID, err := pendingExtensionOf(ctx, in.TaskID, kind)
+			a, err := pendingExtensionOf(ctx, in.TaskID, kind)
 			if err != nil {
 				log.Printf("[channel] status %s task=%s: pending request lookup: %v", in.Type, in.TaskID, err)
 				return
 			}
-			ev.ExtensionID = extID
+			ev.ExtensionID = a.ID
+			ev.Approval = &a
 		}
 		if err := n.NotifyStatus(ctx, in.UserID, ev); err != nil {
 			log.Printf("[channel] status %s task=%s: %v", in.Type, in.TaskID, err)

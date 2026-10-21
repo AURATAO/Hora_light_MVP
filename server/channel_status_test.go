@@ -28,7 +28,9 @@ func TestChatStatusHookOnlyTellsTheRequester(t *testing.T) {
 	hook := statusHook(func(context.Context, string) (string, error) {
 		lookups++
 		return "requester-1", nil
-	}, func(context.Context, string, string) (string, error) { return "ext-1", nil }, rec)
+	}, func(context.Context, string, string) (channel.PendingApproval, error) {
+		return channel.PendingApproval{ID: "ext-1"}, nil
+	}, rec)
 
 	hook(notify.CreateNotificationInput{UserID: "requester-1", TaskID: "t1", Type: "ORDER_ACCEPTED"})
 	hook(notify.CreateNotificationInput{UserID: "supporter-9", TaskID: "t1", Type: "CANCELLED", Body: "x"})
@@ -59,9 +61,9 @@ func TestChatStatusHookArmsTheRequestOfTheRightKind(t *testing.T) {
 	rec := &recNotifier{}
 	var asked []string
 	hook := statusHook(func(context.Context, string) (string, error) { return "requester-1", nil },
-		func(_ context.Context, taskID, kind string) (string, error) {
+		func(_ context.Context, taskID, kind string) (channel.PendingApproval, error) {
 			asked = append(asked, taskID+"/"+kind)
-			return "ext-" + kind, nil
+			return channel.PendingApproval{ID: "ext-" + kind, Kind: kind, Minutes: 15, Cents: 500}, nil
 		}, rec)
 	hook(notify.CreateNotificationInput{UserID: "requester-1", TaskID: "t1", Type: "BUDGET_INCREASE_REQUESTED", Body: "x"})
 	hook(notify.CreateNotificationInput{UserID: "requester-1", TaskID: "t1", Type: "TIME_EXTENSION_REQUESTED", Body: "x"})

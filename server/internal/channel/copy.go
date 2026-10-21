@@ -61,6 +61,7 @@ const (
 	CopyHandoffHolding     = "A HO:RA teammate will get back to you shortly."
 	CopyHandoffStart       = "Let me get a HO:RA teammate for you. They'll text you here shortly — you can keep writing in the meantime."
 	CopyHandoffReleased    = "You're back with me. What can I do for you?"
+	CopyApprovalNote       = "%s's note: %s"
 	CopyApprovalAsk        = "Reply YES to approve or NO to decline."
 	CopyApprovalAskTimed   = "Reply YES to approve or NO to decline. No answer within %d minutes counts as a no."
 	CopyApprovalReask      = "Your supporter is waiting on an answer: reply YES to approve or NO to decline."

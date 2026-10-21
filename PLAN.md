@@ -173,6 +173,9 @@ The setup step is the one to watch.
   a TalkJS round-trip can overwrite each other's hold; relayed text is
   verbatim (prefixed with the profile name) — a link policy is a standard
   proposal, not built.
+- **M3.2 follow-up (R6 m-1):** a YES swiped on an *old* approval prompt
+  approves whatever is pending now; to pin it to that prompt's request, record
+  the extension id on the outbound row and match it in `routeReply`.
 - **M3.2 staging evidence still owed (R3-4):** one real requester→supporter
   message (chat-only requester, supporter who never opened the chat) and one
   supporter→requester message with a photo, on the staging number.

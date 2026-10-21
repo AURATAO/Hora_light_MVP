@@ -242,7 +242,7 @@ func relayChatMessageToRequester(db *sql.DB, conversationID, taskID, senderUID s
 func relayAllowedToRequester(ctx context.Context, db *sql.DB, taskID, senderUID string) (relayPairRow, bool) {
 	pair, err := relayPair(ctx, db, taskID)
 	if err != nil {
-		log.Printf("[talkjs][relay] task=%s lookup: %v", taskID, err)
+		log.Printf("[talkjs][relay] task=%q lookup: %v", taskID, err)
 		return pair, false
 	}
 	if pair.status != "open" || senderUID == "" || senderUID != pair.supporterID || senderUID == pair.requesterID || pair.requesterID == "" {
@@ -250,7 +250,7 @@ func relayAllowedToRequester(ctx context.Context, db *sql.DB, taskID, senderUID 
 	}
 	blocked, err := pairBlocked(ctx, db, senderUID, pair.requesterID)
 	if err != nil {
-		log.Printf("[talkjs][relay] task=%s block check: %v", taskID, err)
+		log.Printf("[talkjs][relay] task=%q block check: %v", taskID, err)
 		return pair, false
 	}
 	return pair, !blocked

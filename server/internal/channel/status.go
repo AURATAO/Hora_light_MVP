@@ -29,9 +29,21 @@ type StatusEvent struct {
 	TotalLogged   string
 	FinalCost     string
 	// Approval requests (M3): the request the YES/NO will answer and the
-	// auto-decline window the app applies.
+	// auto-decline window the app applies. The question is composed here
+	// from these structured fields — never from the app's notification
+	// body, which carries the supporter's free-text reason unquoted.
 	ExtensionID     string
 	ApprovalMinutes int
+	Approval        *PendingApproval
+}
+
+// PendingApproval is the structured request behind an approval question.
+type PendingApproval struct {
+	ID      string
+	Kind    string // "time" | "budget"
+	Minutes int    // kind=time
+	Cents   int    // kind=budget
+	Reason  string // the supporter's words, shown quoted and labelled as theirs
 }
 
 // StatusText is the chat message for an event, and false for events the chat

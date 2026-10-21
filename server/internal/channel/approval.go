@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Approvals by text (PLAN §6 step 4, M3). A supporter's request for more
@@ -32,22 +34,61 @@ const (
 
 func isApprovalRequest(typ string) bool { return typ == evTimeRequested || typ == evBudgetRequested }
 
-// approvalText turns the app's request notification into the chat's
-// question. The app copy ends with an instruction to act in the app; the
-// chat replaces it with its own.
+// approvalText is the chat's own approval question, composed from the
+// structured request: the vetted supporter name, the amount or minutes the
+// server recorded, the task title, and the supporter's reason — quoted,
+// one line, capped, and labelled as their note, never as HO:RA's words.
+// Without the structured request nothing is sent (the app still has it);
+// the app's body is never relayed on the one message a YES answers.
 func approvalText(ev StatusEvent) (string, bool) {
-	body := strings.TrimSpace(ev.Body)
-	if body == "" || ev.ExtensionID == "" {
+	a := ev.Approval
+	if a == nil || a.ID == "" || ev.ExtensionID == "" {
 		return "", false
 	}
-	if i := strings.Index(body, " Approve or decline in the app"); i >= 0 {
-		body = body[:i]
+	who := firstNonEmpty(DisplayName(ev.SupporterName), "Your supporter")
+	title := firstNonEmpty(strings.TrimSpace(ev.TaskTitle), "your task")
+	var body string
+	switch a.Kind {
+	case "budget":
+		if a.Cents <= 0 {
+			return "", false
+		}
+		body = fmt.Sprintf("%s is asking for %s more for \u201c%s\u201d.", who, Dollars(a.Cents), title)
+	default:
+		if a.Minutes <= 0 {
+			return "", false
+		}
+		body = fmt.Sprintf("%s is asking for %d more minutes on \u201c%s\u201d.", who, a.Minutes, title)
+	}
+	if note := quotedNote(a.Reason); note != "" {
+		body += "\n" + fmt.Sprintf(CopyApprovalNote, who, note)
 	}
 	mins := ev.ApprovalMinutes
 	if mins <= 0 {
 		return body + "\n\n" + CopyApprovalAsk, true
 	}
 	return body + "\n\n" + fmt.Sprintf(CopyApprovalAskTimed, mins), true
+}
+
+// quotedNote makes a supporter's free text safe to show inside our message:
+// one line, printable, at most 120 characters, in quotation marks.
+func quotedNote(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	var b strings.Builder
+	for _, c := range s {
+		if unicode.IsPrint(c) && c != '\u201c' && c != '\u201d' && c != '"' {
+			b.WriteRune(c)
+		}
+	}
+	s = strings.TrimSpace(b.String())
+	if s == "" {
+		return ""
+	}
+	if utf8.RuneCountInString(s) > 120 {
+		rs := []rune(s)
+		s = string(rs[:120]) + "\u2026"
+	}
+	return "\u201c" + s + "\u201d"
 }
 
 // onAwaitingApproval answers the pending request with this message.
