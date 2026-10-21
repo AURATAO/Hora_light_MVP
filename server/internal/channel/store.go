@@ -148,18 +148,19 @@ func (s *PGStore) SetMessageTask(ctx context.Context, ch Channel, providerMessag
 
 // LastRelayed: the most recent relayed supporter message on the thread
 // since the given time. (TaskLookup)
-func (s *PGStore) LastRelayed(ctx context.Context, ch Channel, address string, since time.Time) (Relayed, error) {
+func (s *PGStore) LastRelayed(ctx context.Context, ch Channel, address string, since time.Time, excludeProviderID string) (Relayed, error) {
 	var rl Relayed
 	var taskID sql.NullString
 	err := s.DB.QueryRowContext(ctx, `
 		SELECT m.body, m.task_id::text, m.received_at,
 		       EXISTS (SELECT 1 FROM channel_messages i
 		                WHERE i.channel = m.channel AND i.address = m.address
-		                  AND i.direction = 'inbound' AND i.received_at > m.received_at) AS answered
+		                  AND i.direction = 'inbound' AND i.received_at > m.received_at
+		                  AND i.provider_message_id <> $4) AS answered
 		  FROM channel_messages m
 		 WHERE m.channel = $1 AND m.address = $2 AND m.direction = 'outbound' AND m.relay AND m.received_at >= $3
 		 ORDER BY m.received_at DESC LIMIT 1
-	`, string(ch), address, since).Scan(&rl.Text, &taskID, &rl.At, &rl.Answered)
+	`, string(ch), address, since, excludeProviderID).Scan(&rl.Text, &taskID, &rl.At, &rl.Answered)
 	if err == sql.ErrNoRows {
 		return Relayed{}, nil
 	}

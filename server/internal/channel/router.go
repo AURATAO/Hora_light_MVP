@@ -245,9 +245,13 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 	// A bare YES/NO with nothing pending (a late duplicate YES after the
 	// booking went through, a NO to nothing) never starts a draft: "YES" is
 	// not an errand, and parsing it as one would book nonsense.
-	// (A YES/NO for a supporter is a reply to their bubble or a sentence.)
+	// A bare YES/NO with nothing of ours pending: an answer to a supporter
+	// who just asked (relayed), otherwise an acknowledgement.
 	if IsYes(text) || IsNo(text) {
 		if id.Linked() {
+			if handled, err := r.answerToSupporter(ctx, in, id, conv, text); handled {
+				return err
+			}
 			return r.Reply(ctx, in, CopyAck, "")
 		}
 		return r.Reply(ctx, in, CopyWelcome, "")
@@ -296,7 +300,7 @@ func (r *Router) leadIn(p *PendingDraft) string {
 		return ""
 	}
 	p.WhileActiveShown = true
-	return fmt.Sprintf(CopyDraftWhileActive, p.WhileActive, p.WhileActive) + "\n\n"
+	return fmt.Sprintf(CopyDraftWhileActive, p.WhileActive) + "\n\n"
 }
 
 // startDraftOpts: whileActive is the supporter's first name when the draft
@@ -444,8 +448,13 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 	default:
 		// With a supporter on the job, a sentence here may be for them
 		// (D-17): relayed, the draft stays pending.
-		if handled, err := r.routeInContext(ctx, in, id, conv, text); handled {
+		handled, label, err := r.routeInContextLabel(ctx, in, id, conv, text)
+		if handled {
 			return err
+		}
+		if label == llm.IntentAnswer {
+			// "book it please": an answer in words — the YES has to be plain.
+			return r.Reply(ctx, in, CopyConfirmReask, "")
 		}
 		// Not a yes or no: treat it as a correction ("make it 4pm") and
 		// re-draft with everything said so far.

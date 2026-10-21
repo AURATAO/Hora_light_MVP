@@ -669,33 +669,48 @@ func TestPGLastRelayed(t *testing.T) {
 		t.Fatal(err)
 	}
 	addr := "+15550000606"
-	if rl, err := s.LastRelayed(ctx, IMessage, addr, time.Now().Add(-time.Hour)); err != nil || rl.OK {
+	if rl, err := s.LastRelayed(ctx, IMessage, addr, time.Now().Add(-time.Hour), "now-msg"); err != nil || rl.OK {
 		t.Fatalf("empty thread: %+v %v", rl, err)
 	}
 	if err := s.RecordOutbound(ctx, Outbound{Channel: IMessage, To: addr, Text: "Reply YES to approve"}, "p1", t1); err != nil {
 		t.Fatal(err)
 	}
-	if rl, _ := s.LastRelayed(ctx, IMessage, addr, time.Now().Add(-time.Hour)); rl.OK {
+	if rl, _ := s.LastRelayed(ctx, IMessage, addr, time.Now().Add(-time.Hour), "now-msg"); rl.OK {
 		t.Fatal("our own prompt is not a supporter line")
 	}
 	if err := s.RecordOutbound(ctx, Outbound{Channel: IMessage, To: addr, Text: "Sam · Bagel run: what kind?", Relay: true}, "r1", t1); err != nil {
 		t.Fatal(err)
 	}
-	rl, err := s.LastRelayed(ctx, IMessage, addr, time.Now().Add(-time.Hour))
+	rl, err := s.LastRelayed(ctx, IMessage, addr, time.Now().Add(-time.Hour), "now-msg")
 	if err != nil || !rl.OK || rl.Text != "Sam · Bagel run: what kind?" || rl.TaskID != t1 || time.Since(rl.At) > time.Minute || rl.Answered {
 		t.Fatalf("%+v %v", rl, err)
 	}
-	if rl, _ := s.LastRelayed(ctx, IMessage, "+15550000999", time.Now().Add(-time.Hour)); rl.OK {
+	if rl, _ := s.LastRelayed(ctx, IMessage, "+15550000999", time.Now().Add(-time.Hour), "now-msg"); rl.OK {
 		t.Fatal("another thread must not see it")
 	}
-	if rl, _ := s.LastRelayed(ctx, IMessage, addr, time.Now().Add(time.Minute)); rl.OK {
+	if rl, _ := s.LastRelayed(ctx, IMessage, addr, time.Now().Add(time.Minute), "now-msg"); rl.OK {
 		t.Fatal("outside the window")
 	}
 	// Once the person has written, the line counts as answered.
 	if _, err := s.RecordInbound(ctx, Inbound{Channel: IMessage, ProviderMessageID: "ans-1", From: addr, Text: "everything", ReceivedAt: time.Now().Add(time.Second)}); err != nil {
 		t.Fatal(err)
 	}
-	if rl, _ := s.LastRelayed(ctx, IMessage, addr, time.Now().Add(-time.Hour)); !rl.OK || !rl.Answered {
+	if rl, _ := s.LastRelayed(ctx, IMessage, addr, time.Now().Add(-time.Hour), "now-msg"); !rl.OK || !rl.Answered {
 		t.Fatalf("answered: %+v", rl)
+	}
+	// F1: the message being routed is already on record (AttachMessage runs
+	// before routing) and must not count as the answer. Fresh thread.
+	addr2 := "+15550000607"
+	if err := s.RecordOutbound(ctx, Outbound{Channel: IMessage, To: addr2, Text: "Sam · Bagel run: toasted?", Relay: true}, "r2", t1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecordInbound(ctx, Inbound{Channel: IMessage, ProviderMessageID: "cur-1", From: addr2, Text: "yes", ReceivedAt: time.Now().Add(2 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if rl, _ := s.LastRelayed(ctx, IMessage, addr2, time.Now().Add(-time.Hour), "cur-1"); !rl.OK || rl.Answered || rl.Text != "Sam · Bagel run: toasted?" {
+		t.Fatalf("the current message must not count as the answer: %+v", rl)
+	}
+	if rl, _ := s.LastRelayed(ctx, IMessage, addr2, time.Now().Add(-time.Hour), "other"); !rl.Answered {
+		t.Fatalf("any other inbound after it does: %+v", rl)
 	}
 }

@@ -53,7 +53,7 @@ func (f *fakeTasks) TaskForProviderMessage(_ context.Context, _ Channel, _, id s
 	tid, known := f.byMsg[id]
 	return tid, f.relay[id], known, nil
 }
-func (f *fakeTasks) LastRelayed(_ context.Context, _ Channel, _ string, since time.Time) (Relayed, error) {
+func (f *fakeTasks) LastRelayed(_ context.Context, _ Channel, _ string, since time.Time, _ string) (Relayed, error) {
 	if f.lastText == "" || f.lastAt.Before(since) {
 		return Relayed{}, nil
 	}

@@ -30,8 +30,9 @@ import (
 //     one active task → that one; several → a numbered list, and the next
 //     message picks by number. Never guessed.
 //
-// A new errand still wins: the intent classifier runs first, and new_task
-// drafts as before. Relaying moves no money and changes no task state.
+// With a supporter on the job the person's words default to the supporter
+// (D-17); a clear new errand still drafts. Relaying moves no money and
+// changes no task state.
 
 // ActiveTask is a task the requester could be talking to a supporter about:
 // open, with a supporter assigned.
@@ -74,8 +75,9 @@ const relayTextCap = 1500
 type TaskLookup interface {
 	// LastRelayed: the supporter's most recent relayed message on this
 	// thread since the given time, and whether the person has written
-	// anything since it (then it is answered). OK=false when none.
-	LastRelayed(ctx context.Context, ch Channel, address string, since time.Time) (Relayed, error)
+	// anything since it (then it is answered) — not counting the message
+	// being routed now (excludeProviderID). OK=false when none.
+	LastRelayed(ctx context.Context, ch Channel, address string, since time.Time, excludeProviderID string) (Relayed, error)
 	// TaskForProviderMessage: the task a message exchanged with address was
 	// about ("" if none), whether that message was a supporter's relayed
 	// words (as opposed to one of our own prompts or status lines), and
@@ -360,7 +362,30 @@ func (r *Router) onAwaitingTaskChoice(ctx context.Context, in Inbound, id Identi
 	}
 	// Not a pick. A new errand drafts (the hold is dropped — the person has
 	// moved on; they were asked once); anything else joins the hold.
-	intent := r.classify(ctx, text)
+	// A worded reply to the list ("the bagels one, everything"): the
+	// context decides, defaulting to the supporter (P2/P7) — the plain
+	// classifier's "when in doubt, new_task" has no place under a hold.
+	active0, err := r.Chat.ActiveTasks(ctx, id.UserID)
+	if err != nil {
+		return fmt.Errorf("onAwaitingTaskChoice: %w", err)
+	}
+	if t, ok := supporterNamed(active0, text); ok && contains(choices, t.ID) {
+		// Named the supporter: deliver the hold with these words to them.
+		joined := capText(strings.TrimSpace(held + "\n" + text))
+		if err := r.Chat.PostAsRequester(ctx, t.ID, id.UserID, joined, in.ProviderMessageID); err != nil {
+			log.Printf("[channel] relay identity=%s task=%s: %v", id.ID, t.ID, err)
+			if errors.Is(err, ErrTaskNotActive) {
+				return r.clearHold(ctx, in, conv, CopyRelayGone)
+			}
+			return r.Reply(ctx, in, CopyRelayFailedPick, t.ID)
+		}
+		if err := r.releaseHold(ctx, id); err != nil {
+			return fmt.Errorf("onAwaitingTaskChoice: %w", err)
+		}
+		r.noteRelayed(ctx, in, id, t.ID, joined)
+		return nil
+	}
+	intent := r.classifyActive(ctx, text, active0, conv)
 	if intent == llm.IntentNewTask {
 		conv.State, conv.PendingTaskChoices, conv.PendingRelayText = StateIdle, nil, ""
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
@@ -653,16 +678,29 @@ func openQuestion(s State) string {
 // whether the message is for them. handled=false → the caller's own
 // routing (intent classification, correction, re-ask) continues.
 func (r *Router) routeInContext(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) (handled bool, err error) {
+	handled, _, err = r.routeInContextLabel(ctx, in, id, conv, text)
+	return handled, err
+}
+
+// routeInContextLabel is routeInContext that also returns the label the
+// message got when it was not handled ("" when no label was taken), so the
+// caller can re-ask instead of re-drafting an answer-in-words.
+func (r *Router) routeInContextLabel(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) (handled bool, label llm.Intent, err error) {
 	if r.Chat == nil || !id.Linked() {
-		return false, nil
+		return false, "", nil
 	}
 	active, err := r.Chat.ActiveTasks(ctx, id.UserID)
 	if err != nil {
-		return true, fmt.Errorf("routeInContext: %w", err)
+		return true, "", fmt.Errorf("routeInContext: %w", err)
 	}
-	// Step 6: the one-word ways out, whatever the state.
+	// Step 6: the one-word ways out — except that a pending approval is
+	// answered first (P4): "new task:" then is re-asked, "for Maya" relays
+	// but keeps the question armed.
 	if m := newTaskRE.FindStringSubmatch(text); m != nil && strings.TrimSpace(m[1]) != "" {
-		return true, r.startDraft(ctx, in, id, conv, strings.TrimSpace(m[1]))
+		if conv.State == StateAwaitingApproval {
+			return true, "", r.Reply(ctx, in, CopyApprovalFirst, "")
+		}
+		return true, "", r.startDraft(ctx, in, id, conv, strings.TrimSpace(m[1]))
 	}
 	if m := forSupporterRE.FindStringSubmatch(text); m != nil {
 		if t, ok := supporterByName(active, m[1]); ok {
@@ -672,32 +710,38 @@ func (r *Router) routeInContext(ctx context.Context, in Inbound, id Identity, co
 				words = conv.Pending.Source
 			}
 			if words == "" {
-				return true, r.Reply(ctx, in, CopyWhichTaskNothingHeld, "")
+				return true, "", r.Reply(ctx, in, CopyWhichTaskNothingHeld, "")
 			}
 			if conv.Pending == nil {
-				return true, r.relay(ctx, in, id, t.ID, words)
+				return true, "", r.relayKeepingDraft(ctx, in, id, conv, t.ID, words)
 			}
 			// Deliver first; the draft is dropped only once the supporter
 			// has the words (a failed relay keeps it, and the person has
-			// been told).
+			// been told). A pending approval stays armed.
 			sent, err := r.relaySent(ctx, in, id, t.ID, words)
 			if err != nil || !sent {
-				return true, err
+				return true, "", err
 			}
 			fresh, err := r.Conversations.GetConversation(ctx, id.ID)
 			if err != nil {
-				return true, fmt.Errorf("routeInContext: %w", err)
+				return true, "", fmt.Errorf("routeInContext: %w", err)
 			}
 			fresh.Pending = nil
-			fresh.State = fresh.ResumeState()
-			if err := r.Conversations.SaveConversation(ctx, fresh); err != nil {
-				return true, fmt.Errorf("routeInContext: %w", err)
+			if fresh.State != StateAwaitingApproval {
+				fresh.State = fresh.ResumeState()
 			}
-			return true, r.Reply(ctx, in, fmt.Sprintf(CopyRelayedDraftDropped, firstNonEmpty(DisplayName(t.SupporterName), "your supporter")), t.ID)
+			if err := r.Conversations.SaveConversation(ctx, fresh); err != nil {
+				return true, "", fmt.Errorf("routeInContext: %w", err)
+			}
+			reply := fmt.Sprintf(CopyRelayedDraftDropped, firstNonEmpty(DisplayName(t.SupporterName), "your supporter"))
+			if fresh.State == StateAwaitingApproval {
+				reply += "\n\n" + CopyApprovalStillPending
+			}
+			return true, "", r.Reply(ctx, in, reply, t.ID)
 		}
 	}
 	if len(active) == 0 {
-		return false, nil
+		return false, "", nil
 	}
 	// The supporter's last line counts only while that task is active and
 	// the person has not answered it yet.
@@ -709,9 +753,12 @@ func (r *Router) routeInContext(ctx context.Context, in Inbound, id Identity, co
 	// and nothing has been said since. Mid-question the model decides, with
 	// the open question in view (a correction to our draft is not an answer
 	// to the supporter).
-	if conv.State == StateIdle && last != "" && !answered && strings.HasSuffix(strings.TrimSpace(last), "?") &&
-		r.now().Sub(lastAt) <= supporterQuestionWindow && len(strings.Fields(text)) <= 12 {
-		return true, r.relayKeepingDraft(ctx, in, id, conv, lastTask, text)
+	if conv.State == StateIdle && supporterQuestionOpen(last, lastAt, answered, r.now()) && len(strings.Fields(text)) <= 12 {
+		return true, "", r.relayKeepingDraft(ctx, in, id, conv, lastTask, text)
+	}
+	// The one who last wrote is a target only until the person answered.
+	if answered {
+		lastTask = ""
 	}
 	// Step 7b: the model, with the context. Error → to the supporter (P7).
 	// Without a context classifier, the plain one decides only "new
@@ -736,13 +783,13 @@ func (r *Router) routeInContext(ctx context.Context, in Inbound, id Identity, co
 	}
 	switch intent {
 	case llm.IntentCorrection, llm.IntentAnswer:
-		return false, nil // the caller's own path: re-draft / re-ask for a plain YES/NO
+		return false, intent, nil // the caller's own path: re-draft / re-ask for a plain YES/NO
 	case llm.IntentNewTask:
 		if conv.State != StateIdle {
-			return false, nil // a correction / re-ask: the caller's path
+			return false, intent, nil // a correction / re-ask: the caller's path
 		}
 		// Step 7b → draft, saying so (P6).
-		return true, r.startDraftWhileActive(ctx, in, id, conv, text, active)
+		return true, intent, r.startDraftWhileActive(ctx, in, id, conv, text, active)
 	default:
 		// Which supporter: one named in the message, else the one who last
 		// wrote, else the only one; several and no signal → the list
@@ -758,12 +805,35 @@ func (r *Router) routeInContext(ctx context.Context, in Inbound, id Identity, co
 		}
 		if target == "" {
 			if conv.State != StateIdle {
-				return true, r.Reply(ctx, in, fmt.Sprintf(CopyWhichSupporterMidQuestion, supporterNames(active)), "")
+				return true, intent, r.Reply(ctx, in, fmt.Sprintf(CopyWhichSupporterMidQuestion, supporterForms(active)), "")
 			}
-			return true, r.askWhichTask(ctx, in, conv, active, text)
+			return true, intent, r.askWhichTask(ctx, in, conv, active, text)
 		}
-		return true, r.relayKeepingDraft(ctx, in, id, conv, target, text)
+		return true, intent, r.relayKeepingDraft(ctx, in, id, conv, target, text)
 	}
+}
+
+// supporterQuestionOpen: the supporter asked something recently and the
+// person has not written since.
+func supporterQuestionOpen(last string, lastAt time.Time, answered bool, now time.Time) bool {
+	return last != "" && !answered && strings.HasSuffix(strings.TrimSpace(last), "?") && now.Sub(lastAt) <= supporterQuestionWindow
+}
+
+// answerToSupporter: a bare YES/NO in idle that answers an open supporter
+// question (F2) — relayed; handled=false when there is none.
+func (r *Router) answerToSupporter(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) (bool, error) {
+	if r.Chat == nil || !id.Linked() {
+		return false, nil
+	}
+	active, err := r.Chat.ActiveTasks(ctx, id.UserID)
+	if err != nil {
+		return true, fmt.Errorf("answerToSupporter: %w", err)
+	}
+	last, lastTask, lastAt, answered := r.lastSupporterLine(ctx, in, id)
+	if _, ok := taskIn(active, lastTask); !ok || !supporterQuestionOpen(last, lastAt, answered, r.now()) {
+		return false, nil
+	}
+	return true, r.relayKeepingDraft(ctx, in, id, conv, lastTask, text)
 }
 
 func taskIn(active []ActiveTask, id string) (ActiveTask, bool) {
@@ -786,13 +856,28 @@ func supporterNamed(active []ActiveTask, text string) (ActiveTask, bool) {
 			continue
 		}
 		for _, w := range strings.FieldsFunc(text, func(c rune) bool { return !unicode.IsLetter(c) && c != '\'' && c != '-' }) {
-			if strings.EqualFold(w, name) {
+			// Case-sensitive: "Will" the supporter, not "I will be there".
+			if w == name {
 				found, n = t, n+1
 				break
 			}
 		}
 	}
 	return found, n == 1
+}
+
+// supporterForms renders the way out for copy: “for Maya” or “for Sam”.
+func supporterForms(active []ActiveTask) string {
+	var forms []string
+	for _, t := range active {
+		if n := DisplayName(FirstName(t.SupporterName)); n != "" {
+			forms = append(forms, "\u201cfor "+n+"\u201d")
+		}
+	}
+	if len(forms) == 0 {
+		return "\u201cfor my supporter\u201d"
+	}
+	return strings.Join(forms, " or ")
 }
 
 // supporterNames lists the active supporters' first names for copy.
@@ -812,7 +897,8 @@ func supporterNames(active []ActiveTask) string {
 // relayKeepingDraft relays and, if a question of ours is open, says in one
 // line that it still is.
 func (r *Router) relayKeepingDraft(ctx context.Context, in Inbound, id Identity, conv Conversation, taskID, text string) error {
-	if err := r.relay(ctx, in, id, taskID, text); err != nil {
+	sent, err := r.relaySent(ctx, in, id, taskID, text)
+	if err != nil || !sent {
 		return err
 	}
 	switch conv.State {
@@ -833,7 +919,7 @@ func (r *Router) relayKeepingDraft(ctx context.Context, in Inbound, id Identity,
 // startDraftWhileActive drafts a new errand while a supporter is on the
 // job and marks the draft so the summary offers the way out.
 func (r *Router) startDraftWhileActive(ctx context.Context, in Inbound, id Identity, conv Conversation, text string, active []ActiveTask) error {
-	return r.startDraftOpts(ctx, in, id, conv, text, supporterNames(active))
+	return r.startDraftOpts(ctx, in, id, conv, text, supporterForms(active))
 }
 
 func supporterByName(active []ActiveTask, name string) (ActiveTask, bool) {
@@ -861,7 +947,7 @@ func (r *Router) lastSupporterLine(ctx context.Context, in Inbound, id Identity)
 		return "", "", time.Time{}, false
 	}
 	since := r.now().Add(-supporterContextWindow)
-	rl, err := r.Tasks.LastRelayed(ctx, in.Channel, in.From, since)
+	rl, err := r.Tasks.LastRelayed(ctx, in.Channel, in.From, since, in.ProviderMessageID)
 	if err != nil {
 		log.Printf("[channel] last relayed identity=%s: %v", id.ID, err)
 		return "", "", time.Time{}, false
@@ -879,4 +965,27 @@ func (r *Router) lastSupporterLine(ctx context.Context, in Inbound, id Identity)
 		text = text[:i]
 	}
 	return strings.TrimSpace(text), taskID, at, answered
+}
+
+// classifyActive labels a message with the context classifier (or, without
+// one, the plain classifier for "new errand or not"); any failure is
+// "to the supporter" (P7).
+func (r *Router) classifyActive(ctx context.Context, text string, active []ActiveTask, conv Conversation) llm.Intent {
+	if r.InContext == nil {
+		if r.Classifier != nil {
+			if got, err := r.Classifier.Classify(ctx, text); err == nil && got == llm.IntentNewTask {
+				return llm.IntentNewTask
+			}
+		}
+		return llm.IntentToSupporter
+	}
+	c := llm.Context{OpenQuestion: openQuestion(conv.State)}
+	for _, t := range active {
+		c.ActiveTasks = append(c.ActiveTasks, llm.ContextTask{Title: t.Title, SupporterName: DisplayName(FirstName(t.SupporterName))})
+	}
+	got, err := r.InContext.ClassifyInContext(ctx, text, c)
+	if err != nil {
+		log.Printf("[channel] classify in context (using %q): %v", got, err)
+	}
+	return got
 }

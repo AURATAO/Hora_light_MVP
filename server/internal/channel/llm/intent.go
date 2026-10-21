@@ -160,8 +160,11 @@ func (o *OpenAICompat) ClassifyInContext(ctx context.Context, text string, c Con
 	if c.LastSupporterLine != "" {
 		fmt.Fprintf(&b, "The supporter's last message to the customer: %q\n", c.LastSupporterLine)
 	}
-	if c.OpenQuestion != "" {
-		fmt.Fprintf(&b, "HO:RA is currently waiting on the customer to answer a %s question about a NEW booking (a bare yes/no/amount would answer it; this message is not that).\n", c.OpenQuestion)
+	switch c.OpenQuestion {
+	case "booking", "budget", "name":
+		fmt.Fprintf(&b, "HO:RA is currently waiting on the customer to answer a %s question about a pending NEW booking (a bare yes/no/amount would answer it; this message is not that). \"correction\" and \"answer\" are possible labels.\n", c.OpenQuestion)
+	case "approval":
+		b.WriteString("HO:RA is currently waiting on the customer to approve or decline the supporter's request for more time or money (a bare yes/no would answer it; this message is not that). \"answer\" is a possible label; \"correction\" is not.\n")
 	}
 	fmt.Fprintf(&b, "\nCustomer's message: %q", text)
 	// 256 tokens: the answer is ~10, the rest is headroom for a model that
@@ -177,7 +180,12 @@ func (o *OpenAICompat) ClassifyInContext(ctx context.Context, text string, c Con
 		return IntentToSupporter, fmt.Errorf("classify in context decode: %w", err)
 	}
 	switch r.Intent {
-	case IntentCorrection, IntentAnswer:
+	case IntentCorrection:
+		if c.OpenQuestion != "booking" && c.OpenQuestion != "budget" && c.OpenQuestion != "name" {
+			return IntentToSupporter, nil // nothing of ours to correct: for the supporter
+		}
+		return r.Intent, nil
+	case IntentAnswer:
 		if c.OpenQuestion == "" {
 			return IntentToSupporter, nil // nothing open: for the supporter
 		}

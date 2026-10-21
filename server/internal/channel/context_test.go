@@ -68,7 +68,7 @@ func TestContextClassifierAndTheWayOut(t *testing.T) {
 
 	fc.intent = llm.IntentNewTask
 	got := g.say(t, "pick up my laundry tomorrow at 3")
-	if g.state() != StateAwaitingConfirm || !strings.HasPrefix(got, "Booking this as a new errand. If it was for Sam instead, reply “for Sam”.") {
+	if g.state() != StateAwaitingConfirm || !strings.HasPrefix(got, "Booking this as a new errand. If it was for your supporter instead, reply “for Sam”.") {
 		t.Fatalf("state %s reply %q", g.state(), got)
 	}
 	got = g.say(t, "for Sam")
@@ -281,7 +281,7 @@ func TestLastLineOnlyWhileActiveAndSeveralSupporters(t *testing.T) {
 	g.say(t, "new task: walk my dog at 5") // mid-question now
 	fc.intent = llm.IntentToSupporter
 	got = g.say(t, "ring the bell please")
-	if !strings.Contains(got, "Which supporter is that for?") || !strings.Contains(got, "Maya / Sam") || g.state() != StateAwaitingConfirm {
+	if !strings.Contains(got, "Which supporter is that for?") || !strings.Contains(got, "“for Maya” or “for Sam”") || g.state() != StateAwaitingConfirm {
 		t.Fatalf("%q state %s", got, g.state())
 	}
 }
@@ -387,5 +387,113 @@ func TestWordyAnswerIsReaskedNotRelayed(t *testing.T) {
 	}
 	if got := g.say(t, "yes, approve it"); got != CopyApprovalReask || len(chat.posted) != 0 || len(g.booker.resolved) != 0 {
 		t.Fatalf("reply %q posted %v resolved %v", got, chat.posted, g.booker.resolved)
+	}
+}
+
+// ── review round 3 (D-17) ──────────────────────────────────────────────────
+
+// F2: a bare "yes" in idle answers the supporter who just asked.
+func TestBareYesInIdleAnswersTheSupporter(t *testing.T) {
+	g, chat, tasks, _ := contextRig(llm.IntentNewTask, bagelT)
+	tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: want me to wait?", "task-2", time.Now().Add(-time.Minute)
+	if got := g.say(t, "yes"); got != "" || len(chat.posted) != 1 || chat.posted[0] != "task-2:yes" || g.booker.posts != 0 {
+		t.Fatalf("reply %q posted %v booked %d", got, chat.posted, g.booker.posts)
+	}
+	// Answered: the next bare yes is an acknowledgement again.
+	tasks.lastAnswered = true
+	if got := g.say(t, "yes"); got != CopyAck || len(chat.posted) != 1 {
+		t.Fatalf("reply %q posted %v", got, chat.posted)
+	}
+}
+
+// F3: the one who last wrote is a target only until the person answered.
+func TestLastWriterIsATargetOnlyUntilAnswered(t *testing.T) {
+	g, chat, tasks, _ := contextRig(llm.IntentToSupporter, laundryT, bagelT)
+	tasks.lastText, tasks.lastTask, tasks.lastAt, tasks.lastAnswered = "Maya · Laundry: heading over", "task-1", time.Now().Add(-time.Hour), true
+	got := g.say(t, "get the large one")
+	if len(chat.posted) != 0 || !strings.Contains(got, CopyWhichTask) {
+		t.Fatalf("an answered line must not pick the target: posted %v reply %q", chat.posted, got)
+	}
+}
+
+// F4: the escapes never disarm a pending approval.
+func TestEscapesKeepTheApprovalArmed(t *testing.T) {
+	g, chat, _, fc := contextRig(llm.IntentNewTask, bagelT)
+	g.say(t, "pick up my laundry tomorrow at 3") // draft pending
+	if err := g.r.askApproval(context.Background(), "id-"+me, "ext-5"); err != nil {
+		t.Fatal(err)
+	}
+	fc.intent = llm.IntentToSupporter
+	got := g.say(t, "for Sam, why $10 more?")
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if len(chat.posted) != 1 || c.State != StateAwaitingApproval || c.PendingExtensionID != "ext-5" || c.Pending != nil || !strings.Contains(got, CopyApprovalStillPending) {
+		t.Fatalf("posted %v conv %+v reply %q", chat.posted, c, got)
+	}
+	got = g.say(t, "new task: walk my dog at 5")
+	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
+	if got != CopyApprovalFirst || c.State != StateAwaitingApproval || c.PendingExtensionID != "ext-5" {
+		t.Fatalf("reply %q conv %+v", got, c)
+	}
+	g.say(t, "YES")
+	if len(g.booker.resolved) != 1 || !strings.HasSuffix(g.booker.resolved[0], ":ext-5:true") || g.booker.posts != 0 {
+		t.Fatalf("resolved %v booked %d", g.booker.resolved, g.booker.posts)
+	}
+}
+
+// F5: a worded reply to the list goes by name or by context, never to the
+// plain classifier's "when in doubt, new_task"; a failure joins the hold.
+func TestWordedReplyToTheListUsesContext(t *testing.T) {
+	g, chat, _, fc := contextRig(llm.IntentToSupporter, laundryT, bagelT)
+	g.say(t, "door code 1234")
+	g.say(t, "Sam, everything bagel") // names a supporter on the list
+	if len(chat.posted) != 1 || chat.posted[0] != "task-2:door code 1234\nSam, everything bagel" || g.state() != StateIdle {
+		t.Fatalf("posted %v state %s", chat.posted, g.state())
+	}
+	g, chat, _, fc = contextRig(llm.IntentToSupporter, laundryT, bagelT)
+	g.say(t, "door code 1234")
+	fc.err = errors.New("down")
+	got := g.say(t, "the bagels one, everything")
+	if len(chat.posted) != 0 || g.state() != StateAwaitingTaskChoice || !strings.Contains(got, CopyWhichTask) || g.booker.posts != 0 {
+		t.Fatalf("a failure must join the hold, not draft: posted %v state %s reply %q", chat.posted, g.state(), got)
+	}
+}
+
+// MINOR-1: "book it please" in awaiting_confirm is re-asked, not re-drafted.
+func TestWordyYesOnTheSummaryIsReasked(t *testing.T) {
+	g, chat, _, fc := contextRig(llm.IntentNewTask, bagelT)
+	g.say(t, "pick up my laundry tomorrow at 3")
+	fc.intent = llm.IntentAnswer
+	drafts := g.booker.quotes
+	if got := g.say(t, "book it please"); got != CopyConfirmReask || len(chat.posted) != 0 || g.booker.posts != 0 || g.booker.quotes != drafts {
+		t.Fatalf("reply %q posted %v booked %d requoted %v", got, chat.posted, g.booker.posts, g.booker.quotes != drafts)
+	}
+	g.say(t, "YES")
+	if g.booker.posts != 1 {
+		t.Fatalf("booked %d", g.booker.posts)
+	}
+}
+
+// MINOR-5: a failed relay mid-question says only that it failed.
+func TestFailedRelayMidQuestionSaysOnlyThat(t *testing.T) {
+	g, chat, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	c.State, c.PendingExtensionID = StateAwaitingApproval, "ext-1"
+	if err := g.convs.SaveConversation(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	chat.post = errors.New("talkjs 503")
+	if got := g.say(t, "why $10 more?"); got != CopyRelayFailed || sentText(g, CopyApprovalStillPending) {
+		t.Fatalf("%q", got)
+	}
+}
+
+// "I will be there" is not a message to a supporter named Will.
+func TestSupporterNameMatchIsCaseSensitive(t *testing.T) {
+	will := ActiveTask{ID: "t9", Title: "Dog walk", SupporterName: "Will Park"}
+	if _, ok := supporterNamed([]ActiveTask{will, bagelT}, "I will be there in 5"); ok {
+		t.Fatal("lower-case 'will' must not match the name")
+	}
+	if t2, ok := supporterNamed([]ActiveTask{will, bagelT}, "Will, I'll be there in 5"); !ok || t2.ID != "t9" {
+		t.Fatal("the name itself must match")
 	}
 }

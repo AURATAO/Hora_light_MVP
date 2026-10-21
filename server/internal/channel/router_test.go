@@ -204,6 +204,7 @@ func (f fakeClassifier) Classify(context.Context, string) (llm.Intent, error) { 
 
 type fakeBooker struct {
 	mu      sync.Mutex
+	quotes  int
 	posts   int
 	result  PostResult
 	delay   time.Duration
@@ -218,6 +219,9 @@ type fakeBooker struct {
 }
 
 func (b *fakeBooker) Quote(_ context.Context, _ llm.TaskDraft, budgetCents int) (int, int, error) {
+	b.mu.Lock()
+	b.quotes++
+	b.mu.Unlock()
 	return 1200 + budgetCents, 30, nil
 }
 func (b *fakeBooker) Post(_ context.Context, _ string, d llm.TaskDraft, opts PostOptions) PostResult {
