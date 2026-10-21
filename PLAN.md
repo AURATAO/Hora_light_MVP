@@ -133,7 +133,7 @@ reasoning on by default — measure latency with it on and off.
 | M0 | Oct 19 | PLAN.md; `channel` package skeleton; adapter interface; migration file (not applied) | ✅ see §15 |
 | M1 | Oct 20–22 | Sendblue inbound/outbound in sandbox; identity + setup page; dedupe | ✅ help-first flow booked a real task from an iPhone, Oct 20 — §15 |
 | M2 | Oct 23–25 | Draft → YES → hold → task; status updates via `notify.Create` hook | ✅ Oct 20 — booking + accepted/clock in/out/done all seen on an iPhone (staging, payments off) |
-| M3 | Oct 26–28 | Approvals YES/NO; chat relay; multi-task; ops handoff | 🟡 approvals ✅, multi-task ✅, handoff ✅, budget + auto-extend consent ✅, chat relay (M3.2) ✅ PASS r7 + **staging 3.2a/3.2b seen (Oct 21 evening)**; M3.2b conversation model (D-17) ✅ **PASS round 3** — staging bagel flow owed; then M3.6 completion photo + receipt |
+| M3 | Oct 26–28 | Approvals YES/NO; chat relay; multi-task; ops handoff | 🟡 approvals ✅, multi-task ✅, handoff ✅, budget + auto-extend consent ✅, chat relay (M3.2) ✅ PASS r7 + **staging 3.2a/3.2b seen (Oct 21 evening)**; M3.2b conversation model (D-17) ✅ **PASS round 3** — staging bagel flow owed; M3.2c Arbiter amendments (I-O defer-don't-drop, I-P version B) ✅ **PASS round 5** (6e8af2a); M3.6 completion photo + receipt ✅ **PASS round 4** — staging evidence owed for all three (Oct 22) |
 | M4 | Oct 29–31 | WhatsApp adapter on Meta test number; eval run; real-card E2E on both channels; demo | |
 
 ## 11. External dependencies (owner: Aura)
@@ -210,6 +210,13 @@ The setup step is the one to watch.
   message in the last 10 minutes only an explicit YES/NO answers us, casual
   affirmatives relay, with the footer and the "(Passed 'ok' to Sam…)" line.
   (3) Report the Sendblue `reply_to` defect with the Test A/B handles.
+  **Built and reviewed to PASS (5 rounds, 2026-10-22, 6e8af2a; D-17 review
+  log).** Staging branch has the two new columns (`approval_armed_at`,
+  `approval_claimed_at`). Owed: staging evidence — a request arriving
+  during a handoff / mid-booking is asked afterwards; two requests asked
+  one at a time; "ok" with a supporter line in the last 10 minutes goes to
+  the supporter. Arbiter ruling requested in D-17 (double-tap YES after an
+  approval re-shows the draft; guard `onConfirm` the same way?).
 - **M3.6 — completion photo + receipt to the requester's chat (Aura, 2026-10-21):**
   after COMPLETED, send the completion photo with the done message; if the task
   had purchases, a second message "Receipt: $XX" with the receipt photo.
@@ -218,6 +225,12 @@ The setup step is the one to watch.
   check whether `task-completions` is public or needs a signed URL with a
   short expiry before sending to a third-party provider (PII: the photo may
   show a home); (b) WhatsApp outside the 24h window needs a template.
+  **Built and reviewed to PASS (4 rounds, 2026-10-22; D-16 I-R + review
+  log).** Settled: (a) signed 1-hour links to this task's own objects only,
+  never stored or logged; (b) outside the window nothing is sent, as for
+  every status. Owed: staging evidence — completion photo on the done
+  message (iMessage), receipt photo as its own message, `.heic` on WhatsApp
+  dropped with honest copy.
 - **M3.6 follow-up (2026-10-22):** the completion email carries the
   completion photo only; add the receipt photo (7-day signed link, like the
   completion photo) so a chat that could not carry it can say where it is.
