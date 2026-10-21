@@ -133,7 +133,7 @@ reasoning on by default — measure latency with it on and off.
 | M0 | Oct 19 | PLAN.md; `channel` package skeleton; adapter interface; migration file (not applied) | ✅ see §15 |
 | M1 | Oct 20–22 | Sendblue inbound/outbound in sandbox; identity + setup page; dedupe | ✅ help-first flow booked a real task from an iPhone, Oct 20 — §15 |
 | M2 | Oct 23–25 | Draft → YES → hold → task; status updates via `notify.Create` hook | ✅ Oct 20 — booking + accepted/clock in/out/done all seen on an iPhone (staging, payments off) |
-| M3 | Oct 26–28 | Approvals YES/NO; chat relay; multi-task; ops handoff | 🟡 approvals ✅, multi-task ✅, handoff ✅, budget + auto-extend consent ✅ (all reviewed, Oct 21); **chat relay (M3.2) next** — TalkJS staging keys set |
+| M3 | Oct 26–28 | Approvals YES/NO; chat relay; multi-task; ops handoff | 🟡 approvals ✅, multi-task ✅, handoff ✅, budget + auto-extend consent ✅, chat relay (M3.2) built `455d647` — **review in progress**; next M3.6 completion photo + receipt to the requester's chat |
 | M4 | Oct 29–31 | WhatsApp adapter on Meta test number; eval run; real-card E2E on both channels; demo | |
 
 ## 11. External dependencies (owner: Aura)
@@ -152,6 +152,7 @@ reasoning on by default — measure latency with it on and off.
 - [ ] **Go-live change (D-16 R-4):** move the setup page from `server/` to `app/` (Tailwind) — declared exception until then.
 - [ ] **Post-freeze refactor #1 (D-16 R-1):** `createTask` takes the principal as an argument; drop the synthetic context in `chatBooker.Post`.
 - [ ] Privacy Policy: add Sendblue, Meta (WhatsApp), Baseten to the provider list before launch
+- [ ] **Inherited test race (found 2026-10-21, base `853bed5` red too — not a regression):** `go test -race` fails `TestLiveArrivalIsExactlyOnceUnderConcurrency` (`live_tracking_test.go:882`) because 8 goroutines call `gin.SetMode` via `postGpsPing` (`gps_ping_source_test.go:139`). Test-harness-only; fix after the freeze by moving `gin.SetMode` to `TestMain`. verify.sh runs the suite without `-race`, so it stays green there.
 
 ## 12. Funnel metrics (from day one)
 
@@ -163,6 +164,14 @@ The setup step is the one to watch.
 - Dani: confirm approval timeouts and copy for budget/time requests by text.
 - **Post-freeze mobile change:** supporter task screen shows "Ask for a budget" at budget 0 (today gated on `hasBudget`), so a misread chat task is recoverable (see incident 2026-10-21).
 - Does Sendblue expose threaded-reply context? If not, step 5 falls back to 6–7.
+- **M3.6 — completion photo + receipt to the requester's chat (Aura, 2026-10-21):**
+  after COMPLETED, send the completion photo with the done message; if the task
+  had purchases, a second message "Receipt: $XX" with the receipt photo.
+  Groundwork is in M3.2 (`Outbound.MediaURL` → Sendblue `media_url`, WhatsApp
+  image+caption). To settle: (a) the photo URLs today are storage-bucket URLs —
+  check whether `task-completions` is public or needs a signed URL with a
+  short expiry before sending to a third-party provider (PII: the photo may
+  show a home); (b) WhatsApp outside the 24h window needs a template.
 - One number for both channels, or separate? (Default: separate.)
 - ~~Staging~~ decided 2026-10-19, see §16.
 - **Adjustment to make after the flow is complete (Aura, 2026-10-20):** someone
