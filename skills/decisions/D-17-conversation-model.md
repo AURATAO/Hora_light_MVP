@@ -1,6 +1,6 @@
 # D-17 — Conversation model: who is the person talking to?
 
-**Status:** built and reviewed to PASS 2026-10-21 (3 rounds) · Arbiter: Aura — interpretations I-M..I-Q pending · Tier: T3 (money-adjacent routing)
+**Status:** built and reviewed to PASS 2026-10-21 (3 rounds) · Arbiter: Aura — I-M, I-N, I-Q agreed; I-O and I-P amended by ruling (M3.2c) · Tier: T3 (money-adjacent routing)
 **Supersedes:** the "a new errand still wins" rule in D-16 / M3.2 (relay.go header), and I-L's iMessage half.
 
 ## Trigger (staging, 2026-10-21 evening, Aura's tests)
@@ -102,19 +102,33 @@ structured composition (M3.2 R6); authorization in both directions.
 
 - I-M. "Default to the supporter" (P2) is a product rule, not a safety
   rule; the safety rule is P3. A relayed sentence never moves money.
+  **Arbiter 2026-10-21: agreed** ("money is only ever YES and NO").
 - I-N. Sendblue `reply_to` is treated as absent (P5) on the evidence of
-  two controlled trials; revisit only with new evidence from Sendblue.
-- I-O. An approval question is not sent to the phone when it cannot be
-  armed (P4) — the app notification and email still go out.
-- I-P. With no reply context on iMessage, every affirmative the YES regex
-  accepts ("ok", "sure", "yep", "👍", "好"…) answers the open question of
-  ours; the footer names "YES, OK or NO" as examples. A yes meant for the
-  supporter is written as a sentence ("yes please, the large one") and
-  the classifier routes it. Casual affirmatives are the rule's law, not
-  the footer's; this is accepted.
+  two controlled trials; the plumbing stays (`reply_to_provider_id` is
+  still stored) so it is one line to re-enable; the defect is reported to
+  Sendblue with the two trials' handles. **Arbiter 2026-10-21: agreed.**
+- I-O. **(Arbiter 2026-10-21: rewritten — defer, don't drop.)** When the
+  thread cannot take an approval question (handoff, booking in flight, the
+  card-setup page), the question is held and sent — and armed — as soon as
+  the thread can take it, if the request is still pending; an expired
+  request is not sent. A chat-only requester has no app, so "the app has
+  it" was no fallback: only the email would have reached them, usually too
+  late. (To build: M3.2c.)
+- I-P. **(Arbiter 2026-10-21: version B.)** When a supporter has written
+  within the last 10 minutes, only an explicit YES / NO (and their
+  translations) answers the open question of ours; the casual affirmatives
+  the regex otherwise accepts ("ok", "sure", "yep", "👍"…) go to the
+  supporter. The person learns this where it matters: the footer on the
+  relayed line says "to answer me, send YES or NO on its own — anything
+  else (ok, sure, a sentence) goes to Sam", and a relayed "ok" is answered
+  "(Passed 'ok' to Sam. Still waiting on your YES to book.)". With no
+  supporter message in the last 10 minutes the regex is unchanged, so an
+  ordinary booking is not made harder. Error direction: money never moves
+  on an ambiguous word. (To build: M3.2c.)
 - I-Q. Within 10 minutes of an unanswered supporter question, a short
   message in idle is that answer, by rule, even if the person meant a new
   errand ("new task:" forces one). Mid-question the rule does not apply.
+  **Arbiter 2026-10-21: agreed.**
 
 ## Review log
 

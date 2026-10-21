@@ -204,6 +204,12 @@ The setup step is the one to watch.
   well), or (b) a web-only unread badge on the chat button polled from
   TalkJS. (a) is a server change (small, but notifications are frozen-area
   code shared with mobile); (b) is `app/` only, post-freeze.
+- **M3.2c — D-17 rulings to build (Aura, 2026-10-21 23:30):** (1) I-O: an
+  approval question the thread cannot take yet is deferred and sent+armed
+  when it can, if still pending; (2) I-P version B: with a supporter
+  message in the last 10 minutes only an explicit YES/NO answers us, casual
+  affirmatives relay, with the footer and the "(Passed 'ok' to Sam…)" line.
+  (3) Report the Sendblue `reply_to` defect with the Test A/B handles.
 - **M3.6 — completion photo + receipt to the requester's chat (Aura, 2026-10-21):**
   after COMPLETED, send the completion photo with the done message; if the task
   had purchases, a second message "Receipt: $XX" with the receipt photo.
