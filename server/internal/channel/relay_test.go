@@ -39,6 +39,10 @@ type fakeTasks struct {
 	relay map[string]bool   // provider id → was a relayed supporter message
 	set   []string
 	err   error
+	// the supporter's last relayed line, for lastSupporterLine
+	lastText string
+	lastTask string
+	lastAt   time.Time
 }
 
 func (f *fakeTasks) TaskForProviderMessage(_ context.Context, _ Channel, _, id string) (string, bool, bool, error) {
@@ -47,6 +51,12 @@ func (f *fakeTasks) TaskForProviderMessage(_ context.Context, _ Channel, _, id s
 	}
 	tid, known := f.byMsg[id]
 	return tid, f.relay[id], known, nil
+}
+func (f *fakeTasks) LastRelayed(_ context.Context, _ Channel, _ string, since time.Time) (string, string, time.Time, bool, error) {
+	if f.lastText == "" || f.lastAt.Before(since) {
+		return "", "", time.Time{}, false, nil
+	}
+	return f.lastText, f.lastTask, f.lastAt, true, nil
 }
 func (f *fakeTasks) SetMessageTask(_ context.Context, _ Channel, id, task string) error {
 	f.set = append(f.set, id+"→"+task)

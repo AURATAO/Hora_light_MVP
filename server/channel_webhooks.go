@@ -53,6 +53,7 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		Parser:        model,
 		Splitter:      model,
 		Classifier:    model,
+		InContext:     model,
 		Booker:        &chatBooker{sqlDB: sqlDB, model: model},
 		Purchases:     model,
 		// The over-run window the summary states is the billing config's

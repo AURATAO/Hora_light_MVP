@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"time"
 )
 
 // Store persists every message in channel_messages. Its first job is dedupe:
@@ -143,4 +144,24 @@ func (s *PGStore) SetMessageTask(ctx context.Context, ch Channel, providerMessag
 		return fmt.Errorf("set message task: %w", err)
 	}
 	return nil
+}
+
+// LastRelayed: the most recent relayed supporter message on the thread
+// since the given time. (TaskLookup)
+func (s *PGStore) LastRelayed(ctx context.Context, ch Channel, address string, since time.Time) (string, string, time.Time, bool, error) {
+	var body string
+	var taskID sql.NullString
+	var at time.Time
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT body, task_id::text, received_at FROM channel_messages
+		WHERE channel = $1 AND address = $2 AND direction = 'outbound' AND relay AND received_at >= $3
+		ORDER BY received_at DESC LIMIT 1
+	`, string(ch), address, since).Scan(&body, &taskID, &at)
+	if err == sql.ErrNoRows {
+		return "", "", time.Time{}, false, nil
+	}
+	if err != nil {
+		return "", "", time.Time{}, false, fmt.Errorf("last relayed: %w", err)
+	}
+	return body, taskID.String, at, true, nil
 }

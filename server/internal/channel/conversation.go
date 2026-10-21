@@ -61,6 +61,14 @@ type PendingDraft struct {
 	NoAutoExtend bool `json:"no_auto_extend,omitempty"`
 	// BudgetAskIndex is the item the budget question is about (-1 = none).
 	BudgetAskIndex int `json:"budget_ask_index,omitempty"`
+	// NameAsked: the draft is waiting on the first name (awaiting_name), so
+	// an interruption (an approval) can resume there.
+	NameAsked bool `json:"name_asked,omitempty"`
+	// WhileActive is the supporter's first name when the draft was started
+	// while that supporter was on the job (D-17 P6): the summary says so
+	// and "for <name>" relays the words instead.
+	WhileActive      string `json:"while_active,omitempty"`
+	WhileActiveShown bool   `json:"while_active_shown,omitempty"`
 	// First-item budget fields; see DraftItem. Kept flat for stored rows.
 	BudgetCents int  `json:"budget_cents,omitempty"`
 	NeedsBudget bool `json:"needs_budget,omitempty"`
@@ -132,6 +140,12 @@ type Conversation struct {
 // back to the draft that was waiting, or idle.
 func (c Conversation) ResumeState() State {
 	if c.Pending != nil {
+		switch {
+		case c.Pending.NameAsked:
+			return StateAwaitingName
+		case c.Pending.BudgetAskIndex >= 0:
+			return StateAwaitingBudget
+		}
 		return StateAwaitingConfirm
 	}
 	if len(c.PendingTaskChoices) > 0 {

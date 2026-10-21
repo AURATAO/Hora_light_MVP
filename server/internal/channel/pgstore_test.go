@@ -657,3 +657,38 @@ func TestPGTaskChoiceAndMessageTaskRoundTrip(t *testing.T) {
 		t.Fatalf("prompt bubble: %q %v %v", tid, rl, err)
 	}
 }
+
+// D-17: the supporter's last relayed line on the thread, scoped by address
+// and time; our own prompts are not it.
+func TestPGLastRelayed(t *testing.T) {
+	db := testDB(t)
+	s := &PGStore{DB: db}
+	ctx := context.Background()
+	var t1 string
+	if err := db.QueryRow(`INSERT INTO tasks DEFAULT VALUES RETURNING id`).Scan(&t1); err != nil {
+		t.Fatal(err)
+	}
+	addr := "+15550000606"
+	if _, _, _, ok, err := s.LastRelayed(ctx, IMessage, addr, time.Now().Add(-time.Hour)); err != nil || ok {
+		t.Fatalf("empty thread: %v %v", ok, err)
+	}
+	if err := s.RecordOutbound(ctx, Outbound{Channel: IMessage, To: addr, Text: "Reply YES to approve"}, "p1", t1); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, ok, _ := s.LastRelayed(ctx, IMessage, addr, time.Now().Add(-time.Hour)); ok {
+		t.Fatal("our own prompt is not a supporter line")
+	}
+	if err := s.RecordOutbound(ctx, Outbound{Channel: IMessage, To: addr, Text: "Sam · Bagel run: what kind?", Relay: true}, "r1", t1); err != nil {
+		t.Fatal(err)
+	}
+	text, tid, at, ok, err := s.LastRelayed(ctx, IMessage, addr, time.Now().Add(-time.Hour))
+	if err != nil || !ok || text != "Sam · Bagel run: what kind?" || tid != t1 || time.Since(at) > time.Minute {
+		t.Fatalf("%q %q %v %v %v", text, tid, at, ok, err)
+	}
+	if _, _, _, ok, _ := s.LastRelayed(ctx, IMessage, "+15550000999", time.Now().Add(-time.Hour)); ok {
+		t.Fatal("another thread must not see it")
+	}
+	if _, _, _, ok, _ := s.LastRelayed(ctx, IMessage, addr, time.Now().Add(time.Minute)); ok {
+		t.Fatal("outside the window")
+	}
+}

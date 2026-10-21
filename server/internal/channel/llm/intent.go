@@ -51,7 +51,7 @@ func classifySchema() map[string]any {
 // unavailable or answers out of schema — a person should never get silence
 // because a provider hiccuped.
 func (o *OpenAICompat) Classify(ctx context.Context, text string) (Intent, error) {
-	out, _, err := o.completeJSON(ctx, classifyPrompt, text, "intent", classifySchema(), 64)
+	out, _, err := o.completeJSON(ctx, classifyPrompt, text, "intent", classifySchema(), 256)
 	if err != nil {
 		return HeuristicIntent(text), fmt.Errorf("classify: %w", err)
 	}
@@ -79,4 +79,101 @@ func HeuristicIntent(text string) Intent {
 		return IntentGreeting
 	}
 	return IntentNewTask
+}
+
+// ── In context (D-17) ──────────────────────────────────────────────────────
+
+// IntentToSupporter: the message is for the supporter on the job — an
+// answer, an instruction, a preference, small talk. Only produced when the
+// classifier is given a context with at least one active task.
+const IntentToSupporter Intent = "to_supporter"
+
+// Context is what the classifier knows about the thread (D-17 P2): the
+// errands a supporter is working on, what the supporter last said, and
+// which question of ours is open. Task titles and the supporter's line are
+// shown to the model; nothing identifying the person is.
+type Context struct {
+	ActiveTasks []ContextTask
+	// LastSupporterLine is the supporter's most recent relayed message
+	// (within the recency window), "" when none.
+	LastSupporterLine string
+	// OpenQuestion names the question of ours the thread is waiting on:
+	// "" | "booking" (a draft awaits YES) | "budget" | "approval" | "name".
+	OpenQuestion string
+}
+
+type ContextTask struct {
+	Title         string
+	SupporterName string
+}
+
+// ContextClassifier labels a message given the thread's context.
+type ContextClassifier interface {
+	ClassifyInContext(ctx context.Context, text string, c Context) (Intent, error)
+}
+
+const classifyInContextPrompt = `You label one text message a customer sent to HO:RA, an on-demand errand service in New York City where real people ("supporters") run tasks. The customer has at least one errand in progress with a supporter, and talks to the supporter through this same thread.
+
+Return {"intent": X} where X is exactly one of:
+- "to_supporter": the message is for the supporter working on the errand(s) listed — an answer to what the supporter asked, an instruction or preference about that errand ("everything bagel", "leave it at the door", "no onions", "take your time", "where are you?"), a thank-you, or small talk.
+- "new_task": the customer clearly describes a SEPARATE errand — a different place, time or purpose from the listed ones, or they say "new task", "another", "also", "can you also", "next week".
+- "greeting": a hello with no content.
+- "question": a question about HO:RA itself (pricing, hours, how it works) — not about the errand in progress.
+- "other": none of the above.
+
+Default to "to_supporter": with a supporter on the job, short replies, preferences, details and answers are almost always for them. Choose "new_task" only when the message cannot be about the listed errand(s).`
+
+func classifyInContextSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"intent": map[string]any{"type": "string", "enum": []string{
+				string(IntentToSupporter), string(IntentNewTask), string(IntentGreeting), string(IntentQuestion), string(IntentOther),
+			}},
+		},
+		"required":             []string{"intent"},
+		"additionalProperties": false,
+	}
+}
+
+// ClassifyInContext asks the model with the thread's context. On any
+// failure it returns IntentToSupporter with the error (D-17 P7: fail
+// toward the human), never a draft.
+func (o *OpenAICompat) ClassifyInContext(ctx context.Context, text string, c Context) (Intent, error) {
+	var b strings.Builder
+	b.WriteString("Errands in progress:\n")
+	for i, t := range c.ActiveTasks {
+		fmt.Fprintf(&b, "%d. %q with supporter %s\n", i+1, t.Title, firstNonEmptyStr(t.SupporterName, "(unnamed)"))
+	}
+	if c.LastSupporterLine != "" {
+		fmt.Fprintf(&b, "The supporter's last message to the customer: %q\n", c.LastSupporterLine)
+	}
+	if c.OpenQuestion != "" {
+		fmt.Fprintf(&b, "HO:RA is currently waiting on the customer to answer a %s question (a bare yes/no/amount would answer it; this message is not that).\n", c.OpenQuestion)
+	}
+	fmt.Fprintf(&b, "\nCustomer's message: %q", text)
+	// 256 tokens: the answer is ~10, the rest is headroom for a model that
+	// thinks before the JSON (a 64-token cap truncated GLM in staging).
+	out, _, err := o.completeJSON(ctx, classifyInContextPrompt, b.String(), "intent", classifyInContextSchema(), 256)
+	if err != nil {
+		return IntentToSupporter, fmt.Errorf("classify in context: %w", err)
+	}
+	var r struct {
+		Intent Intent `json:"intent"`
+	}
+	if err := json.Unmarshal([]byte(extractJSONObject(out)), &r); err != nil {
+		return IntentToSupporter, fmt.Errorf("classify in context decode: %w", err)
+	}
+	switch r.Intent {
+	case IntentToSupporter, IntentNewTask, IntentGreeting, IntentQuestion, IntentOther:
+		return r.Intent, nil
+	}
+	return IntentToSupporter, fmt.Errorf("classify in context: unknown intent %q", r.Intent)
+}
+
+func firstNonEmptyStr(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }

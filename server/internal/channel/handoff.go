@@ -170,8 +170,8 @@ func (r *Router) Release(ctx context.Context, id Identity) error {
 		return fmt.Errorf("Release: %w", err)
 	}
 	text := CopyHandoffReleased
-	if conv.Pending != nil {
-		text += "\n\n" + CopyBackToDraft + "\n" + r.Summary(conv.Pending)
+	if back := r.resumeLine(ctx, id, conv); back != "" {
+		text += "\n\n" + back
 	}
 	// The state change is the action; the message goes off the request
 	// path (S-32).

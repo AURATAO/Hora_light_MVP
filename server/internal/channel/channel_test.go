@@ -99,8 +99,13 @@ func TestSendblueParseInbound(t *testing.T) {
 	if m.Channel != IMessage || m.ProviderMessageID != "5a17319e-cbcf-443e-897e-d8b0c04b1b09" ||
 		m.From != "+15551234567" || m.To != "+15559990000" ||
 		m.Text != "Need someone to grab my laundry at 3pm" || m.Service != "iMessage" ||
-		m.ReplyToProviderID != "99DCC379-DD76-4712-BA65-11EFB33B8CD6" || m.ReceivedAt.IsZero() {
+		m.ReceivedAt.IsZero() {
 		t.Fatalf("unexpected inbound: %+v", m)
+	}
+	// reply_to is ignored on iMessage (D-17 P5, I-N): Sendblue reports our
+	// most recent outbound message whatever bubble was long-pressed.
+	if m.ReplyToProviderID != "" {
+		t.Fatalf("sendblue reply_to must be ignored, got %q", m.ReplyToProviderID)
 	}
 }
 

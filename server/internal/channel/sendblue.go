@@ -109,9 +109,9 @@ func (a *SendblueAdapter) ParseInbound(body []byte) ([]Inbound, error) {
 		Service:           p.Service,
 		ReceivedAt:        parseTimeOrNow(p.DateSent),
 	}
-	if p.ReplyTo != nil {
-		in.ReplyToProviderID = p.ReplyTo.MessageHandle
-	}
+	// reply_to is deliberately ignored: in two controlled trials (D-17,
+	// 2026-10-21) it named our most recent outbound message whatever bubble
+	// the person had long-pressed. A wrong context is worse than none.
 	if p.MediaURL != "" {
 		in.MediaURLs = []string{p.MediaURL}
 	}

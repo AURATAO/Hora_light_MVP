@@ -101,13 +101,14 @@ func (r *Router) askBudget(ctx context.Context, in Inbound, conv Conversation, i
 	items := conv.Pending.Items()
 	conv.Pending.BudgetAskIndex = i
 	conv.State = StateAwaitingBudget
+	lead := r.leadIn(conv.Pending)
 	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 		return fmt.Errorf("askBudget: %w", err)
 	}
 	if len(items) > 1 {
-		return r.Reply(ctx, in, fmt.Sprintf(CopyAskBudgetFor, items[i].Draft.Title), "")
+		return r.Reply(ctx, in, lead+fmt.Sprintf(CopyAskBudgetFor, items[i].Draft.Title), "")
 	}
-	return r.Reply(ctx, in, CopyAskBudget, "")
+	return r.Reply(ctx, in, lead+CopyAskBudget, "")
 }
 
 // onAwaitingBudget reads the amount (or "nothing") for the item being asked
@@ -136,6 +137,11 @@ func (r *Router) onAwaitingBudget(ctx context.Context, in Inbound, id Identity, 
 	default:
 		cents, ok := AmountCents(text)
 		if !ok {
+			// Not an amount: with a supporter on the job it may be for
+			// them (D-17); otherwise ask again.
+			if handled, err := r.routeInContext(ctx, in, id, conv, text); handled {
+				return err
+			}
 			return r.Reply(ctx, in, CopyAskBudgetAgain, "")
 		}
 		items[i].BudgetCents = cents

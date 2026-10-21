@@ -180,6 +180,19 @@ func (r *Router) NotifyStatus(ctx context.Context, userID string, ev StatusEvent
 	if !found {
 		return nil // an app-only user: nothing to send
 	}
+	if isApprovalRequest(ev.Type) && ev.ExtensionID != "" {
+		// Asked-but-ignored is the worst outcome (D-17 P4, I-O): if the
+		// thread cannot take the question now, it is not sent — the app
+		// notification and email carried it.
+		conv, err := r.Conversations.GetConversation(ctx, t.Identity.ID)
+		if err != nil {
+			return fmt.Errorf("NotifyStatus: %w", err)
+		}
+		if !canArmApproval(conv.State) {
+			log.Printf("[channel] approval ext=%s not sent: conversation in state %s", ev.ExtensionID, conv.State)
+			return nil
+		}
+	}
 	if ev.Type == evResolved {
 		if err := r.clearApproval(ctx, t.Identity.ID); err != nil {
 			return fmt.Errorf("NotifyStatus: %w", err)

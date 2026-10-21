@@ -133,7 +133,7 @@ reasoning on by default — measure latency with it on and off.
 | M0 | Oct 19 | PLAN.md; `channel` package skeleton; adapter interface; migration file (not applied) | ✅ see §15 |
 | M1 | Oct 20–22 | Sendblue inbound/outbound in sandbox; identity + setup page; dedupe | ✅ help-first flow booked a real task from an iPhone, Oct 20 — §15 |
 | M2 | Oct 23–25 | Draft → YES → hold → task; status updates via `notify.Create` hook | ✅ Oct 20 — booking + accepted/clock in/out/done all seen on an iPhone (staging, payments off) |
-| M3 | Oct 26–28 | Approvals YES/NO; chat relay; multi-task; ops handoff | 🟡 approvals ✅, multi-task ✅, handoff ✅, budget + auto-extend consent ✅, chat relay (M3.2) ✅ **review PASS round 7** (Oct 21) — staging evidence owed; next M3.6 completion photo + receipt to the requester's chat |
+| M3 | Oct 26–28 | Approvals YES/NO; chat relay; multi-task; ops handoff | 🟡 approvals ✅, multi-task ✅, handoff ✅, budget + auto-extend consent ✅, chat relay (M3.2) ✅ PASS r7 + **staging 3.2a/3.2b seen (Oct 21 evening)**; M3.2b conversation model (D-17) built — review next; then M3.6 completion photo + receipt |
 | M4 | Oct 29–31 | WhatsApp adapter on Meta test number; eval run; real-card E2E on both channels; demo | |
 
 ## 11. External dependencies (owner: Aura)
@@ -164,7 +164,16 @@ The setup step is the one to watch.
 
 - Dani: confirm approval timeouts and copy for budget/time requests by text.
 - **Post-freeze mobile change:** supporter task screen shows "Ask for a budget" at budget 0 (today gated on `hasBudget`), so a misread chat task is recoverable (see incident 2026-10-21).
-- Does Sendblue expose threaded-reply context? If not, step 5 falls back to 6–7.
+- ~~Does Sendblue expose threaded-reply context?~~ **Closed 2026-10-21 (D-17, I-N):
+  the field exists and is wrong** — `reply_to.message_handle` named our most
+  recent outbound message in both controlled trials, whatever bubble was
+  long-pressed. Ignored on iMessage; WhatsApp `context.id` is reliable.
+- **D-17 conversation model (M3.2b, 2026-10-21):** with a supporter on the
+  job the person's words default to the supporter; a rule relays short
+  answers to a fresh supporter question; the context classifier decides the
+  rest; "for Maya" / "new task:" are the ways out; an approval request
+  interrupts our own questions (budget/name too) and is not sent when it
+  cannot be armed. See the decision record for principles and routing.
 - **M3.2 accepted limitations (review rounds 1–3, 2026-10-21):** no dedupe of
   TalkJS webhook retries on the supporter→requester side (same as the push
   path); a held message has no TTL (purged with the account); supporter

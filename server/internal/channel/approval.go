@@ -136,14 +136,48 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 	default:
 		reply = CopyApprovalGone
 	}
-	if conv.Pending != nil {
-		// Back to the request they were confirming.
-		reply += "\n\n" + CopyBackToDraft + "\n" + r.Summary(conv.Pending)
-	} else if conv.State == StateAwaitingTaskChoice {
-		// Back to the message they were about to send a supporter.
-		reply += "\n\n" + CopyBackToHold + "\n" + r.taskList(ctx, id, conv.PendingTaskChoices)
+	if back := r.resumeLine(ctx, id, conv); back != "" {
+		reply += "\n\n" + back
 	}
 	return r.Reply(ctx, in, reply, res.TaskID)
+}
+
+// resumeLine re-asks whatever our own question was before an interruption
+// (D-17 P4), for the state ResumeState chose; "" when nothing was pending.
+func (r *Router) resumeLine(ctx context.Context, id Identity, conv Conversation) string {
+	switch conv.State {
+	case StateAwaitingName:
+		if conv.Pending != nil {
+			return CopyBackToDraft + "\n" + fmt.Sprintf(CopyAskName, conv.Pending.Headline())
+		}
+	case StateAwaitingBudget:
+		if conv.Pending != nil {
+			items := conv.Pending.Items()
+			i := conv.Pending.BudgetAskIndex
+			if i >= 0 && i < len(items) && len(items) > 1 {
+				return CopyBackToDraft + "\n" + fmt.Sprintf(CopyAskBudgetFor, items[i].Draft.Title)
+			}
+			return CopyBackToDraft + "\n" + CopyAskBudget
+		}
+	case StateAwaitingConfirm:
+		if conv.Pending != nil {
+			return CopyBackToDraft + "\n" + r.Summary(conv.Pending)
+		}
+	case StateAwaitingTaskChoice:
+		return CopyBackToHold + "\n" + r.taskList(ctx, id, conv.PendingTaskChoices)
+	}
+	return ""
+}
+
+// canArmApproval: the states an approval question can interrupt. Elsewhere
+// (handoff, booking in flight) the question is not sent to the phone
+// (D-17 P4, I-O) — the app still has it.
+func canArmApproval(s State) bool {
+	switch s {
+	case StateIdle, StateAwaitingConfirm, StateAwaitingApproval, StateAwaitingTaskChoice, StateAwaitingBudget, StateAwaitingName:
+		return true
+	}
+	return false
 }
 
 // askApproval moves the conversation to the approval question, keeping any
@@ -155,9 +189,12 @@ func (r *Router) askApproval(ctx context.Context, identityID, extensionID string
 		return fmt.Errorf("askApproval: %w", err)
 	}
 	switch conv.State {
-	case StateIdle, StateAwaitingConfirm, StateAwaitingApproval, StateAwaitingTaskChoice:
-		// A held relay message (awaiting_task_choice) survives underneath,
-		// like a draft: ResumeState brings it back and the answer reminds.
+	case StateIdle, StateAwaitingConfirm, StateAwaitingApproval, StateAwaitingTaskChoice,
+		StateAwaitingBudget, StateAwaitingName:
+		// The supporter's request interrupts our own questions (D-17 P4):
+		// a draft, a budget or name question, or a held relay message
+		// survives underneath — ResumeState brings it back and the answer
+		// re-asks it.
 		conv.State = StateAwaitingApproval
 		conv.PendingExtensionID = extensionID
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {

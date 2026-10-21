@@ -125,6 +125,9 @@ type Router struct {
 	// a linked requester's small talk gets CopyAck as before.
 	Chat  TaskChat
 	Tasks TaskLookup
+	// InContext labels a message when a supporter is on the job (D-17 P2);
+	// nil = the plain Classifier with "to the supporter" as the default.
+	InContext llm.ContextClassifier
 	// Go runs a reply off the request path when the caller is an HTTP
 	// request (S-32: the setup page's finish step must not wait on
 	// Sendblue/Meta). Default `go f()`; tests run it inline.
@@ -249,6 +252,10 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 		}
 		return r.Reply(ctx, in, CopyWelcome, "")
 	}
+	// With a supporter on the job, the thread's context decides (D-17).
+	if handled, err := r.routeInContext(ctx, in, id, conv, text); handled {
+		return err
+	}
 	intent := r.classify(ctx, text)
 	switch intent {
 	case llm.IntentNewTask:
@@ -279,6 +286,22 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 // confirmation step. source is everything the person has said about this
 // task so far.
 func (r *Router) startDraft(ctx context.Context, in Inbound, id Identity, conv Conversation, source string) error {
+	return r.startDraftOpts(ctx, in, id, conv, source, "")
+}
+
+// leadIn is the one-line notice on the first message of a draft started
+// while a supporter was on the job (D-17 P6); "" afterwards.
+func (r *Router) leadIn(p *PendingDraft) string {
+	if p == nil || p.WhileActive == "" || p.WhileActiveShown {
+		return ""
+	}
+	p.WhileActiveShown = true
+	return fmt.Sprintf(CopyDraftWhileActive, p.WhileActive, p.WhileActive) + "\n\n"
+}
+
+// startDraftOpts: whileActive is the supporter's first name when the draft
+// is started with that supporter on the job.
+func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, conv Conversation, source, whileActive string) error {
 	if r.Parser == nil || r.Prompt == nil || r.Booker == nil {
 		return fmt.Errorf("start draft: router not fully configured")
 	}
@@ -332,20 +355,23 @@ func (r *Router) startDraft(ctx context.Context, in Inbound, id Identity, conv C
 		}
 		return r.Reply(ctx, in, CopyParseFailed, "")
 	}
-	p := &PendingDraft{Source: source, CreatedAtUnix: r.now().Unix(), Unparsed: unparsed, BudgetAskIndex: -1}
+	p := &PendingDraft{Source: source, CreatedAtUnix: r.now().Unix(), Unparsed: unparsed, BudgetAskIndex: -1, WhileActive: whileActive}
 	if conv.Pending != nil {
 		// A correction re-drafts; the opt-out they already gave stands.
 		p.NoAutoExtend = conv.Pending.NoAutoExtend
+		p.WhileActive, p.WhileActiveShown = conv.Pending.WhileActive, conv.Pending.WhileActiveShown
 	}
 	p.SetItems(items)
 	conv.Pending = p
 
 	if !id.Linked() && conv.PendingName == "" {
 		conv.State = StateAwaitingName
+		p.NameAsked = true
+		lead := r.leadIn(p)
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 			return fmt.Errorf("startDraft: %w", err)
 		}
-		return r.Reply(ctx, in, fmt.Sprintf(CopyAskName, p.Headline()), "")
+		return r.Reply(ctx, in, lead+fmt.Sprintf(CopyAskName, p.Headline()), "")
 	}
 	return r.continueDraft(ctx, in, id, conv)
 }
@@ -356,7 +382,7 @@ func (r *Router) showSummary(ctx context.Context, in Inbound, conv Conversation)
 		// error: fail the route (retried) rather than misstate exposure.
 		return fmt.Errorf("showSummary: AutoExtendMinutes not configured")
 	}
-	summary := r.Summary(conv.Pending)
+	summary := r.leadIn(conv.Pending) + r.Summary(conv.Pending)
 	conv.Pending.SummaryShown = summary
 	conv.State = StateAwaitingConfirm
 	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
@@ -372,6 +398,9 @@ func (r *Router) onName(ctx context.Context, in Inbound, id Identity, conv Conve
 	name := CleanName(text)
 	if name == "" {
 		return r.Reply(ctx, in, CopyAskNameAgain, "")
+	}
+	if conv.Pending != nil {
+		conv.Pending.NameAsked = false
 	}
 	conv.PendingName = name
 	if conv.Pending == nil { // nothing to book; just remember the name
@@ -413,6 +442,11 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 		}
 		return wrapErr("onConfirm", err)
 	default:
+		// With a supporter on the job, a sentence here may be for them
+		// (D-17): relayed, the draft stays pending.
+		if handled, err := r.routeInContext(ctx, in, id, conv, text); handled {
+			return err
+		}
 		// Not a yes or no: treat it as a correction ("make it 4pm") and
 		// re-draft with everything said so far.
 		source := text
