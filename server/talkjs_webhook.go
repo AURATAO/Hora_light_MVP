@@ -11,7 +11,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -129,6 +131,13 @@ func handleTalkJSWebhook(c *gin.Context, db *sql.DB) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
+	// A valid signature from long ago is a replay: since M3.2 this endpoint
+	// can put a message on a phone, so freshness is checked too.
+	if !talkjsTimestampFresh(c.GetHeader(talkjsTimestampHeader), time.Now()) {
+		log.Printf("[talkjs][webhook] stale timestamp — rejecting")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
 
 	var ev talkjsWebhookEvent
 	if err := json.Unmarshal(raw, &ev); err != nil {
@@ -193,6 +202,24 @@ func handleTalkJSWebhook(c *gin.Context, db *sql.DB) {
 }
 
 // ── Signature ──────────────────────────────────────────────────────────────
+
+// talkjsReplayWindow bounds how old (or how far ahead) a signed webhook may
+// be. TalkJS retries for a while; five minutes covers that with clock skew.
+const talkjsReplayWindow = 5 * time.Minute
+
+// talkjsTimestampFresh: the X-TalkJS-Timestamp (milliseconds since the
+// epoch) is within the replay window of now.
+func talkjsTimestampFresh(ts string, now time.Time) bool {
+	ms, err := strconv.ParseInt(strings.TrimSpace(ts), 10, 64)
+	if err != nil {
+		return false
+	}
+	d := now.Sub(time.UnixMilli(ms))
+	if d < 0 {
+		d = -d
+	}
+	return d <= talkjsReplayWindow
+}
 
 // verifyTalkJSSignature checks the X-TalkJS-Signature header per
 // talkjs.com/docs/Features/Security: HMAC-SHA256 over `timestamp + "." + raw

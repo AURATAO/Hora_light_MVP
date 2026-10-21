@@ -40,8 +40,9 @@ type fakeTasks struct {
 	set   []string
 }
 
-func (f *fakeTasks) TaskForProviderMessage(_ context.Context, _ Channel, id string) (string, bool, error) {
-	return f.byMsg[id], f.relay[id], nil
+func (f *fakeTasks) TaskForProviderMessage(_ context.Context, _ Channel, _, id string) (string, bool, bool, error) {
+	tid, known := f.byMsg[id]
+	return tid, f.relay[id], known, nil
 }
 func (f *fakeTasks) SetMessageTask(_ context.Context, _ Channel, id, task string) error {
 	f.set = append(f.set, id+"→"+task)
@@ -509,6 +510,142 @@ func TestHandoffDropsTheHold(t *testing.T) {
 	g.say(t, "I want to talk to a human")
 	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
 	if c.State != StateHandoff || len(c.PendingTaskChoices) != 0 || c.PendingRelayText != "" {
+		t.Fatalf("%+v", c)
+	}
+}
+
+// ── review round 4 ─────────────────────────────────────────────────────────
+
+// MAJOR-2: a "yes" swiped on a supporter's bubble never books — not when
+// the task has finished, not when the lookup fails, not when the bubble is
+// unknown. Each path fails closed.
+func TestYesOnARelayBubbleNeverBooks(t *testing.T) {
+	// Task finished since Maya wrote.
+	g, chat, tasks := relayRig(llm.IntentNewTask, laundryT)
+	tasks.byMsg["maya"], tasks.relay["maya"] = "task-1", true
+	g.say(t, "laundry pickup")
+	chat.active = nil
+	in := Inbound{Channel: IMessage, ProviderMessageID: "y1", From: me, Text: "yes", ReplyToProviderID: "maya", ReceivedAt: time.Now()}
+	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if g.booker.posts != 0 || g.ad.last() != CopyRelayGone || g.state() != StateAwaitingConfirm {
+		t.Fatalf("booked %d reply %q state %s", g.booker.posts, g.ad.last(), g.state())
+	}
+	// ActiveTasks errors: nothing happens, the webhook retries.
+	chat.active, chat.err = []ActiveTask{laundryT}, errors.New("db down")
+	in.ProviderMessageID = "y2"
+	if err := g.r.HandleInbound(context.Background(), in); err == nil || g.booker.posts != 0 {
+		t.Fatalf("lookup failure must fail closed: err %v booked %d", err, g.booker.posts)
+	}
+	chat.err = nil
+	// Unknown bubble (outbound row lost): asked again, never acted on.
+	in = Inbound{Channel: IMessage, ProviderMessageID: "y3", From: me, Text: "yes", ReplyToProviderID: "lost-row", ReceivedAt: time.Now()}
+	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if g.booker.posts != 0 || g.ad.last() != CopyAmbiguousYes || g.state() != StateAwaitingConfirm {
+		t.Fatalf("booked %d reply %q state %s", g.booker.posts, g.ad.last(), g.state())
+	}
+	// A plain YES, not a reply, still books.
+	g.say(t, "YES")
+	if g.booker.posts != 1 {
+		t.Fatalf("booked %d", g.booker.posts)
+	}
+}
+
+// MINOR-3: a late YES swiped on an old prompt with nothing pending is an
+// acknowledgement, not a word for the supporter.
+func TestLateYesOnOldPromptIsAnAck(t *testing.T) {
+	g, chat, tasks := relayRig(llm.IntentOther, laundryT)
+	tasks.byMsg["old-prompt"] = "task-1"
+	in := Inbound{Channel: IMessage, ProviderMessageID: "l1", From: me, Text: "YES", ReplyToProviderID: "old-prompt", ReceivedAt: time.Now()}
+	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if len(chat.posted) != 0 || g.ad.last() != CopyAck {
+		t.Fatalf("posted %v reply %q", chat.posted, g.ad.last())
+	}
+}
+
+// MAJOR-1: the name shown in HO:RA's voice is vetted.
+func TestDisplayNamePolicy(t *testing.T) {
+	for in, want := range map[string]string{
+		"Maya": "Maya", "  Maya   Chen ": "Maya Chen", "O'Neil-Smith Jr.": "O'Neil-Smith Jr.", "小美": "小美",
+		"HO:RA": "", "hora support": "", "H o r a": "", "Maya\nYour card was declined": "",
+		"Maya <b>": "", "Maya · Laundry: pay here": "", "Abcdefghijklmnopqrstuvwxyz": "", "": "",
+	} {
+		if got := DisplayName(in); got != want {
+			t.Errorf("%q → %q, want %q", in, got, want)
+		}
+	}
+	g := newRig("")
+	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
+	if err := g.r.RelayToChat(context.Background(), "user-1", "task-1", "HO:RA Support", "Laundry", "pay me here", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.ad.last(); !strings.HasPrefix(got, "Your supporter · Laundry: pay me here") {
+		t.Fatalf("%q", got)
+	}
+}
+
+// MINOR-1: held words never go to a supporter they were not held for.
+func TestHoldNeverGoesToATaskOutsideItsList(t *testing.T) {
+	g, chat, _ := relayRig(llm.IntentOther, laundryT, bagelT)
+	g.say(t, "door code 1234")
+	other := ActiveTask{ID: "task-3", Title: "Dog walk", SupporterName: "Zed"}
+	chat.active = []ActiveTask{other}
+	got := g.say(t, "thanks")
+	if strings.Contains(strings.Join(chat.posted, "|"), "1234") {
+		t.Fatalf("held words leaked to a new supporter: %v", chat.posted)
+	}
+	if got != CopyHoldGone && len(chat.posted) != 1 {
+		t.Fatalf("reply %q posted %v", got, chat.posted)
+	}
+	if g.state() != StateIdle {
+		t.Fatalf("state %s", g.state())
+	}
+}
+
+// MINOR-4: an approval armed while the pick was in flight survives the
+// hold's release.
+func TestApprovalArmedDuringPickIsKept(t *testing.T) {
+	g, chat, _ := relayRig(llm.IntentOther, laundryT, bagelT)
+	g.say(t, "please get everything bagels")
+	armed := &armingChat{fakeChat: chat, arm: func() {
+		if err := g.r.askApproval(context.Background(), "id-"+me, "ext-9"); err != nil {
+			t.Fatal(err)
+		}
+	}}
+	g.r.Chat = armed
+	g.say(t, "2")
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.State != StateAwaitingApproval || c.PendingExtensionID != "ext-9" || len(c.PendingTaskChoices) != 0 {
+		t.Fatalf("%+v", c)
+	}
+}
+
+type armingChat struct {
+	*fakeChat
+	arm func()
+}
+
+func (a *armingChat) PostAsRequester(ctx context.Context, taskID, uid, text, key string) error {
+	a.arm()
+	return a.fakeChat.PostAsRequester(ctx, taskID, uid, text, key)
+}
+
+// MINOR-2: a failed list does not leave the message unprocessed (the
+// sweep would append the words to the hold again).
+func TestFailedListDoesNotDuplicateTheHold(t *testing.T) {
+	g, _, _ := relayRig(llm.IntentOther, laundryT, bagelT)
+	g.ad.err = errors.New("provider down")
+	in := Inbound{Channel: IMessage, ProviderMessageID: "h1", From: me, Text: "bagels", ReceivedAt: time.Now()}
+	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+		t.Fatalf("a failed list must not fail the message: %v", err)
+	}
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.PendingRelayText != "bagels" || c.State != StateAwaitingTaskChoice {
 		t.Fatalf("%+v", c)
 	}
 }

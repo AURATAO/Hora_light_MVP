@@ -627,17 +627,21 @@ func TestPGTaskChoiceAndMessageTaskRoundTrip(t *testing.T) {
 	if _, err := s.RecordInbound(ctx, in); err != nil {
 		t.Fatal(err)
 	}
-	if tid, _, err := s.TaskForProviderMessage(ctx, IMessage, "in-relay-1"); err != nil || tid != "" {
+	if tid, _, known, err := s.TaskForProviderMessage(ctx, IMessage, "+15550000505", "in-relay-1"); err != nil || tid != "" || !known {
 		t.Fatalf("untagged message: %q %v", tid, err)
 	}
 	if err := s.SetMessageTask(ctx, IMessage, "in-relay-1", t2); err != nil {
 		t.Fatal(err)
 	}
-	if tid, rl, err := s.TaskForProviderMessage(ctx, IMessage, "in-relay-1"); err != nil || tid != t2 || rl {
+	if tid, rl, known, err := s.TaskForProviderMessage(ctx, IMessage, "+15550000505", "in-relay-1"); err != nil || tid != t2 || rl || !known {
 		t.Fatalf("%q %v", tid, err)
 	}
-	if tid, _, err := s.TaskForProviderMessage(ctx, IMessage, "never-seen"); err != nil || tid != "" {
-		t.Fatalf("unknown message: %q %v", tid, err)
+	if tid, _, known, err := s.TaskForProviderMessage(ctx, IMessage, "+15550000505", "never-seen"); err != nil || tid != "" || known {
+		t.Fatalf("unknown message: %q %v %v", tid, known, err)
+	}
+	// Someone else's thread: the same provider id is unknown there.
+	if _, _, known, err := s.TaskForProviderMessage(ctx, IMessage, "+15550000999", "in-relay-1"); err != nil || known {
+		t.Fatalf("foreign thread must not see the message: %v %v", known, err)
 	}
 	// A relayed supporter message is remembered as such; our own prompt is not.
 	if err := s.RecordOutbound(ctx, Outbound{Channel: IMessage, To: "+15550000505", Text: "Maya · x: hi", Relay: true}, "out-relay", t2); err != nil {
@@ -646,10 +650,10 @@ func TestPGTaskChoiceAndMessageTaskRoundTrip(t *testing.T) {
 	if err := s.RecordOutbound(ctx, Outbound{Channel: IMessage, To: "+15550000505", Text: "Reply YES to approve"}, "out-prompt", t2); err != nil {
 		t.Fatal(err)
 	}
-	if tid, rl, err := s.TaskForProviderMessage(ctx, IMessage, "out-relay"); err != nil || tid != t2 || !rl {
+	if tid, rl, _, err := s.TaskForProviderMessage(ctx, IMessage, "+15550000505", "out-relay"); err != nil || tid != t2 || !rl {
 		t.Fatalf("relay bubble: %q %v %v", tid, rl, err)
 	}
-	if tid, rl, err := s.TaskForProviderMessage(ctx, IMessage, "out-prompt"); err != nil || tid != t2 || rl {
+	if tid, rl, _, err := s.TaskForProviderMessage(ctx, IMessage, "+15550000505", "out-prompt"); err != nil || tid != t2 || rl {
 		t.Fatalf("prompt bubble: %q %v %v", tid, rl, err)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"hora-auth/internal/channel/llm"
@@ -59,10 +60,11 @@ const relayTextCap = 1500
 // TaskLookup resolves which task one of our earlier messages was about, for
 // inline replies (Sendblue reply_to, WhatsApp context).
 type TaskLookup interface {
-	// TaskForProviderMessage: the task a message was about ("" if none),
-	// and whether that message was a supporter's relayed words (as opposed
-	// to one of our own prompts or status lines).
-	TaskForProviderMessage(ctx context.Context, ch Channel, providerMessageID string) (taskID string, relay bool, err error)
+	// TaskForProviderMessage: the task a message exchanged with address was
+	// about ("" if none), whether that message was a supporter's relayed
+	// words (as opposed to one of our own prompts or status lines), and
+	// whether the message is on record at all.
+	TaskForProviderMessage(ctx context.Context, ch Channel, address, providerMessageID string) (taskID string, relay, known bool, err error)
 	// SetMessageTask records which task an inbound message turned out to be
 	// about, so a later inline reply to the supporter's answer threads back.
 	SetMessageTask(ctx context.Context, ch Channel, providerMessageID, taskID string) error
@@ -83,35 +85,108 @@ func taskChoice(text string) (int, bool) {
 	return n, true
 }
 
-// inlineTarget: an inline reply to one of our messages names its task
-// (step 5). "" when the message is not a reply, the replied-to message was
-// not about a task, or the lookup is unavailable (logged; the message then
-// routes by intent like any other).
-func (r *Router) inlineTarget(ctx context.Context, in Inbound, id Identity) (taskID string, relay bool) {
-	if r.Chat == nil || r.Tasks == nil || !id.Linked() || in.ReplyToProviderID == "" {
-		return "", false
+// bubbleKind is what an inline reply was swiped on.
+type bubbleKind int
+
+const (
+	bubbleNone    bubbleKind = iota // not a reply
+	bubbleUnknown                   // a reply, but the message is not on record
+	bubblePrompt                    // one of our own prompts / status lines
+	bubbleRelay                     // a supporter's relayed words
+)
+
+// bubble: what the person replied to, and the task it was about (""
+// when none). An error is a lookup failure — fail closed, the webhook
+// retries — never "unknown".
+func (r *Router) bubble(ctx context.Context, in Inbound, id Identity) (bubbleKind, string, error) {
+	if r.Tasks == nil || !id.Linked() || in.ReplyToProviderID == "" {
+		return bubbleNone, "", nil
 	}
-	tid, isRelay, err := r.Tasks.TaskForProviderMessage(ctx, in.Channel, in.ReplyToProviderID)
+	tid, isRelay, known, err := r.Tasks.TaskForProviderMessage(ctx, in.Channel, in.From, in.ReplyToProviderID)
 	if err != nil {
-		log.Printf("[channel] inline target identity=%s: %v", id.ID, err)
-		return "", false
+		return bubbleNone, "", fmt.Errorf("bubble: %w", err)
 	}
-	if tid == "" {
-		return "", false
+	switch {
+	case !known:
+		return bubbleUnknown, "", nil
+	case isRelay:
+		return bubbleRelay, tid, nil
+	default:
+		return bubblePrompt, tid, nil
 	}
-	// Only an active task: a reply to "Maya finished!" routes like any
-	// other message instead of hitting a dead end.
+}
+
+// isActive reports whether the task is one the person can still talk to a
+// supporter about. An error fails closed.
+func (r *Router) isActive(ctx context.Context, id Identity, taskID string) (bool, error) {
+	if r.Chat == nil || taskID == "" {
+		return false, nil
+	}
 	active, err := r.Chat.ActiveTasks(ctx, id.UserID)
 	if err != nil {
-		log.Printf("[channel] inline target identity=%s: %v", id.ID, err)
-		return "", false
+		return false, fmt.Errorf("isActive: %w", err)
 	}
 	for _, t := range active {
-		if t.ID == tid {
-			return tid, isRelay
+		if t.ID == taskID {
+			return true, nil
 		}
 	}
-	return "", false
+	return false, nil
+}
+
+// routeReply decides what an inline reply means (step 5; I-L: the bubble
+// decides). handled=false → the message goes on to the state machine.
+//
+//   - a reply to a supporter's relayed words is for the supporter, whatever
+//     it says: relayed if the task is active, otherwise "that task has
+//     finished" — it never reaches a pending YES/NO;
+//   - a bare YES/NO on a bubble we cannot identify while a question is
+//     pending is ambiguous and is asked again, never acted on;
+//   - a reply to one of our prompts with a question pending is an answer
+//     to us (state machine); with nothing pending it names that task (an
+//     active one), except a bare YES/NO, which is a late acknowledgement;
+//   - anything else: state machine.
+func (r *Router) routeReply(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) (handled bool, err error) {
+	kind, tid, err := r.bubble(ctx, in, id)
+	if err != nil {
+		return true, err
+	}
+	bare := IsYes(text) || IsNo(text)
+	switch kind {
+	case bubbleRelay:
+		if r.Chat == nil {
+			return true, r.Reply(ctx, in, CopyRelayGone, "")
+		}
+		active, err := r.isActive(ctx, id, tid)
+		if err != nil {
+			return true, err
+		}
+		if !active {
+			return true, r.Reply(ctx, in, CopyRelayGone, "")
+		}
+		return true, r.relay(ctx, in, id, tid, text)
+	case bubbleUnknown:
+		if bare && awaitingAnswer(conv.State) {
+			return true, r.Reply(ctx, in, CopyAmbiguousYes, "")
+		}
+		return false, nil
+	case bubblePrompt:
+		if awaitingAnswer(conv.State) {
+			return false, nil
+		}
+		if bare {
+			return true, r.Reply(ctx, in, CopyAck, "")
+		}
+		active, err := r.isActive(ctx, id, tid)
+		if err != nil {
+			return true, err
+		}
+		if active {
+			return true, r.relay(ctx, in, id, tid, text)
+		}
+		return false, nil
+	}
+	return false, nil
 }
 
 // relayOr sends a non-errand message from a linked requester to their
@@ -169,8 +244,8 @@ func (r *Router) taskList(ctx context.Context, id Identity, ids []string) string
 		if active, err := r.Chat.ActiveTasks(ctx, id.UserID); err == nil {
 			for _, t := range active {
 				titles[t.ID] = t.Title
-				if t.SupporterName != "" {
-					titles[t.ID] += " (" + t.SupporterName + ")"
+				if n := DisplayName(t.SupporterName); n != "" {
+					titles[t.ID] += " (" + n + ")"
 				}
 			}
 		}
@@ -200,8 +275,8 @@ func (r *Router) askWhichTask(ctx context.Context, in Inbound, conv Conversation
 	ids := make([]string, 0, len(choices))
 	for i, t := range choices {
 		fmt.Fprintf(&b, "\n%d. %s", i+1, t.Title)
-		if t.SupporterName != "" {
-			fmt.Fprintf(&b, " (%s)", t.SupporterName)
+		if n := DisplayName(t.SupporterName); n != "" {
+			fmt.Fprintf(&b, " (%s)", n)
 		}
 		ids = append(ids, t.ID)
 	}
@@ -212,7 +287,13 @@ func (r *Router) askWhichTask(ctx context.Context, in Inbound, conv Conversation
 	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 		return fmt.Errorf("askWhichTask: %w", err)
 	}
-	return r.Reply(ctx, in, b.String(), "")
+	// The hold is the durable part. A failed list is logged, not returned:
+	// returning it would leave the message unprocessed and the recovery
+	// sweep would append the same words to the hold again.
+	if err := r.Reply(ctx, in, b.String(), ""); err != nil {
+		log.Printf("[channel] askWhichTask identity=%s: list not sent: %v", conv.IdentityID, err)
+	}
+	return nil
 }
 
 // onAwaitingTaskChoice: a number picks and delivers the held message; the
@@ -246,8 +327,7 @@ func (r *Router) onAwaitingTaskChoice(ctx context.Context, in Inbound, id Identi
 			}
 			return r.Reply(ctx, in, CopyRelayFailedPick, taskID)
 		}
-		conv.State, conv.PendingTaskChoices, conv.PendingRelayText = StateIdle, nil, ""
-		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+		if err := r.releaseHold(ctx, id); err != nil {
 			return fmt.Errorf("onAwaitingTaskChoice: %w", err)
 		}
 		r.noteRelayed(ctx, in, id, taskID, held)
@@ -274,8 +354,18 @@ func (r *Router) onAwaitingTaskChoice(ctx context.Context, in Inbound, id Identi
 		// to go, and the person is told so.
 		return r.clearHold(ctx, in, conv, CopyHoldGone)
 	case 1:
-		// Deliver first; the hold is cleared only once the supporter has it.
 		taskID := active[0].ID
+		if !contains(choices, taskID) {
+			// A different supporter than the ones the hold was for: the
+			// held words are not theirs. Drop them, say so, and route the
+			// new message on its own.
+			if err := r.clearHold(ctx, in, conv, CopyHoldGone); err != nil {
+				return err
+			}
+			conv.State, conv.PendingTaskChoices, conv.PendingRelayText = StateIdle, nil, ""
+			return r.onIdle(ctx, in, id, conv, text)
+		}
+		// Deliver first; the hold is cleared only once the supporter has it.
 		if err := r.Chat.PostAsRequester(ctx, taskID, id.UserID, joined, in.ProviderMessageID); err != nil {
 			log.Printf("[channel] relay identity=%s task=%s: %v", id.ID, taskID, err)
 			if errors.Is(err, ErrTaskNotActive) {
@@ -287,8 +377,7 @@ func (r *Router) onAwaitingTaskChoice(ctx context.Context, in Inbound, id Identi
 			}
 			return r.Reply(ctx, in, CopyRelayFailed, taskID)
 		}
-		conv.State, conv.PendingTaskChoices, conv.PendingRelayText = StateIdle, nil, ""
-		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+		if err := r.releaseHold(ctx, id); err != nil {
 			return fmt.Errorf("onAwaitingTaskChoice: %w", err)
 		}
 		r.noteRelayed(ctx, in, id, taskID, joined)
@@ -296,6 +385,29 @@ func (r *Router) onAwaitingTaskChoice(ctx context.Context, in Inbound, id Identi
 	default:
 		return r.askWhichTask(ctx, in, conv, active, joined)
 	}
+}
+
+// releaseHold clears the hold on a freshly loaded row, so an approval armed
+// while the TalkJS call was in flight is kept, not overwritten.
+func (r *Router) releaseHold(ctx context.Context, id Identity) error {
+	conv, err := r.Conversations.GetConversation(ctx, id.ID)
+	if err != nil {
+		return err
+	}
+	conv.PendingTaskChoices, conv.PendingRelayText = nil, ""
+	if conv.State == StateAwaitingTaskChoice {
+		conv.State = StateIdle
+	}
+	return r.Conversations.SaveConversation(ctx, conv)
+}
+
+func contains(ids []string, id string) bool {
+	for _, x := range ids {
+		if x == id {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Router) clearHold(ctx context.Context, in Inbound, conv Conversation, reply string) error {
@@ -324,8 +436,8 @@ func (r *Router) RelayToChat(ctx context.Context, requesterID, taskID, supporter
 		log.Printf("[channel] relay to chat task=%s not sent: outside WhatsApp 24h window", taskID)
 		return nil
 	}
-	who := firstNonEmpty(strings.TrimSpace(supporterName), "Your supporter")
-	whoLower := firstNonEmpty(strings.TrimSpace(supporterName), "your supporter")
+	who := firstNonEmpty(DisplayName(supporterName), "Your supporter")
+	whoLower := firstNonEmpty(DisplayName(supporterName), "your supporter")
 	body := capText(strings.TrimSpace(text))
 	if body == "" && mediaURL != "" {
 		body = "(attachment)"
@@ -360,6 +472,30 @@ func (r *Router) pendingNote(conv Conversation, who string) string {
 		return fmt.Sprintf(CopyRelayWhileConfirm, conv.Pending.Headline(), Dollars(conv.Pending.TotalCents()), who)
 	case StateAwaitingApproval:
 		return fmt.Sprintf(CopyRelayWhileApproval, who)
+	case StateAwaitingBudget:
+		return fmt.Sprintf(CopyRelayWhileBudget, who)
 	}
 	return ""
+}
+
+// DisplayName is what a supporter's name may look like in HO:RA's own
+// voice on a trusted number: one line, letters and ordinary name
+// punctuation only, at most 24 characters, and never one that reads as us
+// ("HO:RA", "hora support"). Anything else → "" (the caller falls back to
+// "your supporter"). The name is the person's own profile field, so this
+// is where it is vetted, not where it is typed.
+func DisplayName(name string) string {
+	name = strings.Join(strings.Fields(name), " ") // one line, single spaces
+	for _, c := range name {
+		if !(unicode.IsLetter(c) || unicode.IsNumber(c) || c == ' ' || c == '\'' || c == '-' || c == '.') {
+			return ""
+		}
+	}
+	if utf8.RuneCountInString(name) > 24 {
+		return ""
+	}
+	if strings.Contains(strings.ToLower(strings.ReplaceAll(name, " ", "")), "hora") {
+		return ""
+	}
+	return name
 }

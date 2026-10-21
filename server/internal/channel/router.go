@@ -194,15 +194,10 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	if IsHumanRequest(text) {
 		return r.handOff(ctx, in, id, conv, HandoffHumanRequested)
 	}
-	// Inline replies (relay.go step 5). The bubble decides: a reply to a
-	// supporter's relayed words is for the supporter, whatever it says — a
-	// "yes" swiped on "large bag too?" never books. A reply to one of our
-	// own prompts or status lines is an answer to us: it goes through the
-	// state machine (a YES on "reply YES to approve" approves; a sentence on
-	// it is re-asked, as before). With nothing pending, a reply to any
-	// message about an active task names that task.
-	if tid, isRelay := r.inlineTarget(ctx, in, id); tid != "" && (isRelay || !awaitingAnswer(conv.State)) {
-		return r.relay(ctx, in, id, tid, text)
+	// Inline replies (relay.go, routeReply): the bubble decides. A "yes"
+	// swiped on a supporter's words never books; a YES on our prompt does.
+	if handled, err := r.routeReply(ctx, in, id, conv, text); handled {
+		return err
 	}
 	switch conv.State {
 	case StateAwaitingName:

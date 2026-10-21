@@ -114,20 +114,22 @@ func (s *PGStore) RecentMessages(ctx context.Context, ch Channel, address string
 
 // TaskForProviderMessage: the task one of our (or their) earlier messages
 // was about, for inline replies. "" when unknown. (TaskLookup)
-func (s *PGStore) TaskForProviderMessage(ctx context.Context, ch Channel, providerMessageID string) (string, bool, error) {
+func (s *PGStore) TaskForProviderMessage(ctx context.Context, ch Channel, address, providerMessageID string) (string, bool, bool, error) {
 	var taskID sql.NullString
 	var relay bool
+	// Scoped to the thread: a provider id from someone else's thread is
+	// "unknown" here, whatever it names.
 	err := s.DB.QueryRowContext(ctx, `
 		SELECT task_id::text, relay FROM channel_messages
-		WHERE channel = $1 AND provider_message_id = $2
-	`, string(ch), providerMessageID).Scan(&taskID, &relay)
+		WHERE channel = $1 AND address = $2 AND provider_message_id = $3
+	`, string(ch), address, providerMessageID).Scan(&taskID, &relay)
 	if err == sql.ErrNoRows {
-		return "", false, nil
+		return "", false, false, nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("task for message: %w", err)
+		return "", false, false, fmt.Errorf("task for message: %w", err)
 	}
-	return taskID.String, relay, nil
+	return taskID.String, relay, true, nil
 }
 
 // SetMessageTask records which task an inbound message turned out to be

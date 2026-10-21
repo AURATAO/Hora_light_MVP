@@ -217,7 +217,7 @@ func relayChatMessageToRequester(db *sql.DB, conversationID, taskID, senderUID s
 	}
 	// custom.taskId is client-settable; the room itself must be the task's.
 	if conversationID != talkjsConversationID(taskID) {
-		log.Printf("[talkjs][relay] task=%s conversation mismatch — not relayed", taskID)
+		log.Printf("[talkjs][relay] task=%q conversation mismatch — not relayed", taskID)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
