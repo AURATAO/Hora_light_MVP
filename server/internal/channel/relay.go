@@ -52,6 +52,15 @@ type TaskChat interface {
 	PostAsRequester(ctx context.Context, taskID, userID, text, key string) error
 }
 
+// Relayed is a supporter's relayed line as the thread remembers it.
+type Relayed struct {
+	Text     string
+	TaskID   string
+	At       time.Time
+	Answered bool // an inbound message followed it
+	OK       bool
+}
+
 // ErrTaskNotActive: the task can no longer take a message (finished,
 // cancelled, no supporter, blocked, or not the sender's).
 var ErrTaskNotActive = errors.New("task not active")
@@ -64,8 +73,9 @@ const relayTextCap = 1500
 // inline replies (Sendblue reply_to, WhatsApp context).
 type TaskLookup interface {
 	// LastRelayed: the supporter's most recent relayed message on this
-	// thread since the given time — its text and task — ok=false when none.
-	LastRelayed(ctx context.Context, ch Channel, address string, since time.Time) (text, taskID string, at time.Time, ok bool, err error)
+	// thread since the given time, and whether the person has written
+	// anything since it (then it is answered). OK=false when none.
+	LastRelayed(ctx context.Context, ch Channel, address string, since time.Time) (Relayed, error)
 	// TaskForProviderMessage: the task a message exchanged with address was
 	// about ("" if none), whether that message was a supporter's relayed
 	// words (as opposed to one of our own prompts or status lines), and
@@ -222,15 +232,22 @@ func (r *Router) relayOr(ctx context.Context, in Inbound, id Identity, conv Conv
 // about. The requester gets no echo: their own message is already on their
 // screen.
 func (r *Router) relay(ctx context.Context, in Inbound, id Identity, taskID, text string) error {
+	_, err := r.relaySent(ctx, in, id, taskID, text)
+	return err
+}
+
+// relaySent relays and reports whether the supporter got it; on failure
+// the person has already been told.
+func (r *Router) relaySent(ctx context.Context, in Inbound, id Identity, taskID, text string) (bool, error) {
 	if err := r.Chat.PostAsRequester(ctx, taskID, id.UserID, capText(text), in.ProviderMessageID); err != nil {
 		log.Printf("[channel] relay identity=%s task=%s: %v", id.ID, taskID, err)
 		if errors.Is(err, ErrTaskNotActive) {
-			return r.Reply(ctx, in, CopyRelayGone, "")
+			return false, r.Reply(ctx, in, CopyRelayGone, "")
 		}
-		return r.Reply(ctx, in, CopyRelayFailed, taskID)
+		return false, r.Reply(ctx, in, CopyRelayFailed, taskID)
 	}
 	r.noteRelayed(ctx, in, id, taskID, text)
-	return nil
+	return true, nil
 }
 
 func capText(s string) string {
@@ -611,7 +628,7 @@ const (
 var (
 	// "for Maya" / "for my supporter" / "tell Sam": the words were for them
 	// (D-17 P6). The name is checked against the active supporters.
-	forSupporterRE = regexp.MustCompile(`(?i)^\s*(?:for|to|tell)\s+(my\s+supporter|supporter|him|her|them|[\p{L}'-]+)\s*[:,.!]?\s*(.*)$`)
+	forSupporterRE = regexp.MustCompile(`(?i)^\s*(?:for|tell)\s+(my\s+supporter|[\p{L}'-]+)\s*[:,.!]?\s*(.*)$`)
 	// "new task: …" / "another errand …": force a draft.
 	newTaskRE = regexp.MustCompile(`(?i)^\s*(?:new\s+(?:task|errand|request)|another\s+(?:task|errand|request))\b[\s:,-]*(.*)$`)
 )
@@ -655,28 +672,44 @@ func (r *Router) routeInContext(ctx context.Context, in Inbound, id Identity, co
 				words = conv.Pending.Source
 			}
 			if words == "" {
-				return false, nil
+				return true, r.Reply(ctx, in, CopyWhichTaskNothingHeld, "")
 			}
-			if conv.Pending != nil {
-				conv.Pending = nil
-				conv.State = StateIdle
-				if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
-					return true, fmt.Errorf("routeInContext: %w", err)
-				}
-				if err := r.relay(ctx, in, id, t.ID, words); err != nil {
-					return true, err
-				}
-				return true, r.Reply(ctx, in, fmt.Sprintf(CopyRelayedDraftDropped, firstNonEmpty(DisplayName(t.SupporterName), "your supporter")), t.ID)
+			if conv.Pending == nil {
+				return true, r.relay(ctx, in, id, t.ID, words)
 			}
-			return true, r.relay(ctx, in, id, t.ID, words)
+			// Deliver first; the draft is dropped only once the supporter
+			// has the words (a failed relay keeps it, and the person has
+			// been told).
+			sent, err := r.relaySent(ctx, in, id, t.ID, words)
+			if err != nil || !sent {
+				return true, err
+			}
+			fresh, err := r.Conversations.GetConversation(ctx, id.ID)
+			if err != nil {
+				return true, fmt.Errorf("routeInContext: %w", err)
+			}
+			fresh.Pending = nil
+			fresh.State = fresh.ResumeState()
+			if err := r.Conversations.SaveConversation(ctx, fresh); err != nil {
+				return true, fmt.Errorf("routeInContext: %w", err)
+			}
+			return true, r.Reply(ctx, in, fmt.Sprintf(CopyRelayedDraftDropped, firstNonEmpty(DisplayName(t.SupporterName), "your supporter")), t.ID)
 		}
 	}
 	if len(active) == 0 {
 		return false, nil
 	}
-	// Step 7a: the supporter just asked, and this is a short reply.
-	last, lastTask, lastAt := r.lastSupporterLine(ctx, in, id)
-	if last != "" && strings.HasSuffix(strings.TrimSpace(last), "?") &&
+	// The supporter's last line counts only while that task is active and
+	// the person has not answered it yet.
+	last, lastTask, lastAt, answered := r.lastSupporterLine(ctx, in, id)
+	if _, ok := taskIn(active, lastTask); !ok {
+		last, lastTask = "", ""
+	}
+	// Step 7a (idle only): the supporter just asked, this is a short reply,
+	// and nothing has been said since. Mid-question the model decides, with
+	// the open question in view (a correction to our draft is not an answer
+	// to the supporter).
+	if conv.State == StateIdle && last != "" && !answered && strings.HasSuffix(strings.TrimSpace(last), "?") &&
 		r.now().Sub(lastAt) <= supporterQuestionWindow && len(strings.Fields(text)) <= 12 {
 		return true, r.relayKeepingDraft(ctx, in, id, conv, lastTask, text)
 	}
@@ -685,8 +718,10 @@ func (r *Router) routeInContext(ctx context.Context, in Inbound, id Identity, co
 	// errand or not"; everything else is for the supporter.
 	intent := llm.IntentToSupporter
 	if r.InContext == nil {
-		if r.classify(ctx, text) == llm.IntentNewTask {
-			intent = llm.IntentNewTask
+		if r.Classifier != nil {
+			if got, err := r.Classifier.Classify(ctx, text); err == nil && got == llm.IntentNewTask {
+				intent = llm.IntentNewTask
+			}
 		}
 	} else {
 		c := llm.Context{LastSupporterLine: last, OpenQuestion: openQuestion(conv.State)}
@@ -700,6 +735,8 @@ func (r *Router) routeInContext(ctx context.Context, in Inbound, id Identity, co
 		intent = got
 	}
 	switch intent {
+	case llm.IntentCorrection, llm.IntentAnswer:
+		return false, nil // the caller's own path: re-draft / re-ask for a plain YES/NO
 	case llm.IntentNewTask:
 		if conv.State != StateIdle {
 			return false, nil // a correction / re-ask: the caller's path
@@ -707,18 +744,69 @@ func (r *Router) routeInContext(ctx context.Context, in Inbound, id Identity, co
 		// Step 7b → draft, saying so (P6).
 		return true, r.startDraftWhileActive(ctx, in, id, conv, text, active)
 	default:
-		target := lastTask
-		if target == "" && len(active) == 1 {
+		// Which supporter: one named in the message, else the one who last
+		// wrote, else the only one; several and no signal → the list
+		// (idle), or a line naming the way out (mid-question, where the
+		// list cannot hold).
+		target := ""
+		if t, ok := supporterNamed(active, text); ok {
+			target = t.ID
+		} else if lastTask != "" {
+			target = lastTask
+		} else if len(active) == 1 {
 			target = active[0].ID
 		}
 		if target == "" {
 			if conv.State != StateIdle {
-				return false, nil // several tasks mid-question: ask again rather than hold
+				return true, r.Reply(ctx, in, fmt.Sprintf(CopyWhichSupporterMidQuestion, supporterNames(active)), "")
 			}
 			return true, r.askWhichTask(ctx, in, conv, active, text)
 		}
 		return true, r.relayKeepingDraft(ctx, in, id, conv, target, text)
 	}
+}
+
+func taskIn(active []ActiveTask, id string) (ActiveTask, bool) {
+	for _, t := range active {
+		if t.ID == id && id != "" {
+			return t, true
+		}
+	}
+	return ActiveTask{}, false
+}
+
+// supporterNamed: the message mentions exactly one active supporter's
+// first name ("tell Sam…", "Maya can wait").
+func supporterNamed(active []ActiveTask, text string) (ActiveTask, bool) {
+	var found ActiveTask
+	n := 0
+	for _, t := range active {
+		name := DisplayName(FirstName(t.SupporterName))
+		if name == "" {
+			continue
+		}
+		for _, w := range strings.FieldsFunc(text, func(c rune) bool { return !unicode.IsLetter(c) && c != '\'' && c != '-' }) {
+			if strings.EqualFold(w, name) {
+				found, n = t, n+1
+				break
+			}
+		}
+	}
+	return found, n == 1
+}
+
+// supporterNames lists the active supporters' first names for copy.
+func supporterNames(active []ActiveTask) string {
+	var names []string
+	for _, t := range active {
+		if n := DisplayName(FirstName(t.SupporterName)); n != "" {
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
+		return "your supporter"
+	}
+	return strings.Join(names, " / ")
 }
 
 // relayKeepingDraft relays and, if a question of ours is open, says in one
@@ -727,13 +815,17 @@ func (r *Router) relayKeepingDraft(ctx context.Context, in Inbound, id Identity,
 	if err := r.relay(ctx, in, id, taskID, text); err != nil {
 		return err
 	}
-	if conv.Pending != nil {
-		switch conv.State {
-		case StateAwaitingConfirm:
+	switch conv.State {
+	case StateAwaitingConfirm:
+		if conv.Pending != nil {
 			return r.Reply(ctx, in, CopyDraftStillPending, "")
-		case StateAwaitingBudget:
+		}
+	case StateAwaitingBudget:
+		if conv.Pending != nil {
 			return r.Reply(ctx, in, CopyBudgetStillPending, "")
 		}
+	case StateAwaitingApproval:
+		return r.Reply(ctx, in, CopyApprovalStillPending, "")
 	}
 	return nil
 }
@@ -741,42 +833,43 @@ func (r *Router) relayKeepingDraft(ctx context.Context, in Inbound, id Identity,
 // startDraftWhileActive drafts a new errand while a supporter is on the
 // job and marks the draft so the summary offers the way out.
 func (r *Router) startDraftWhileActive(ctx context.Context, in Inbound, id Identity, conv Conversation, text string, active []ActiveTask) error {
-	who := ""
-	if len(active) == 1 {
-		who = DisplayName(FirstName(active[0].SupporterName))
-	}
-	return r.startDraftOpts(ctx, in, id, conv, text, who)
+	return r.startDraftOpts(ctx, in, id, conv, text, supporterNames(active))
 }
 
 func supporterByName(active []ActiveTask, name string) (ActiveTask, bool) {
 	n := strings.ToLower(strings.TrimSpace(name))
-	generic := n == "my supporter" || n == "supporter" || n == "him" || n == "her" || n == "them"
-	if generic && len(active) == 1 {
-		return active[0], true
+	if n == "my supporter" {
+		if len(active) == 1 {
+			return active[0], true
+		}
+		return ActiveTask{}, false
 	}
+	var found ActiveTask
+	hits := 0
 	for _, t := range active {
 		if strings.EqualFold(FirstName(t.SupporterName), n) {
-			return t, true
+			found, hits = t, hits+1
 		}
 	}
-	return ActiveTask{}, false
+	return found, hits == 1
 }
 
 // lastSupporterLine: the supporter's most recent relayed message on this
 // thread within the window, with its task and time.
-func (r *Router) lastSupporterLine(ctx context.Context, in Inbound, id Identity) (text, taskID string, at time.Time) {
+func (r *Router) lastSupporterLine(ctx context.Context, in Inbound, id Identity) (text, taskID string, at time.Time, answered bool) {
 	if r.Tasks == nil {
-		return "", "", time.Time{}
+		return "", "", time.Time{}, false
 	}
 	since := r.now().Add(-supporterContextWindow)
-	text, taskID, at, ok, err := r.Tasks.LastRelayed(ctx, in.Channel, in.From, since)
+	rl, err := r.Tasks.LastRelayed(ctx, in.Channel, in.From, since)
 	if err != nil {
 		log.Printf("[channel] last relayed identity=%s: %v", id.ID, err)
-		return "", "", time.Time{}
+		return "", "", time.Time{}, false
 	}
-	if !ok {
-		return "", "", time.Time{}
+	if !rl.OK {
+		return "", "", time.Time{}, false
 	}
+	text, taskID, at, answered = rl.Text, rl.TaskID, rl.At, rl.Answered
 	// The stored line is "Maya · Task: words[\n\n(footer)]"; hand the model
 	// the words only.
 	if i := strings.Index(text, ": "); i >= 0 {
@@ -785,5 +878,5 @@ func (r *Router) lastSupporterLine(ctx context.Context, in Inbound, id Identity)
 	if i := strings.Index(text, "\n\n("); i >= 0 {
 		text = text[:i]
 	}
-	return strings.TrimSpace(text), taskID, at
+	return strings.TrimSpace(text), taskID, at, answered
 }

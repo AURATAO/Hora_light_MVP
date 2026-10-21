@@ -35,7 +35,7 @@ var (
 	// Amount in the person's own words: "$20", "20 dollars", "budget of 25",
 	// "up to $30", "around 15 bucks". Whole dollars; cents are rare in chat.
 	amountRE   = regexp.MustCompile(`(?i)(?:\$\s?(\d{1,4})(?:\.\d{1,2})?)|(?:\b(\d{1,4})\s?(?:dollars|bucks|usd)\b)|(?:\b(?:budget|up to|max|maximum|limit)(?: of| is|:)?\s?\$?\s?(\d{1,4})\b)`)
-	noBudgetRE = regexp.MustCompile(`(?i)^\s*(no|none|nothing|0|\$0|zero|nope)\b|\b(no budget|nothing to buy|don'?t need to buy|not buying|already paid|prepaid|it'?s paid)\b`)
+	noBudgetRE = regexp.MustCompile(`(?i)^\s*(no|none|nothing|0|\$0|zero|nope)[\s!.]*$|\b(no budget|nothing to buy|don'?t need to buy|not buying|already paid|prepaid|it'?s paid)\b`)
 	noAutoRE   = regexp.MustCompile(`(?i)\b(no extra time|no overtime|don'?t go over|do not go over|ask (me )?first|ask before|no auto[- ]?extend|stick to the estimate|not a minute more)\b|不要超時|超時先問`)
 )
 

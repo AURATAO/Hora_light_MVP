@@ -88,6 +88,16 @@ func HeuristicIntent(text string) Intent {
 // classifier is given a context with at least one active task.
 const IntentToSupporter Intent = "to_supporter"
 
+// IntentCorrection: the message changes the thing HO:RA is asking about
+// (a time, a place, a detail of the pending booking) — only meaningful
+// when a question of ours is open.
+const IntentCorrection Intent = "correction"
+
+// IntentAnswer: the message answers HO:RA's open question in words the
+// rule does not match ("yes, approve it", "ok go ahead with the $10") —
+// HO:RA re-asks for a plain YES/NO; it is not relayed.
+const IntentAnswer Intent = "answer"
+
 // Context is what the classifier knows about the thread (D-17 P2): the
 // errands a supporter is working on, what the supporter last said, and
 // which question of ours is open. Task titles and the supporter's line are
@@ -119,6 +129,8 @@ Return {"intent": X} where X is exactly one of:
 - "new_task": the customer clearly describes a SEPARATE errand — a different place, time or purpose from the listed ones, or they say "new task", "another", "also", "can you also", "next week".
 - "greeting": a hello with no content.
 - "question": a question about HO:RA itself (pricing, hours, how it works) — not about the errand in progress.
+- "correction": ONLY when HO:RA has an open question about a pending NEW booking (stated below) and the message changes that booking — a different time, place, duration or detail for it ("make it 4pm", "actually 2 bags", "the other address"). Never use this when no booking question is open.
+- "answer": ONLY when HO:RA has an open question (stated below) and the message is the customer's answer to THAT question in words — approving or declining the supporter's request ("yes, approve it", "ok fine, go ahead with the extra"), confirming the booking ("book it please"), or a budget ("about twenty dollars"). Never use this when no question is open.
 - "other": none of the above.
 
 Default to "to_supporter": with a supporter on the job, short replies, preferences, details and answers are almost always for them. Choose "new_task" only when the message cannot be about the listed errand(s).`
@@ -128,7 +140,7 @@ func classifyInContextSchema() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"intent": map[string]any{"type": "string", "enum": []string{
-				string(IntentToSupporter), string(IntentNewTask), string(IntentGreeting), string(IntentQuestion), string(IntentOther),
+				string(IntentToSupporter), string(IntentNewTask), string(IntentCorrection), string(IntentAnswer), string(IntentGreeting), string(IntentQuestion), string(IntentOther),
 			}},
 		},
 		"required":             []string{"intent"},
@@ -149,7 +161,7 @@ func (o *OpenAICompat) ClassifyInContext(ctx context.Context, text string, c Con
 		fmt.Fprintf(&b, "The supporter's last message to the customer: %q\n", c.LastSupporterLine)
 	}
 	if c.OpenQuestion != "" {
-		fmt.Fprintf(&b, "HO:RA is currently waiting on the customer to answer a %s question (a bare yes/no/amount would answer it; this message is not that).\n", c.OpenQuestion)
+		fmt.Fprintf(&b, "HO:RA is currently waiting on the customer to answer a %s question about a NEW booking (a bare yes/no/amount would answer it; this message is not that).\n", c.OpenQuestion)
 	}
 	fmt.Fprintf(&b, "\nCustomer's message: %q", text)
 	// 256 tokens: the answer is ~10, the rest is headroom for a model that
@@ -165,6 +177,11 @@ func (o *OpenAICompat) ClassifyInContext(ctx context.Context, text string, c Con
 		return IntentToSupporter, fmt.Errorf("classify in context decode: %w", err)
 	}
 	switch r.Intent {
+	case IntentCorrection, IntentAnswer:
+		if c.OpenQuestion == "" {
+			return IntentToSupporter, nil // nothing open: for the supporter
+		}
+		return r.Intent, nil
 	case IntentToSupporter, IntentNewTask, IntentGreeting, IntentQuestion, IntentOther:
 		return r.Intent, nil
 	}

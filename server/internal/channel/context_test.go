@@ -84,10 +84,15 @@ func TestContextClassifierAndTheWayOut(t *testing.T) {
 	if g.state() != StateAwaitingConfirm || !strings.Contains(got, "Reply YES") {
 		t.Fatalf("state %s reply %q", g.state(), got)
 	}
-	// The lead-in shows once, not on every re-draft.
+	// A correction re-drafts (the model says so, with the open question in
+	// view) and the lead-in is not repeated.
+	fc.intent = llm.IntentCorrection
 	got = g.say(t, "make it 6")
-	if strings.Contains(got, "Booking this as a new errand") {
-		t.Fatalf("lead-in repeated: %q", got)
+	if g.state() != StateAwaitingConfirm || !strings.Contains(got, "Reply YES") || strings.Contains(got, "Booking this as a new errand") || len(chat.posted) != 2 {
+		t.Fatalf("state %s reply %q posted %v", g.state(), got, chat.posted)
+	}
+	if fc.calls[len(fc.calls)-1].OpenQuestion != "booking" {
+		t.Fatalf("the model must know a booking question is open: %+v", fc.calls[len(fc.calls)-1])
 	}
 }
 
@@ -179,19 +184,26 @@ func TestUnarmableApprovalIsNotSent(t *testing.T) {
 	}
 }
 
-// Name question survives an interruption too.
+// Name question survives an interruption too: the approval is armed over
+// it, answered, and the name question comes back.
 func TestApprovalInterruptsTheNameQuestion(t *testing.T) {
 	g := newRig(llm.IntentNewTask) // not linked: a first-timer
 	g.say(t, "laundry pickup")
 	if g.state() != StateAwaitingName {
 		t.Fatalf("state %s", g.state())
 	}
-	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
-	if !c.Pending.NameAsked || c.ResumeState() != StateAwaitingName {
-		t.Fatalf("%+v", c.Pending)
+	if err := g.r.askApproval(context.Background(), "id-"+me, "ext-3"); err != nil {
+		t.Fatal(err)
+	}
+	if g.state() != StateAwaitingApproval {
+		t.Fatalf("state %s", g.state())
+	}
+	got := g.say(t, "YES")
+	if len(g.booker.resolved) != 1 || g.state() != StateAwaitingName || !strings.Contains(got, "first name") {
+		t.Fatalf("resolved %v state %s reply %q", g.booker.resolved, g.state(), got)
 	}
 	g.say(t, "Aura")
-	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
 	if c.Pending.NameAsked || c.ResumeState() != StateAwaitingConfirm {
 		t.Fatalf("%+v", c.Pending)
 	}
@@ -217,3 +229,163 @@ func TestFooterPerChannel(t *testing.T) {
 }
 
 func ptrTime(t time.Time) *time.Time { return &t }
+
+// ── review round 2 (D-17) ──────────────────────────────────────────────────
+
+// MAJOR-1: a sentence while an approval is pending reaches the supporter;
+// the question stays open.
+func TestSentenceDuringApprovalIsRelayed(t *testing.T) {
+	g, chat, _, fc := contextRig(llm.IntentToSupporter, bagelT)
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	c.State, c.PendingExtensionID = StateAwaitingApproval, "ext-1"
+	if err := g.convs.SaveConversation(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	got := g.say(t, "why $10 more?")
+	if len(chat.posted) != 1 || chat.posted[0] != "task-2:why $10 more?" || g.state() != StateAwaitingApproval || got != CopyApprovalStillPending {
+		t.Fatalf("posted %v state %s reply %q", chat.posted, g.state(), got)
+	}
+	if fc.calls[0].OpenQuestion != "approval" {
+		t.Fatalf("%+v", fc.calls[0])
+	}
+	g.say(t, "NO")
+	if len(g.booker.resolved) != 1 {
+		t.Fatalf("resolved %v", g.booker.resolved)
+	}
+}
+
+// MAJOR-2: the supporter's last line is a target only while that task is
+// active; several supporters and no signal → the list (idle) or a line
+// naming the way out (mid-question); a name in the message picks.
+func TestLastLineOnlyWhileActiveAndSeveralSupporters(t *testing.T) {
+	g, chat, tasks, _ := contextRig(llm.IntentToSupporter, bagelT) // laundry (Maya) finished
+	tasks.lastText, tasks.lastTask, tasks.lastAt = "Maya · Laundry: anything else?", "task-1", time.Now().Add(-time.Minute)
+	g.say(t, "can you get oat milk too?")
+	if len(chat.posted) != 1 || chat.posted[0] != "task-2:can you get oat milk too?" {
+		t.Fatalf("a finished supporter's question must not capture the message: %v", chat.posted)
+	}
+
+	g, chat, tasks, fc := contextRig(llm.IntentToSupporter, laundryT, bagelT)
+	tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: toasted?", "task-2", time.Now().Add(-90*time.Minute)
+	g.say(t, "Maya please ring the bell")
+	if len(chat.posted) != 1 || chat.posted[0] != "task-1:Maya please ring the bell" {
+		t.Fatalf("a named supporter wins over the last line: %v", chat.posted)
+	}
+	tasks.lastText = ""
+	got := g.say(t, "ring the bell please")
+	if !strings.Contains(got, CopyWhichTask) || g.state() != StateAwaitingTaskChoice {
+		t.Fatalf("no signal, two supporters → the list: %q state %s", got, g.state())
+	}
+	g.say(t, "never mind")
+	fc.intent = llm.IntentNewTask
+	g.say(t, "new task: walk my dog at 5") // mid-question now
+	fc.intent = llm.IntentToSupporter
+	got = g.say(t, "ring the bell please")
+	if !strings.Contains(got, "Which supporter is that for?") || !strings.Contains(got, "Maya / Sam") || g.state() != StateAwaitingConfirm {
+		t.Fatalf("%q state %s", got, g.state())
+	}
+}
+
+// MAJOR-3: "for Maya" with a pending draft delivers first; a failed relay
+// keeps the draft and says only that it failed.
+func TestForSupporterKeepsTheDraftWhenRelayFails(t *testing.T) {
+	g, chat, _, fc := contextRig(llm.IntentNewTask, bagelT)
+	g.say(t, "pick up my laundry tomorrow at 3")
+	if g.state() != StateAwaitingConfirm {
+		t.Fatalf("state %s", g.state())
+	}
+	chat.post = errors.New("talkjs 503")
+	got := g.say(t, "for Sam")
+	if got != CopyRelayFailed || g.state() != StateAwaitingConfirm || len(chat.posted) != 0 {
+		t.Fatalf("reply %q state %s posted %v", got, g.state(), chat.posted)
+	}
+	if sentText(g, "Passed that on to Sam. The new errand is dropped.") {
+		t.Fatal("must not claim delivery")
+	}
+	chat.post = nil
+	fc.intent = llm.IntentToSupporter
+	got = g.say(t, "for Sam")
+	if g.state() != StateIdle || len(chat.posted) != 1 || !strings.Contains(got, "Passed that on to Sam") {
+		t.Fatalf("reply %q state %s posted %v", got, g.state(), chat.posted)
+	}
+}
+
+// MAJOR-4: only "for <Name>" / "tell <Name>" / "for my supporter" are the
+// way out — never a pronoun; "For her birthday…" is an errand.
+func TestEscapePhraseIsNarrow(t *testing.T) {
+	g, chat, _, fc := contextRig(llm.IntentNewTask, bagelT)
+	got := g.say(t, "For her birthday I need flowers delivered Friday")
+	if len(chat.posted) != 0 || g.state() == StateIdle || !strings.Contains(got, "Booking this as a new errand") {
+		t.Fatalf("posted %v state %s reply %q", chat.posted, g.state(), got)
+	}
+	fc.intent = llm.IntentCorrection
+	g.say(t, "for him, 3pm instead")
+	if len(chat.posted) != 0 || g.state() == StateIdle {
+		t.Fatalf("a pronoun is not the way out: posted %v state %s", chat.posted, g.state())
+	}
+	// Two supporters with the same first name: the name alone is ambiguous.
+	g, chat, _, _ = contextRig(llm.IntentToSupporter, ActiveTask{ID: "t1", Title: "A", SupporterName: "Sam Lee"}, ActiveTask{ID: "t2", Title: "B", SupporterName: "Sam Wu"})
+	got = g.say(t, "for Sam: ring twice")
+	if len(chat.posted) != 0 || !strings.Contains(got, "Which task") {
+		t.Fatalf("posted %v reply %q", chat.posted, got)
+	}
+	// "for Maya" with nothing pending and no words: asked what to say.
+	g, chat, _, _ = contextRig(llm.IntentToSupporter, bagelT)
+	if got := g.say(t, "for Sam"); got != CopyWhichTaskNothingHeld || len(chat.posted) != 0 {
+		t.Fatalf("%q %v", got, chat.posted)
+	}
+}
+
+// MINOR-3: an answered question no longer captures; the rule is idle-only.
+func TestRuleNeedsAnUnansweredQuestionAndIdle(t *testing.T) {
+	g, chat, tasks, fc := contextRig(llm.IntentNewTask, bagelT)
+	tasks.lastText, tasks.lastTask, tasks.lastAt, tasks.lastAnswered = "Sam · Bagel run: toasted?", "task-2", time.Now().Add(-time.Minute), true
+	g.say(t, "pick up my laundry tomorrow at 3")
+	if len(chat.posted) != 0 || g.state() != StateAwaitingConfirm || len(fc.calls) != 1 {
+		t.Fatalf("answered question must not capture: posted %v state %s calls %d", chat.posted, g.state(), len(fc.calls))
+	}
+	tasks.lastAnswered = false
+	fc.intent = llm.IntentCorrection
+	got := g.say(t, "make it 4pm")
+	if len(chat.posted) != 0 || !strings.Contains(got, "Reply YES") {
+		t.Fatalf("mid-question the model decides, not the rule: posted %v reply %q", chat.posted, got)
+	}
+}
+
+// MINOR-4: "no onions" is not "nothing to buy".
+func TestNoOnionsIsNotNoBudget(t *testing.T) {
+	if IsNoBudget("no onions") || IsNoBudget("no, the other one") || !IsNoBudget("no") || !IsNoBudget("nothing") || !IsNoBudget("nothing to buy") {
+		t.Fatal("budget opt-out regex")
+	}
+}
+
+// NIT-1: without a context classifier, a plain-classifier failure still
+// goes to the supporter.
+func TestPlainClassifierFailureGoesToTheSupporter(t *testing.T) {
+	g, chat, _ := relayRig(llm.IntentNewTask, bagelT)
+	g.r.Classifier = failingClassifier{}
+	g.say(t, "I want everything bagel")
+	if len(chat.posted) != 1 || g.state() != StateIdle {
+		t.Fatalf("posted %v state %s", chat.posted, g.state())
+	}
+}
+
+type failingClassifier struct{}
+
+func (failingClassifier) Classify(context.Context, string) (llm.Intent, error) {
+	return llm.IntentNewTask, errors.New("down")
+}
+
+// An answer to our question in words ("yes, approve it") is re-asked for
+// a plain YES/NO — never relayed, never acted on.
+func TestWordyAnswerIsReaskedNotRelayed(t *testing.T) {
+	g, chat, _, _ := contextRig(llm.IntentAnswer, bagelT)
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	c.State, c.PendingExtensionID = StateAwaitingApproval, "ext-1"
+	if err := g.convs.SaveConversation(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.say(t, "yes, approve it"); got != CopyApprovalReask || len(chat.posted) != 0 || len(g.booker.resolved) != 0 {
+		t.Fatalf("reply %q posted %v resolved %v", got, chat.posted, g.booker.resolved)
+	}
+}

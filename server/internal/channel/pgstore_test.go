@@ -669,26 +669,33 @@ func TestPGLastRelayed(t *testing.T) {
 		t.Fatal(err)
 	}
 	addr := "+15550000606"
-	if _, _, _, ok, err := s.LastRelayed(ctx, IMessage, addr, time.Now().Add(-time.Hour)); err != nil || ok {
-		t.Fatalf("empty thread: %v %v", ok, err)
+	if rl, err := s.LastRelayed(ctx, IMessage, addr, time.Now().Add(-time.Hour)); err != nil || rl.OK {
+		t.Fatalf("empty thread: %+v %v", rl, err)
 	}
 	if err := s.RecordOutbound(ctx, Outbound{Channel: IMessage, To: addr, Text: "Reply YES to approve"}, "p1", t1); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, ok, _ := s.LastRelayed(ctx, IMessage, addr, time.Now().Add(-time.Hour)); ok {
+	if rl, _ := s.LastRelayed(ctx, IMessage, addr, time.Now().Add(-time.Hour)); rl.OK {
 		t.Fatal("our own prompt is not a supporter line")
 	}
 	if err := s.RecordOutbound(ctx, Outbound{Channel: IMessage, To: addr, Text: "Sam · Bagel run: what kind?", Relay: true}, "r1", t1); err != nil {
 		t.Fatal(err)
 	}
-	text, tid, at, ok, err := s.LastRelayed(ctx, IMessage, addr, time.Now().Add(-time.Hour))
-	if err != nil || !ok || text != "Sam · Bagel run: what kind?" || tid != t1 || time.Since(at) > time.Minute {
-		t.Fatalf("%q %q %v %v %v", text, tid, at, ok, err)
+	rl, err := s.LastRelayed(ctx, IMessage, addr, time.Now().Add(-time.Hour))
+	if err != nil || !rl.OK || rl.Text != "Sam · Bagel run: what kind?" || rl.TaskID != t1 || time.Since(rl.At) > time.Minute || rl.Answered {
+		t.Fatalf("%+v %v", rl, err)
 	}
-	if _, _, _, ok, _ := s.LastRelayed(ctx, IMessage, "+15550000999", time.Now().Add(-time.Hour)); ok {
+	if rl, _ := s.LastRelayed(ctx, IMessage, "+15550000999", time.Now().Add(-time.Hour)); rl.OK {
 		t.Fatal("another thread must not see it")
 	}
-	if _, _, _, ok, _ := s.LastRelayed(ctx, IMessage, addr, time.Now().Add(time.Minute)); ok {
+	if rl, _ := s.LastRelayed(ctx, IMessage, addr, time.Now().Add(time.Minute)); rl.OK {
 		t.Fatal("outside the window")
+	}
+	// Once the person has written, the line counts as answered.
+	if _, err := s.RecordInbound(ctx, Inbound{Channel: IMessage, ProviderMessageID: "ans-1", From: addr, Text: "everything", ReceivedAt: time.Now().Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if rl, _ := s.LastRelayed(ctx, IMessage, addr, time.Now().Add(-time.Hour)); !rl.OK || !rl.Answered {
+		t.Fatalf("answered: %+v", rl)
 	}
 }

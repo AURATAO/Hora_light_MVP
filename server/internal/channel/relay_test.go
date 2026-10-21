@@ -40,9 +40,10 @@ type fakeTasks struct {
 	set   []string
 	err   error
 	// the supporter's last relayed line, for lastSupporterLine
-	lastText string
-	lastTask string
-	lastAt   time.Time
+	lastText     string
+	lastTask     string
+	lastAt       time.Time
+	lastAnswered bool
 }
 
 func (f *fakeTasks) TaskForProviderMessage(_ context.Context, _ Channel, _, id string) (string, bool, bool, error) {
@@ -52,11 +53,11 @@ func (f *fakeTasks) TaskForProviderMessage(_ context.Context, _ Channel, _, id s
 	tid, known := f.byMsg[id]
 	return tid, f.relay[id], known, nil
 }
-func (f *fakeTasks) LastRelayed(_ context.Context, _ Channel, _ string, since time.Time) (string, string, time.Time, bool, error) {
+func (f *fakeTasks) LastRelayed(_ context.Context, _ Channel, _ string, since time.Time) (Relayed, error) {
 	if f.lastText == "" || f.lastAt.Before(since) {
-		return "", "", time.Time{}, false, nil
+		return Relayed{}, nil
 	}
-	return f.lastText, f.lastTask, f.lastAt, true, nil
+	return Relayed{Text: f.lastText, TaskID: f.lastTask, At: f.lastAt, Answered: f.lastAnswered, OK: true}, nil
 }
 func (f *fakeTasks) SetMessageTask(_ context.Context, _ Channel, id, task string) error {
 	f.set = append(f.set, id+"→"+task)
@@ -461,7 +462,8 @@ func TestBubbleKindDecidesWhoGetsTheAnswer(t *testing.T) {
 	if err := g.convs.SaveConversation(context.Background(), c); err != nil {
 		t.Fatal(err)
 	}
-	tasks.byMsg["prompt-1"] = "task-1" // our prompt: relay=false
+	tasks.byMsg["prompt-1"] = "task-1"                     // our prompt: relay=false
+	g.r.InContext = &fakeContext{intent: llm.IntentAnswer} // "yes, approve it" answers us, in words
 	in := Inbound{Channel: IMessage, ProviderMessageID: "s1", From: me, Text: "yes, approve it", ReplyToProviderID: "prompt-1", ReceivedAt: time.Now()}
 	if err := g.r.HandleInbound(context.Background(), in); err != nil {
 		t.Fatal(err)

@@ -100,6 +100,11 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 	case IsNo(text):
 		approve = false
 	default:
+		// A sentence while the request is pending may be for the
+		// supporter ("why $10 more?") — relayed, the question stays open.
+		if handled, err := r.routeInContext(ctx, in, id, conv, text); handled {
+			return err
+		}
 		return r.Reply(ctx, in, CopyApprovalReask, "")
 	}
 	if r.Booker == nil {
