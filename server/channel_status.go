@@ -33,14 +33,14 @@ func chatStatusHook(sqlDB *sql.DB, router *channel.Router) func(notify.CreateNot
 		// still goes, and the email carries the photos (D-16 I-R).
 		var p completionPhotos
 		if photo.String != "" {
-			if signed, reason := signedTaskPhotoURL(photo.String, taskPhotoLinkTTL); reason != "" {
+			if signed, reason := signedTaskPhotoURL(photo.String, taskID, taskPhotoLinkTTL); reason != "" {
 				log.Printf("[channel] status COMPLETED task=%s: completion photo not sent: %s", taskID, reason)
 			} else {
 				p.Photo = signed
 			}
 		}
 		if receipt.String != "" {
-			if signed, reason := signedTaskPhotoURL(receipt.String, taskPhotoLinkTTL); reason != "" {
+			if signed, reason := signedTaskPhotoURL(receipt.String, taskID, taskPhotoLinkTTL); reason != "" {
 				log.Printf("[channel] status COMPLETED task=%s: receipt photo not sent: %s", taskID, reason)
 			} else {
 				p.Receipt = signed

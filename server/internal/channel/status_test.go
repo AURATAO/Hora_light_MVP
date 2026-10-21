@@ -138,7 +138,7 @@ func TestCompletedCarriesPhotoAndReceipt(t *testing.T) {
 		t.Fatalf("sent %d", len(g.ad.sent))
 	}
 	done, receipt := g.ad.sent[0], g.ad.sent[1]
-	if !strings.HasPrefix(done.Text, "Done: “Bagel run”.") || !strings.Contains(done.Text, "Purchases: $12.40, included in the total (receipt photo follows)") || done.MediaURL != ev.PhotoURL {
+	if !strings.HasPrefix(done.Text, "Done: “Bagel run”.") || !strings.Contains(done.Text, "Purchases: $12.40 (receipt photo follows)") || done.MediaURL != ev.PhotoURL {
 		t.Fatalf("done: %+v", done)
 	}
 	if receipt.Text != "Receipt: $12.40." || receipt.MediaURL != ev.ReceiptPhotoURL {
@@ -179,7 +179,7 @@ func TestCompletedCarriesPhotoAndReceipt(t *testing.T) {
 	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: "COMPLETED", TaskID: "task-1", TaskTitle: "Laundry", ReceiptTotal: "$3.00"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(g.ad.sent) != 1 || !strings.Contains(g.ad.sent[0].Text, "Purchases: $3.00, included in the total (receipt in your email)") {
+	if len(g.ad.sent) != 1 || !strings.Contains(g.ad.sent[0].Text, "Purchases: $3.00 (receipt in your email)") {
 		t.Fatalf("%+v", g.ad.sent)
 	}
 
@@ -189,7 +189,7 @@ func TestCompletedCarriesPhotoAndReceipt(t *testing.T) {
 	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: "COMPLETED", TaskID: "task-1", TaskTitle: "Laundry", ReceiptPhotoURL: "https://cdn/r.jpg"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(g.ad.sent) != 2 || g.ad.sent[1].Text != "Receipt: see photo." {
+	if len(g.ad.sent) != 2 || g.ad.sent[1].Text != CopyReceiptPhotoOnly || g.ad.sent[1].MediaURL != "https://cdn/r.jpg" {
 		t.Fatalf("%+v", g.ad.sent)
 	}
 
@@ -206,6 +206,58 @@ func TestCompletedCarriesPhotoAndReceipt(t *testing.T) {
 		t.Fatalf("%+v", g.ad.sent)
 	}
 
+	// The receipt photo refused with no amount known: where it is.
+	g = newRig("")
+	g.r.Status = target
+	g.ad.mediaErr = errors.New("media_url unreachable")
+	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: "COMPLETED", TaskID: "task-1", TaskTitle: "Laundry", ReceiptPhotoURL: "https://cdn/r.jpg"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.ad.sent) != 2 || g.ad.sent[1].Text != CopyReceiptPhotoInEmail {
+		t.Fatalf("%+v", g.ad.sent)
+	}
+
+	// The text-only retry fails too: the error surfaces, nothing else is
+	// tried; a not-configured adapter is not retried at all.
+	g = newRig("")
+	g.r.Status = target
+	g.ad.err = errors.New("provider down")
+	if err := g.r.NotifyStatus(context.Background(), "user-1", ev); err == nil || len(g.ad.sent) != 0 {
+		t.Fatalf("err %v sent %+v", err, g.ad.sent)
+	}
+	g = newRig("")
+	g.r.Status = target
+	g.ad.err = ErrNotConfigured
+	if err := g.r.NotifyStatus(context.Background(), "user-1", ev); !errors.Is(err, ErrNotConfigured) {
+		t.Fatalf("%v", err)
+	}
+
+	// A channel that cannot carry the media is asked first: the words never
+	// promise a photo, and no photo-only message goes out.
+	g = newRig("")
+	g.r.Adapters[WhatsApp] = &pickyAdapter{fakeSendAdapter: g.ad}
+	now := time.Now()
+	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: WhatsApp, Address: me}, LastInboundAt: &now}}
+	heic := ev
+	heic.PhotoURL = "https://x.supabase.co/storage/v1/object/sign/task-completions/c/1.heic?token=a"
+	heic.ReceiptPhotoURL = "https://x.supabase.co/storage/v1/object/sign/task-completions/r/1.heic?token=b"
+	if err := g.r.NotifyStatus(context.Background(), "user-1", heic); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.ad.sent) != 1 || g.ad.sent[0].MediaURL != "" || !strings.Contains(g.ad.sent[0].Text, "Purchases: $12.40 (receipt in your email)") || strings.Contains(g.ad.sent[0].Text, "follows") {
+		t.Fatalf("%+v", g.ad.sent)
+	}
+	// …and carries what it can.
+	g = newRig("")
+	g.r.Adapters[WhatsApp] = &pickyAdapter{fakeSendAdapter: g.ad}
+	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: WhatsApp, Address: me}, LastInboundAt: &now}}
+	if err := g.r.NotifyStatus(context.Background(), "user-1", ev); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.ad.sent) != 2 || g.ad.sent[0].MediaURL != ev.PhotoURL || !strings.Contains(g.ad.sent[0].Text, "(receipt photo follows)") || g.ad.sent[1].MediaURL != ev.ReceiptPhotoURL {
+		t.Fatalf("%+v", g.ad.sent)
+	}
+
 	// WhatsApp outside the 24h window: nothing is sent, photos included.
 	old := time.Now().Add(-25 * time.Hour)
 	g = newRig("")
@@ -216,4 +268,11 @@ func TestCompletedCarriesPhotoAndReceipt(t *testing.T) {
 	if len(g.ad.sent) != 0 {
 		t.Fatalf("%+v", g.ad.sent)
 	}
+}
+
+// pickyAdapter carries only .jpg links, like WhatsApp.
+type pickyAdapter struct{ *fakeSendAdapter }
+
+func (p *pickyAdapter) CanCarryMedia(u string, textLen int) bool {
+	return looksLikeImageURL(u) && textLen <= 1024
 }

@@ -180,7 +180,7 @@ func (a *WhatsAppAdapter) Send(ctx context.Context, o Outbound) (string, error) 
 		"text": map[string]any{"body": o.Text, "preview_url": false},
 	}
 	if o.MediaURL != "" {
-		if looksLikeImageURL(o.MediaURL) && len(o.Text) <= 1024 {
+		if a.CanCarryMedia(o.MediaURL, len(o.Text)) {
 			// An image message with the text as its caption (cap 1024).
 			delete(payload, "text")
 			payload["type"] = "image"
@@ -189,7 +189,7 @@ func (a *WhatsAppAdapter) Send(ctx context.Context, o Outbound) (string, error) 
 			// Anything else (a PDF, a long caption): the words only. A link
 			// pasted into the chat would outlive its signed token and sit
 			// there dead; the email carries the photo (D-16 I-R).
-			log.Printf("[channel] whatsapp: media dropped: not an image link or caption too long")
+			log.Printf("[channel] whatsapp send: media dropped (not an image link, or caption over the cap)")
 		}
 	}
 	if o.ReplyToProviderID != "" {
@@ -255,12 +255,19 @@ func unixOrNow(s string) time.Time {
 
 // looksLikeImageURL: Meta accepts only images on an image message; other
 // files go as a link in a text message.
+// CanCarryMedia: Meta's image message takes JPEG and PNG, with a caption of
+// at most 1024 characters. Anything else would be refused or, pasted as a
+// link, would outlive its token in the chat — so it is not carried.
+func (a *WhatsAppAdapter) CanCarryMedia(mediaURL string, textLen int) bool {
+	return looksLikeImageURL(mediaURL) && textLen <= 1024
+}
+
 func looksLikeImageURL(u string) bool {
 	p := strings.ToLower(u)
 	if i := strings.IndexAny(p, "?#"); i >= 0 {
 		p = p[:i]
 	}
-	for _, ext := range []string{".jpg", ".jpeg", ".png", ".webp"} {
+	for _, ext := range []string{".jpg", ".jpeg", ".png"} {
 		if strings.HasSuffix(p, ext) {
 			return true
 		}

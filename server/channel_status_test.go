@@ -113,13 +113,15 @@ func TestPhotosOfFailsClosed(t *testing.T) {
 	ctx := context.Background()
 	prev := photosOf
 	t.Cleanup(func() { photosOf = prev })
-	_ = chatStatusHook(sqldb, nil) // installs the DB-backed photosOf
-	if _, err := db.Exec(ctx, `alter table public.tasks
-		add column if not exists completion_photo_url text,
-		add column if not exists receipt_photo_url text,
-		add column if not exists receipt_amount_cents integer`); err != nil {
-		t.Fatal(err)
+	// No signer in this process: the "ours but unsigned" cases below depend
+	// on it. The client is cached once per binary, so a run with storage
+	// env set would sign for real — skip rather than call out.
+	t.Setenv("SUPABASE_PROJECT_URL", "")
+	t.Setenv("SUPABASE_SERVICE_ROLE_KEY", "")
+	if taskPhotoStorageClient != nil {
+		t.Skip("storage client already initialised in this binary")
 	}
+	_ = chatStatusHook(sqldb, nil) // installs the DB-backed photosOf
 	set := func(photo, receipt string, cents int) {
 		t.Helper()
 		if _, err := db.Exec(ctx, `update public.tasks set completion_photo_url = nullif($2,''), receipt_photo_url = nullif($3,''), receipt_amount_cents = $4 where id = $1::uuid`,
@@ -128,7 +130,7 @@ func TestPhotosOfFailsClosed(t *testing.T) {
 		}
 	}
 	// Ours, but no signer in this process: no link, amount still stated.
-	set("https://x.supabase.co/storage/v1/object/public/task-completions/c/1.jpg", "https://x.supabase.co/storage/v1/object/public/task-completions/r/1.jpg", 1240)
+	set("https://x.supabase.co/storage/v1/object/public/task-completions/completions/"+w.taskID+"/1.jpg", "https://x.supabase.co/storage/v1/object/public/task-completions/completions/"+w.taskID+"/2.jpg", 1240)
 	p, err := photosOf(ctx, w.taskID)
 	if err != nil || p.Photo != "" || p.Receipt != "" || p.ReceiptTotal != "$12.40" {
 		t.Fatalf("%+v %v", p, err)
@@ -137,6 +139,11 @@ func TestPhotosOfFailsClosed(t *testing.T) {
 	set("https://evil.example/home.jpg", "", 0)
 	if p, err = photosOf(ctx, w.taskID); err != nil || p.Photo != "" || p.Receipt != "" || p.ReceiptTotal != "" {
 		t.Fatalf("%+v %v", p, err)
+	}
+	// Ours, another task's key: stopped here (completeTask does not bind
+	// the key to the task), whatever the signer would say.
+	if _, reason := signedTaskPhotoURL("https://x.supabase.co/storage/v1/object/public/task-completions/completions/other-task/1.jpg", w.taskID, taskPhotoLinkTTL); reason != "not this task's photo" {
+		t.Fatalf("reason %q", reason)
 	}
 	// Nothing stored: nothing.
 	set("", "", 0)

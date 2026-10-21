@@ -160,6 +160,9 @@ CREATE TABLE public.tasks (
 	assigned_to text NOT NULL DEFAULT '',
 	assigned_to_id uuid REFERENCES public.users(id),
 	status text NOT NULL DEFAULT 'open',
+	completion_photo_url text,
+	receipt_photo_url text,
+	receipt_amount_cents integer,
 	job_lat double precision,
 	job_lng double precision,
 	created_at timestamptz NOT NULL DEFAULT now()

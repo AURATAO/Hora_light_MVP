@@ -94,9 +94,9 @@ func StatusText(ev StatusEvent) (string, bool) {
 			// The receipt photo is a message of its own when it can be sent;
 			// "follows" promises nothing about order.
 			if ev.ReceiptPhotoURL != "" {
-				fmt.Fprintf(&b, "\nPurchases: %s, included in the total (receipt photo follows)", ev.ReceiptTotal)
+				fmt.Fprintf(&b, "\nPurchases: %s (receipt photo follows)", ev.ReceiptTotal)
 			} else {
-				fmt.Fprintf(&b, "\nPurchases: %s, included in the total (receipt in your email)", ev.ReceiptTotal)
+				fmt.Fprintf(&b, "\nPurchases: %s (receipt in your email)", ev.ReceiptTotal)
 			}
 		}
 		b.WriteString("\n\nYour receipt is on its way by email. Need something else? Just text me.")
@@ -236,6 +236,21 @@ func (r *Router) NotifyStatus(ctx context.Context, userID string, ev StatusEvent
 			return nil
 		}
 	}
+	if ev.Type == "COMPLETED" {
+		// Ask the channel first, so the words never promise a photo it
+		// cannot carry (D-16 I-R). A photo it cannot carry is in the email.
+		if mc, ok := r.Adapters[t.Identity.Channel].(MediaCarrier); ok {
+			if ev.PhotoURL != "" && !mc.CanCarryMedia(ev.PhotoURL, len(text)) {
+				log.Printf("[channel] status COMPLETED task=%s: completion photo not carried by %s", ev.TaskID, t.Identity.Channel)
+				ev.PhotoURL = ""
+			}
+			if ev.ReceiptPhotoURL != "" && !mc.CanCarryMedia(ev.ReceiptPhotoURL, len(CopyReceiptPhotoOnly)+32) {
+				log.Printf("[channel] status COMPLETED task=%s: receipt photo not carried by %s", ev.TaskID, t.Identity.Channel)
+				ev.ReceiptPhotoURL = ""
+			}
+			text, _ = StatusText(ev) // recomposed against what will be sent
+		}
+	}
 	if t.Identity.Channel == WhatsApp {
 		if t.LastInboundAt == nil || r.now().Sub(*t.LastInboundAt) > WhatsAppWindow {
 			// Needs an approved template (M4). Email and push still carried it.
@@ -254,9 +269,13 @@ func (r *Router) NotifyStatus(ctx context.Context, userID string, ev StatusEvent
 		// The receipt, as its own message so the photo is unmistakable. If
 		// the photo cannot be delivered, the amount still is, with where
 		// the photo can be found.
-		rc := Outbound{Channel: t.Identity.Channel, To: t.Identity.Address, MediaURL: ev.ReceiptPhotoURL,
-			Text: fmt.Sprintf(CopyReceipt, firstNonEmpty(ev.ReceiptTotal, "see photo"))}
-		if err := r.sendWithMediaFallback(ctx, rc, ev.TaskID, fmt.Sprintf(CopyReceiptNoPhoto, firstNonEmpty(ev.ReceiptTotal, "in your email"))); err != nil {
+		rc := Outbound{Channel: t.Identity.Channel, To: t.Identity.Address, MediaURL: ev.ReceiptPhotoURL, Text: CopyReceiptPhotoOnly}
+		textOnly := CopyReceiptPhotoInEmail
+		if ev.ReceiptTotal != "" {
+			rc.Text = fmt.Sprintf(CopyReceipt, ev.ReceiptTotal)
+			textOnly = fmt.Sprintf(CopyReceiptNoPhoto, ev.ReceiptTotal)
+		}
+		if err := r.sendWithMediaFallback(ctx, rc, ev.TaskID, textOnly); err != nil {
 			return fmt.Errorf("NotifyStatus: receipt: %w", err)
 		}
 	}
@@ -277,9 +296,11 @@ func (r *Router) NotifyStatus(ctx context.Context, userID string, ev StatusEvent
 // never carries the link (ProviderErrorText).
 func (r *Router) sendWithMediaFallback(ctx context.Context, out Outbound, taskID, textOnly string) error {
 	err := r.Send(ctx, out, taskID)
-	if err == nil || out.MediaURL == "" {
+	if err == nil || out.MediaURL == "" || errors.Is(err, ErrNotConfigured) {
 		return err
 	}
+	// A refusal at the API call. (A timeout after the provider accepted
+	// the message repeats the words once — declared in D-16 I-R.)
 	log.Printf("[channel] status task=%s: media send failed, sending text only: %v", taskID, err)
 	out.MediaURL = ""
 	if textOnly != "" {

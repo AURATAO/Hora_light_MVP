@@ -278,15 +278,20 @@ func TestWhatsAppSend(t *testing.T) {
 // S-12: a provider error body that echoes a signed media link must not
 // put the token in a log line.
 func TestProviderErrorTextMasksLinksAndTokens(t *testing.T) {
-	body := []byte(`{"error":"media_url unreachable: https://x.supabase.co/storage/v1/object/sign/task-completions/c/1.jpg?token=eyJhbGciOi.secret for +1 (555) 123-4567, token=again"}`)
-	got := ProviderErrorText(body)
-	for _, bad := range []string{"supabase.co", "eyJhbGciOi", "token=again", "555"} {
-		if strings.Contains(got, bad) {
-			t.Fatalf("%q leaked in %q", bad, got)
+	for _, body := range []string{
+		`{"error":"media_url unreachable: https://x.supabase.co/storage/v1/object/sign/task-completions/c/1.jpg?token=eyJhbGciOi.secret for +1 (555) 123-4567, token=again"}`,
+		// Meta escapes slashes in its JSON bodies.
+		`{"error":{"message":"Could not fetch HTTPS:\/\/x.supabase.co\/storage\/v1\/object\/sign\/task-completions\/c\/1.jpg?TOKEN=eyJhbGciOi.secret"}}`,
+	} {
+		got := ProviderErrorText([]byte(body))
+		for _, bad := range []string{"supabase.co", "eyJhbGciOi", "token=again", "555", "task-completions"} {
+			if strings.Contains(strings.ToLower(got), strings.ToLower(bad)) {
+				t.Fatalf("%q leaked in %q", bad, got)
+			}
 		}
-	}
-	if !strings.Contains(got, "[url]") || !strings.Contains(got, "[number]") {
-		t.Fatalf("%q", got)
+		if !strings.Contains(got, "[url]") {
+			t.Fatalf("%q", got)
+		}
 	}
 }
 
@@ -481,6 +486,9 @@ func TestSendblueSendMedia(t *testing.T) {
 func TestWhatsAppSendMedia(t *testing.T) {
 	srv, got := capturePayload(t, `{"messages":[{"id":"wamid.M"}]}`)
 	a := &WhatsAppAdapter{AccessToken: "tok", PhoneNumberID: "111", BaseURL: srv.URL}
+	if a.CanCarryMedia("https://cdn.example/p.jpg?sig=1", 10) != true || a.CanCarryMedia("https://cdn.example/p.webp", 10) || a.CanCarryMedia("https://cdn.example/p.heic", 10) || a.CanCarryMedia("https://cdn.example/p.png", 1025) {
+		t.Fatal("CanCarryMedia: jpg/png only, caption within the cap")
+	}
 	if _, err := a.Send(context.Background(), Outbound{To: "+15551234567", Text: "Maya · Laundry: done", MediaURL: "https://cdn.example/p.jpg?sig=1"}); err != nil {
 		t.Fatal(err)
 	}

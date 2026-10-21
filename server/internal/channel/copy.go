@@ -52,6 +52,8 @@ const (
 	CopyConfirmReask         = "Reply YES to book, NO to drop it, or tell me what to change."
 	CopyReceipt              = "Receipt: %s."
 	CopyReceiptNoPhoto       = "Receipt: %s. The photo is in your email."
+	CopyReceiptPhotoOnly     = "The receipt:"
+	CopyReceiptPhotoInEmail  = "The receipt photo is in your email."
 	// I-P version B: a casual affirmative went to the supporter.
 	CopyPassedOn                  = "(Passed “%s” to %s.)"
 	CopyStillWaitingBooking       = "Still waiting on your YES or NO — book “%s” for %s."

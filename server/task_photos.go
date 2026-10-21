@@ -118,7 +118,7 @@ func canonicalTaskPhotoURL(raw string) string {
 // the signing call — a task screen with a broken image is better than a
 // task screen that 500s, and the failure is logged either way.
 func signTaskPhotoURL(raw string, ttl time.Duration) string {
-	signed, reason := signedTaskPhotoURL(raw, ttl)
+	signed, reason := signedTaskPhotoURL(raw, "", ttl)
 	if reason != "" {
 		return raw
 	}
@@ -130,11 +130,17 @@ func signTaskPhotoURL(raw string, ttl time.Duration) string {
 // platform (a photo sent to a messaging provider, M3.6) this is the only
 // form to use — a stored reference that is not ours, or that could not be
 // signed, must not travel as a link in HO:RA's voice (S-12, D-16 I-R).
-// Reasons never carry the URL.
-func signedTaskPhotoURL(raw string, ttl time.Duration) (signed, reason string) {
+// With taskID set, the object must also sit under that task's own prefix
+// (uploads are keyed completions/<task>/…): completeTask does not bind the
+// key to the task, so this is where another task's photo is stopped from
+// reaching this requester. Reasons never carry the URL.
+func signedTaskPhotoURL(raw, taskID string, ttl time.Duration) (signed, reason string) {
 	key, ok := taskPhotoObjectKey(raw)
 	if !ok {
 		return "", "not a task photo of ours"
+	}
+	if taskID != "" && !strings.HasPrefix(key, "completions/"+taskID+"/") {
+		return "", "not this task's photo"
 	}
 	st := taskPhotoStorage()
 	if st == nil {

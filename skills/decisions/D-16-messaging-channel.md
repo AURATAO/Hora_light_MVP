@@ -31,20 +31,35 @@
   the requester's own thread through Sendblue (`media_url`, fetched by
   Sendblue server-side and stored as an attachment on the iMessage) and
   Meta (image message with caption; Meta fetches and caches the media).
-  Rules: (1) only a signed link to one of OUR `task-completions` objects
-  ever leaves — `signedTaskPhotoURL` fails closed, so a reference that is
-  not ours, or that cannot be signed, is left out (the text still goes, the
-  email carries the photos); (2) the link lives `taskPhotoLinkTTL` (1 hour),
-  enough for the provider's fetch; (3) the link is never stored in
-  `channel_messages` (the body is the text) and never logged — provider
-  error bodies are masked for URLs and `token=` values before they reach
-  an error string; (4) on WhatsApp a media reference that is not an image
-  link is dropped, not pasted as text, because a link in the chat would
-  outlive its token; (5) a media send the provider refuses falls back to
-  the words once, so "done" is never lost to a photo, and a receipt photo
-  that cannot be sent becomes "Receipt: $X. The photo is in your email.";
-  (6) outside WhatsApp's 24h window nothing is sent (template, M4), as for
-  every status. Privacy Policy: §1 already says completion and receipt
+  Rules: (1) only a signed link to one of OUR `task-completions` objects,
+  under THIS task's own key prefix (`completions/<task>/…`), ever leaves —
+  `signedTaskPhotoURL(raw, taskID, ttl)` fails closed, so a reference that
+  is not ours, is another task's, or cannot be signed, is left out (the
+  text still goes, the email carries the photos). "Ours" is the path shape
+  plus the task prefix; `completeTask` itself does not bind the key to the
+  task, so this is where another task's photo is stopped. (2) The link
+  lives `taskPhotoLinkTTL` (1 hour), enough for the provider's fetch; for
+  that hour it is a bearer link, and it will sit in the provider's request
+  logs and fetch cache as any media link does. (3) The link is never
+  stored in `channel_messages` (the body is the text) and not logged by
+  us — provider error bodies are masked for URLs (JSON-escaped slashes
+  included) and `token=` values before they reach an error string; a
+  percent-encoded echo is not masked (judged unlikely). (4) The channel is
+  asked BEFORE the copy is composed whether it can carry the media
+  (`MediaCarrier`): WhatsApp carries JPEG/PNG with a caption ≤1024; a
+  `.heic` or an over-long caption means the photo is not sent and the
+  words say "receipt in your email" — never pasted as a link, which would
+  outlive its token. (5) A media send the provider REFUSES AT THE API CALL
+  falls back to the words once (a receipt photo → "Receipt: $X. The photo
+  is in your email."); a timeout after the provider accepted the message
+  repeats the words once (accepted: a duplicate "done" over a lost one);
+  an asynchronous media failure after a 200 (a status webhook) is not seen
+  and the message carried by that send is lost — the email still has it.
+  (6) Outside WhatsApp's 24h window nothing is sent (template, M4), as for
+  every status. The "Purchases: $X" line states the receipt amount, not a
+  share of the total: reimbursement is clamped to the approved budget plus
+  tolerance (billing.go), so "included in the total" would not always be
+  true. Privacy Policy: §1 already says completion and receipt
   photos are shown to the requester through short-lived signed links; the
   iMessage/WhatsApp line in §1 and §5(b) must name the photos as sent via
   those providers (Aura's edit list, PLAN §11). Delivery is at-most-once
@@ -262,3 +277,34 @@ Ordering: the photo columns are written in the same statement as
 `status='completed'` (main.go) before `notify.Create` runs — the lookup
 cannot race the upload. Idempotency: at-most-once per notification row,
 same as the email (declared in I-R).
+
+### M3.6 — review round 2 — 2026-10-22 at `6239b6e` (Reviewer: new Sonnet session; Verifier: no RED, I-05 INCOMPLETE)
+
+**FAIL ×1 MAJOR.** The WhatsApp adapter dropped a non-image media
+reference at send time, after the copy had already promised "receipt
+photo follows" / "see photo" — the same class as round-1 #4. MINOR: no
+no-amount fallback copy; `urlRun` missed Meta's JSON-escaped `https:\/\/`;
+the fallback retried on any error (not-configured, plan-limit, a lost
+response — a possible duplicate); I-R overstated ("never lost", "never
+logged"); `.webp` in the image list (Meta takes JPEG/PNG); "ours" was path
+shape only — `completeTask` does not bind the key to the task, so another
+task's key would be signed and sent; "included in the total" not always
+true (reimbursement clamp); `TestPhotosOfFailsClosed` ran DDL and assumed
+no storage env; test gaps.
+
+Fixed (all): `MediaCarrier` capability — the router asks the adapter
+before composing, clears what it cannot carry, and recomposes the words
+("receipt in your email"), no photo-only message; `CopyReceiptPhotoOnly`
+("The receipt:") / `CopyReceiptPhotoInEmail`; `urlRun` matches escaped
+slashes; no retry on `ErrNotConfigured`, duplicate-on-lost-response and
+async-failure cases declared in I-R(5); `.webp` removed; the task-prefix
+check in `signedTaskPhotoURL` (reason "not this task's photo"); copy
+"Purchases: $X (receipt photo follows / receipt in your email)"; the
+photo columns moved into the live test fixture, env cleared and the
+cached-client case skipped. Tests: WhatsApp `.heic` done+receipt (one
+message, no promise) and the carried case; no-amount fallback; text-only
+retry failing; not-configured not retried; escaped-slash/uppercase masks;
+`CanCarryMedia` table; other task's key. Still untested: the positive
+signing path (the signer is a package `sync.Once`; injecting it is a
+refactor of frozen code — deferred) and a negative amount in
+`formatCentsUSD` (unreachable: `ReceiptTotal` is set only for cents > 0).

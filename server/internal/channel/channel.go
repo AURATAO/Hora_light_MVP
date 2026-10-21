@@ -100,6 +100,14 @@ type Adapter interface {
 // and records nothing.
 var ErrUnverified = errors.New("channel: webhook failed verification")
 
+// MediaCarrier is an optional adapter capability: whether a message with
+// this media reference and this much text would carry the media as the
+// provider accepts it. The router asks BEFORE composing copy, so a photo
+// the channel cannot carry is never promised (M3.6, D-16 I-R).
+type MediaCarrier interface {
+	CanCarryMedia(mediaURL string, textLen int) bool
+}
+
 // ErrNotConfigured means the adapter is missing credentials it needs.
 var ErrNotConfigured = errors.New("channel: adapter not configured")
 
