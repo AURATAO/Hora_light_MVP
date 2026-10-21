@@ -422,6 +422,14 @@ Fix in two layers:
    amount parsed by rule (`$20`, `20 dollars`, `twenty`) → shopping budget on
    the task, shown in the summary, covered by the hold. An amount in the
    original message ("budget 60") is taken directly.
+   Also in M3.5 (Aura, 2026-10-21): **auto-extend consent.** The app has a
+   checkbox (default on); the chat sent nothing and the server defaulted to
+   on — consent the person never saw. Now the summary states it ("If it runs
+   a little over, up to 15 extra minutes are OK without asking") and the one
+   YES covers it; "no extra time" / "ask me first" (rule-matched) turns it
+   off and re-shows the summary; the value is sent explicitly at posting.
+   No extra question: every added question costs completions; the line is
+   the chat's checkbox.
 2. **Supporter app (post-freeze):** show "Ask for a budget" even at 0 — the
    server already accepts it, and the requester now approves by YES in the
    chat (M3.1). This is the safety net when the chat misreads.
