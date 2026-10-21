@@ -289,6 +289,7 @@ type fakeStore struct {
 	processed []string
 	outbound  int
 	lastTask  string
+	lastID    string
 	stored    []string
 	err       error
 }
@@ -314,11 +315,12 @@ func (s *fakeStore) MarkProcessed(_ context.Context, _ Channel, id string) error
 	s.processed = append(s.processed, id)
 	return nil
 }
-func (s *fakeStore) RecordOutbound(_ context.Context, o Outbound, _ string, taskID string) error {
+func (s *fakeStore) RecordOutbound(_ context.Context, o Outbound, providerID string, taskID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.outbound++
 	s.lastTask = taskID
+	s.lastID = providerID
 	s.stored = append(s.stored, o.RecordedText())
 	return nil
 }
@@ -326,6 +328,11 @@ func (s *fakeStore) storedBodies() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.stored...)
+}
+func (s *fakeStore) lastOutboundID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastID
 }
 func (s *fakeStore) lastOutboundTask() string {
 	s.mu.Lock()
@@ -411,5 +418,65 @@ func TestHandlerRejectsGet(t *testing.T) {
 	newHandler(&fakeAdapter{}, &fakeStore{}, &fakeRouter{}).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("code %d", w.Code)
+	}
+}
+
+// ── media (M3.2 relay: a supporter's photo rides along) ────────────────────
+
+func capturePayload(t *testing.T, reply string) (*httptest.Server, *map[string]any) {
+	t.Helper()
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = map[string]any{}
+		_ = json.Unmarshal(b, &got)
+		_, _ = w.Write([]byte(reply))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &got
+}
+
+func TestSendblueSendMedia(t *testing.T) {
+	srv, got := capturePayload(t, `{"message_handle":"out-2","status":"QUEUED"}`)
+	a := &SendblueAdapter{APIKey: "k", APISecret: "s", FromNumber: "+15559990000", BaseURL: srv.URL}
+	if _, err := a.Send(context.Background(), Outbound{To: "+15551234567", Text: "Maya · Laundry: done", MediaURL: "https://cdn.example/p.jpg"}); err != nil {
+		t.Fatal(err)
+	}
+	if (*got)["media_url"] != "https://cdn.example/p.jpg" || (*got)["content"] != "Maya · Laundry: done" {
+		t.Fatalf("%+v", *got)
+	}
+	a.Send(context.Background(), Outbound{To: "+15551234567", Text: "plain"})
+	if _, has := (*got)["media_url"]; has {
+		t.Fatalf("no media_url without media: %+v", *got)
+	}
+}
+
+func TestWhatsAppSendMedia(t *testing.T) {
+	srv, got := capturePayload(t, `{"messages":[{"id":"wamid.M"}]}`)
+	a := &WhatsAppAdapter{AccessToken: "tok", PhoneNumberID: "111", BaseURL: srv.URL}
+	if _, err := a.Send(context.Background(), Outbound{To: "+15551234567", Text: "Maya · Laundry: done", MediaURL: "https://cdn.example/p.jpg?sig=1"}); err != nil {
+		t.Fatal(err)
+	}
+	img, _ := (*got)["image"].(map[string]any)
+	if (*got)["type"] != "image" || img["link"] != "https://cdn.example/p.jpg?sig=1" || img["caption"] != "Maya · Laundry: done" {
+		t.Fatalf("%+v", *got)
+	}
+	if _, has := (*got)["text"]; has {
+		t.Fatalf("image message carries no text block: %+v", *got)
+	}
+	// Not an image (a PDF receipt): text with the link, never an image
+	// message Meta would reject — and the words are not lost.
+	if _, err := a.Send(context.Background(), Outbound{To: "+15551234567", Text: "Receipt", MediaURL: "https://cdn.example/r.pdf"}); err != nil {
+		t.Fatal(err)
+	}
+	txt, _ := (*got)["text"].(map[string]any)
+	if (*got)["type"] != "text" || txt["body"] != "Receipt\nhttps://cdn.example/r.pdf" {
+		t.Fatalf("%+v", *got)
+	}
+	// A caption over Meta's 1024 cap falls back the same way.
+	long := strings.Repeat("x", 1100)
+	a.Send(context.Background(), Outbound{To: "+15551234567", Text: long, MediaURL: "https://cdn.example/p.png"})
+	if (*got)["type"] != "text" {
+		t.Fatalf("long caption must fall back to text: %v", (*got)["type"])
 	}
 }

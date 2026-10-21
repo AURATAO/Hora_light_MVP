@@ -180,10 +180,15 @@ func (a *WhatsAppAdapter) Send(ctx context.Context, o Outbound) (string, error) 
 		"text": map[string]any{"body": o.Text, "preview_url": false},
 	}
 	if o.MediaURL != "" {
-		// An image message with the text as its caption.
-		delete(payload, "text")
-		payload["type"] = "image"
-		payload["image"] = map[string]any{"link": o.MediaURL, "caption": o.Text}
+		if looksLikeImageURL(o.MediaURL) && len(o.Text) <= 1024 {
+			// An image message with the text as its caption (cap 1024).
+			delete(payload, "text")
+			payload["type"] = "image"
+			payload["image"] = map[string]any{"link": o.MediaURL, "caption": o.Text}
+		} else {
+			// Anything else (a PDF, a long caption): the text plus the link.
+			payload["text"] = map[string]any{"body": o.Text + "\n" + o.MediaURL, "preview_url": true}
+		}
 	}
 	if o.ReplyToProviderID != "" {
 		payload["context"] = map[string]string{"message_id": o.ReplyToProviderID}
@@ -244,4 +249,19 @@ func unixOrNow(s string) time.Time {
 		log.Printf("[channel] whatsapp parse: unreadable timestamp, using receive time: %v", fmt.Errorf("parse timestamp: %w", err))
 	}
 	return time.Now().UTC()
+}
+
+// looksLikeImageURL: Meta accepts only images on an image message; other
+// files go as a link in a text message.
+func looksLikeImageURL(u string) bool {
+	p := strings.ToLower(u)
+	if i := strings.IndexAny(p, "?#"); i >= 0 {
+		p = p[:i]
+	}
+	for _, ext := range []string{".jpg", ".jpeg", ".png", ".webp"} {
+		if strings.HasSuffix(p, ext) {
+			return true
+		}
+	}
+	return false
 }

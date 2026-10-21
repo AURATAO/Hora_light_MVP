@@ -110,11 +110,9 @@ func TestSeveralActiveTasksAskWhichOne(t *testing.T) {
 	if g.state() != StateAwaitingTaskChoice || len(chat.posted) != 0 {
 		t.Fatalf("state %s posted %v", g.state(), chat.posted)
 	}
-	if got := g.say(t, "7"); got != CopyWhichTaskBadPick || g.state() != StateIdle {
+	if got := g.say(t, "7"); got != CopyWhichTaskBadPick || g.state() != StateAwaitingTaskChoice {
 		t.Fatalf("%q state %s", got, g.state())
 	}
-	// Ask again: the list is rebuilt from the message, not from stale state.
-	g.say(t, "please get everything bagels")
 	g.say(t, "#2")
 	if len(chat.posted) != 1 || chat.posted[0] != "task-2:please get everything bagels" {
 		t.Fatalf("posted %v", chat.posted)
@@ -229,5 +227,102 @@ func TestTaskChoiceParsing(t *testing.T) {
 		if (want == 0 && ok) || (want > 0 && (!ok || got != want)) {
 			t.Errorf("%q → %d ok=%v want %d", text, got, ok, want)
 		}
+	}
+}
+
+// ── review round 2 (M-1, M-3) ──────────────────────────────────────────────
+
+// M-1: a supporter's message relayed while a YES is pending says what a bare
+// YES still answers; an inline reply to the supporter relays in that state
+// instead of booking.
+func TestRelayDuringPendingYesIsDisambiguated(t *testing.T) {
+	g, chat, tasks := relayRig(llm.IntentNewTask, laundryT)
+	g.say(t, "laundry pickup") // draft pending → awaiting_confirm
+	if g.state() != StateAwaitingConfirm {
+		t.Fatalf("state %s", g.state())
+	}
+	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
+	if err := g.r.RelayToChat(context.Background(), "user-1", "task-1", "Maya", "Laundry pickup", "Want the large bag too?", ""); err != nil {
+		t.Fatal(err)
+	}
+	got := g.ad.last()
+	if !strings.HasPrefix(got, "Maya · Laundry pickup: Want the large bag too?") || !strings.Contains(got, "A plain YES or NO here still answers my question") || !strings.Contains(got, "Laundry pickup") {
+		t.Fatalf("%q", got)
+	}
+	// An inline reply to Maya's message is for Maya: nothing books.
+	tasks.byMsg[g.st.lastOutboundID()] = "task-1"
+	in := Inbound{Channel: IMessage, ProviderMessageID: "r1", From: me, Text: "yes please", ReplyToProviderID: g.st.lastOutboundID(), ReceivedAt: time.Now()}
+	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if len(chat.posted) != 1 || chat.posted[0] != "task-1:yes please" || g.booker.posts != 0 || g.state() != StateAwaitingConfirm {
+		t.Fatalf("posted %v booked %d state %s", chat.posted, g.booker.posts, g.state())
+	}
+	// A bare YES, not in reply to anything, still answers the pending draft.
+	g.say(t, "YES")
+	if g.booker.posts != 1 {
+		t.Fatalf("booked %d", g.booker.posts)
+	}
+	// Nothing pending → no note.
+	if err := g.r.RelayToChat(context.Background(), "user-1", "task-1", "Maya", "Laundry pickup", "On my way", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.ad.last(); strings.Contains(got, "still answers") {
+		t.Fatalf("no note when nothing is pending: %q", got)
+	}
+}
+
+func TestRelayDuringPendingApprovalIsDisambiguated(t *testing.T) {
+	g, _, _ := relayRig(llm.IntentOther, laundryT)
+	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	c.State, c.PendingExtensionID = StateAwaitingApproval, "ext-1"
+	if err := g.convs.SaveConversation(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.r.RelayToChat(context.Background(), "user-1", "task-1", "Maya", "Laundry pickup", "ok if I take 15 more?", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.ad.last(); !strings.Contains(got, "still answers my question about Maya’s request") {
+		t.Fatalf("%q", got)
+	}
+}
+
+// M-3: the hold survives a bad pick and a failed post; a second message
+// joins the hold instead of replacing it; nothing is relayed as "1".
+func TestHoldSurvivesBadPickAndFailedPost(t *testing.T) {
+	g, chat, _ := relayRig(llm.IntentOther, laundryT, bagelT)
+	g.say(t, "please get everything bagels")
+	if got := g.say(t, "7"); got != CopyWhichTaskBadPick || g.state() != StateAwaitingTaskChoice {
+		t.Fatalf("%q state %s", got, g.state())
+	}
+	chat.post = errors.New("talkjs 503")
+	if got := g.say(t, "2"); got != CopyRelayFailedPick || g.state() != StateAwaitingTaskChoice {
+		t.Fatalf("%q state %s", got, g.state())
+	}
+	chat.post = nil
+	g.say(t, "2")
+	if len(chat.posted) != 1 || chat.posted[0] != "task-2:please get everything bagels" || g.state() != StateIdle {
+		t.Fatalf("posted %v state %s", chat.posted, g.state())
+	}
+
+	g, chat, _ = relayRig(llm.IntentOther, laundryT, bagelT)
+	g.say(t, "please get everything bagels")
+	got := g.say(t, "and a coffee")
+	if !strings.Contains(got, CopyWhichTask) || g.state() != StateAwaitingTaskChoice {
+		t.Fatalf("%q state %s", got, g.state())
+	}
+	g.say(t, "1")
+	if len(chat.posted) != 1 || chat.posted[0] != "task-1:please get everything bagels\nand a coffee" {
+		t.Fatalf("second message must join the hold, not replace it: %v", chat.posted)
+	}
+}
+
+// An empty supporter message (a location, a sticker) sends nothing.
+func TestRelayToChatSkipsEmptyBody(t *testing.T) {
+	g := newRig("")
+	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
+	if err := g.r.RelayToChat(context.Background(), "user-1", "task-1", "Maya", "Laundry", "   ", ""); err != nil || len(g.ad.sent) != 0 {
+		t.Fatalf("err %v sent %+v", err, g.ad.sent)
 	}
 }

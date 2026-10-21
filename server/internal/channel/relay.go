@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"hora-auth/internal/channel/llm"
 )
 
 // Chat relay (PLAN §6 steps 5–7, §7; M3.2). The supporter talks in the
@@ -110,13 +112,17 @@ func (r *Router) relay(ctx context.Context, in Inbound, id Identity, taskID, tex
 		log.Printf("[channel] relay identity=%s task=%s: %v", id.ID, taskID, err)
 		return r.Reply(ctx, in, CopyRelayFailed, taskID)
 	}
+	r.noteRelayed(ctx, in, id, taskID, text)
+	return nil
+}
+
+func (r *Router) noteRelayed(ctx context.Context, in Inbound, id Identity, taskID, text string) {
 	if r.Tasks != nil {
 		if err := r.Tasks.SetMessageTask(ctx, in.Channel, in.ProviderMessageID, taskID); err != nil {
 			log.Printf("[channel] relay identity=%s task=%s: %v", id.ID, taskID, fmt.Errorf("record task: %w", err))
 		}
 	}
 	log.Printf("[channel] relayed identity=%s task=%s len=%d", id.ID, taskID, len(text))
-	return nil
 }
 
 // askWhichTask shows the numbered list and keeps the message for after the
@@ -142,30 +148,68 @@ func (r *Router) askWhichTask(ctx context.Context, in Inbound, conv Conversation
 	return r.Reply(ctx, in, b.String(), "")
 }
 
-// onAwaitingTaskChoice: a number picks; anything else is treated as a fresh
-// message (a new errand drafts; "new" explicitly starts one).
+// onAwaitingTaskChoice: a number picks and delivers the held message; the
+// hold is cleared only once the supporter has it (a failed post keeps it,
+// and the person is told to reply the number again). A number off the list
+// re-asks and keeps the hold. Anything else is a fresh message: a new
+// errand drafts; other small talk is added to the hold and the list is
+// shown again (nothing is dropped unannounced).
 func (r *Router) onAwaitingTaskChoice(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
 	choices, held := conv.PendingTaskChoices, conv.PendingRelayText
-	conv.State = StateIdle
-	conv.PendingTaskChoices = nil
-	conv.PendingRelayText = ""
-	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
-		return fmt.Errorf("onAwaitingTaskChoice: %w", err)
-	}
 	if n, ok := taskChoice(text); ok {
-		if n > len(choices) {
+		if n > len(choices) || held == "" {
+			if held == "" { // nothing to deliver: drop the hold
+				return r.clearHold(ctx, in, conv, CopyWhichTaskNothingHeld)
+			}
 			return r.Reply(ctx, in, CopyWhichTaskBadPick, "")
 		}
-		if held == "" {
-			return r.Reply(ctx, in, CopyWhichTaskNothingHeld, "")
+		taskID := choices[n-1]
+		if err := r.Chat.PostAsRequester(ctx, taskID, id.UserID, held); err != nil {
+			log.Printf("[channel] relay identity=%s task=%s: %v", id.ID, taskID, err)
+			return r.Reply(ctx, in, CopyRelayFailedPick, taskID)
 		}
-		return r.relay(ctx, in, id, choices[n-1], held)
+		conv.State, conv.PendingTaskChoices, conv.PendingRelayText = StateIdle, nil, ""
+		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+			return fmt.Errorf("onAwaitingTaskChoice: %w", err)
+		}
+		r.noteRelayed(ctx, in, id, taskID, held)
+		return nil
 	}
-	if strings.EqualFold(strings.TrimSpace(text), "new") {
-		return r.Reply(ctx, in, CopyHelloAgain, "")
+	// Not a pick. A new errand drafts (the hold is dropped — the person has
+	// moved on; they were asked once); anything else joins the hold.
+	intent := r.classify(ctx, text)
+	if intent == llm.IntentNewTask {
+		conv.State, conv.PendingTaskChoices, conv.PendingRelayText = StateIdle, nil, ""
+		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+			return fmt.Errorf("onAwaitingTaskChoice: %w", err)
+		}
+		return r.startDraft(ctx, in, id, conv, text)
 	}
-	// Not a pick: handle it as an ordinary message.
-	return r.onIdle(ctx, in, id, conv, text)
+	active, err := r.Chat.ActiveTasks(ctx, id.UserID)
+	if err != nil {
+		return fmt.Errorf("onAwaitingTaskChoice: %w", err)
+	}
+	joined := strings.TrimSpace(held + "\n" + text)
+	switch len(active) {
+	case 0:
+		return r.clearHold(ctx, in, conv, CopyAck)
+	case 1:
+		conv.State, conv.PendingTaskChoices, conv.PendingRelayText = StateIdle, nil, ""
+		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+			return fmt.Errorf("onAwaitingTaskChoice: %w", err)
+		}
+		return r.relay(ctx, in, id, active[0].ID, joined)
+	default:
+		return r.askWhichTask(ctx, in, conv, active, joined)
+	}
+}
+
+func (r *Router) clearHold(ctx context.Context, in Inbound, conv Conversation, reply string) error {
+	conv.State, conv.PendingTaskChoices, conv.PendingRelayText = StateIdle, nil, ""
+	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+		return fmt.Errorf("clear hold: %w", err)
+	}
+	return r.Reply(ctx, in, reply, "")
 }
 
 // RelayToChat delivers a supporter's chat message to the requester's thread
@@ -191,7 +235,33 @@ func (r *Router) RelayToChat(ctx context.Context, requesterID, taskID, supporter
 	if body == "" && mediaURL != "" {
 		body = "(photo)"
 	}
-	out := Outbound{Channel: t.Identity.Channel, To: t.Identity.Address,
-		Text: fmt.Sprintf("%s · %s: %s", who, firstNonEmpty(strings.TrimSpace(taskTitle), "your task"), body), MediaURL: mediaURL}
+	if body == "" {
+		return nil // a location, a sticker, a system line: nothing to say
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s · %s: %s", who, firstNonEmpty(strings.TrimSpace(taskTitle), "your task"), body)
+	// Money rule: if this thread is waiting on a YES/NO, say what a bare
+	// YES/NO still means, so the supporter's question cannot capture it.
+	if conv, err := r.Conversations.GetConversation(ctx, t.Identity.ID); err != nil {
+		return fmt.Errorf("RelayToChat: %w", err)
+	} else if note := r.pendingNote(conv, who); note != "" {
+		b.WriteString("\n\n" + note)
+	}
+	out := Outbound{Channel: t.Identity.Channel, To: t.Identity.Address, Text: b.String(), MediaURL: mediaURL}
 	return r.Send(ctx, out, taskID)
+}
+
+// pendingNote states what a bare YES/NO answers while one is pending; ""
+// when nothing is.
+func (r *Router) pendingNote(conv Conversation, who string) string {
+	switch conv.State {
+	case StateAwaitingConfirm:
+		if conv.Pending == nil {
+			return ""
+		}
+		return fmt.Sprintf(CopyRelayWhileConfirm, conv.Pending.Headline(), Dollars(conv.Pending.TotalCents()), who)
+	case StateAwaitingApproval:
+		return fmt.Sprintf(CopyRelayWhileApproval, who, who)
+	}
+	return ""
 }

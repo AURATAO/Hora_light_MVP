@@ -66,9 +66,15 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		Status:   store,
 		Ops:      opsEmailNotifier{sqlDB: sqlDB},
 		Thread:   store,
-		// Chat relay both ways (channel_relay.go).
-		Chat:  &talkjsRelay{sqlDB: sqlDB},
-		Tasks: store,
+		Tasks:    store,
+	}
+	// Chat relay both ways (channel_relay.go) — only with TalkJS REST
+	// credentials; without them a requester's small talk gets the plain
+	// acknowledgement, not "couldn't pass that on".
+	if _, _, ok := talkjsConfigured(); ok {
+		router.Chat = &talkjsRelay{sqlDB: sqlDB}
+	} else {
+		log.Printf("[channel] WARNING: TALKJS_APP_ID/TALKJS_SECRET_KEY not set — chat relay off")
 	}
 	chatRelayHook = func(ctx context.Context, requesterID, taskID, supporterName, taskTitle, text, mediaURL string) {
 		if err := router.RelayToChat(ctx, requesterID, taskID, supporterName, taskTitle, text, mediaURL); err != nil {

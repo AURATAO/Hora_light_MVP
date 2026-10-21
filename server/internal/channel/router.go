@@ -194,6 +194,14 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	if IsHumanRequest(text) {
 		return r.handOff(ctx, in, id, conv, HandoffHumanRequested)
 	}
+	// An inline reply to a supporter's message is for the supporter, whatever
+	// it says and whatever is pending (relay.go step 5): "yes please" replied
+	// to "toasted?" is an answer to Maya, not a booking YES. The pending
+	// question stays pending; a bare YES/NO not in reply to anything still
+	// answers it (and a relayed message says so — RelayToChat).
+	if tid := r.inlineTarget(ctx, in, id); tid != "" {
+		return r.relay(ctx, in, id, tid, text)
+	}
 	switch conv.State {
 	case StateAwaitingName:
 		return r.onName(ctx, in, id, conv, text)
@@ -212,22 +220,7 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	}
 }
 
-func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
-	// A bare YES/NO with nothing pending (a late duplicate YES after the
-	// booking went through, a NO to nothing) never starts a draft: "YES" is
-	// not an errand, and parsing it as one would book nonsense.
-	// An inline reply to a supporter's message is for the supporter, whatever
-	// it says (relay.go step 5) — "yes please" answering "toasted?" is not a
-	// booking YES: nothing is pending here, so nothing can be booked.
-	if tid := r.inlineTarget(ctx, in, id); tid != "" {
-		return r.relay(ctx, in, id, tid, text)
-	}
-	if IsYes(text) || IsNo(text) {
-		if id.Linked() {
-			return r.relayOr(ctx, in, id, conv, text, CopyAck)
-		}
-		return r.Reply(ctx, in, CopyWelcome, "")
-	}
+func (r *Router) classify(ctx context.Context, text string) llm.Intent {
 	intent := llm.HeuristicIntent(text)
 	if r.Classifier != nil {
 		got, err := r.Classifier.Classify(ctx, text)
@@ -236,6 +229,20 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 		}
 		intent = got
 	}
+	return intent
+}
+
+func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
+	// A bare YES/NO with nothing pending (a late duplicate YES after the
+	// booking went through, a NO to nothing) never starts a draft: "YES" is
+	// not an errand, and parsing it as one would book nonsense.
+	if IsYes(text) || IsNo(text) {
+		if id.Linked() {
+			return r.relayOr(ctx, in, id, conv, text, CopyAck)
+		}
+		return r.Reply(ctx, in, CopyWelcome, "")
+	}
+	intent := r.classify(ctx, text)
 	switch intent {
 	case llm.IntentNewTask:
 		return r.startDraft(ctx, in, id, conv, text)
