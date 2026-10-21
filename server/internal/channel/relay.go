@@ -538,6 +538,9 @@ func (r *Router) pendingNote(conv Conversation, who string, ch Channel) string {
 		}
 		return fmt.Sprintf(CopyRelayWhileConfirm, conv.Pending.Headline(), Dollars(conv.Pending.TotalCents()), who)
 	case StateAwaitingApproval:
+		if conv.Unconfirmed() {
+			return "" // a question not yet confirmed delivered is not described
+		}
 		if im {
 			return fmt.Sprintf(CopyRelayWhileApprovalIM, who)
 		}
@@ -1042,6 +1045,9 @@ func stillWaiting(conv Conversation) string {
 			return fmt.Sprintf(CopyStillWaitingBooking, conv.Pending.Headline(), Dollars(conv.Pending.TotalCents()))
 		}
 	case StateAwaitingApproval:
+		if conv.Unconfirmed() {
+			return CopyApprovalOnItsWay
+		}
 		return CopyStillWaitingApproval
 	case StateAwaitingBudget:
 		return CopyStillWaitingBudget

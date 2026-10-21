@@ -100,7 +100,7 @@ func StatusText(ev StatusEvent) (string, bool) {
 				fmt.Fprintf(&b, "\nPurchases: %s", ev.ReceiptTotal)
 			}
 		}
-		b.WriteString("\n\nYour receipt is on its way by email. Need something else? Just text me.")
+		b.WriteString("\n\nYour payment receipt is on its way by email. Need something else? Just text me.")
 		return b.String(), true
 	case evTimeRequested, evBudgetRequested:
 		return approvalText(ev)
@@ -295,8 +295,8 @@ func receiptText(ev StatusEvent) string {
 }
 
 // sendWithMediaFallback sends a message that may carry a photo; if the
-// provider REFUSES THE REQUEST (a 4xx other than auth or rate limit — an
-// unreachable link, an unsupported type), the words are sent once more on
+// provider REFUSES THE REQUEST (a 4xx other than auth, timeout/conflict
+// or rate limit — an unreachable link, an unsupported type), the words are sent once more on
 // their own — the person's "done" message must not be lost to a photo.
 // textOnly, when set, replaces the text for that second attempt. A
 // transport failure is not retried: the message may have gone through,
@@ -309,7 +309,9 @@ func (r *Router) sendWithMediaFallback(ctx context.Context, out Outbound, taskID
 		return err
 	}
 	var pe *ProviderStatusError
-	if !errors.As(err, &pe) || pe.Status < 400 || pe.Status > 499 || pe.Status == 401 || pe.Status == 403 || pe.Status == 429 {
+	switch {
+	case !errors.As(err, &pe), pe.Status < 400, pe.Status > 499,
+		pe.Status == 401, pe.Status == 403, pe.Status == 408, pe.Status == 409, pe.Status == 429: // auth, timeout/conflict (may have gone through), rate limit
 		return err
 	}
 	log.Printf("[channel] status task=%s: media refused, sending text only: %v", taskID, err)

@@ -300,9 +300,10 @@ func TestCompletedCarriesPhotoAndReceipt(t *testing.T) {
 	}
 }
 
-// pickyAdapter carries only .jpg links, like WhatsApp.
+// pickyAdapter records like fakeSendAdapter and judges media exactly as
+// the real WhatsApp adapter does.
 type pickyAdapter struct{ *fakeSendAdapter }
 
 func (p *pickyAdapter) CanCarryMedia(u string, textLen int) bool {
-	return looksLikeImageURL(u) && textLen <= 1024
+	return (&WhatsAppAdapter{}).CanCarryMedia(u, textLen)
 }

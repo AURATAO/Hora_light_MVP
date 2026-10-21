@@ -308,3 +308,43 @@ structured composition (M3.2 R6); authorization in both directions.
   burst after a new question of ours; PG: 8 concurrent claims → one win,
   draft survives claim/confirm/clear, confirm/clear CAS, SQL state list ==
   `canArmApproval` for every state.
+- **Round 4 (6ad1734) — FAIL.** MAJOR: the unconfirmed-claim repair aged
+  the claim from `updated_at`, which `TouchConversation` refreshes on
+  every inbound message — so a person texting YES into a lost question
+  was refused every time ("reply YES to approve", a loop) and the
+  question was never re-sent. MINOR: an unconfirmed claim with no hold had
+  no way out, and `RemoveHold` could drop the armed request's hold; the
+  resend path skipped the liveness checks; a nil stamp in
+  `awaiting_approval` failed open; the end-of-message resume still
+  followed a re-ask of our own question, and the resolution path burst
+  the resume line and the next question; a resolution landing between
+  claim and confirm left a delivered question unarmed (a YES then lands on
+  the state underneath); a stale full-row save could disarm a confirmed
+  question; relay notes described an undelivered question; test gaps.
+
+  Fixed (all): `approval_claimed_at` (new column; staging ALTER applied),
+  written by `ClaimHold` only, ages the claim; `repairUnconfirmed` re-sends
+  from the hold if the request is still live (same `holdLive` checks as
+  the first send: own user, window by our clock, booker pending, text to
+  ask) or clears the claim otherwise; `RemoveHold` never drops the armed
+  request's hold; `HoldApproval` never re-holds it; `Unconfirmed()` treats
+  a nil stamp in `awaiting_approval` as unconfirmed; the refused-YES reply
+  is "Your supporter has a question for you — it's on its way, one moment"
+  (never "reply YES"), and `pendingNote`/`stillWaiting` say the same while
+  unconfirmed; the end-of-message resume runs only when the reply left the
+  thread idle (or the approval itself); `onAwaitingApproval` omits the
+  resume line when a held question follows; `ConfirmArmed` returns whether
+  the claim was still there — if the request ended mid-send the person is
+  told "I couldn't find that request anymore"; `SaveConversation`'s upsert
+  keeps an armed question (state, request, stamps) unless the caller is
+  ending it on purpose (handoff) — a stale snapshot can no longer disarm
+  it, and only `ClearApproval` ends one. Tests: refused YES through
+  `HandleInbound` with the row touched, then re-sent after 3 min and
+  answerable; resolution mid-send → told, YES afterwards books/approves
+  nothing; re-ask of our question not followed by the supporter's; PG:
+  `RemoveHold`/`HoldApproval` on the armed request, stale full-row save
+  keeps the question, `ClaimHold` stamps `approval_claimed_at`, the old
+  round-trip test now ends the question through `ClearApproval`. Accepted
+  residuals (declared): the undo after a failed send resumes to the
+  current row's `ResumeState`; a re-send after 3 minutes may repeat a
+  question whose first delivery succeeded but whose confirm write failed.

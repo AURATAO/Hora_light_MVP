@@ -136,11 +136,12 @@ type Conversation struct {
 	// LastInboundAt is the person's latest message (read-only here; stamped
 	// by TouchConversation). WhatsApp's 24h window is measured from it.
 	LastInboundAt *time.Time
-	// UpdatedAt is the row's last state write (read-only here). A claimed
-	// question whose delivery was never confirmed is re-sent only once the
-	// claim is older than UnconfirmedResend — a send in flight must not be
-	// repeated by a resume point running beside it.
-	UpdatedAt time.Time
+	// ApprovalClaimedAt is when the armed question was claimed (written by
+	// ClaimHold only — nothing else touches it, so an inbound message
+	// cannot refresh it). A claim whose delivery was never confirmed is
+	// re-sent only once it is older than UnconfirmedResend — a send in
+	// flight must not be repeated by a resume point running beside it.
+	ApprovalClaimedAt *time.Time
 	// PendingTaskChoices are the task ids listed when asking which supporter
 	// a message is for; PendingRelayText is that message, relayed on pick.
 	PendingTaskChoices []string
@@ -223,11 +224,11 @@ type ConversationStore interface {
 	// and the send leaves a question that no message can answer and that
 	// the next resume point re-sends. False when another caller got there
 	// first or the state moved (D-17 I-O).
-	ClaimHold(ctx context.Context, identityID, extensionID string) (bool, error)
+	ClaimHold(ctx context.Context, identityID, extensionID string, at time.Time) (bool, error)
 	// ConfirmArmed, after the question was delivered: stamps the real
 	// armed-at time and drops the hold — if that request is still the
-	// armed one.
-	ConfirmArmed(ctx context.Context, identityID, extensionID string, at time.Time) error
+	// armed one (false otherwise: it ended while the send was in flight).
+	ConfirmArmed(ctx context.Context, identityID, extensionID string, at time.Time) (bool, error)
 	// ClearApproval ends the armed question for THAT request and no other
 	// (compare-and-set on the request id): state becomes `resume`, request
 	// and stamp cleared. False when it was not the armed one any more.
@@ -240,9 +241,13 @@ type ConversationStore interface {
 var ArmedUnconfirmed = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // Unconfirmed reports whether the armed question has not been confirmed
-// sent.
+// sent. In awaiting_approval a missing stamp counts as unconfirmed: a
+// question with no known delivery time is never answerable.
 func (c Conversation) Unconfirmed() bool {
-	return c.ApprovalArmedAt != nil && !c.ApprovalArmedAt.Before(ArmedUnconfirmed)
+	if c.State != StateAwaitingApproval {
+		return false
+	}
+	return c.ApprovalArmedAt == nil || !c.ApprovalArmedAt.Before(ArmedUnconfirmed)
 }
 
 // UnconfirmedResend: how old a claim must be before an unconfirmed question
@@ -264,15 +269,15 @@ func armableStatesLiteral() string {
 	return "{" + strings.Join(parts, ",") + "}"
 }
 
-func (s *PGStore) ClaimHold(ctx context.Context, identityID, extensionID string) (bool, error) {
+func (s *PGStore) ClaimHold(ctx context.Context, identityID, extensionID string, at time.Time) (bool, error) {
 	var one int
 	err := s.DB.QueryRowContext(ctx, `
 		UPDATE channel_conversations SET
-		  state = $3, pending_extension_id = $2::uuid, approval_armed_at = $4, updated_at = now()
+		  state = $3, pending_extension_id = $2::uuid, approval_armed_at = $4, approval_claimed_at = $6, updated_at = now()
 		WHERE identity_id = $1 AND state = ANY($5::text[])
 		  AND coalesce(deferred_approval, '[]'::jsonb) @> jsonb_build_array(jsonb_build_object('extension_id', $2::text))
 		RETURNING 1
-	`, identityID, extensionID, string(StateAwaitingApproval), ArmedUnconfirmed, armableStatesLiteral()).Scan(&one)
+	`, identityID, extensionID, string(StateAwaitingApproval), ArmedUnconfirmed, armableStatesLiteral(), at).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -282,25 +287,30 @@ func (s *PGStore) ClaimHold(ctx context.Context, identityID, extensionID string)
 	return true, nil
 }
 
-func (s *PGStore) ConfirmArmed(ctx context.Context, identityID, extensionID string, at time.Time) error {
-	_, err := s.DB.ExecContext(ctx, `
+func (s *PGStore) ConfirmArmed(ctx context.Context, identityID, extensionID string, at time.Time) (bool, error) {
+	var one int
+	err := s.DB.QueryRowContext(ctx, `
 		UPDATE channel_conversations SET
 		  approval_armed_at = $3,
 		  deferred_approval = (SELECT jsonb_agg(e ORDER BY ord) FROM jsonb_array_elements(coalesce(deferred_approval, '[]'::jsonb)) WITH ORDINALITY AS t(e, ord)
 		                        WHERE e->>'extension_id' <> $2::text)
 		WHERE identity_id = $1 AND state = $4 AND pending_extension_id = $2::uuid
-	`, identityID, extensionID, at, string(StateAwaitingApproval))
-	if err != nil {
-		return fmt.Errorf("confirm armed: %w", err)
+		RETURNING 1
+	`, identityID, extensionID, at, string(StateAwaitingApproval)).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
 	}
-	return nil
+	if err != nil {
+		return false, fmt.Errorf("confirm armed: %w", err)
+	}
+	return true, nil
 }
 
 func (s *PGStore) ClearApproval(ctx context.Context, identityID, extensionID string, resume State) (bool, error) {
 	var one int
 	err := s.DB.QueryRowContext(ctx, `
 		UPDATE channel_conversations SET
-		  state = $3, pending_extension_id = NULL, approval_armed_at = NULL, updated_at = now()
+		  state = $3, pending_extension_id = NULL, approval_armed_at = NULL, approval_claimed_at = NULL, updated_at = now()
 		WHERE identity_id = $1 AND state = $4 AND pending_extension_id = $2::uuid
 		RETURNING 1
 	`, identityID, extensionID, string(resume), string(StateAwaitingApproval)).Scan(&one)
@@ -341,7 +351,8 @@ func (s *PGStore) RemoveHold(ctx context.Context, identityID, extensionID string
 		  deferred_approval = (SELECT jsonb_agg(e ORDER BY ord) FROM jsonb_array_elements(coalesce(deferred_approval, '[]'::jsonb)) WITH ORDINALITY AS t(e, ord)
 		                        WHERE e->>'extension_id' <> $2::text)
 		WHERE identity_id = $1
-	`, identityID, extensionID)
+		  AND NOT (state = $3 AND pending_extension_id::text = $2::text) -- the armed request's hold is its re-send source
+	`, identityID, extensionID, string(StateAwaitingApproval))
 	if err != nil {
 		return fmt.Errorf("remove hold: %w", err)
 	}
@@ -390,15 +401,15 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 	var state string
 	var pending []byte
 	var name, ext, relay sql.NullString
-	var terms, armed, lastIn, updated sql.NullTime
+	var terms, armed, lastIn, claimed sql.NullTime
 	var choicesJSON string
 	var deferred sql.NullString
 	err := s.DB.QueryRowContext(ctx, `
 		SELECT state, pending_draft, pending_name, terms_accepted_at, pending_extension_id::text,
 		       COALESCE(array_to_json(pending_task_choices)::text, '[]'), pending_relay_text,
-		       deferred_approval::text, approval_armed_at, last_inbound_at, updated_at
+		       deferred_approval::text, approval_armed_at, last_inbound_at, approval_claimed_at
 		FROM channel_conversations WHERE identity_id = $1
-	`, identityID).Scan(&state, &pending, &name, &terms, &ext, &choicesJSON, &relay, &deferred, &armed, &lastIn, &updated)
+	`, identityID).Scan(&state, &pending, &name, &terms, &ext, &choicesJSON, &relay, &deferred, &armed, &lastIn, &claimed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, nil
 	}
@@ -431,8 +442,9 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 		t := lastIn.Time
 		c.LastInboundAt = &t
 	}
-	if updated.Valid {
-		c.UpdatedAt = updated.Time
+	if claimed.Valid {
+		t := claimed.Time
+		c.ApprovalClaimedAt = &t
 	}
 	if len(pending) > 0 && string(pending) != "null" {
 		var p PendingDraft
@@ -467,14 +479,24 @@ func (s *PGStore) SaveConversation(ctx context.Context, c Conversation) error {
 		VALUES ($1, $2, $3::jsonb, NULLIF($4, ''), $5, NULLIF($6, '')::uuid,
 		        NULLIF($7, '{}')::uuid[], NULLIF($8, ''), $9, now())
 		ON CONFLICT (identity_id) DO UPDATE SET
-		  state = EXCLUDED.state,
+		  -- An armed question (a claim that landed after this caller read
+		  -- its snapshot) is kept unless the caller is ending it on purpose
+		  -- (a handoff) — a stale full-row save must not silently disarm a
+		  -- question the person is about to answer (S-11/5). The claim's
+		  -- own fields travel with it; everything else is the caller's.
+		  state = CASE WHEN channel_conversations.state = 'awaiting_approval' AND EXCLUDED.state NOT IN ('awaiting_approval', 'handoff')
+		               THEN channel_conversations.state ELSE EXCLUDED.state END,
+		  pending_extension_id = CASE WHEN channel_conversations.state = 'awaiting_approval' AND EXCLUDED.state NOT IN ('awaiting_approval', 'handoff')
+		               THEN channel_conversations.pending_extension_id ELSE EXCLUDED.pending_extension_id END,
+		  approval_armed_at = CASE WHEN channel_conversations.state = 'awaiting_approval' AND EXCLUDED.state NOT IN ('awaiting_approval', 'handoff')
+		               THEN channel_conversations.approval_armed_at ELSE EXCLUDED.approval_armed_at END,
+		  approval_claimed_at = CASE WHEN channel_conversations.state = 'awaiting_approval' AND EXCLUDED.state NOT IN ('awaiting_approval', 'handoff')
+		               THEN channel_conversations.approval_claimed_at ELSE NULL END,
 		  pending_draft = EXCLUDED.pending_draft,
 		  pending_name = EXCLUDED.pending_name,
 		  terms_accepted_at = COALESCE(channel_conversations.terms_accepted_at, EXCLUDED.terms_accepted_at),
-		  pending_extension_id = EXCLUDED.pending_extension_id,
 		  pending_task_choices = EXCLUDED.pending_task_choices,
 		  pending_relay_text = EXCLUDED.pending_relay_text,
-		  approval_armed_at = EXCLUDED.approval_armed_at,
 		  updated_at = now()
 	`, c.IdentityID, string(c.State), pending, c.PendingName, terms, c.PendingExtensionID,
 		pgUUIDArray(c.PendingTaskChoices), c.PendingRelayText, armed)

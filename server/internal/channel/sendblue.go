@@ -204,7 +204,7 @@ func truncate(b []byte, n int) string {
 
 var (
 	digitRun = regexp.MustCompile(`\+?\d[\d\s().-]{5,}\d`)
-	urlRun   = regexp.MustCompile(`(?i)https?:(?:\\*/|\\u002f){2}[^\s"'<>]+`) // JSON-escaped slashes too (\/, \\/, \u002f)
+	urlRun   = regexp.MustCompile(`(?i)https?:(?:\\*/|\\+u002f){2}[^\s"'<>]+`) // JSON-escaped slashes too (\/, \\/, \u002f, \\u002f)
 	tokenRun = regexp.MustCompile(`(?i)\btoken=[^\s&"'<>]+`)
 )
 

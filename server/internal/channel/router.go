@@ -213,16 +213,15 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 			return err
 		}
 	}
-	before := conv.State
 	err = r.handleState(ctx, in, id, conv, text)
-	if err == nil && len(conv.Deferred) > 0 {
+	if err == nil && (len(conv.Deferred) > 0 || conv.Unconfirmed()) {
 		// A question held while the thread could not take it follows the
-		// reply that moved the thread on (I-O) — unless that reply just
-		// put a new question of ours (a draft summary, budget, name, task
-		// choice): two questions in one burst invite a YES for the wrong
-		// one, so the supporter's waits for the next resume point.
+		// reply that left the thread idle (I-O). Any other state means the
+		// reply asked or re-asked a question of ours: two questions in one
+		// burst invite a YES for the wrong one, so the supporter's waits
+		// for the next resume point (the booking's outcome, the answer).
 		if after, gerr := r.Conversations.GetConversation(ctx, id.ID); gerr == nil &&
-			(after.State == StateIdle || after.State == before || after.State == StateAwaitingApproval) {
+			(after.State == StateIdle || after.Unconfirmed()) {
 			r.resumeDeferred(ctx, id)
 		}
 	}

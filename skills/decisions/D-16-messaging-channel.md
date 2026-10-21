@@ -35,7 +35,7 @@
   under THIS task's own key prefix (`completions/<task>/…`), ever leaves —
   `signedTaskPhotoURL(raw, taskID, ttl)` fails closed, so a reference that
   is not ours, is another task's, or cannot be signed, is left out (the
-  text still goes, the email carries the photos). "Ours" is the path shape
+  text still goes). "Ours" is the path shape
   plus the task prefix; `completeTask` itself does not bind the key to the
   task, so this is where another task's photo is stopped. (2) The link
   lives `taskPhotoLinkTTL` (1 hour), enough for the provider's fetch; for
@@ -52,19 +52,25 @@
   never pasted, because it would outlive its token; a PUBLIC relay
   attachment the channel cannot carry (M3.2: a PDF, a photo with a long
   note) is still pasted as a link, as before (`Outbound.MediaExpires`
-  tells the two apart). Sendblue has no carrier check and relies on the
-  API's refusal. (5) A media send the provider REFUSES (a 4xx other than
+  tells the two apart; the cap is counted in bytes, which errs on the
+  safe side; `.webp` is no longer treated as an image anywhere, so a
+  relayed `.webp` is now pasted as a link and labelled "(attachment)" —
+  Meta would have refused it as an image). Sendblue has no carrier check
+  and relies on the API's refusal. (5) A media send the provider REFUSES (a 4xx other than
   401/403/429 — `ProviderStatusError`) falls back to the words once (a
   receipt photo → "Receipt: $X. (The photo couldn't be sent here.)"); a
   plan-limit 400 is indistinguishable from a media 400 and costs one more
-  refused call; a transport failure (the message may have gone through)
-  is NOT retried; an asynchronous media failure after a 200 (a status
-  webhook) is not seen — the message carried by that send is lost, and a
-  "(receipt photo follows)" already sent can then be false. (6) Outside
+  refused call; a transport failure, 408/409, 401/403, 429 or a 5xx (the
+  message may have gone through, or a retry would not help) is NOT
+  retried; an asynchronous media failure after a 200 (a status webhook) is
+  not seen. So a "(receipt photo follows)" already sent can be false
+  whenever the receipt send fails in any of those ways — the person then
+  has the amount in the first message and no photo; nothing corrects it. (6) Outside
   WhatsApp's 24h window nothing is sent (template, M4), as for every
   status. (7) The copy never says where a photo that was not sent can be
   found: the completion email carries the completion photo only, not the
-  receipt (a follow-up, PLAN §13). The "Purchases: $X" line states the
+  receipt (a follow-up, PLAN §13 "Open questions"); the "Your payment
+  receipt is on its way by email" line is the RECEIPT email, not a photo. The "Purchases: $X" line states the
   receipt amount, not a share of the total: reimbursement is clamped to
   the approved budget plus tolerance (billing.go). Privacy Policy: §1 already says completion and receipt
   photos are shown to the requester through short-lived signed links; the
@@ -345,3 +351,17 @@ call counts for timeout / not-configured / 401 / 429 / 500 (one call) and
 cleanup; relay PDF link kept vs expiring `.heic` dropped; `.JPG`,
 extensionless, 1024 boundary; mixed carry; caption-length drop;
 double-escaped and `\u002f` echoes.
+
+### M3.6 — review round 4 — 2026-10-22 at `6ad1734` (Reviewer: new Sonnet session) — **PASS**
+
+Both round-3 MAJORs closed in code. MINORs, all applied in the same
+commit as the M3.2c round-4 fixes: "Your payment receipt is on its way by
+email" (the RECEIPT email, not a photo); I-R(1) stale "email carries the
+photos" removed; I-R(5) now says any failed receipt send leaves the
+"follows" promise unmet; 408/409 excluded from the retry set; the
+`looksLikeImageURL` comment moved; `pickyAdapter` delegates to the real
+`WhatsAppAdapter.CanCarryMedia` (`WhatsAppCaptionMax`); the cap declared
+in bytes; `urlRun` also matches `\\u002f`; `a.Send` errors asserted;
+`preview_url: true` asserted for a relay link; `RelayToChat` pinned to
+`MediaExpires == false`; the `.webp` relay change declared in I-R(4); the
+PLAN section named.

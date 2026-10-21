@@ -232,7 +232,7 @@ func TestRelayToChatDeliversToTheRequester(t *testing.T) {
 	if err := g.r.RelayToChat(context.Background(), "user-1", "task-1", "Maya Chen", "Laundry pickup", "On my way!", "https://cdn.example/p.jpg"); err != nil {
 		t.Fatal(err)
 	}
-	if len(g.ad.sent) != 1 || g.ad.sent[0].Text != "Maya Chen · Laundry pickup: On my way!" || g.ad.sent[0].MediaURL != "https://cdn.example/p.jpg" {
+	if len(g.ad.sent) != 1 || g.ad.sent[0].Text != "Maya Chen · Laundry pickup: On my way!" || g.ad.sent[0].MediaURL != "https://cdn.example/p.jpg" || g.ad.sent[0].MediaExpires {
 		t.Fatalf("sent %+v", g.ad.sent)
 	}
 	if g.st.lastOutboundTask() != "task-1" {
@@ -314,6 +314,7 @@ func TestRelayDuringPendingApprovalIsDisambiguated(t *testing.T) {
 	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
 	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
 	c.State, c.PendingExtensionID = StateAwaitingApproval, "ext-1"
+	c.ApprovalArmedAt = ptrTime(time.Now().Add(-time.Minute)) // a delivered question
 	if err := g.convs.SaveConversation(context.Background(), c); err != nil {
 		t.Fatal(err)
 	}
@@ -372,6 +373,7 @@ func TestInlineYesOnApprovalPromptApproves(t *testing.T) {
 	g, chat, tasks := relayRig(llm.IntentOther, laundryT)
 	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
 	c.State, c.PendingExtensionID = StateAwaitingApproval, "ext-1"
+	c.ApprovalArmedAt = ptrTime(time.Now().Add(-time.Minute)) // a delivered question
 	if err := g.convs.SaveConversation(context.Background(), c); err != nil {
 		t.Fatal(err)
 	}
@@ -464,6 +466,7 @@ func TestBubbleKindDecidesWhoGetsTheAnswer(t *testing.T) {
 	g, chat, tasks := relayRig(llm.IntentOther, laundryT)
 	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
 	c.State, c.PendingExtensionID = StateAwaitingApproval, "ext-1"
+	c.ApprovalArmedAt = ptrTime(time.Now().Add(-time.Minute)) // a delivered question
 	if err := g.convs.SaveConversation(context.Background(), c); err != nil {
 		t.Fatal(err)
 	}

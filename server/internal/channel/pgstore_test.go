@@ -536,10 +536,18 @@ func TestPGPendingExtensionRoundTrip(t *testing.T) {
 	if err != nil || got.State != StateAwaitingApproval || got.PendingExtensionID != ext {
 		t.Fatalf("%+v %v", got, err)
 	}
+	// A full-row save cannot end the question (a stale snapshot must not
+	// disarm it); ClearApproval does.
 	got.PendingExtensionID = ""
 	got.State = got.ResumeState()
 	if err := s.SaveConversation(ctx, got); err != nil {
 		t.Fatal(err)
+	}
+	if kept, _ := s.GetConversation(ctx, a.ID); kept.State != StateAwaitingApproval || kept.PendingExtensionID != ext {
+		t.Fatalf("a full-row save disarmed the question: %+v", kept)
+	}
+	if ok, err := s.ClearApproval(ctx, a.ID, ext, StateIdle); err != nil || !ok {
+		t.Fatalf("clear: %v %v", ok, err)
 	}
 	again, err := s.GetConversation(ctx, a.ID)
 	if err != nil || again.State != StateIdle || again.PendingExtensionID != "" {
@@ -787,7 +795,7 @@ func TestPGClaimHold(t *testing.T) {
 		}
 	}
 	// Not from a handoff.
-	if ok, err := s.ClaimHold(ctx, a.ID, ext); err != nil || ok {
+	if ok, err := s.ClaimHold(ctx, a.ID, ext, time.Now()); err != nil || ok {
 		t.Fatalf("claimed from handoff: %v %v", ok, err)
 	}
 	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateAwaitingConfirm, Pending: draft}); err != nil {
@@ -800,7 +808,7 @@ func TestPGClaimHold(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if ok, err := s.ClaimHold(ctx, a.ID, ext); err == nil && ok {
+			if ok, err := s.ClaimHold(ctx, a.ID, ext, time.Now()); err == nil && ok {
 				atomic.AddInt32(&wins, 1)
 			}
 		}()
@@ -810,25 +818,49 @@ func TestPGClaimHold(t *testing.T) {
 		t.Fatalf("claims won: %d", wins)
 	}
 	got, err := s.GetConversation(ctx, a.ID)
-	if err != nil || got.State != StateAwaitingApproval || got.PendingExtensionID != ext || !got.Unconfirmed() ||
+	if err != nil || got.State != StateAwaitingApproval || got.PendingExtensionID != ext || !got.Unconfirmed() || got.ApprovalClaimedAt == nil ||
 		len(got.Deferred) != 2 || got.Pending == nil || got.Pending.QuoteCents != 2700 {
 		t.Fatalf("claimed: %+v %v", got, err)
 	}
+	// The claimed request's hold cannot be removed (it is the re-send
+	// source); the other can.
+	if err := s.RemoveHold(ctx, a.ID, ext); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.GetConversation(ctx, a.ID); len(got.Deferred) != 2 {
+		t.Fatalf("armed hold removed: %+v", got)
+	}
+	// A stale full-row save (a handler that read its snapshot before the
+	// claim) does not disarm the question; a handoff does.
+	stale := Conversation{IdentityID: a.ID, State: StateAwaitingConfirm, Pending: draft}
+	if err := s.SaveConversation(ctx, stale); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.GetConversation(ctx, a.ID); got.State != StateAwaitingApproval || got.PendingExtensionID != ext || !got.Unconfirmed() || got.ApprovalClaimedAt == nil {
+		t.Fatalf("stale save disarmed the question: %+v", got)
+	}
 	// Not while another question is armed.
-	if ok, _ := s.ClaimHold(ctx, a.ID, ext2); ok {
+	if ok, _ := s.ClaimHold(ctx, a.ID, ext2, time.Now()); ok {
 		t.Fatal("claimed while another question is armed")
 	}
 	// Confirmed: stamped, hold gone, the other hold and the draft stay.
 	at := time.Now().Truncate(time.Microsecond)
-	if err := s.ConfirmArmed(ctx, a.ID, ext, at); err != nil {
-		t.Fatal(err)
+	if ok, err := s.ConfirmArmed(ctx, a.ID, ext, at); err != nil || !ok {
+		t.Fatalf("confirm: %v %v", ok, err)
 	}
 	if got, _ = s.GetConversation(ctx, a.ID); got.Unconfirmed() || !got.ApprovalArmedAt.Equal(at) || len(got.Deferred) != 1 || got.Deferred[0].ExtensionID != ext2 || got.Pending == nil {
 		t.Fatalf("confirmed: %+v", got)
 	}
-	// Confirming a request that is not the armed one changes nothing.
-	if err := s.ConfirmArmed(ctx, a.ID, ext2, time.Now()); err != nil {
+	// Confirming a request that is not the armed one changes nothing;
+	// removing the armed one's hold is refused; re-holding it is a no-op.
+	if ok, err := s.ConfirmArmed(ctx, a.ID, ext2, time.Now()); err != nil || ok {
+		t.Fatalf("stray confirm: %v %v", ok, err)
+	}
+	if err := s.HoldApproval(ctx, a.ID, DeferredApproval{UserID: "u", TaskID: "t", ExtensionID: ext, AtUnix: 3}); err != nil {
 		t.Fatal(err)
+	}
+	if got, _ = s.GetConversation(ctx, a.ID); len(got.Deferred) != 1 {
+		t.Fatalf("armed request re-held: %+v", got)
 	}
 	if got, _ = s.GetConversation(ctx, a.ID); !got.ApprovalArmedAt.Equal(at) || len(got.Deferred) != 1 {
 		t.Fatalf("stray confirm: %+v", got)
@@ -848,7 +880,7 @@ func TestPGClaimHold(t *testing.T) {
 		if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: st, Pending: draft, PendingExtensionID: ""}); err != nil {
 			t.Fatal(err)
 		}
-		ok, err := s.ClaimHold(ctx, a.ID, ext2)
+		ok, err := s.ClaimHold(ctx, a.ID, ext2, time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}

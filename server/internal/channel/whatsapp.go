@@ -258,17 +258,22 @@ func unixOrNow(s string) time.Time {
 	return time.Now().UTC()
 }
 
-// looksLikeImageURL: Meta accepts only images on an image message; other
-// files go as a link in a text message.
 var _ MediaCarrier = (*WhatsAppAdapter)(nil)
+
+// WhatsAppCaptionMax is Meta's cap on an image caption. Counted in bytes
+// here (Meta counts characters), which only errs on the safe side.
+const WhatsAppCaptionMax = 1024
 
 // CanCarryMedia: Meta's image message takes JPEG and PNG, with a caption of
 // at most 1024 characters. Anything else would be refused or, pasted as a
 // link, would outlive its token in the chat — so it is not carried.
 func (a *WhatsAppAdapter) CanCarryMedia(mediaURL string, textLen int) bool {
-	return looksLikeImageURL(mediaURL) && textLen <= 1024
+	return looksLikeImageURL(mediaURL) && textLen <= WhatsAppCaptionMax
 }
 
+// looksLikeImageURL: Meta accepts only JPEG/PNG on an image message; other
+// files go as a link in a text message (relay) or are dropped (an expiring
+// task photo).
 func looksLikeImageURL(u string) bool {
 	p := strings.ToLower(u)
 	if i := strings.IndexAny(p, "?#"); i >= 0 {

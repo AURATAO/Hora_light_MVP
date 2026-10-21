@@ -98,11 +98,15 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 	switch {
 	case (IsYes(text) || IsNo(text)) && conv.Unconfirmed():
 		// Claimed but never confirmed delivered: nothing can answer it.
-		// Re-sent from the hold once the claim is old enough; meanwhile the
-		// person is told a question is waiting.
+		// Re-sent from the hold once the claim is old enough; until then
+		// the person is told a question is on its way — not to reply YES
+		// to one they may not have seen.
 		log.Printf("[channel] approval identity=%s ext=%s: answer refused, question unconfirmed", id.ID, conv.PendingExtensionID)
 		r.resumeDeferred(ctx, id)
-		return r.Reply(ctx, in, CopyApprovalReask, "")
+		if after, err := r.Conversations.GetConversation(ctx, id.ID); err == nil && !after.Unconfirmed() {
+			return nil // repaired just now: re-sent (or ended) above
+		}
+		return r.Reply(ctx, in, CopyApprovalOnItsWay, "")
 	case (IsYes(text) || IsNo(text)) && conv.ApprovalArmedAt != nil && (in.ReceivedAt.IsZero() || in.ReceivedAt.Before(*conv.ApprovalArmedAt)):
 		// Sent before the question was asked (a second tap on YES for the
 		// booking, say), or with no usable send time: it cannot be taken as
@@ -162,8 +166,13 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 	default:
 		reply = CopyApprovalGone
 	}
-	if back := r.resumeLine(ctx, id, conv); back != "" {
-		reply += "\n\n" + back
+	if len(conv.Deferred) == 0 {
+		// Our own question comes back — unless the next held question is
+		// about to follow (one question per burst; the draft's prompt
+		// returns after that answer).
+		if back := r.resumeLine(ctx, id, conv); back != "" {
+			reply += "\n\n" + back
+		}
 	}
 	if err := r.Reply(ctx, in, reply, res.TaskID); err != nil {
 		return err
@@ -256,35 +265,24 @@ func (r *Router) clearApproval(ctx context.Context, id Identity, extensionID str
 // the clock, resolved, closed task, another supporter, another user) are
 // dropped. One at a time: the next is resumed after the answer. This is
 // the ONLY path that arms a question: the hold is claimed atomically in
-// the store — state and request set, armed-at = ArmedUnconfirmed, the hold
-// kept — so concurrent resume points ask once; then the question is sent;
-// then ConfirmArmed stamps the real time and drops the hold. Between claim
-// and confirm no message can answer it (every message precedes
-// ArmedUnconfirmed), and a crash there is repaired by the next resume
-// point, which re-sends from the hold. A failed send undoes the claim on
-// a context that outlives the caller's. Errors are logged — the person's
-// own flow must not fail over the supporter's question.
+// the store — state and request set, armed-at = ArmedUnconfirmed,
+// claimed-at stamped, the hold kept — so concurrent resume points ask
+// once; then the question is sent; then ConfirmArmed stamps the real time
+// and drops the hold. Between claim and confirm no message can answer it
+// (every message precedes ArmedUnconfirmed), and a crash there is
+// repaired here once the claim is older than UnconfirmedResend: re-sent
+// from the hold if the request is still live, cleared otherwise. A failed
+// send undoes the claim on a context that outlives the caller's. Errors
+// are logged — the person's own flow must not fail over the supporter's
+// question.
 func (r *Router) resumeDeferred(ctx context.Context, id Identity) {
 	conv, err := r.Conversations.GetConversation(ctx, id.ID)
 	if err != nil {
 		log.Printf("[channel] resume deferred identity=%s: %v", id.ID, err)
 		return
 	}
-	if conv.State == StateAwaitingApproval && conv.Unconfirmed() {
-		// Claimed, never confirmed sent. A send may still be in flight
-		// beside us; only a claim older than any live send is re-sent from
-		// the hold. With no hold to re-send from, nothing can answer it and
-		// the request's own resolution clears it.
-		if r.now().Sub(conv.UpdatedAt) < UnconfirmedResend {
-			return
-		}
-		for _, d := range conv.Deferred {
-			if d.ExtensionID == conv.PendingExtensionID {
-				log.Printf("[channel] approval ext=%s: claim unconfirmed for %s, re-sending", d.ExtensionID, UnconfirmedResend)
-				r.sendClaimed(ctx, id, d)
-				return
-			}
-		}
+	if conv.Unconfirmed() {
+		r.repairUnconfirmed(ctx, id, conv)
 		return
 	}
 	if len(conv.Deferred) == 0 || !canArmApproval(conv.State) {
@@ -295,17 +293,14 @@ func (r *Router) resumeDeferred(ctx context.Context, id Identity) {
 		return // kept; a later resume point may fall inside the window
 	}
 	for _, d := range conv.Deferred {
-		live := d.UserID == id.UserID && r.remainingMinutes(d) != 0
-		if live && r.Booker != nil {
-			live, err = r.Booker.ExtensionPending(ctx, d.UserID, d.ExtensionID)
-			if err != nil {
-				// Kept for the next resume point; the others are not held
-				// up behind it.
-				log.Printf("[channel] resume deferred ext=%s: %v", d.ExtensionID, err)
-				continue
-			}
+		live, err := r.holdLive(ctx, id, d)
+		if err != nil {
+			// Kept for the next resume point; the others are not held up
+			// behind it.
+			log.Printf("[channel] resume deferred ext=%s: %v", d.ExtensionID, err)
+			continue
 		}
-		if _, ok := approvalText(r.heldEvent(d)); !live || !ok {
+		if !live {
 			log.Printf("[channel] deferred approval ext=%s dropped: no longer the person's to answer", d.ExtensionID)
 			if err := r.Conversations.RemoveHold(ctx, id.ID, d.ExtensionID); err != nil {
 				log.Printf("[channel] resume deferred identity=%s: %v", id.ID, err)
@@ -313,7 +308,7 @@ func (r *Router) resumeDeferred(ctx context.Context, id Identity) {
 			}
 			continue
 		}
-		claimed, err := r.Conversations.ClaimHold(ctx, id.ID, d.ExtensionID)
+		claimed, err := r.Conversations.ClaimHold(ctx, id.ID, d.ExtensionID, r.now())
 		if err != nil {
 			log.Printf("[channel] resume deferred ext=%s: %v", d.ExtensionID, err)
 			return
@@ -324,6 +319,58 @@ func (r *Router) resumeDeferred(ctx context.Context, id Identity) {
 		r.sendClaimed(ctx, id, d)
 		return // one question at a time; the rest after the answer
 	}
+}
+
+// repairUnconfirmed: a claim whose delivery was never confirmed. Younger
+// than UnconfirmedResend it may still be in flight — left alone. Older, it
+// is re-sent from its hold if the request is still live, and otherwise
+// cleared (nothing could answer it anyway; the thread gets its state back).
+func (r *Router) repairUnconfirmed(ctx context.Context, id Identity, conv Conversation) {
+	if conv.ApprovalClaimedAt != nil && r.now().Sub(*conv.ApprovalClaimedAt) < UnconfirmedResend {
+		return
+	}
+	for _, d := range conv.Deferred {
+		if d.ExtensionID != conv.PendingExtensionID {
+			continue
+		}
+		live, err := r.holdLive(ctx, id, d)
+		if err != nil {
+			log.Printf("[channel] approval ext=%s: unconfirmed, liveness unknown: %v", d.ExtensionID, err)
+			return
+		}
+		if live {
+			log.Printf("[channel] approval ext=%s: claim unconfirmed for %s, re-sending", d.ExtensionID, UnconfirmedResend)
+			r.sendClaimed(ctx, id, d)
+			return
+		}
+		break
+	}
+	// No hold to re-send from, or the request is no longer live: end it.
+	log.Printf("[channel] approval ext=%s: unconfirmed claim cleared", conv.PendingExtensionID)
+	if _, err := r.Conversations.ClearApproval(ctx, id.ID, conv.PendingExtensionID, conv.ResumeState()); err != nil {
+		log.Printf("[channel] resume deferred identity=%s: %v", id.ID, err)
+		return
+	}
+	if err := r.Conversations.RemoveHold(ctx, id.ID, conv.PendingExtensionID); err != nil {
+		log.Printf("[channel] resume deferred identity=%s: %v", id.ID, err)
+	}
+}
+
+// holdLive: whether a held request is still this person's to answer —
+// their own, inside the app's auto-decline window by our clock (expiry is
+// lazy), and pending by the booker (pending, task open, same supporter,
+// not a blocked pair), with something to ask.
+func (r *Router) holdLive(ctx context.Context, id Identity, d DeferredApproval) (bool, error) {
+	if d.UserID != id.UserID || r.remainingMinutes(d) == 0 {
+		return false, nil
+	}
+	if _, ok := approvalText(r.heldEvent(d)); !ok {
+		return false, nil
+	}
+	if r.Booker == nil {
+		return true, nil
+	}
+	return r.Booker.ExtensionPending(ctx, d.UserID, d.ExtensionID)
 }
 
 // remainingMinutes: what is left of the app's auto-decline window for a
@@ -347,7 +394,9 @@ func (r *Router) heldEvent(d DeferredApproval) StatusEvent {
 
 // sendClaimed delivers a claimed question and confirms it armed; on a
 // failed send the claim is undone (the hold stays) for a later resume
-// point.
+// point. If the request ended while the send was in flight (the confirm
+// finds the claim gone), the person is told so the question they just
+// read is not left standing.
 func (r *Router) sendClaimed(ctx context.Context, id Identity, d DeferredApproval) {
 	text, _ := approvalText(r.heldEvent(d))
 	if err := r.Send(ctx, Outbound{Channel: id.Channel, To: id.Address, Text: text}, d.TaskID); err != nil {
@@ -363,9 +412,17 @@ func (r *Router) sendClaimed(ctx context.Context, id Identity, d DeferredApprova
 		}
 		return
 	}
-	if err := r.Conversations.ConfirmArmed(context.WithoutCancel(ctx), id.ID, d.ExtensionID, r.now()); err != nil {
+	confirmed, err := r.Conversations.ConfirmArmed(context.WithoutCancel(ctx), id.ID, d.ExtensionID, r.now())
+	if err != nil {
 		// Still armed as unconfirmed: unanswerable, re-sent at the next
 		// resume point (a repeat over a lost question).
 		log.Printf("[channel] resume deferred ext=%s: confirm failed: %v", d.ExtensionID, err)
+		return
+	}
+	if !confirmed {
+		log.Printf("[channel] resume deferred ext=%s: ended while the question was in flight", d.ExtensionID)
+		if err := r.Send(ctx, Outbound{Channel: id.Channel, To: id.Address, Text: CopyApprovalGone}, d.TaskID); err != nil {
+			log.Printf("[channel] resume deferred ext=%s: %v", d.ExtensionID, err)
+		}
 	}
 }
