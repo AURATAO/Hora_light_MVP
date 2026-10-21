@@ -111,3 +111,33 @@ func (s *PGStore) RecentMessages(ctx context.Context, ch Channel, address string
 	}
 	return out, nil
 }
+
+// TaskForProviderMessage: the task one of our (or their) earlier messages
+// was about, for inline replies. "" when unknown. (TaskLookup)
+func (s *PGStore) TaskForProviderMessage(ctx context.Context, ch Channel, providerMessageID string) (string, error) {
+	var taskID sql.NullString
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT task_id::text FROM channel_messages
+		WHERE channel = $1 AND provider_message_id = $2
+	`, string(ch), providerMessageID).Scan(&taskID)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("task for message: %w", err)
+	}
+	return taskID.String, nil
+}
+
+// SetMessageTask records which task an inbound message turned out to be
+// about. (TaskLookup)
+func (s *PGStore) SetMessageTask(ctx context.Context, ch Channel, providerMessageID, taskID string) error {
+	_, err := s.DB.ExecContext(ctx, `
+		UPDATE channel_messages SET task_id = $3::uuid
+		WHERE channel = $1 AND provider_message_id = $2
+	`, string(ch), providerMessageID, taskID)
+	if err != nil {
+		return fmt.Errorf("set message task: %w", err)
+	}
+	return nil
+}

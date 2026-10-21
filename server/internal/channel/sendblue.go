@@ -130,6 +130,9 @@ func (a *SendblueAdapter) Send(ctx context.Context, out Outbound) (string, error
 	if out.ReplyToProviderID != "" {
 		req["reply_to"] = map[string]string{"message_handle": out.ReplyToProviderID}
 	}
+	if out.MediaURL != "" {
+		req["media_url"] = out.MediaURL
+	}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return "", fmt.Errorf("sendblue send marshal: %w", err)

@@ -30,6 +30,9 @@ const (
 	// StateAwaitingBudget: an errand involves buying something and the chat
 	// is asking how much to set aside (M3.5).
 	StateAwaitingBudget State = "awaiting_budget"
+	// StateAwaitingTaskChoice: several supporters could be meant; the next
+	// message picks one by number (M3.2).
+	StateAwaitingTaskChoice State = "awaiting_task_choice"
 	// StatePosting means a booking is in flight (stored as 'drafting'). Only
 	// one caller can move a conversation into it — see ClaimForPosting.
 	StatePosting State = "drafting"
@@ -119,6 +122,10 @@ type Conversation struct {
 	// PendingExtensionID is the extension request the next YES/NO answers
 	// (StateAwaitingApproval).
 	PendingExtensionID string
+	// PendingTaskChoices are the task ids listed when asking which supporter
+	// a message is for; PendingRelayText is that message, relayed on pick.
+	PendingTaskChoices []string
+	PendingRelayText   string
 }
 
 // ResumeState is where a conversation goes once an approval is answered:
@@ -191,12 +198,14 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 	c := Conversation{IdentityID: identityID, State: StateIdle}
 	var state string
 	var pending []byte
-	var name, ext sql.NullString
+	var name, ext, relay sql.NullString
 	var terms sql.NullTime
+	var choicesJSON string
 	err := s.DB.QueryRowContext(ctx, `
-		SELECT state, pending_draft, pending_name, terms_accepted_at, pending_extension_id::text
+		SELECT state, pending_draft, pending_name, terms_accepted_at, pending_extension_id::text,
+		       COALESCE(array_to_json(pending_task_choices)::text, '[]'), pending_relay_text
 		FROM channel_conversations WHERE identity_id = $1
-	`, identityID).Scan(&state, &pending, &name, &terms, &ext)
+	`, identityID).Scan(&state, &pending, &name, &terms, &ext, &choicesJSON, &relay)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, nil
 	}
@@ -206,6 +215,12 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 	c.State = State(state)
 	c.PendingName = name.String
 	c.PendingExtensionID = ext.String
+	c.PendingRelayText = relay.String
+	if choicesJSON != "" && choicesJSON != "null" {
+		if err := json.Unmarshal([]byte(choicesJSON), &c.PendingTaskChoices); err != nil {
+			return c, fmt.Errorf("get conversation: decode task choices: %w", err)
+		}
+	}
 	if terms.Valid {
 		t := terms.Time
 		c.TermsAcceptedAt = &t
@@ -235,16 +250,21 @@ func (s *PGStore) SaveConversation(ctx context.Context, c Conversation) error {
 	}
 	_, err := s.DB.ExecContext(ctx, `
 		INSERT INTO channel_conversations
-		  (identity_id, state, pending_draft, pending_name, terms_accepted_at, pending_extension_id, updated_at)
-		VALUES ($1, $2, $3::jsonb, NULLIF($4, ''), $5, NULLIF($6, '')::uuid, now())
+		  (identity_id, state, pending_draft, pending_name, terms_accepted_at, pending_extension_id,
+		   pending_task_choices, pending_relay_text, updated_at)
+		VALUES ($1, $2, $3::jsonb, NULLIF($4, ''), $5, NULLIF($6, '')::uuid,
+		        NULLIF($7, '{}')::uuid[], NULLIF($8, ''), now())
 		ON CONFLICT (identity_id) DO UPDATE SET
 		  state = EXCLUDED.state,
 		  pending_draft = EXCLUDED.pending_draft,
 		  pending_name = EXCLUDED.pending_name,
 		  terms_accepted_at = COALESCE(channel_conversations.terms_accepted_at, EXCLUDED.terms_accepted_at),
 		  pending_extension_id = EXCLUDED.pending_extension_id,
+		  pending_task_choices = EXCLUDED.pending_task_choices,
+		  pending_relay_text = EXCLUDED.pending_relay_text,
 		  updated_at = now()
-	`, c.IdentityID, string(c.State), pending, c.PendingName, terms, c.PendingExtensionID)
+	`, c.IdentityID, string(c.State), pending, c.PendingName, terms, c.PendingExtensionID,
+		pgUUIDArray(c.PendingTaskChoices), c.PendingRelayText)
 	if err != nil {
 		return fmt.Errorf("save conversation: %w", err)
 	}
@@ -320,4 +340,10 @@ func CleanName(text string) string {
 		return ""
 	}
 	return t
+}
+
+// pgUUIDArray renders ids as a Postgres array literal ('{a,b}'; '{}' when
+// empty, which the INSERT turns into NULL).
+func pgUUIDArray(ids []string) string {
+	return "{" + strings.Join(ids, ",") + "}"
 }

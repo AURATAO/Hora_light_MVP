@@ -142,6 +142,9 @@ CREATE TABLE IF NOT EXISTS public.channel_conversations (
   pending_extension_id   uuid REFERENCES public.extension_requests(id),
   -- Candidate tasks offered in a "which task?" question, in the order listed.
   pending_task_choices   uuid[],
+  -- The message held while asking which task it is for (M3.2), relayed on
+  -- the pick. Message text, like pending_draft; purged with the identity.
+  pending_relay_text     text,
   -- Last message FROM the person. WhatsApp free-form replies are allowed for
   -- 24h after this; later messages need an approved template.
   last_inbound_at        timestamp with time zone,

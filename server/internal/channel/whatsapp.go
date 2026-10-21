@@ -179,6 +179,12 @@ func (a *WhatsAppAdapter) Send(ctx context.Context, o Outbound) (string, error) 
 		"type": "text",
 		"text": map[string]any{"body": o.Text, "preview_url": false},
 	}
+	if o.MediaURL != "" {
+		// An image message with the text as its caption.
+		delete(payload, "text")
+		payload["type"] = "image"
+		payload["image"] = map[string]any{"link": o.MediaURL, "caption": o.Text}
+	}
 	if o.ReplyToProviderID != "" {
 		payload["context"] = map[string]string{"message_id": o.ReplyToProviderID}
 	}

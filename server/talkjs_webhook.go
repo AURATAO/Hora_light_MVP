@@ -185,6 +185,9 @@ func handleTalkJSWebhook(c *gin.Context, db *sql.DB) {
 		// hold up the webhook response (S-32).
 		go notify.SendPush(context.Background(), db, userID, taskID, "NEW_MESSAGE", title, body)
 	}
+	// Requesters who book by text get the supporter's words on their phone
+	// (channel_relay.go). Off the request path like the pushes.
+	go relayChatMessageToRequester(db, taskID, senderUID, title, ev.Data.Message)
 
 	c.Status(http.StatusOK)
 }

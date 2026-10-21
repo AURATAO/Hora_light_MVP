@@ -121,6 +121,10 @@ type Router struct {
 	// request then gets the holding copy and an error in the log).
 	Ops    OpsNotifier
 	Thread ThreadReader
+	// Chat and Tasks bridge the task chat (relay.go). Chat nil = no relay:
+	// a linked requester's small talk gets CopyAck as before.
+	Chat  TaskChat
+	Tasks TaskLookup
 	// Go runs a reply off the request path when the caller is an HTTP
 	// request (S-32: the setup page's finish step must not wait on
 	// Sendblue/Meta). Default `go f()`; tests run it inline.
@@ -201,6 +205,8 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 		return r.onAwaitingApproval(ctx, in, id, conv, text)
 	case StateAwaitingBudget:
 		return r.onAwaitingBudget(ctx, in, id, conv, text)
+	case StateAwaitingTaskChoice:
+		return r.onAwaitingTaskChoice(ctx, in, id, conv, text)
 	default:
 		return r.onIdle(ctx, in, id, conv, text)
 	}
@@ -210,9 +216,15 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 	// A bare YES/NO with nothing pending (a late duplicate YES after the
 	// booking went through, a NO to nothing) never starts a draft: "YES" is
 	// not an errand, and parsing it as one would book nonsense.
+	// An inline reply to a supporter's message is for the supporter, whatever
+	// it says (relay.go step 5) — "yes please" answering "toasted?" is not a
+	// booking YES: nothing is pending here, so nothing can be booked.
+	if tid := r.inlineTarget(ctx, in, id); tid != "" {
+		return r.relay(ctx, in, id, tid, text)
+	}
 	if IsYes(text) || IsNo(text) {
 		if id.Linked() {
-			return r.Reply(ctx, in, CopyAck, "")
+			return r.relayOr(ctx, in, id, conv, text, CopyAck)
 		}
 		return r.Reply(ctx, in, CopyWelcome, "")
 	}
@@ -228,17 +240,22 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 	case llm.IntentNewTask:
 		return r.startDraft(ctx, in, id, conv, text)
 	case llm.IntentQuestion:
+		// With a supporter on the job, "where are you?" is for them.
+		if id.Linked() {
+			return r.relayOr(ctx, in, id, conv, text, CopyAbout)
+		}
 		return r.Reply(ctx, in, CopyAbout, "")
 	case llm.IntentGreeting:
 		if id.Linked() {
-			return r.Reply(ctx, in, CopyHelloAgain, "")
+			return r.relayOr(ctx, in, id, conv, text, CopyHelloAgain)
 		}
 		return r.Reply(ctx, in, CopyWelcome, "")
 	default:
-		// "good", "thanks", "ok" — typically a reaction to a status update.
-		// A customer is not re-introduced to the service; a stranger is.
+		// "good", "thanks", "ok" — a reaction to a status update, or a word
+		// for the supporter when one is on the job. A customer is not
+		// re-introduced to the service; a stranger is.
 		if id.Linked() {
-			return r.Reply(ctx, in, CopyAck, "")
+			return r.relayOr(ctx, in, id, conv, text, CopyAck)
 		}
 		return r.Reply(ctx, in, CopyWelcome, "")
 	}

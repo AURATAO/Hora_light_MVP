@@ -64,6 +64,9 @@ type Outbound struct {
 	// Text. A setup link carries a raw token that must never be stored
 	// (S-11 amended, condition 3: only its SHA-256 hash is kept).
 	StoredText string
+	// MediaURL, when set, attaches a public image (a supporter's photo
+	// relayed from the task chat). Text still goes as the caption/body.
+	MediaURL string
 }
 
 // RecordedText is the body to store for o.

@@ -582,3 +582,61 @@ func TestPGThreadAndHandedOff(t *testing.T) {
 		t.Fatalf("want ErrIdentityNotFound, got %v", err)
 	}
 }
+
+// M3.2: the task list and the held message round-trip, clear to NULL, and
+// an inbound message can be tagged with its task so an inline reply finds it.
+func TestPGTaskChoiceAndMessageTaskRoundTrip(t *testing.T) {
+	db := testDB(t)
+	s := &PGStore{DB: db}
+	ctx := context.Background()
+	a, err := s.UpsertIdentity(ctx, IMessage, "+15550000505")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var t1, t2 string
+	if err := db.QueryRow(`INSERT INTO tasks DEFAULT VALUES RETURNING id`).Scan(&t1); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`INSERT INTO tasks DEFAULT VALUES RETURNING id`).Scan(&t2); err != nil {
+		t.Fatal(err)
+	}
+	c := Conversation{IdentityID: a.ID, State: StateAwaitingTaskChoice, PendingTaskChoices: []string{t1, t2}, PendingRelayText: "leave it at the door"}
+	if err := s.SaveConversation(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetConversation(ctx, a.ID)
+	if err != nil || got.State != StateAwaitingTaskChoice || len(got.PendingTaskChoices) != 2 ||
+		got.PendingTaskChoices[0] != t1 || got.PendingTaskChoices[1] != t2 || got.PendingRelayText != "leave it at the door" {
+		t.Fatalf("%+v %v", got, err)
+	}
+	got.State, got.PendingTaskChoices, got.PendingRelayText = StateIdle, nil, ""
+	if err := s.SaveConversation(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.GetConversation(ctx, a.ID)
+	if err != nil || again.State != StateIdle || len(again.PendingTaskChoices) != 0 || again.PendingRelayText != "" {
+		t.Fatalf("%+v %v", again, err)
+	}
+	var nulls int
+	if err := db.QueryRow(`SELECT count(*) FROM channel_conversations WHERE identity_id = $1 AND pending_task_choices IS NULL AND pending_relay_text IS NULL`, a.ID).Scan(&nulls); err != nil || nulls != 1 {
+		t.Fatalf("cleared fields must be NULL: %d %v", nulls, err)
+	}
+
+	// Inbound message → task tag → lookup.
+	in := Inbound{Channel: IMessage, ProviderMessageID: "in-relay-1", From: "+15550000505", Text: "ok", ReceivedAt: time.Now()}
+	if _, err := s.RecordInbound(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	if tid, err := s.TaskForProviderMessage(ctx, IMessage, "in-relay-1"); err != nil || tid != "" {
+		t.Fatalf("untagged message: %q %v", tid, err)
+	}
+	if err := s.SetMessageTask(ctx, IMessage, "in-relay-1", t2); err != nil {
+		t.Fatal(err)
+	}
+	if tid, err := s.TaskForProviderMessage(ctx, IMessage, "in-relay-1"); err != nil || tid != t2 {
+		t.Fatalf("%q %v", tid, err)
+	}
+	if tid, err := s.TaskForProviderMessage(ctx, IMessage, "never-seen"); err != nil || tid != "" {
+		t.Fatalf("unknown message: %q %v", tid, err)
+	}
+}

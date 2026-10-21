@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"log"
 	"net/http"
@@ -65,6 +66,14 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		Status:   store,
 		Ops:      opsEmailNotifier{sqlDB: sqlDB},
 		Thread:   store,
+		// Chat relay both ways (channel_relay.go).
+		Chat:  &talkjsRelay{sqlDB: sqlDB},
+		Tasks: store,
+	}
+	chatRelayHook = func(ctx context.Context, requesterID, taskID, supporterName, taskTitle, text, mediaURL string) {
+		if err := router.RelayToChat(ctx, requesterID, taskID, supporterName, taskTitle, text, mediaURL); err != nil {
+			log.Printf("[channel] relay to chat task=%s: %v", taskID, err)
+		}
 	}
 	// Task status updates to the chat (channel_status.go). Set here, before
 	// the server starts, and only when the flag is on.
