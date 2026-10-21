@@ -234,6 +234,15 @@ func TestExtensionPendingChecksAgeTaskAndSupporter(t *testing.T) {
 		t.Fatal(err)
 	}
 	check(other, false, "supporter no longer on the task")
+	if _, err := db.Exec(ctx, `update public.tasks set assigned_to_id = $2::uuid, assigned_to = $3 where id = $1::uuid`, w.taskID, w.supporterID, w.supporterEmail); err != nil {
+		t.Fatal(err)
+	}
+	check(other, true, "supporter back on the task")
+	blockPair(t, w.requesterID, w.supporterID)
+	check(other, false, "a blocked pair, like the relay")
+	if _, err := sqldb.ExecContext(ctx, `DELETE FROM public.user_blocks`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.Exec(ctx, `update public.tasks set assigned_to_id = $2::uuid, assigned_to = $3, status = 'cancelled' where id = $1::uuid`, w.taskID, w.supporterID, w.supporterEmail); err != nil {
 		t.Fatal(err)
 	}

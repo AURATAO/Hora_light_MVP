@@ -96,6 +96,11 @@ func quotedNote(s string) string {
 func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
 	var approve bool
 	switch {
+	case (IsYes(text) || IsNo(text)) && conv.ApprovalArmedAt != nil && !in.ReceivedAt.IsZero() && in.ReceivedAt.Before(*conv.ApprovalArmedAt):
+		// Sent before the question was asked (a second tap on YES for the
+		// booking, say): it cannot be answering it. The question is put
+		// again; nothing moves (S-11/5).
+		return r.Reply(ctx, in, CopyApprovalReask, "")
 	case IsYes(text):
 		approve = true
 	case IsNo(text):
@@ -117,6 +122,7 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 
 	// Whatever happened, this question is answered or gone: resume.
 	conv.PendingExtensionID = ""
+	conv.ApprovalArmedAt = nil
 	conv.State = conv.ResumeState()
 	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 		return fmt.Errorf("onAwaitingApproval: %w", err)
@@ -182,9 +188,11 @@ func (r *Router) resumeLine(ctx context.Context, id Identity, conv Conversation)
 // canArmApproval: the states an approval question can interrupt. Elsewhere
 // (handoff, booking in flight) the question is not sent to the phone
 // (D-17 P4, I-O) — the app still has it.
+// Not while another question is armed: one at a time, so a YES can never
+// land on a request other than the one it was read against.
 func canArmApproval(s State) bool {
 	switch s {
-	case StateIdle, StateAwaitingConfirm, StateAwaitingApproval, StateAwaitingTaskChoice, StateAwaitingBudget, StateAwaitingName:
+	case StateIdle, StateAwaitingConfirm, StateAwaitingTaskChoice, StateAwaitingBudget, StateAwaitingName:
 		return true
 	}
 	return false
@@ -199,7 +207,7 @@ func (r *Router) askApproval(ctx context.Context, identityID, extensionID string
 		return fmt.Errorf("askApproval: %w", err)
 	}
 	switch conv.State {
-	case StateIdle, StateAwaitingConfirm, StateAwaitingApproval, StateAwaitingTaskChoice,
+	case StateIdle, StateAwaitingConfirm, StateAwaitingTaskChoice,
 		StateAwaitingBudget, StateAwaitingName:
 		// The supporter's request interrupts our own questions (D-17 P4):
 		// a draft, a budget or name question, or a held relay message
@@ -207,6 +215,8 @@ func (r *Router) askApproval(ctx context.Context, identityID, extensionID string
 		// re-asks it.
 		conv.State = StateAwaitingApproval
 		conv.PendingExtensionID = extensionID
+		now := r.now()
+		conv.ApprovalArmedAt = &now
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 			return fmt.Errorf("askApproval: %w", err)
 		}
@@ -220,9 +230,13 @@ func (r *Router) askApproval(ctx context.Context, identityID, extensionID string
 	}
 }
 
-// clearApproval is called when the request resolved elsewhere (the app, or
-// the timeout): a later YES must not answer it.
-func (r *Router) clearApproval(ctx context.Context, identityID string) error {
+// clearApproval is called when a request resolved elsewhere (the app, or
+// the timeout): a later YES must not answer it. Only the armed question
+// for THAT request is cleared — a resolution of another request on the
+// same task leaves the asked question armed. When the event does not say
+// which request resolved, the armed one is kept unless the booker says it
+// is no longer pending.
+func (r *Router) clearApproval(ctx context.Context, identityID, userID, extensionID string) error {
 	conv, err := r.Conversations.GetConversation(ctx, identityID)
 	if err != nil {
 		return fmt.Errorf("clearApproval: %w", err)
@@ -230,7 +244,21 @@ func (r *Router) clearApproval(ctx context.Context, identityID string) error {
 	if conv.State != StateAwaitingApproval {
 		return nil
 	}
+	if extensionID != "" {
+		if conv.PendingExtensionID != extensionID {
+			return nil
+		}
+	} else if r.Booker != nil && conv.PendingExtensionID != "" {
+		pending, err := r.Booker.ExtensionPending(ctx, userID, conv.PendingExtensionID)
+		if err != nil {
+			return fmt.Errorf("clearApproval: %w", err)
+		}
+		if pending {
+			return nil // some other request resolved; this question stands
+		}
+	}
 	conv.PendingExtensionID = ""
+	conv.ApprovalArmedAt = nil
 	conv.State = conv.ResumeState()
 	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 		return fmt.Errorf("clearApproval: %w", err)
@@ -238,21 +266,28 @@ func (r *Router) clearApproval(ctx context.Context, identityID string) error {
 	return nil
 }
 
-// resumeDeferred sends and arms the oldest held approval question that is
-// still the person's to answer, once the thread can take it; stale ones
-// (timed out by the clock, resolved, closed task, another supporter) are
-// dropped. One at a time: the next is resumed after the answer. Sent
-// before it is cleared (at-least-once: a crash in between repeats the
-// question, never loses it). Errors are logged — the person's own flow
-// must not fail over the supporter's question.
+// resumeDeferred asks the oldest held approval question that is still the
+// person's to answer, once the thread can take it; stale ones (timed out by
+// the clock, resolved, closed task, another supporter, another user) are
+// dropped. One at a time: the next is resumed after the answer. The hold is
+// claimed atomically in the store — armed and removed in one statement,
+// conditional on the state — so two resume points running at once cannot
+// both ask it, and only then is it sent; if the send fails the claim is
+// undone and the hold put back for a later resume point. Errors are
+// logged — the person's own flow must not fail over the supporter's
+// question.
 func (r *Router) resumeDeferred(ctx context.Context, id Identity) {
 	conv, err := r.Conversations.GetConversation(ctx, id.ID)
 	if err != nil {
 		log.Printf("[channel] resume deferred identity=%s: %v", id.ID, err)
 		return
 	}
-	if len(conv.Deferred) == 0 || !canArmApproval(conv.State) || conv.State == StateAwaitingApproval {
+	if len(conv.Deferred) == 0 || !canArmApproval(conv.State) {
 		return
+	}
+	if id.Channel == WhatsApp && (conv.LastInboundAt == nil || r.now().Sub(*conv.LastInboundAt) > WhatsAppWindow) {
+		log.Printf("[channel] deferred approvals identity=%s not sent: outside WhatsApp 24h window", id.ID)
+		return // kept; a later resume point may fall inside the window
 	}
 	for _, d := range conv.Deferred {
 		remaining := d.TimeoutMinutes
@@ -263,11 +298,16 @@ func (r *Router) resumeDeferred(ctx context.Context, id Identity) {
 		if live && r.Booker != nil {
 			live, err = r.Booker.ExtensionPending(ctx, d.UserID, d.ExtensionID)
 			if err != nil {
+				// Kept for the next resume point; the others are not held
+				// up behind it.
 				log.Printf("[channel] resume deferred ext=%s: %v", d.ExtensionID, err)
-				return // retried at the next resume point; the hold stays
+				continue
 			}
 		}
-		if !live {
+		ev := StatusEvent{Type: d.Type, TaskID: d.TaskID, TaskTitle: d.TaskTitle, SupporterName: d.SupporterName,
+			ExtensionID: d.ExtensionID, ApprovalMinutes: remaining, Approval: &d.Approval}
+		text, ok := approvalText(ev)
+		if !live || !ok {
 			log.Printf("[channel] deferred approval ext=%s dropped: no longer the person's to answer", d.ExtensionID)
 			if err := r.Conversations.RemoveHold(ctx, id.ID, d.ExtensionID); err != nil {
 				log.Printf("[channel] resume deferred identity=%s: %v", id.ID, err)
@@ -275,33 +315,22 @@ func (r *Router) resumeDeferred(ctx context.Context, id Identity) {
 			}
 			continue
 		}
-		if id.Channel == WhatsApp && r.Status != nil {
-			if t, found, err := r.Status.StatusTargetFor(ctx, d.UserID, d.TaskID); err == nil && found &&
-				(t.LastInboundAt == nil || r.now().Sub(*t.LastInboundAt) > WhatsAppWindow) {
-				log.Printf("[channel] deferred approval ext=%s not sent: outside WhatsApp 24h window", d.ExtensionID)
-				return // kept; a later resume point may fall inside the window
-			}
-		}
-		ev := StatusEvent{Type: d.Type, TaskID: d.TaskID, TaskTitle: d.TaskTitle, SupporterName: d.SupporterName,
-			ExtensionID: d.ExtensionID, ApprovalMinutes: remaining, Approval: &d.Approval}
-		text, ok := approvalText(ev)
-		if !ok {
-			log.Printf("[channel] deferred approval ext=%s dropped: nothing to ask", d.ExtensionID)
-			if err := r.Conversations.RemoveHold(ctx, id.ID, d.ExtensionID); err != nil {
-				log.Printf("[channel] resume deferred identity=%s: %v", id.ID, err)
-				return
-			}
-			continue
-		}
-		if err := r.Send(ctx, Outbound{Channel: id.Channel, To: id.Address, Text: text}, d.TaskID); err != nil {
+		claimed, err := r.Conversations.ClaimHold(ctx, id.ID, d.ExtensionID, r.now())
+		if err != nil {
 			log.Printf("[channel] resume deferred ext=%s: %v", d.ExtensionID, err)
 			return
 		}
-		if err := r.Conversations.RemoveHold(ctx, id.ID, d.ExtensionID); err != nil {
-			log.Printf("[channel] resume deferred identity=%s: %v", id.ID, err)
+		if !claimed {
+			return // another resume point got there first, or the state moved
 		}
-		if err := r.askApproval(ctx, id.ID, d.ExtensionID); err != nil {
-			log.Printf("[channel] resume deferred ext=%s: %v", d.ExtensionID, err)
+		if err := r.Send(ctx, Outbound{Channel: id.Channel, To: id.Address, Text: text}, d.TaskID); err != nil {
+			log.Printf("[channel] resume deferred ext=%s: send failed, hold kept: %v", d.ExtensionID, err)
+			if err := r.Conversations.HoldApproval(ctx, id.ID, d); err != nil {
+				log.Printf("[channel] resume deferred identity=%s: %v", id.ID, err)
+			}
+			if err := r.clearApproval(ctx, id.ID, id.UserID, d.ExtensionID); err != nil {
+				log.Printf("[channel] resume deferred identity=%s: %v", id.ID, err)
+			}
 		}
 		return // one question at a time; the rest after the answer
 	}

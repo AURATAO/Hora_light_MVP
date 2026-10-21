@@ -25,6 +25,31 @@
 - **I-F. Production-affecting edits outside the new package** (all behaviour-equivalent in production): `main.go` — `gin.Default()` rebuilt as `gin.New()` + Logger(SkipPaths) + Recovery; `DB_MAX_CONNS` (default 8, unchanged). `payments.go` — staging-only live-key refusal. `notify.go` — the hook (nil in prod). `live_tracking.go` — `ON_MY_WAY` call (no-op while the hook is nil). `AvatarUploader.jsx` — reads `VITE_API_BASE_URL` as a fallback.
 - **I-G. The migration file was edited after its first apply to the staging branch** (added `awaiting_name`, `pending_name`, `terms_accepted_at`). It has never shipped; the branch was altered to match. S-21's forward-only rule is read as applying from first production apply.
 - **I-H. Legacy `/webhooks/whatsapp` stub (S-60.6)** stays registered during the freeze; removed in the go-live change.
+- **I-R. Task photos reach the messaging providers (M3.6, 2026-10-22).** A
+  new data class beyond I-B's message text: after COMPLETED, the completion
+  photo and the receipt photo — which can show someone's home — are sent to
+  the requester's own thread through Sendblue (`media_url`, fetched by
+  Sendblue server-side and stored as an attachment on the iMessage) and
+  Meta (image message with caption; Meta fetches and caches the media).
+  Rules: (1) only a signed link to one of OUR `task-completions` objects
+  ever leaves — `signedTaskPhotoURL` fails closed, so a reference that is
+  not ours, or that cannot be signed, is left out (the text still goes, the
+  email carries the photos); (2) the link lives `taskPhotoLinkTTL` (1 hour),
+  enough for the provider's fetch; (3) the link is never stored in
+  `channel_messages` (the body is the text) and never logged — provider
+  error bodies are masked for URLs and `token=` values before they reach
+  an error string; (4) on WhatsApp a media reference that is not an image
+  link is dropped, not pasted as text, because a link in the chat would
+  outlive its token; (5) a media send the provider refuses falls back to
+  the words once, so "done" is never lost to a photo, and a receipt photo
+  that cannot be sent becomes "Receipt: $X. The photo is in your email.";
+  (6) outside WhatsApp's 24h window nothing is sent (template, M4), as for
+  every status. Privacy Policy: §1 already says completion and receipt
+  photos are shown to the requester through short-lived signed links; the
+  iMessage/WhatsApp line in §1 and §5(b) must name the photos as sent via
+  those providers (Aura's edit list, PLAN §11). Delivery is at-most-once
+  per notification row, like the email; a repeated COMPLETED notification
+  repeats the messages.
 
 ## Constitution impact
 - Standards added: none proposed yet. Candidate: "a credential never travels in a URL query string" (generalising the S-12 fixes here).
@@ -203,3 +228,37 @@ PASS + INCOMPLETE may be conditionally approved only if (a) every check that did
 - Recorded as follow-ups (PLAN §13): MINOR-1 single approval slot — a resolution of request A clears the arm for request B (fails closed: a later YES gets "Got it"; fix: carry the extension id on `EXTENSION_RESOLVED` and clear only on match); MINOR-6 a blocked supporter's approval note still reaches the phone (same as the app's push; one line in safety); MINOR-8 an approval question can be sent while unarmable (pre-existing; check armability before sending).
 **Verifier (round 7, at `d8a9f42`):** EXIT=1 — inherited gitleaks (C-2); I-05 INCOMPLETE (docker, C-1); everything else green incl. full server suite with DB.
 **Arbiter (Aura):** _pending_ — M3.2 under the same conditional approval as D-16 (C-1..C-3) plus the staging evidence (R3-4) before it is called done; interpretations I-K, I-L to confirm.
+
+### M3.6 (completion photo + receipt to the requester's chat) — review round 1 — 2026-10-22 at `03a97bc` (Reviewer: Sonnet, isolated; Verifier: with the M3.2c run)
+
+**FAIL ×5 MAJOR.** (1) `photosOf` used `signTaskPhotoURL`, which returns
+its input unchanged when the reference is not ours, storage is not
+configured or signing fails — so a public-form or supporter-controlled URL
+could reach Sendblue/Meta in HO:RA's voice. (2) A provider error body that
+echoes the signed link would put its token in a log line
+(`ProviderErrorText` masked only digit runs). (3) A media send the provider
+refused lost the "done" message entirely. (4) "Purchases: $X (receipt
+below)" could be false — the second send can fail, and Sendblue does not
+guarantee order. (5) No decision record for a new data class going to
+third parties. MINOR: tests stubbed `photosOf`; no WhatsApp/`.heic`/
+"see photo"/send-failure/repeat cases; purchases without a receipt photo
+were silently dropped; copy "Receipt for the purchases"; `formatCentsUSD`
+untested; idempotency and photo-before-notification ordering unproven.
+
+Fixed (all): `signedTaskPhotoURL` (fail-closed; reasons never carry the
+URL) and `photosOf` uses only it, logging task id + reason; the amount is
+stated even without a receipt photo ("Purchases: $X, included in the total
+(receipt in your email)"), and with one, "(receipt photo follows)" — no
+order promised; `ProviderErrorText` masks `https?://…` and `token=…`;
+`sendWithMediaFallback` resends the words once when the media is refused
+(receipt → "Receipt: $X. The photo is in your email."); WhatsApp drops a
+non-image media reference instead of pasting the link; copy "Receipt: $X.";
+I-R above. Tests: real `photosOf` against the DB (ours-but-unsigned /
+not-ours / nothing), WhatsApp image payload with a signed query string and
+the `.heic` drop, error-text masking, media refusal fallback for both
+messages, purchases without photo, photo without amount, outside the 24h
+window, `formatCentsUSD`, and that no stored body carries `token=`.
+Ordering: the photo columns are written in the same statement as
+`status='completed'` (main.go) before `notify.Create` runs — the lookup
+cannot race the upload. Idempotency: at-most-once per notification row,
+same as the email (declared in I-R).

@@ -2,6 +2,7 @@ package channel
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -124,11 +125,12 @@ func TestStatusTextOnMyWayIsChatOnlyCopy(t *testing.T) {
 // second message with the receipt photo and the amount. Both are sent to
 // the booking thread, tagged with the task.
 func TestCompletedCarriesPhotoAndReceipt(t *testing.T) {
-	g := newRig("")
-	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
+	target := &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
 	ev := StatusEvent{Type: "COMPLETED", TaskID: "task-1", TaskTitle: "Bagel run", SupporterName: "Sam", TotalLogged: "32 min", FinalCost: "$27.40",
 		PhotoURL:        "https://x.supabase.co/storage/v1/object/sign/task-completions/c/1.jpg?token=a",
 		ReceiptPhotoURL: "https://x.supabase.co/storage/v1/object/sign/task-completions/r/1.jpg?token=b", ReceiptTotal: "$12.40"}
+	g := newRig("")
+	g.r.Status = target
 	if err := g.r.NotifyStatus(context.Background(), "user-1", ev); err != nil {
 		t.Fatal(err)
 	}
@@ -136,18 +138,25 @@ func TestCompletedCarriesPhotoAndReceipt(t *testing.T) {
 		t.Fatalf("sent %d", len(g.ad.sent))
 	}
 	done, receipt := g.ad.sent[0], g.ad.sent[1]
-	if !strings.HasPrefix(done.Text, "Done: “Bagel run”.") || !strings.Contains(done.Text, "Purchases: $12.40 (receipt below)") || done.MediaURL != ev.PhotoURL {
+	if !strings.HasPrefix(done.Text, "Done: “Bagel run”.") || !strings.Contains(done.Text, "Purchases: $12.40, included in the total (receipt photo follows)") || done.MediaURL != ev.PhotoURL {
 		t.Fatalf("done: %+v", done)
 	}
-	if receipt.Text != "Receipt for the purchases: $12.40." || receipt.MediaURL != ev.ReceiptPhotoURL {
+	if receipt.Text != "Receipt: $12.40." || receipt.MediaURL != ev.ReceiptPhotoURL {
 		t.Fatalf("receipt: %+v", receipt)
 	}
 	if g.st.lastOutboundTask() != "task-1" {
 		t.Fatal("receipt must be recorded against the task")
 	}
+	// The signed links never reach the message store (S-12).
+	for _, body := range g.st.storedBodies() {
+		if strings.Contains(body, "token=") || strings.Contains(body, "supabase.co") {
+			t.Fatalf("signed link stored: %q", body)
+		}
+	}
+
 	// No purchases: one message, with the photo; no photo: text only.
 	g = newRig("")
-	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
+	g.r.Status = target
 	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: "COMPLETED", TaskID: "task-1", TaskTitle: "Laundry", PhotoURL: "https://cdn/p.jpg"}); err != nil {
 		t.Fatal(err)
 	}
@@ -155,11 +164,56 @@ func TestCompletedCarriesPhotoAndReceipt(t *testing.T) {
 		t.Fatalf("%+v", g.ad.sent)
 	}
 	g = newRig("")
-	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
+	g.r.Status = target
 	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: "COMPLETED", TaskID: "task-1", TaskTitle: "Laundry"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(g.ad.sent) != 1 || g.ad.sent[0].MediaURL != "" {
+		t.Fatalf("%+v", g.ad.sent)
+	}
+
+	// Purchases without a receipt photo: the amount is still stated, and
+	// where the receipt is; no second message.
+	g = newRig("")
+	g.r.Status = target
+	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: "COMPLETED", TaskID: "task-1", TaskTitle: "Laundry", ReceiptTotal: "$3.00"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.ad.sent) != 1 || !strings.Contains(g.ad.sent[0].Text, "Purchases: $3.00, included in the total (receipt in your email)") {
+		t.Fatalf("%+v", g.ad.sent)
+	}
+
+	// A receipt photo without an amount: "see photo".
+	g = newRig("")
+	g.r.Status = target
+	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: "COMPLETED", TaskID: "task-1", TaskTitle: "Laundry", ReceiptPhotoURL: "https://cdn/r.jpg"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.ad.sent) != 2 || g.ad.sent[1].Text != "Receipt: see photo." {
+		t.Fatalf("%+v", g.ad.sent)
+	}
+
+	// The provider refuses the media: the words still go, once, on their
+	// own — and the receipt amount with where the photo is.
+	g = newRig("")
+	g.r.Status = target
+	g.ad.mediaErr = errors.New("media_url unreachable")
+	if err := g.r.NotifyStatus(context.Background(), "user-1", ev); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.ad.sent) != 2 || g.ad.sent[0].MediaURL != "" || !strings.HasPrefix(g.ad.sent[0].Text, "Done: “Bagel run”.") ||
+		g.ad.sent[1].MediaURL != "" || g.ad.sent[1].Text != "Receipt: $12.40. The photo is in your email." {
+		t.Fatalf("%+v", g.ad.sent)
+	}
+
+	// WhatsApp outside the 24h window: nothing is sent, photos included.
+	old := time.Now().Add(-25 * time.Hour)
+	g = newRig("")
+	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: WhatsApp, Address: me}, LastInboundAt: &old}}
+	if err := g.r.NotifyStatus(context.Background(), "user-1", ev); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.ad.sent) != 0 {
 		t.Fatalf("%+v", g.ad.sent)
 	}
 }

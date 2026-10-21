@@ -144,6 +144,9 @@ CREATE TABLE IF NOT EXISTS public.channel_conversations (
   -- The budget/time request awaiting the person's YES/NO. Its own expiry
   -- (extension_requests) still decides the default outcome.
   pending_extension_id   uuid REFERENCES public.extension_requests(id),
+  -- When that question was asked. A message sent before it (a second tap
+  -- on YES for the booking) cannot be its answer (D-17 I-O, S-11/5).
+  approval_armed_at      timestamp with time zone,
   -- Candidate tasks offered in a "which task?" question, in the order listed.
   pending_task_choices   uuid[],
   -- The message held while asking which task it is for (M3.2), relayed on
@@ -198,7 +201,8 @@ NOTIFY pgrst, 'reload schema';
 ALTER TABLE public.channel_conversations
   ADD COLUMN IF NOT EXISTS pending_task_choices uuid[],
   ADD COLUMN IF NOT EXISTS pending_relay_text   text,
-  ADD COLUMN IF NOT EXISTS deferred_approval    jsonb;
+  ADD COLUMN IF NOT EXISTS deferred_approval    jsonb,
+  ADD COLUMN IF NOT EXISTS approval_armed_at    timestamp with time zone;
 ALTER TABLE public.channel_messages
   ADD COLUMN IF NOT EXISTS relay boolean NOT NULL DEFAULT false;
 -- The state set grew the same way; re-assert the CHECK so an older table

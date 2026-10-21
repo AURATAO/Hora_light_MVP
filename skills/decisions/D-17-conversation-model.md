@@ -221,3 +221,45 @@ structured composition (M3.2 R6); authorization in both directions.
   Verify also surfaced a gitleaks hit on main's placeholder Stripe key in
   `payments_phase3_test.go` (0bf9d39): a false positive, allowlisted by
   fingerprint in `.gitleaksignore` with a note.
+- **Round 2 (35ee771) — FAIL.** MAJOR-1 and MAJOR-2 of round 1 closed;
+  MAJOR-3/4 closed for the hold list but still open for the *armed*
+  question: (1) `EXTENSION_RESOLVED` carried no request id, so a resolution
+  of request B disarmed the asked question A (the person's YES then got
+  "Got it" and A auto-declined) — and A's own late resolution hook disarmed
+  B after the chain armed it; (2) `canArmApproval` included
+  `awaiting_approval`, so a second live request was sent and armed OVER the
+  first — a YES read against A would approve B. MINOR: send → RemoveHold →
+  askApproval could leave a sent question unarmed with the hold gone; no
+  mutual exclusion between resume points (two could send, one could orphan
+  the other's arming); a YES sent before the question was asked (the
+  double-tap on the booking's YES) could answer it; `ExtensionPending`
+  lacked the blocked-pair filter; one poison hold blocked the rest;
+  `RemoveHold` did not preserve order; the I-L exemption in the gate was
+  not WhatsApp-only; `memConversations.RemoveHold` made phantom rows;
+  `resumeDeferred` trusted the caller's `UserID` and `StatusTargetFor`'s
+  identity for the window; tests missing for all of it.
+
+  Fixed (all): `notify.CreateNotificationInput.ExtensionID` set on the
+  requester's `EXTENSION_RESOLVED` (extensions.go) and carried on the
+  event; `clearApproval(identity, user, ext)` clears only the armed
+  question for THAT request, and with no id keeps it while the booker says
+  it is still pending. `canArmApproval` excludes `awaiting_approval`: a
+  request arriving while one is armed is held (one at a time), the same
+  request again is a no-op. `ClaimHold` is one UPDATE — state, request,
+  `approval_armed_at` (new column; staging ALTER applied) and hold removal
+  together, conditional on an armable state and the hold being present —
+  so concurrent resume points ask once; only after the claim is the
+  question sent, and a failed send undoes the claim and puts the hold back.
+  `onAwaitingApproval` refuses a YES/NO whose `ReceivedAt` precedes
+  `ApprovalArmedAt` and re-asks. Booker errors skip the entry, not the
+  list. `ExtensionPending` adds the `user_blocks` filter. `RemoveHold`/
+  `ClaimHold` keep order (`WITH ORDINALITY`). The I-L exemption applies to
+  WhatsApp only (P5). The WhatsApp window is the conversation's own
+  `last_inbound_at` (now read with the row). Tests: second request while
+  armed → held, B's resolution leaves A, no-id resolution with A pending
+  leaves A, A's late resolution leaves B, B's clears; YES from before the
+  question → re-ask; 8 concurrent `resumeDeferred` → one send; send
+  failure → hold back, nothing armed; other user → dropped; WhatsApp
+  window; PG `ClaimHold` (not from handoff, once, not while armed,
+  `approval_armed_at`/`last_inbound_at` round-trip); DB `ExtensionPending`
+  blocked pair; I-L on iMessage ignored.

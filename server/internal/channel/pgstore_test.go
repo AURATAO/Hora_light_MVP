@@ -753,3 +753,71 @@ func TestPGDeferredApprovalRoundTrip(t *testing.T) {
 		t.Fatalf("cleared field must be NULL: %v %v", isNull, err)
 	}
 }
+
+// M3.2c round 2: the claim is one statement — armed, stamped and removed
+// from the hold together, only from a state the question may interrupt,
+// and only once.
+func TestPGClaimHold(t *testing.T) {
+	db := testDB(t)
+	s := &PGStore{DB: db}
+	ctx := context.Background()
+	a, err := s.UpsertIdentity(ctx, IMessage, "+15550000708")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ext, ext2 string
+	if err := db.QueryRow(`INSERT INTO extension_requests DEFAULT VALUES RETURNING id`).Scan(&ext); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`INSERT INTO extension_requests DEFAULT VALUES RETURNING id`).Scan(&ext2); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateHandoff}); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range []string{ext, ext2} {
+		if err := s.HoldApproval(ctx, a.ID, DeferredApproval{UserID: "u", TaskID: "t", ExtensionID: e, AtUnix: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Not from a handoff.
+	if ok, err := s.ClaimHold(ctx, a.ID, ext, time.Now()); err != nil || ok {
+		t.Fatalf("claimed from handoff: %v %v", ok, err)
+	}
+	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateIdle}); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().Truncate(time.Microsecond)
+	if ok, err := s.ClaimHold(ctx, a.ID, ext, at); err != nil || !ok {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+	got, err := s.GetConversation(ctx, a.ID)
+	if err != nil || got.State != StateAwaitingApproval || got.PendingExtensionID != ext || got.ApprovalArmedAt == nil || !got.ApprovalArmedAt.Equal(at) ||
+		len(got.Deferred) != 1 || got.Deferred[0].ExtensionID != ext2 {
+		t.Fatalf("%+v %v", got, err)
+	}
+	// Once: a second claim of the same hold, and a claim of the other while
+	// one is armed, both fail.
+	if ok, _ := s.ClaimHold(ctx, a.ID, ext, time.Now()); ok {
+		t.Fatal("claimed twice")
+	}
+	if ok, _ := s.ClaimHold(ctx, a.ID, ext2, time.Now()); ok {
+		t.Fatal("claimed while another question is armed")
+	}
+	// A full-row save clears the armed stamp with the question.
+	got.State, got.PendingExtensionID, got.ApprovalArmedAt = StateIdle, "", nil
+	if err := s.SaveConversation(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.GetConversation(ctx, a.ID); got.ApprovalArmedAt != nil || len(got.Deferred) != 1 {
+		t.Fatalf("%+v", got)
+	}
+	// LastInboundAt is read with the row.
+	when := time.Now().Truncate(time.Microsecond)
+	if err := s.TouchConversation(ctx, a.ID, when); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.GetConversation(ctx, a.ID); got.LastInboundAt == nil || !got.LastInboundAt.Equal(when) {
+		t.Fatalf("%+v", got)
+	}
+}

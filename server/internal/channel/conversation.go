@@ -128,8 +128,14 @@ type Conversation struct {
 	PendingName     string
 	TermsAcceptedAt *time.Time
 	// PendingExtensionID is the extension request the next YES/NO answers
-	// (StateAwaitingApproval).
+	// (StateAwaitingApproval). ApprovalArmedAt is when that question was
+	// asked: a message sent before it cannot be its answer (a second tap on
+	// YES for the booking must not approve the supporter's request).
 	PendingExtensionID string
+	ApprovalArmedAt    *time.Time
+	// LastInboundAt is the person's latest message (read-only here; stamped
+	// by TouchConversation). WhatsApp's 24h window is measured from it.
+	LastInboundAt *time.Time
 	// PendingTaskChoices are the task ids listed when asking which supporter
 	// a message is for; PendingRelayText is that message, relayed on pick.
 	PendingTaskChoices []string
@@ -204,6 +210,37 @@ type ConversationStore interface {
 	// request twice is a no-op.
 	HoldApproval(ctx context.Context, identityID string, d DeferredApproval) error
 	RemoveHold(ctx context.Context, identityID, extensionID string) error
+	// ClaimHold arms a held question in one statement: the state becomes
+	// awaiting_approval for that request, armed at `at`, and the hold is
+	// removed — only if the thread is in a state the question may interrupt
+	// (not already asking one) and the hold is still there. False when
+	// another caller got there first or the state moved (D-17 I-O).
+	ClaimHold(ctx context.Context, identityID, extensionID string, at time.Time) (bool, error)
+}
+
+// armableFromHold: the states a held question may be resumed into. Not
+// awaiting_approval — one question at a time.
+var armableFromHold = "{" + string(StateIdle) + "," + string(StateAwaitingConfirm) + "," + string(StateAwaitingTaskChoice) + "," + string(StateAwaitingBudget) + "," + string(StateAwaitingName) + "}"
+
+func (s *PGStore) ClaimHold(ctx context.Context, identityID, extensionID string, at time.Time) (bool, error) {
+	var one int
+	err := s.DB.QueryRowContext(ctx, `
+		UPDATE channel_conversations SET
+		  state = $3, pending_extension_id = $2::uuid, approval_armed_at = $4,
+		  deferred_approval = (SELECT jsonb_agg(e ORDER BY ord) FROM jsonb_array_elements(coalesce(deferred_approval, '[]'::jsonb)) WITH ORDINALITY AS t(e, ord)
+		                        WHERE e->>'extension_id' <> $2),
+		  updated_at = now()
+		WHERE identity_id = $1 AND state = ANY($5::text[])
+		  AND coalesce(deferred_approval, '[]'::jsonb) @> jsonb_build_array(jsonb_build_object('extension_id', $2::text))
+		RETURNING 1
+	`, identityID, extensionID, string(StateAwaitingApproval), at, armableFromHold).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("claim hold: %w", err)
+	}
+	return true, nil
 }
 
 func (s *PGStore) HoldApproval(ctx context.Context, identityID string, d DeferredApproval) error {
@@ -231,7 +268,7 @@ func (s *PGStore) HoldApproval(ctx context.Context, identityID string, d Deferre
 func (s *PGStore) RemoveHold(ctx context.Context, identityID, extensionID string) error {
 	_, err := s.DB.ExecContext(ctx, `
 		UPDATE channel_conversations SET
-		  deferred_approval = (SELECT jsonb_agg(e) FROM jsonb_array_elements(coalesce(deferred_approval, '[]'::jsonb)) e
+		  deferred_approval = (SELECT jsonb_agg(e ORDER BY ord) FROM jsonb_array_elements(coalesce(deferred_approval, '[]'::jsonb)) WITH ORDINALITY AS t(e, ord)
 		                        WHERE e->>'extension_id' <> $2),
 		  updated_at = now()
 		WHERE identity_id = $1
@@ -284,15 +321,15 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 	var state string
 	var pending []byte
 	var name, ext, relay sql.NullString
-	var terms sql.NullTime
+	var terms, armed, lastIn sql.NullTime
 	var choicesJSON string
 	var deferred sql.NullString
 	err := s.DB.QueryRowContext(ctx, `
 		SELECT state, pending_draft, pending_name, terms_accepted_at, pending_extension_id::text,
 		       COALESCE(array_to_json(pending_task_choices)::text, '[]'), pending_relay_text,
-		       deferred_approval::text
+		       deferred_approval::text, approval_armed_at, last_inbound_at
 		FROM channel_conversations WHERE identity_id = $1
-	`, identityID).Scan(&state, &pending, &name, &terms, &ext, &choicesJSON, &relay, &deferred)
+	`, identityID).Scan(&state, &pending, &name, &terms, &ext, &choicesJSON, &relay, &deferred, &armed, &lastIn)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, nil
 	}
@@ -317,6 +354,14 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 		t := terms.Time
 		c.TermsAcceptedAt = &t
 	}
+	if armed.Valid {
+		t := armed.Time
+		c.ApprovalArmedAt = &t
+	}
+	if lastIn.Valid {
+		t := lastIn.Time
+		c.LastInboundAt = &t
+	}
 	if len(pending) > 0 && string(pending) != "null" {
 		var p PendingDraft
 		if err := json.Unmarshal(pending, &p); err != nil {
@@ -336,16 +381,19 @@ func (s *PGStore) SaveConversation(ctx context.Context, c Conversation) error {
 		}
 		pending = string(b)
 	}
-	var terms any
+	var terms, armed any
 	if c.TermsAcceptedAt != nil {
 		terms = *c.TermsAcceptedAt
+	}
+	if c.ApprovalArmedAt != nil {
+		armed = *c.ApprovalArmedAt
 	}
 	_, err := s.DB.ExecContext(ctx, `
 		INSERT INTO channel_conversations
 		  (identity_id, state, pending_draft, pending_name, terms_accepted_at, pending_extension_id,
-		   pending_task_choices, pending_relay_text, updated_at)
+		   pending_task_choices, pending_relay_text, approval_armed_at, updated_at)
 		VALUES ($1, $2, $3::jsonb, NULLIF($4, ''), $5, NULLIF($6, '')::uuid,
-		        NULLIF($7, '{}')::uuid[], NULLIF($8, ''), now())
+		        NULLIF($7, '{}')::uuid[], NULLIF($8, ''), $9, now())
 		ON CONFLICT (identity_id) DO UPDATE SET
 		  state = EXCLUDED.state,
 		  pending_draft = EXCLUDED.pending_draft,
@@ -354,9 +402,10 @@ func (s *PGStore) SaveConversation(ctx context.Context, c Conversation) error {
 		  pending_extension_id = EXCLUDED.pending_extension_id,
 		  pending_task_choices = EXCLUDED.pending_task_choices,
 		  pending_relay_text = EXCLUDED.pending_relay_text,
+		  approval_armed_at = EXCLUDED.approval_armed_at,
 		  updated_at = now()
 	`, c.IdentityID, string(c.State), pending, c.PendingName, terms, c.PendingExtensionID,
-		pgUUIDArray(c.PendingTaskChoices), c.PendingRelayText)
+		pgUUIDArray(c.PendingTaskChoices), c.PendingRelayText, armed)
 	if err != nil {
 		return fmt.Errorf("save conversation: %w", err)
 	}

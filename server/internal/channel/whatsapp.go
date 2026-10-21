@@ -186,8 +186,10 @@ func (a *WhatsAppAdapter) Send(ctx context.Context, o Outbound) (string, error) 
 			payload["type"] = "image"
 			payload["image"] = map[string]any{"link": o.MediaURL, "caption": o.Text}
 		} else {
-			// Anything else (a PDF, a long caption): the text plus the link.
-			payload["text"] = map[string]any{"body": o.Text + "\n" + o.MediaURL, "preview_url": true}
+			// Anything else (a PDF, a long caption): the words only. A link
+			// pasted into the chat would outlive its signed token and sit
+			// there dead; the email carries the photo (D-16 I-R).
+			log.Printf("[channel] whatsapp: media dropped: not an image link or caption too long")
 		}
 	}
 	if o.ReplyToProviderID != "" {

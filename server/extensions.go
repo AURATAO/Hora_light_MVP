@@ -852,11 +852,12 @@ func announceExtensionResolution(ctx context.Context, e ExtensionRequest) {
 		TaskTitle: t.Title,
 	})
 	notifyUser(ctx, t.RequesterID, t.RequesterEmail, notify.CreateNotificationInput{
-		TaskID:    e.TaskID,
-		Type:      "EXTENSION_RESOLVED",
-		Title:     requesterTitle,
-		Body:      requesterBody,
-		TaskTitle: t.Title,
+		TaskID:      e.TaskID,
+		ExtensionID: e.ID,
+		Type:        "EXTENSION_RESOLVED",
+		Title:       requesterTitle,
+		Body:        requesterBody,
+		TaskTitle:   t.Title,
 	})
 }
 

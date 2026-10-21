@@ -202,13 +202,22 @@ func truncate(b []byte, n int) string {
 	return string(b[:n]) + "…"
 }
 
-var digitRun = regexp.MustCompile(`\+?\d[\d\s().-]{5,}\d`)
+var (
+	digitRun = regexp.MustCompile(`\+?\d[\d\s().-]{5,}\d`)
+	urlRun   = regexp.MustCompile(`(?i)https?://[^\s"'<>]+`)
+	tokenRun = regexp.MustCompile(`(?i)\btoken=[^\s&"'<>]+`)
+)
 
 // ProviderErrorText is a provider's error body made safe for an error string
 // that will be logged: phone-number-shaped digit runs masked (a provider may
-// echo the recipient back, S-12) and the length capped.
+// echo the recipient back, S-12), URLs and token= values masked (a provider
+// may echo a signed media link back — a bearer token for a photo of
+// someone's home), and the length capped.
 func ProviderErrorText(b []byte) string {
-	return truncate(digitRun.ReplaceAll(b, []byte("[number]")), 200)
+	b = digitRun.ReplaceAll(b, []byte("[number]"))
+	b = urlRun.ReplaceAll(b, []byte("[url]"))
+	b = tokenRun.ReplaceAll(b, []byte("token=[redacted]"))
+	return truncate(b, 200)
 }
 
 // closeBody closes a provider response body and logs a close failure (S-31).

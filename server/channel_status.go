@@ -28,15 +28,26 @@ func chatStatusHook(sqlDB *sql.DB, router *channel.Router) func(notify.CreateNot
 		if err != nil {
 			return completionPhotos{}, err
 		}
+		// Fail closed: only a signed link to one of our objects leaves the
+		// platform. A photo that cannot be signed is left out — the text
+		// still goes, and the email carries the photos (D-16 I-R).
 		var p completionPhotos
 		if photo.String != "" {
-			p.Photo = signTaskPhotoURL(photo.String, taskPhotoLinkTTL)
+			if signed, reason := signedTaskPhotoURL(photo.String, taskPhotoLinkTTL); reason != "" {
+				log.Printf("[channel] status COMPLETED task=%s: completion photo not sent: %s", taskID, reason)
+			} else {
+				p.Photo = signed
+			}
 		}
 		if receipt.String != "" {
-			p.Receipt = signTaskPhotoURL(receipt.String, taskPhotoLinkTTL)
-			if cents.Int64 > 0 {
-				p.ReceiptTotal = formatCentsUSD(int(cents.Int64))
+			if signed, reason := signedTaskPhotoURL(receipt.String, taskPhotoLinkTTL); reason != "" {
+				log.Printf("[channel] status COMPLETED task=%s: receipt photo not sent: %s", taskID, reason)
+			} else {
+				p.Receipt = signed
 			}
+		}
+		if cents.Int64 > 0 {
+			p.ReceiptTotal = formatCentsUSD(int(cents.Int64))
 		}
 		return p, nil
 	}
@@ -160,5 +171,6 @@ func statusEvent(in notify.CreateNotificationInput) channel.StatusEvent {
 		SupporterName: in.SupporterName,
 		TotalLogged:   in.TotalLogged,
 		FinalCost:     in.FinalCost,
+		ExtensionID:   in.ExtensionID, // set on EXTENSION_RESOLVED: which request
 	}
 }

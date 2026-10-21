@@ -275,6 +275,21 @@ func TestWhatsAppSend(t *testing.T) {
 	}
 }
 
+// S-12: a provider error body that echoes a signed media link must not
+// put the token in a log line.
+func TestProviderErrorTextMasksLinksAndTokens(t *testing.T) {
+	body := []byte(`{"error":"media_url unreachable: https://x.supabase.co/storage/v1/object/sign/task-completions/c/1.jpg?token=eyJhbGciOi.secret for +1 (555) 123-4567, token=again"}`)
+	got := ProviderErrorText(body)
+	for _, bad := range []string{"supabase.co", "eyJhbGciOi", "token=again", "555"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("%q leaked in %q", bad, got)
+		}
+	}
+	if !strings.Contains(got, "[url]") || !strings.Contains(got, "[number]") {
+		t.Fatalf("%q", got)
+	}
+}
+
 // ── WebhookHandler ─────────────────────────────────────────────────────────
 
 type fakeAdapter struct {
@@ -476,13 +491,14 @@ func TestWhatsAppSendMedia(t *testing.T) {
 	if _, has := (*got)["text"]; has {
 		t.Fatalf("image message carries no text block: %+v", *got)
 	}
-	// Not an image (a PDF receipt): text with the link, never an image
-	// message Meta would reject — and the words are not lost.
-	if _, err := a.Send(context.Background(), Outbound{To: "+15551234567", Text: "Receipt", MediaURL: "https://cdn.example/r.pdf"}); err != nil {
+	// Not an image (a PDF receipt, a .heic): the words only, never an image
+	// message Meta would reject — and never a pasted link, which would
+	// outlive its signed token in the chat (M3.6, D-16 I-R).
+	if _, err := a.Send(context.Background(), Outbound{To: "+15551234567", Text: "Receipt", MediaURL: "https://cdn.example/r.pdf?token=abc"}); err != nil {
 		t.Fatal(err)
 	}
 	txt, _ := (*got)["text"].(map[string]any)
-	if (*got)["type"] != "text" || txt["body"] != "Receipt\nhttps://cdn.example/r.pdf" {
+	if (*got)["type"] != "text" || txt["body"] != "Receipt" || txt["preview_url"] != false || (*got)["image"] != nil {
 		t.Fatalf("%+v", *got)
 	}
 	// A caption over Meta's 1024 cap falls back the same way.

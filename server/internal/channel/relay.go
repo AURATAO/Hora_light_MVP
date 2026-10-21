@@ -997,11 +997,15 @@ func (r *Router) casualToSupporter(ctx context.Context, in Inbound, id Identity,
 	if r.Chat == nil || !id.Linked() {
 		return false, nil
 	}
-	// A reply swiped on one of our own prompts is an answer to us (I-L).
-	if kind, _, err := r.bubble(ctx, in, id); err != nil {
-		return true, err
-	} else if kind == bubblePrompt {
-		return false, nil
+	// A reply swiped on one of our own prompts is an answer to us (I-L) —
+	// only where reply context is real (WhatsApp; Sendblue's is ignored at
+	// ingest, P5/I-N).
+	if in.Channel == WhatsApp {
+		if kind, _, err := r.bubble(ctx, in, id); err != nil {
+			return true, err
+		} else if kind == bubblePrompt {
+			return false, nil
+		}
 	}
 	last, lastTask, lastAt, _, err := r.lastSupporterLineErr(ctx, in, id)
 	if err != nil {

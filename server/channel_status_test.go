@@ -102,3 +102,53 @@ func TestChatStatusHookAttachesCompletionPhotos(t *testing.T) {
 		t.Fatalf("a photo lookup failure must still send the text: %+v", rec.events)
 	}
 }
+
+// M3.6 round 1: the real photo lookup fails closed. Without a signing
+// client (this test binary), a stored reference — ours or not — never
+// becomes a link; the amount still travels; a task with no purchases
+// yields nothing.
+func TestPhotosOfFailsClosed(t *testing.T) {
+	setupLiveDB(t)
+	w := seedLiveWorld(t)
+	ctx := context.Background()
+	prev := photosOf
+	t.Cleanup(func() { photosOf = prev })
+	_ = chatStatusHook(sqldb, nil) // installs the DB-backed photosOf
+	if _, err := db.Exec(ctx, `alter table public.tasks
+		add column if not exists completion_photo_url text,
+		add column if not exists receipt_photo_url text,
+		add column if not exists receipt_amount_cents integer`); err != nil {
+		t.Fatal(err)
+	}
+	set := func(photo, receipt string, cents int) {
+		t.Helper()
+		if _, err := db.Exec(ctx, `update public.tasks set completion_photo_url = nullif($2,''), receipt_photo_url = nullif($3,''), receipt_amount_cents = $4 where id = $1::uuid`,
+			w.taskID, photo, receipt, cents); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Ours, but no signer in this process: no link, amount still stated.
+	set("https://x.supabase.co/storage/v1/object/public/task-completions/c/1.jpg", "https://x.supabase.co/storage/v1/object/public/task-completions/r/1.jpg", 1240)
+	p, err := photosOf(ctx, w.taskID)
+	if err != nil || p.Photo != "" || p.Receipt != "" || p.ReceiptTotal != "$12.40" {
+		t.Fatalf("%+v %v", p, err)
+	}
+	// Not ours: never passed through.
+	set("https://evil.example/home.jpg", "", 0)
+	if p, err = photosOf(ctx, w.taskID); err != nil || p.Photo != "" || p.Receipt != "" || p.ReceiptTotal != "" {
+		t.Fatalf("%+v %v", p, err)
+	}
+	// Nothing stored: nothing.
+	set("", "", 0)
+	if p, err = photosOf(ctx, w.taskID); err != nil || p != (completionPhotos{}) {
+		t.Fatalf("%+v %v", p, err)
+	}
+}
+
+func TestFormatCentsUSD(t *testing.T) {
+	for cents, want := range map[int]string{0: "$0.00", 5: "$0.05", 99: "$0.99", 100: "$1.00", 123456: "$1234.56"} {
+		if got := formatCentsUSD(cents); got != want {
+			t.Errorf("%d: %q want %q", cents, got, want)
+		}
+	}
+}

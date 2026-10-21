@@ -68,9 +68,12 @@ func SendEmail(p EmailPayload) error {
 }
 
 type CreateNotificationInput struct {
-	DB                 *sql.DB
-	UserID             string
-	TaskID             string
+	DB     *sql.DB
+	UserID string
+	TaskID string
+	// ExtensionID names the request an EXTENSION_RESOLVED notification is
+	// about, so the chat clears the right armed question and no other.
+	ExtensionID        string
 	Type               string
 	Title              string
 	Body               string

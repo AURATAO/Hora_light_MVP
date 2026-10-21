@@ -247,7 +247,10 @@ func (b *chatBooker) ExtensionPending(ctx context.Context, userID, extensionID s
 		    JOIN public.tasks t ON t.id = e.task_id
 		   WHERE e.id = $1::uuid AND e.status = $2 AND t.requester_id = $3::uuid
 		     AND t.status = 'open' AND t.assigned_to_id = e.supporter_id
-		     AND e.created_at > now() - make_interval(mins => $4))`,
+		     AND e.created_at > now() - make_interval(mins => $4)
+		     AND NOT EXISTS (SELECT 1 FROM public.user_blocks b
+		                      WHERE (b.blocker_id = t.requester_id AND b.blocked_id = e.supporter_id)
+		                         OR (b.blocker_id = e.supporter_id AND b.blocked_id = t.requester_id)))`,
 		extensionID, extensionStatusPending, userID, Billing.ApprovalTimeoutMinutes).Scan(&pending)
 	if err != nil {
 		return false, fmt.Errorf("extension pending: %w", err)

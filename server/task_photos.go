@@ -118,24 +118,38 @@ func canonicalTaskPhotoURL(raw string) string {
 // the signing call — a task screen with a broken image is better than a
 // task screen that 500s, and the failure is logged either way.
 func signTaskPhotoURL(raw string, ttl time.Duration) string {
+	signed, reason := signedTaskPhotoURL(raw, ttl)
+	if reason != "" {
+		return raw
+	}
+	return signed
+}
+
+// signedTaskPhotoURL is the fail-closed form: a signed link to one of OUR
+// objects, or an empty string and the reason. For anything that leaves the
+// platform (a photo sent to a messaging provider, M3.6) this is the only
+// form to use — a stored reference that is not ours, or that could not be
+// signed, must not travel as a link in HO:RA's voice (S-12, D-16 I-R).
+// Reasons never carry the URL.
+func signedTaskPhotoURL(raw string, ttl time.Duration) (signed, reason string) {
 	key, ok := taskPhotoObjectKey(raw)
 	if !ok {
-		return raw
+		return "", "not a task photo of ours"
 	}
 	st := taskPhotoStorage()
 	if st == nil {
-		return raw
+		return "", "storage not configured"
 	}
 	seconds := int(ttl / time.Second)
 	if seconds <= 0 {
 		seconds = int(taskPhotoLinkTTL / time.Second)
 	}
-	signed, err := st.CreateSignedUrl(taskPhotoBucket, key, seconds)
-	if err != nil || signed.SignedURL == "" {
+	s, err := st.CreateSignedUrl(taskPhotoBucket, key, seconds)
+	if err != nil || s.SignedURL == "" {
 		log.Printf("[task-photos][ERROR] could not sign %s/%s: %v", taskPhotoBucket, key, err)
-		return raw
+		return "", "signing failed"
 	}
-	return signed.SignedURL
+	return s.SignedURL, ""
 }
 
 var (

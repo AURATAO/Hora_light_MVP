@@ -90,7 +90,14 @@ func StatusText(ev StatusEvent) (string, bool) {
 			fmt.Fprintf(&b, "\nTotal: %s", ev.FinalCost)
 		}
 		if ev.ReceiptTotal != "" {
-			fmt.Fprintf(&b, "\nPurchases: %s (receipt below)", ev.ReceiptTotal)
+			// What the supporter bought for them, already inside the total.
+			// The receipt photo is a message of its own when it can be sent;
+			// "follows" promises nothing about order.
+			if ev.ReceiptPhotoURL != "" {
+				fmt.Fprintf(&b, "\nPurchases: %s, included in the total (receipt photo follows)", ev.ReceiptTotal)
+			} else {
+				fmt.Fprintf(&b, "\nPurchases: %s, included in the total (receipt in your email)", ev.ReceiptTotal)
+			}
 		}
 		b.WriteString("\n\nYour receipt is on its way by email. Need something else? Just text me.")
 		return b.String(), true
@@ -198,10 +205,14 @@ func (r *Router) NotifyStatus(ctx context.Context, userID string, ev StatusEvent
 		if err != nil {
 			return fmt.Errorf("NotifyStatus: %w", err)
 		}
+		if conv.State == StateAwaitingApproval && conv.PendingExtensionID == ev.ExtensionID {
+			return nil // already asked and armed
+		}
 		if !canArmApproval(conv.State) {
 			// Held, not dropped (D-17 I-O): sent and armed as soon as the
-			// thread can take it, if the request is still the person's to
-			// answer then. Appended narrowly; one hold per request.
+			// thread can take it — including while another question is
+			// armed (one at a time) — if the request is still the person's
+			// to answer then. Appended narrowly; one hold per request.
 			d := DeferredApproval{UserID: userID, TaskID: ev.TaskID, TaskTitle: ev.TaskTitle, SupporterName: ev.SupporterName,
 				ExtensionID: ev.ExtensionID, Type: ev.Type, TimeoutMinutes: ev.ApprovalMinutes, AtUnix: r.now().Unix()}
 			if ev.Approval != nil {
@@ -218,7 +229,7 @@ func (r *Router) NotifyStatus(ctx context.Context, userID string, ev StatusEvent
 		// A held question is not cleared here: the resolution names only
 		// the task, and another request on it may still be live. Every
 		// hold is re-checked against the request when it is resumed.
-		if err := r.clearApproval(ctx, t.Identity.ID); err != nil {
+		if err := r.clearApproval(ctx, t.Identity.ID, userID, ev.ExtensionID); err != nil {
 			return fmt.Errorf("NotifyStatus: %w", err)
 		}
 		if !ok {
@@ -236,14 +247,16 @@ func (r *Router) NotifyStatus(ctx context.Context, userID string, ev StatusEvent
 	if ev.Type == "COMPLETED" && ev.PhotoURL != "" {
 		out.MediaURL = ev.PhotoURL
 	}
-	if err := r.Send(ctx, out, ev.TaskID); err != nil {
+	if err := r.sendWithMediaFallback(ctx, out, ev.TaskID, ""); err != nil {
 		return fmt.Errorf("NotifyStatus: %w", err)
 	}
 	if ev.Type == "COMPLETED" && ev.ReceiptPhotoURL != "" {
-		// The receipt, as its own message so the photo is unmistakable.
+		// The receipt, as its own message so the photo is unmistakable. If
+		// the photo cannot be delivered, the amount still is, with where
+		// the photo can be found.
 		rc := Outbound{Channel: t.Identity.Channel, To: t.Identity.Address, MediaURL: ev.ReceiptPhotoURL,
 			Text: fmt.Sprintf(CopyReceipt, firstNonEmpty(ev.ReceiptTotal, "see photo"))}
-		if err := r.Send(ctx, rc, ev.TaskID); err != nil {
+		if err := r.sendWithMediaFallback(ctx, rc, ev.TaskID, fmt.Sprintf(CopyReceiptNoPhoto, firstNonEmpty(ev.ReceiptTotal, "in your email"))); err != nil {
 			return fmt.Errorf("NotifyStatus: receipt: %w", err)
 		}
 	}
@@ -254,4 +267,23 @@ func (r *Router) NotifyStatus(ctx context.Context, userID string, ev StatusEvent
 		}
 	}
 	return nil
+}
+
+// sendWithMediaFallback sends a message that may carry a photo; if the
+// provider refuses the media (unreachable link, unsupported type, timeout),
+// the words are sent once more on their own — the person's "done" message
+// must not be lost to a photo. textOnly, when set, replaces the text for
+// that second attempt. A failed media send is logged by Send; the error
+// never carries the link (ProviderErrorText).
+func (r *Router) sendWithMediaFallback(ctx context.Context, out Outbound, taskID, textOnly string) error {
+	err := r.Send(ctx, out, taskID)
+	if err == nil || out.MediaURL == "" {
+		return err
+	}
+	log.Printf("[channel] status task=%s: media send failed, sending text only: %v", taskID, err)
+	out.MediaURL = ""
+	if textOnly != "" {
+		out.Text = textOnly
+	}
+	return r.Send(ctx, out, taskID)
 }

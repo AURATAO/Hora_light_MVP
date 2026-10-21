@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -660,6 +661,177 @@ func TestDeferredApprovalIsSentWhenTheThreadCanTakeIt(t *testing.T) {
 	if c.State != StateIdle || len(c.Deferred) != 2 {
 		t.Fatalf("conv %+v", c)
 	}
+
+	// A send failure: the claim is undone and the hold put back.
+	g, _ = held(t)
+	g.booker.pendingExt = map[string]bool{"ext-9": true, "ext-10": true}
+	g.ad.err = errors.New("provider down")
+	_ = g.r.Release(context.Background(), Identity{ID: "id-" + me, UserID: "user-1", Channel: IMessage, Address: me})
+	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.State != StateIdle || c.PendingExtensionID != "" || len(c.Deferred) != 2 {
+		t.Fatalf("conv %+v", c)
+	}
+
+	// Held for another user's identity: dropped, never asked.
+	g, _ = held(t)
+	g.booker.pendingExt = map[string]bool{"ext-9": true, "ext-10": true}
+	if err := g.r.Release(context.Background(), Identity{ID: "id-" + me, UserID: "user-2", Channel: IMessage, Address: me}); err != nil {
+		t.Fatal(err)
+	}
+	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.State != StateIdle || len(c.Deferred) != 0 || strings.Contains(g.ad.last(), "asking") {
+		t.Fatalf("conv %+v last %q", c, g.ad.last())
+	}
+}
+
+// I-O, one at a time: a second live request while one is armed is held,
+// not asked over it; a resolution of some other request leaves the armed
+// question standing; the resolution of the armed one clears it.
+func TestSecondRequestWhileOneIsArmedIsHeld(t *testing.T) {
+	g, _, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
+	evA := StatusEvent{Type: evBudgetRequested, TaskID: "task-2", TaskTitle: "Bagel run", SupporterName: "Sam",
+		ExtensionID: "ext-A", ApprovalMinutes: 5, Approval: &PendingApproval{ID: "ext-A", Kind: "budget", Cents: 1000}}
+	evB := StatusEvent{Type: evTimeRequested, TaskID: "task-2", TaskTitle: "Bagel run", SupporterName: "Sam",
+		ExtensionID: "ext-B", ApprovalMinutes: 5, Approval: &PendingApproval{ID: "ext-B", Kind: "time", Minutes: 15}}
+	g.booker.pendingExt = map[string]bool{"ext-A": true, "ext-B": true}
+	for _, e := range []StatusEvent{evA, evA, evB} { // A asked once; B held
+		if err := g.r.NotifyStatus(context.Background(), "user-1", e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.State != StateAwaitingApproval || c.PendingExtensionID != "ext-A" || len(c.Deferred) != 1 || c.Deferred[0].ExtensionID != "ext-B" || len(g.ad.sent) != 1 {
+		t.Fatalf("conv %+v sent %d", c, len(g.ad.sent))
+	}
+	// B resolves in the app: A stays armed.
+	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: evResolved, TaskID: "task-2", ExtensionID: "ext-B", Title: "You approved the request"}); err != nil {
+		t.Fatal(err)
+	}
+	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.State != StateAwaitingApproval || c.PendingExtensionID != "ext-A" {
+		t.Fatalf("another request's resolution must not disarm A: %+v", c)
+	}
+	// A resolution without an id: the booker says A is still pending → stays.
+	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: evResolved, TaskID: "task-2", Title: "A request timed out"}); err != nil {
+		t.Fatal(err)
+	}
+	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.State != StateAwaitingApproval || c.PendingExtensionID != "ext-A" {
+		t.Fatalf("A still pending must stay armed: %+v", c)
+	}
+	// The person answers A: it resolves, and B (still held, still live) follows.
+	g.say(t, "YES")
+	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
+	if len(g.booker.resolved) != 1 || !strings.HasSuffix(g.booker.resolved[0], ":ext-A:true") || c.State != StateAwaitingApproval || c.PendingExtensionID != "ext-B" || len(c.Deferred) != 0 {
+		t.Fatalf("resolved %v conv %+v", g.booker.resolved, c)
+	}
+	// A's own late resolution hook must not disarm B.
+	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: evResolved, TaskID: "task-2", ExtensionID: "ext-A", Title: "You approved the request"}); err != nil {
+		t.Fatal(err)
+	}
+	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.State != StateAwaitingApproval || c.PendingExtensionID != "ext-B" {
+		t.Fatalf("A's resolution must not disarm B: %+v", c)
+	}
+	// B's resolution does.
+	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: evResolved, TaskID: "task-2", ExtensionID: "ext-B", Title: "A request timed out"}); err != nil {
+		t.Fatal(err)
+	}
+	if g.state() != StateIdle {
+		t.Fatalf("state %s", g.state())
+	}
+}
+
+// S-11/5: a YES sent before the question was asked is not its answer — the
+// double-tap on the booking's YES cannot approve the supporter's request.
+func TestAnswerFromBeforeTheQuestionIsNotAnAnswer(t *testing.T) {
+	g, _, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	if err := g.r.askApproval(context.Background(), "id-"+me, "ext-2"); err != nil {
+		t.Fatal(err)
+	}
+	in := Inbound{Channel: IMessage, ProviderMessageID: "early-yes", From: me, Text: "YES", ReceivedAt: time.Now().Add(-time.Minute)}
+	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.booker.resolved) != 0 || g.state() != StateAwaitingApproval || g.ad.last() != CopyApprovalReask {
+		t.Fatalf("resolved %v state %s last %q", g.booker.resolved, g.state(), g.ad.last())
+	}
+	g.say(t, "YES") // sent now: the answer
+	if len(g.booker.resolved) != 1 {
+		t.Fatalf("resolved %v", g.booker.resolved)
+	}
+}
+
+// Two resume points at once ask a held question once.
+func TestConcurrentResumeAsksOnce(t *testing.T) {
+	g, _, _, _ := contextRig(llm.IntentNewTask, bagelT)
+	g.r.Ops, g.r.Thread = &memOps{}, &memThread{st: g.st}
+	g.say(t, "I want to talk to a human")
+	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
+	ev := StatusEvent{Type: evBudgetRequested, TaskID: "task-2", TaskTitle: "Bagel run", SupporterName: "Sam",
+		ExtensionID: "ext-9", ApprovalMinutes: 5, Approval: &PendingApproval{ID: "ext-9", Kind: "budget", Cents: 1000}}
+	if err := g.r.NotifyStatus(context.Background(), "user-1", ev); err != nil {
+		t.Fatal(err)
+	}
+	g.booker.pendingExt = map[string]bool{"ext-9": true}
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	c.State = StateIdle
+	if err := g.convs.SaveConversation(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	before := len(g.ad.sent)
+	id := Identity{ID: "id-" + me, UserID: "user-1", Channel: IMessage, Address: me}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); g.r.resumeDeferred(context.Background(), id) }()
+	}
+	wg.Wait()
+	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
+	if len(g.ad.sent)-before != 1 || c.State != StateAwaitingApproval || c.PendingExtensionID != "ext-9" || len(c.Deferred) != 0 {
+		t.Fatalf("sent %d conv %+v", len(g.ad.sent)-before, c)
+	}
+}
+
+// The WhatsApp 24h window is measured from the person's own last message:
+// outside it the hold waits for a later resume point.
+func TestDeferredApprovalWaitsForTheWhatsAppWindow(t *testing.T) {
+	g, _, _, _ := contextRig(llm.IntentNewTask, bagelT)
+	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: WhatsApp, Address: me}}}
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	c.State = StatePosting
+	if err := g.convs.SaveConversation(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	ev := StatusEvent{Type: evBudgetRequested, TaskID: "task-2", TaskTitle: "Bagel run", SupporterName: "Sam",
+		ExtensionID: "ext-9", ApprovalMinutes: 5, Approval: &PendingApproval{ID: "ext-9", Kind: "budget", Cents: 1000}}
+	if err := g.r.NotifyStatus(context.Background(), "user-1", ev); err != nil {
+		t.Fatal(err)
+	}
+	g.booker.pendingExt = map[string]bool{"ext-9": true}
+	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
+	c.State = StateIdle
+	if err := g.convs.SaveConversation(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	g.r.Adapters[WhatsApp] = g.ad
+	old := time.Now().Add(-25 * time.Hour)
+	g.convs.setLastInbound("id-"+me, &old)
+	id := Identity{ID: "id-" + me, UserID: "user-1", Channel: WhatsApp, Address: me}
+	before := len(g.ad.sent)
+	g.r.resumeDeferred(context.Background(), id)
+	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
+	if len(g.ad.sent) != before || len(c.Deferred) != 1 || c.State != StateIdle {
+		t.Fatalf("sent %d conv %+v", len(g.ad.sent)-before, c)
+	}
+	now := time.Now()
+	g.convs.setLastInbound("id-"+me, &now)
+	g.r.resumeDeferred(context.Background(), id)
+	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
+	if len(g.ad.sent) != before+1 || c.State != StateAwaitingApproval {
+		t.Fatalf("sent %d conv %+v", len(g.ad.sent)-before, c)
+	}
 }
 
 // I-O at the booking resume point: a question held while the booking was
@@ -696,18 +868,35 @@ func TestDeferredApprovalFollowsTheBooking(t *testing.T) {
 // a lookup failure must not let the word answer us by accident; 確認 is a
 // strict YES.
 func TestCasualAffirmativeGateEdges(t *testing.T) {
-	// Swiped on the approval prompt: an answer, even with a fresh question.
+	// Swiped on the approval prompt (WhatsApp, where reply context is
+	// real): an answer, even with a fresh question.
 	g, chat, tasks, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.r.Adapters[WhatsApp] = g.ad
+	g.ids.link(me, "user-1")
 	if err := g.r.askApproval(context.Background(), "id-"+me, "ext-2"); err != nil {
 		t.Fatal(err)
 	}
 	tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: ok if I take 15 more?", "task-2", time.Now().Add(-time.Minute)
 	tasks.byMsg["prompt-1"] = "task-2"
-	in := Inbound{Channel: IMessage, ProviderMessageID: "ok1", From: me, Text: "ok", ReplyToProviderID: "prompt-1", ReceivedAt: time.Now()}
+	in := Inbound{Channel: WhatsApp, ProviderMessageID: "ok1", From: me, Text: "ok", ReplyToProviderID: "prompt-1", ReceivedAt: time.Now()}
 	if err := g.r.HandleInbound(context.Background(), in); err != nil {
 		t.Fatal(err)
 	}
 	if len(chat.posted) != 0 || len(g.booker.resolved) != 1 {
+		t.Fatalf("posted %v resolved %v", chat.posted, g.booker.resolved)
+	}
+	// On iMessage the swipe carries nothing (P5): the word goes to Sam.
+	g, chat, tasks, _ = contextRig(llm.IntentToSupporter, bagelT)
+	if err := g.r.askApproval(context.Background(), "id-"+me, "ext-2"); err != nil {
+		t.Fatal(err)
+	}
+	tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: ok if I take 15 more?", "task-2", time.Now().Add(-time.Minute)
+	tasks.byMsg["prompt-1"] = "task-2"
+	in = Inbound{Channel: IMessage, ProviderMessageID: "ok1b", From: me, Text: "ok", ReplyToProviderID: "prompt-1", ReceivedAt: time.Now()}
+	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if len(chat.posted) != 1 || len(g.booker.resolved) != 0 {
 		t.Fatalf("posted %v resolved %v", chat.posted, g.booker.resolved)
 	}
 

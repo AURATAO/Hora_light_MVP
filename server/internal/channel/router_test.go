@@ -118,11 +118,23 @@ func (m *memConversations) SaveConversation(_ context.Context, c Conversation) e
 			c.TermsAcceptedAt = old.TermsAcceptedAt // COALESCE, like the SQL
 		}
 		c.Deferred = old.Deferred // not in the upsert; HoldApproval/RemoveHold only
+		c.LastInboundAt = old.LastInboundAt
 	} else {
 		c.Deferred = nil
+		c.LastInboundAt = nil
 	}
 	m.convs[c.IdentityID] = c
 	return nil
+}
+func (m *memConversations) setLastInbound(iid string, at *time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c := m.convs[iid]
+	c.IdentityID, c.LastInboundAt = iid, at
+	if c.State == "" {
+		c.State = StateIdle
+	}
+	m.convs[iid] = c
 }
 func (m *memConversations) HoldApproval(_ context.Context, iid string, d DeferredApproval) error {
 	m.mu.Lock()
@@ -143,7 +155,10 @@ func (m *memConversations) HoldApproval(_ context.Context, iid string, d Deferre
 func (m *memConversations) RemoveHold(_ context.Context, iid, ext string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	c := m.convs[iid]
+	c, ok := m.convs[iid]
+	if !ok {
+		return nil // like the UPDATE: no row, nothing done
+	}
 	var kept []DeferredApproval
 	for _, h := range c.Deferred {
 		if h.ExtensionID != ext {
@@ -153,6 +168,30 @@ func (m *memConversations) RemoveHold(_ context.Context, iid, ext string) error 
 	c.Deferred = kept
 	m.convs[iid] = c
 	return nil
+}
+func (m *memConversations) ClaimHold(_ context.Context, iid, ext string, at time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.convs[iid]
+	if !ok || !canArmApproval(c.State) {
+		return false, nil
+	}
+	var kept []DeferredApproval
+	found := false
+	for _, h := range c.Deferred {
+		if h.ExtensionID == ext {
+			found = true
+			continue
+		}
+		kept = append(kept, h)
+	}
+	if !found {
+		return false, nil
+	}
+	c.Deferred, c.State, c.PendingExtensionID = kept, StateAwaitingApproval, ext
+	c.ApprovalArmedAt = &at
+	m.convs[iid] = c
+	return true, nil
 }
 func (m *memConversations) ConversationsForUser(_ context.Context, user string) ([]Conversation, []Identity, error) {
 	m.ids.mu.Lock()
@@ -313,6 +352,9 @@ type fakeSendAdapter struct {
 	mu   sync.Mutex
 	sent []Outbound
 	err  error
+	// mediaErr fails any send that carries a photo (a provider refusing
+	// the media), leaving text-only sends alone.
+	mediaErr error
 }
 
 func (a *fakeSendAdapter) Send(_ context.Context, o Outbound) (string, error) {
@@ -320,6 +362,9 @@ func (a *fakeSendAdapter) Send(_ context.Context, o Outbound) (string, error) {
 	defer a.mu.Unlock()
 	if a.err != nil {
 		return "", a.err
+	}
+	if a.mediaErr != nil && o.MediaURL != "" {
+		return "", a.mediaErr
 	}
 	a.sent = append(a.sent, o)
 	return "out-" + string(rune('a'+len(a.sent))), nil
