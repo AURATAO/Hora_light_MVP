@@ -133,3 +133,19 @@ func TestSplitErrandsAndFallback(t *testing.T) {
 		t.Fatalf("fallback: %v %v", got, err)
 	}
 }
+
+func TestNeedsPurchaseAndFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := w.Write([]byte(`{"choices":[{"message":{"content":"{\"purchase\":true}"},"finish_reason":"stop"}]}`)); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer srv.Close()
+	p := &OpenAICompat{BaseURL: srv.URL, APIKey: "k", Model: "m"}
+	if yes, err := p.NeedsPurchase(context.Background(), "get me a sandwich"); err != nil || !yes {
+		t.Fatalf("%v %v", yes, err)
+	}
+	if yes, err := (&OpenAICompat{}).NeedsPurchase(context.Background(), "x"); err == nil || yes {
+		t.Fatalf("unavailable must be (false, error): %v %v", yes, err)
+	}
+}

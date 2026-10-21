@@ -124,6 +124,7 @@ CREATE TABLE IF NOT EXISTS public.channel_conversations (
                            'awaiting_confirm',
                            'awaiting_setup',
                            'awaiting_approval',
+                           'awaiting_budget',
                            'awaiting_task_choice',
                            'handoff'
                          )),

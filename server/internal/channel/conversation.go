@@ -27,6 +27,9 @@ const (
 	// the next YES/NO answers that (M3). A pending draft is kept underneath
 	// and resumed afterwards.
 	StateAwaitingApproval State = "awaiting_approval"
+	// StateAwaitingBudget: an errand involves buying something and the chat
+	// is asking how much to set aside (M3.5).
+	StateAwaitingBudget State = "awaiting_budget"
 	// StatePosting means a booking is in flight (stored as 'drafting'). Only
 	// one caller can move a conversation into it — see ClaimForPosting.
 	StatePosting State = "drafting"
@@ -49,6 +52,16 @@ type PendingDraft struct {
 	// Unparsed is the part of the message no draft could be made from, kept
 	// so the summary can say so instead of silently dropping it.
 	Unparsed []string `json:"unparsed,omitempty"`
+	// NoAutoExtend: the person turned off the up-to-15-minutes-over consent
+	// the summary states (M3.5). Default (false) = consent, as the app's
+	// checkbox; it is sent explicitly at posting either way.
+	NoAutoExtend bool `json:"no_auto_extend,omitempty"`
+	// BudgetAskIndex is the item the budget question is about (-1 = none).
+	BudgetAskIndex int `json:"budget_ask_index,omitempty"`
+	// First-item budget fields; see DraftItem. Kept flat for stored rows.
+	BudgetCents int  `json:"budget_cents,omitempty"`
+	NeedsBudget bool `json:"needs_budget,omitempty"`
+	BudgetAsked bool `json:"budget_asked,omitempty"`
 }
 
 // DraftItem is one errand with its estimate.
@@ -56,18 +69,26 @@ type DraftItem struct {
 	Draft        llm.TaskDraft `json:"draft"`
 	QuoteCents   int           `json:"quote_cents"`
 	QuoteMinutes int           `json:"quote_minutes"`
+	// BudgetCents is the shopping ceiling the person agreed to (0 = none);
+	// NeedsBudget = the errand involves buying; BudgetAsked = the question
+	// was answered (or the amount came with the message).
+	BudgetCents int  `json:"budget_cents,omitempty"`
+	NeedsBudget bool `json:"needs_budget,omitempty"`
+	BudgetAsked bool `json:"budget_asked,omitempty"`
 }
 
 // Items is every errand in order, the first included.
 func (p *PendingDraft) Items() []DraftItem {
 	items := make([]DraftItem, 0, 1+len(p.More))
-	items = append(items, DraftItem{Draft: p.Draft, QuoteCents: p.QuoteCents, QuoteMinutes: p.QuoteMinutes})
+	items = append(items, DraftItem{Draft: p.Draft, QuoteCents: p.QuoteCents, QuoteMinutes: p.QuoteMinutes,
+		BudgetCents: p.BudgetCents, NeedsBudget: p.NeedsBudget, BudgetAsked: p.BudgetAsked})
 	return append(items, p.More...)
 }
 
 // SetItems stores items (at least one) in the same shape.
 func (p *PendingDraft) SetItems(items []DraftItem) {
 	p.Draft, p.QuoteCents, p.QuoteMinutes = items[0].Draft, items[0].QuoteCents, items[0].QuoteMinutes
+	p.BudgetCents, p.NeedsBudget, p.BudgetAsked = items[0].BudgetCents, items[0].NeedsBudget, items[0].BudgetAsked
 	p.More = append([]DraftItem(nil), items[1:]...)
 }
 

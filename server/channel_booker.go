@@ -29,6 +29,7 @@ import (
 //     gate — outstanding balance, no card, decline, 3DS, PAYMENTS_ENFORCED —
 //     is therefore the production code path, not a copy of it.
 type chatBooker struct {
+	model *llm.OpenAICompat
 	sqlDB *sql.DB
 }
 
@@ -43,15 +44,21 @@ func draftMinutes(d llm.TaskDraft) int {
 	return defaultChatMinutes
 }
 
-func (b *chatBooker) Quote(_ context.Context, d llm.TaskDraft) (int, int, error) {
+func (b *chatBooker) Quote(_ context.Context, d llm.TaskDraft, budgetCents int) (int, int, error) {
 	minutes := draftMinutes(d)
-	q := quoteTask(d.Category, minutes, 0,
+	// Same quote as /tasks/estimate: base + time + the shopping budget the
+	// hold must also cover.
+	q := quoteTask(d.Category, minutes, budgetCents,
 		resolveRateCentsPerMin(estimateStartAt(!d.Scheduled, d.ScheduledTime)))
 	return q.TotalCents, minutes, nil
 }
 
 // draftToCreateInput maps a chat draft onto the POST /tasks body the app sends.
-func draftToCreateInput(d llm.TaskDraft) createTaskInput {
+// The two consents the app collects on its form — the shopping budget and
+// the auto-extend checkbox — are sent explicitly from what the chat gathered,
+// never left to the server default (M3.5).
+func draftToCreateInput(d llm.TaskDraft, opts channel.PostOptions) createTaskInput {
+	autoExtend := opts.AutoExtend
 	loc := strings.TrimSpace(d.Location1)
 	if l2 := strings.TrimSpace(d.Location2); l2 != "" {
 		// The same " | " encoding both clients use for a two-stop task.
@@ -67,7 +74,9 @@ func draftToCreateInput(d llm.TaskDraft) createTaskInput {
 		// Closest existing attribution value. A dedicated "message" value
 		// needs a CHECK change on tasks, which waits for the review freeze to
 		// end; channel_messages.task_id already identifies these tasks.
-		CreatedVia: "ai_parse",
+		CreatedVia:        "ai_parse",
+		PrepayAmountCents: opts.BudgetCents,
+		AutoExtendConsent: &autoExtend,
 	}
 	if d.Scheduled {
 		in.ScheduledAt = d.ScheduledTime
@@ -75,7 +84,7 @@ func draftToCreateInput(d llm.TaskDraft) createTaskInput {
 	return in
 }
 
-func (b *chatBooker) Post(ctx context.Context, userID string, d llm.TaskDraft) channel.PostResult {
+func (b *chatBooker) Post(ctx context.Context, userID string, d llm.TaskDraft, opts channel.PostOptions) channel.PostResult {
 	var email string
 	if err := b.sqlDB.QueryRowContext(ctx,
 		`select coalesce(email,'') from public.users where id = $1::uuid`, userID).Scan(&email); err != nil {
@@ -86,7 +95,7 @@ func (b *chatBooker) Post(ctx context.Context, userID string, d llm.TaskDraft) c
 		log.Printf("[channel-booker] post uid=%s: user has no email", userID)
 		return channel.PostResult{Outcome: channel.PostFailed}
 	}
-	body, err := json.Marshal(draftToCreateInput(d))
+	body, err := json.Marshal(draftToCreateInput(d, opts))
 	if err != nil {
 		log.Printf("[channel-booker] post uid=%s: %v", userID, fmt.Errorf("encode task: %w", err))
 		return channel.PostResult{Outcome: channel.PostFailed}
@@ -217,4 +226,10 @@ func (b *chatBooker) extensionAsk(ctx context.Context, e ExtensionRequest) strin
 		return ask
 	}
 	return ask + " on \u201c" + title + "\u201d"
+}
+
+// NeedsPurchase is the model tiebreak for budget.go: asked only when the
+// rule saw no purchase word. The model's answer never sets an amount.
+func (b *chatBooker) NeedsPurchase(ctx context.Context, text string) (bool, error) {
+	return b.model.NeedsPurchase(ctx, text)
 }

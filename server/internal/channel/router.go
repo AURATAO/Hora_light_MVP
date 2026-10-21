@@ -15,9 +15,19 @@ import (
 // arithmetic as POST /tasks/estimate and Post runs the real POST /tasks
 // handler, so holds, card checks and every refusal behave exactly as in the
 // app (PLAN §1: business rules unchanged).
+// PostOptions carries the consents gathered in the chat alongside the draft.
+type PostOptions struct {
+	// BudgetCents is the shopping ceiling the person agreed to (0 = none).
+	BudgetCents int
+	// AutoExtend: may the supporter run up to the auto-extend window past
+	// the estimate without asking. Always sent explicitly.
+	AutoExtend bool
+}
+
 type Booker interface {
-	Quote(ctx context.Context, d llm.TaskDraft) (cents, minutes int, err error)
-	Post(ctx context.Context, userID string, d llm.TaskDraft) PostResult
+	// Quote prices a draft with the budget the hold must also cover.
+	Quote(ctx context.Context, d llm.TaskDraft, budgetCents int) (cents, minutes int, err error)
+	Post(ctx context.Context, userID string, d llm.TaskDraft, opts PostOptions) PostResult
 	// ApplyChatProfile writes the name and terms consent gathered in the chat
 	// onto the user's profile (fills blanks only; never overwrites).
 	ApplyChatProfile(ctx context.Context, userID, name string, termsAcceptedAt *time.Time) error
@@ -85,7 +95,10 @@ type Router struct {
 	Parser        llm.Parser
 	// Splitter separates a message asking for several errands (M3). Nil
 	// means every message is one errand.
-	Splitter   llm.Splitter
+	Splitter llm.Splitter
+	// Purchases is the model tiebreak for "does this errand involve buying
+	// something" (budget.go). Nil = rule only.
+	Purchases  PurchaseChecker
 	Classifier llm.Classifier
 	Booker     Booker
 	// Prompt builds the extraction prompt for "now" — the same one the app's
@@ -181,6 +194,8 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 		return r.onAwaitingSetup(ctx, in, id, conv, text)
 	case StateAwaitingApproval:
 		return r.onAwaitingApproval(ctx, in, id, conv, text)
+	case StateAwaitingBudget:
+		return r.onAwaitingBudget(ctx, in, id, conv, text)
 	default:
 		return r.onIdle(ctx, in, id, conv, text)
 	}
@@ -259,11 +274,21 @@ func (r *Router) startDraft(ctx context.Context, in Inbound, id Identity, conv C
 			continue
 		}
 		log.Printf("[channel] parsed model=%s latency=%s in=%d out=%d category=%s", usage.Model, usage.Latency.Round(time.Millisecond), usage.InputTokens, usage.OutputTokens, draft.Category)
-		cents, minutes, err := r.Booker.Quote(ctx, draft)
+		it := DraftItem{Draft: draft}
+		if r.needsPurchase(ctx, text, draft) {
+			it.NeedsBudget = true
+			// An amount in the person's own words settles it without a
+			// question ("budget 60", "$20 for the bagels").
+			if cents, ok := AmountCents(text); ok {
+				it.BudgetCents, it.BudgetAsked = cents, true
+			}
+		}
+		cents, minutes, err := r.Booker.Quote(ctx, draft, it.BudgetCents)
 		if err != nil {
 			return fmt.Errorf("start draft: quote: %w", err)
 		}
-		items = append(items, DraftItem{Draft: draft, QuoteCents: cents, QuoteMinutes: minutes})
+		it.QuoteCents, it.QuoteMinutes = cents, minutes
+		items = append(items, it)
 	}
 	if len(items) == 0 {
 		if r.lastReplyWasParseFailure(ctx, id) {
@@ -271,7 +296,11 @@ func (r *Router) startDraft(ctx context.Context, in Inbound, id Identity, conv C
 		}
 		return r.Reply(ctx, in, CopyParseFailed, "")
 	}
-	p := &PendingDraft{Source: source, CreatedAtUnix: r.now().Unix(), Unparsed: unparsed}
+	p := &PendingDraft{Source: source, CreatedAtUnix: r.now().Unix(), Unparsed: unparsed, BudgetAskIndex: -1}
+	if conv.Pending != nil {
+		// A correction re-drafts; the opt-out they already gave stands.
+		p.NoAutoExtend = conv.Pending.NoAutoExtend
+	}
 	p.SetItems(items)
 	conv.Pending = p
 
@@ -282,7 +311,7 @@ func (r *Router) startDraft(ctx context.Context, in Inbound, id Identity, conv C
 		}
 		return r.Reply(ctx, in, fmt.Sprintf(CopyAskName, p.Headline()), "")
 	}
-	return r.showSummary(ctx, in, conv)
+	return r.continueDraft(ctx, in, id, conv)
 }
 
 func (r *Router) showSummary(ctx context.Context, in Inbound, conv Conversation) error {
@@ -311,13 +340,20 @@ func (r *Router) onName(ctx context.Context, in Inbound, id Identity, conv Conve
 		}
 		return r.Reply(ctx, in, CopyWelcome, "")
 	}
-	return r.showSummary(ctx, in, conv)
+	return r.continueDraft(ctx, in, id, conv)
 }
 
 func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
 	switch {
 	case IsNo(text):
 		return r.dropDraft(ctx, in, conv)
+	case IsNoAutoExtend(text):
+		// Opt out of the over-run consent the summary states; same price,
+		// re-shown so the YES that follows is to the terms they chose.
+		if conv.Pending != nil {
+			conv.Pending.NoAutoExtend = true
+		}
+		return r.showSummary(ctx, in, conv)
 	case IsYes(text):
 		now := r.now()
 		conv.TermsAcceptedAt = &now
@@ -420,7 +456,7 @@ func (r *Router) claimAndPost(ctx context.Context, ch Channel, id Identity, from
 	items := pending.Items()
 	booked := 0
 	for i, it := range items {
-		res = r.Booker.Post(ctx, id.UserID, it.Draft)
+		res = r.Booker.Post(ctx, id.UserID, it.Draft, PostOptions{BudgetCents: it.BudgetCents, AutoExtend: !pending.NoAutoExtend})
 		log.Printf("[channel] post identity=%s item=%d/%d outcome=%d task=%s", id.ID, i+1, len(items), res.Outcome, res.TaskID)
 		switch res.Outcome {
 		case PostBooked:

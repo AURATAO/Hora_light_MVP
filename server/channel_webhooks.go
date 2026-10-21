@@ -52,7 +52,8 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		Parser:        model,
 		Splitter:      model,
 		Classifier:    model,
-		Booker:        &chatBooker{sqlDB: sqlDB},
+		Booker:        &chatBooker{sqlDB: sqlDB, model: model},
+		Purchases:     model,
 		// The same extraction prompt as the app's AI posting
 		// (ai_task_parser.go), read-only — that file is frozen for review.
 		Prompt:   aiTaskParserSystemPrompt,

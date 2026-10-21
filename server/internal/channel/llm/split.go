@@ -80,3 +80,37 @@ func (o *OpenAICompat) SplitErrands(ctx context.Context, text string) ([]string,
 	}
 	return errands, u, nil
 }
+
+// NeedsPurchase is the tiebreak for the budget question (budget.go): does
+// this errand involve the supporter paying for something? Used only when the
+// rule saw no purchase word. The answer never sets an amount.
+func (o *OpenAICompat) NeedsPurchase(ctx context.Context, text string) (bool, error) {
+	out, _, err := o.completeJSON(ctx, purchasePrompt, text, "purchase", purchaseSchema(), 32)
+	if err != nil {
+		return false, fmt.Errorf("needs purchase: %w", err)
+	}
+	var r struct {
+		Purchase bool `json:"purchase"`
+	}
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		return false, fmt.Errorf("needs purchase: decode: %w", err)
+	}
+	return r.Purchase, nil
+}
+
+const purchasePrompt = `You read one errand a person asked HO:RA (an on-demand errand service in New York City) to do.
+
+Answer whether the person doing the errand will have to PAY for something on the requester's behalf — buy, order, or pick up an item the requester has not already paid for (food, groceries, flowers, a prescription, supplies, a ticket).
+
+Not a purchase: picking up something already paid for or belonging to the requester (their laundry, a package, dry cleaning, keys), waiting in line, accompanying someone, moving or assembling things, returning an item.
+
+Return {"purchase": true} or {"purchase": false}. When unsure, answer false.`
+
+func purchaseSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"properties":           map[string]any{"purchase": map[string]any{"type": "boolean"}},
+		"required":             []string{"purchase"},
+		"additionalProperties": false,
+	}
+}

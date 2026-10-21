@@ -90,7 +90,7 @@ func TestAmbiguousReplyReasksAndDecidesNothing(t *testing.T) {
 func TestApprovalInterruptsADraftAndResumesIt(t *testing.T) {
 	g := approvalRig(t)
 	g.r.Classifier = fakeClassifier{intent: "new_task"}
-	g.say(t, "grocery run tomorrow 10am")
+	g.say(t, "laundry run tomorrow 10am")
 	if g.state() != StateAwaitingConfirm {
 		t.Fatalf("state %s", g.state())
 	}

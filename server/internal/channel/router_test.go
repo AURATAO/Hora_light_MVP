@@ -214,15 +214,19 @@ type fakeBooker struct {
 	// multi-errand (M3): titles posted in order; per-call results when set
 	posted  []string
 	results []PostResult
+	opts    []PostOptions
 }
 
-func (b *fakeBooker) Quote(context.Context, llm.TaskDraft) (int, int, error) { return 1200, 30, nil }
-func (b *fakeBooker) Post(_ context.Context, _ string, d llm.TaskDraft) PostResult {
+func (b *fakeBooker) Quote(_ context.Context, _ llm.TaskDraft, budgetCents int) (int, int, error) {
+	return 1200 + budgetCents, 30, nil
+}
+func (b *fakeBooker) Post(_ context.Context, _ string, d llm.TaskDraft, opts PostOptions) PostResult {
 	time.Sleep(b.delay)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.posts++
 	b.posted = append(b.posted, d.Title)
+	b.opts = append(b.opts, opts)
 	if len(b.results) > 0 {
 		r := b.results[0]
 		b.results = b.results[1:]

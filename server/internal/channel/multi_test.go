@@ -21,15 +21,15 @@ func multiRig(t *testing.T) *rig {
 	g.ids.link(me, "user-1")
 	g.r.Splitter = fakeSplitter{}
 	g.parser.byText = map[string]llm.TaskDraft{
-		"pick up my laundry": laundryD, "get groceries": groceryD, "return a package": returnD,
+		"pick up my laundry": laundryD, "get groceries with $40": groceryD, "return a package": returnD,
 	}
 	return g
 }
 
 func TestOneMessageSeveralErrandsOneSummaryOneYes(t *testing.T) {
 	g := multiRig(t)
-	got := g.say(t, "pick up my laundry and then get groceries and then return a package")
-	for _, want := range []string{"1. Laundry pickup", "2. Grocery run", "3. Return a package", "Total estimate: $36", "Reply YES to book all 3"} {
+	got := g.say(t, "pick up my laundry and then get groceries with $40 and then return a package")
+	for _, want := range []string{"1. Laundry pickup", "2. Grocery run", "3. Return a package", "Total estimate: $76", "Reply YES to book all 3"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("summary missing %q:\n%s", want, got)
 		}
@@ -59,7 +59,7 @@ func TestSingleErrandSummaryUnchanged(t *testing.T) {
 // far it got.
 func TestPartialFailureKeepsOnlyTheUnbooked(t *testing.T) {
 	g := multiRig(t)
-	g.say(t, "pick up my laundry and then get groceries and then return a package")
+	g.say(t, "pick up my laundry and then get groceries with $40 and then return a package")
 	g.booker.results = []PostResult{
 		{Outcome: PostBooked, TaskID: "t1"},
 		{Outcome: PostDeclined, Message: "Your card was declined."},
@@ -119,7 +119,7 @@ func TestFirstTimerSeveralErrands(t *testing.T) {
 	g.ids = newMemIdentities()
 	g.r.Identities = g.ids
 	g.convs.ids = g.ids
-	got := g.say(t, "pick up my laundry and then get groceries")
+	got := g.say(t, "pick up my laundry and then get groceries with $40")
 	if !strings.Contains(got, "Got it: 2 errands.") || g.state() != StateAwaitingName {
 		t.Fatalf("%q state %s", got, g.state())
 	}
@@ -142,7 +142,7 @@ func TestPendingDraftBackwardCompatible(t *testing.T) {
 // pending, and a single 3DS item leaves nothing pending.
 func TestThreeDSItemIsSpentNotRetried(t *testing.T) {
 	g := multiRig(t)
-	g.say(t, "pick up my laundry and then get groceries")
+	g.say(t, "pick up my laundry and then get groceries with $40")
 	g.booker.results = []PostResult{{Outcome: PostNeeds3DS, TaskID: "t1", Message: "bank check"}}
 	g.say(t, "YES")
 	c, err := g.convs.GetConversation(context.Background(), "id-"+me)

@@ -21,6 +21,11 @@ const (
 	CopyTextOnly           = "I can only read text for now. Tell me what you need and when."
 	CopyParseFailed        = "Sorry, I couldn't work that out. Could you say what you need, where, and when?"
 	CopyAskName            = "Got it: %s.\n\nBefore I price it, what's your first name?"
+	CopyAskBudget          = "Will your supporter be buying something for this? About how much should I set aside, e.g. $20? Reply \"nothing\" if there's nothing to buy."
+	CopyAskBudgetFor       = "For \u201c%s\u201d: will your supporter be buying something? About how much should I set aside, e.g. $20? Reply \"nothing\" if there's nothing to buy."
+	CopyAskBudgetAgain     = "Just an amount is fine, like $20 — or \"nothing\" if there's nothing to buy."
+	CopyAutoExtendOn       = "If it runs a little over, up to %d extra minutes are OK without asking. Say \"no extra time\" to turn that off."
+	CopyAutoExtendOff      = "Your supporter will ask before going over the estimate."
 	CopyTooManyErrands     = "That's more than I can book in one go (up to %d at a time). Send me the first few and we'll take it from there."
 	CopyAskNameAgain       = "Just your first name is fine."
 	CopyOneStepToBook      = "One step to book, about a minute: confirm your email and add a card. Nothing is charged until the task is done.\n\n%s\n\nI'll book it as soon as you finish."
@@ -60,7 +65,6 @@ func (r *Router) Summary(p *PendingDraft) string {
 	if len(items) == 1 {
 		b.WriteString(r.itemLines(items[0], ""))
 		fmt.Fprintf(&b, "\nEstimate: %s (you pay for the time actually used)", Dollars(p.QuoteCents))
-		b.WriteString("\n\nReply YES to book, or tell me what to change.")
 	} else {
 		for i, it := range items {
 			if i > 0 {
@@ -70,6 +74,17 @@ func (r *Router) Summary(p *PendingDraft) string {
 			fmt.Fprintf(&b, "\nEstimate: %s", Dollars(it.QuoteCents))
 		}
 		fmt.Fprintf(&b, "\n\nTotal estimate: %s (you pay for the time actually used)", Dollars(p.TotalCents()))
+	}
+	// The over-run consent, stated where the YES can see it (the app's
+	// checkbox). One line either way, so the person always knows which.
+	if p.NoAutoExtend {
+		b.WriteString("\n" + CopyAutoExtendOff)
+	} else {
+		fmt.Fprintf(&b, "\n"+CopyAutoExtendOn, AutoExtendMinutes)
+	}
+	if len(items) == 1 {
+		b.WriteString("\n\nReply YES to book, or tell me what to change.")
+	} else {
 		fmt.Fprintf(&b, "\n\nReply YES to book all %d, or tell me what to change.", len(items))
 	}
 	for _, u := range p.Unparsed {
@@ -93,6 +108,9 @@ func (r *Router) itemLines(it DraftItem, prefix string) string {
 	if where := where(d.Location1, d.Location2); where != "" {
 		b.WriteString("\n")
 		b.WriteString(where)
+	}
+	if it.BudgetCents > 0 {
+		fmt.Fprintf(&b, "\nShopping budget: %s (covered by the hold; you pay what the receipt says)", Dollars(it.BudgetCents))
 	}
 	return b.String()
 }
