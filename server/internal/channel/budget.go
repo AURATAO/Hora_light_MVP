@@ -24,10 +24,6 @@ import (
 // AutoExtendMinutes past the estimate without asking. The summary states it
 // and the one YES covers it; "no extra time" (rule-matched) turns it off.
 
-// AutoExtendMinutes mirrors the server's BillingConfig.AutoExtendMinutes for
-// the summary line. The server applies its own value at posting.
-const AutoExtendMinutes = 15
-
 // PurchaseChecker says whether an errand involves the supporter paying for
 // something. The rule runs first; the model is the tiebreak.
 type PurchaseChecker interface {

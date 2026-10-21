@@ -54,6 +54,9 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		Classifier:    model,
 		Booker:        &chatBooker{sqlDB: sqlDB, model: model},
 		Purchases:     model,
+		// The over-run window the summary states is the billing config's
+		// own value (S-11/5: the YES is to the real exposure).
+		AutoExtendMinutes: Billing.AutoExtendMinutes,
 		// The same extraction prompt as the app's AI posting
 		// (ai_task_parser.go), read-only — that file is frozen for review.
 		Prompt:   aiTaskParserSystemPrompt,

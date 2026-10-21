@@ -80,7 +80,7 @@ func (r *Router) Summary(p *PendingDraft) string {
 	if p.NoAutoExtend {
 		b.WriteString("\n" + CopyAutoExtendOff)
 	} else {
-		fmt.Fprintf(&b, "\n"+CopyAutoExtendOn, AutoExtendMinutes)
+		fmt.Fprintf(&b, "\n"+CopyAutoExtendOn, r.AutoExtendMinutes)
 	}
 	if len(items) == 1 {
 		b.WriteString("\n\nReply YES to book, or tell me what to change.")

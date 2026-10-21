@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"hora-auth/internal/channel"
@@ -51,5 +53,20 @@ func TestPostResultFrom(t *testing.T) {
 		if got := postResultFrom(c.status, []byte(c.body)); got.Outcome != c.want {
 			t.Errorf("%d %s → %v, want %v", c.status, c.body, got.Outcome, c.want)
 		}
+	}
+}
+
+// S-11/5: the over-run window the chat summary states must be the billing
+// config's own value, never a copy that can drift from what the booked task
+// gets.
+func TestChatSummaryWindowIsTheBillingValue(t *testing.T) {
+	if Billing.AutoExtendMinutes <= 0 {
+		t.Fatal("billing config has no auto-extend window")
+	}
+	r := &channel.Router{AutoExtendMinutes: Billing.AutoExtendMinutes}
+	got := r.Summary(&channel.PendingDraft{Draft: llm.TaskDraft{Title: "x"}, QuoteCents: 100})
+	want := fmt.Sprintf("up to %d extra minutes", Billing.AutoExtendMinutes)
+	if !strings.Contains(got, want) {
+		t.Fatalf("summary says %q, billing window is %d", got, Billing.AutoExtendMinutes)
 	}
 }

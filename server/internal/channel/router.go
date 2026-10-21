@@ -98,9 +98,14 @@ type Router struct {
 	Splitter llm.Splitter
 	// Purchases is the model tiebreak for "does this errand involve buying
 	// something" (budget.go). Nil = rule only.
-	Purchases  PurchaseChecker
-	Classifier llm.Classifier
-	Booker     Booker
+	Purchases PurchaseChecker
+	// AutoExtendMinutes is the over-run window the summary states — the
+	// server's own BillingConfig value, passed in so what the person says
+	// YES to is what the booked task gets. Required when the summary is
+	// shown: zero is a configuration error, not a default.
+	AutoExtendMinutes int
+	Classifier        llm.Classifier
+	Booker            Booker
 	// Prompt builds the extraction prompt for "now" — the same one the app's
 	// AI posting uses (server/ai_task_parser.go).
 	Prompt   func(now time.Time) string
@@ -315,6 +320,11 @@ func (r *Router) startDraft(ctx context.Context, in Inbound, id Identity, conv C
 }
 
 func (r *Router) showSummary(ctx context.Context, in Inbound, conv Conversation) error {
+	if r.AutoExtendMinutes <= 0 && !conv.Pending.NoAutoExtend {
+		// The summary would state a consent with no figure. Configuration
+		// error: fail the route (retried) rather than misstate exposure.
+		return fmt.Errorf("showSummary: AutoExtendMinutes not configured")
+	}
 	summary := r.Summary(conv.Pending)
 	conv.Pending.SummaryShown = summary
 	conv.State = StateAwaitingConfirm

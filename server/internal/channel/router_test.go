@@ -314,6 +314,8 @@ func newRig(intent llm.Intent) *rig {
 		SetupURL:   func(t string) string { return "https://example.test/channel/setup#t=" + t },
 		Location:   nyc,
 		Go:         func(f func()) { f() },
+		// the server passes its billing value; tests use the same figure
+		AutoExtendMinutes: 15,
 	}
 	return &rig{r: r, ids: ids, convs: convs, ad: ad, st: st, parser: p, booker: b}
 }

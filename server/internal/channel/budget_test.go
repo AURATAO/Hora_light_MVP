@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"hora-auth/internal/channel/llm"
 )
@@ -184,5 +185,17 @@ func TestFirstTimerNameThenBudget(t *testing.T) {
 	}
 	if got := g.say(t, "$12"); !strings.Contains(got, "Reply YES to book") {
 		t.Fatalf("%q", got)
+	}
+}
+
+// The window figure is injected; an unconfigured router must not state a
+// consent it cannot quantify.
+func TestSummaryRefusesWithoutAutoExtendWindow(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.r.AutoExtendMinutes = 0
+	in := Inbound{Channel: IMessage, ProviderMessageID: "w1", From: me, Text: "laundry pickup", ReceivedAt: time.Now()}
+	if err := g.r.HandleInbound(context.Background(), in); err == nil {
+		t.Fatal("expected a configuration error")
 	}
 }
