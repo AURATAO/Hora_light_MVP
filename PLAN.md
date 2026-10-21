@@ -218,6 +218,11 @@ The setup step is the one to watch.
   check whether `task-completions` is public or needs a signed URL with a
   short expiry before sending to a third-party provider (PII: the photo may
   show a home); (b) WhatsApp outside the 24h window needs a template.
+- **M3.6 follow-up (2026-10-22):** the completion email carries the
+  completion photo only; add the receipt photo (7-day signed link, like the
+  completion photo) so a chat that could not carry it can say where it is.
+  Until then the chat copy promises nothing about where an unsent photo is
+  (D-16 I-R(7)).
 - One number for both channels, or separate? (Default: separate.)
 - ~~Staging~~ decided 2026-10-19, see §16.
 - **Adjustment to make after the flow is complete (Aura, 2026-10-20):** someone

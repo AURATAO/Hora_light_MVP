@@ -143,6 +143,9 @@ func (m *memConversations) HoldApproval(_ context.Context, iid string, d Deferre
 	if !ok {
 		c = Conversation{IdentityID: iid, State: StateIdle}
 	}
+	if c.State == StateAwaitingApproval && c.PendingExtensionID == d.ExtensionID {
+		return nil // the armed one is not re-held
+	}
 	for _, h := range c.Deferred {
 		if h.ExtensionID == d.ExtensionID {
 			return nil
@@ -169,27 +172,54 @@ func (m *memConversations) RemoveHold(_ context.Context, iid, ext string) error 
 	m.convs[iid] = c
 	return nil
 }
-func (m *memConversations) ClaimHold(_ context.Context, iid, ext string, at time.Time) (bool, error) {
+func (m *memConversations) ClaimHold(_ context.Context, iid, ext string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	c, ok := m.convs[iid]
 	if !ok || !canArmApproval(c.State) {
 		return false, nil
 	}
-	var kept []DeferredApproval
 	found := false
 	for _, h := range c.Deferred {
 		if h.ExtensionID == ext {
 			found = true
-			continue
 		}
-		kept = append(kept, h)
 	}
 	if !found {
 		return false, nil
 	}
-	c.Deferred, c.State, c.PendingExtensionID = kept, StateAwaitingApproval, ext
+	c.State, c.PendingExtensionID = StateAwaitingApproval, ext
+	at := ArmedUnconfirmed
 	c.ApprovalArmedAt = &at
+	c.UpdatedAt = time.Now()
+	m.convs[iid] = c
+	return true, nil
+}
+func (m *memConversations) ConfirmArmed(_ context.Context, iid, ext string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.convs[iid]
+	if !ok || c.State != StateAwaitingApproval || c.PendingExtensionID != ext {
+		return nil
+	}
+	var kept []DeferredApproval
+	for _, h := range c.Deferred {
+		if h.ExtensionID != ext {
+			kept = append(kept, h)
+		}
+	}
+	c.Deferred, c.ApprovalArmedAt = kept, &at
+	m.convs[iid] = c
+	return nil
+}
+func (m *memConversations) ClearApproval(_ context.Context, iid, ext string, resume State) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.convs[iid]
+	if !ok || c.State != StateAwaitingApproval || c.PendingExtensionID != ext {
+		return false, nil
+	}
+	c.State, c.PendingExtensionID, c.ApprovalArmedAt = resume, "", nil
 	m.convs[iid] = c
 	return true, nil
 }
@@ -339,6 +369,9 @@ func (b *fakeBooker) ExtensionPending(_ context.Context, _, ext string) (bool, e
 	if b.pendingErr != nil {
 		return false, b.pendingErr
 	}
+	if b.pendingExt == nil {
+		return true, nil // pending unless a test says otherwise
+	}
 	return b.pendingExt[ext], nil
 }
 func (b *fakeBooker) ApplyChatProfile(_ context.Context, user, name string, _ *time.Time) error {
@@ -349,9 +382,10 @@ func (b *fakeBooker) ApplyChatProfile(_ context.Context, user, name string, _ *t
 // fakeSendAdapter records sends.
 type fakeSendAdapter struct {
 	fakeAdapter
-	mu   sync.Mutex
-	sent []Outbound
-	err  error
+	mu    sync.Mutex
+	sent  []Outbound
+	calls int
+	err   error
 	// mediaErr fails any send that carries a photo (a provider refusing
 	// the media), leaving text-only sends alone.
 	mediaErr error
@@ -360,6 +394,7 @@ type fakeSendAdapter struct {
 func (a *fakeSendAdapter) Send(_ context.Context, o Outbound) (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.calls++
 	if a.err != nil {
 		return "", a.err
 	}
@@ -427,6 +462,27 @@ func (g *rig) say(t *testing.T, text string) string {
 		t.Fatalf("say %q: %v", text, err)
 	}
 	return g.ad.last()
+}
+
+// arm asks an approval question through the real path (hold → claim →
+// send → confirm), as NotifyStatus does; the question is the last send.
+func (g *rig) arm(t *testing.T, ext string) {
+	t.Helper()
+	if g.r.Status == nil {
+		g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
+	}
+	kind, mins, cents := "budget", 0, 1000
+	if strings.HasPrefix(ext, "ext-t") {
+		kind, mins, cents = "time", 15, 0
+	}
+	err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: evBudgetRequested, TaskID: "task-2", TaskTitle: "Bagel run", SupporterName: "Sam",
+		ExtensionID: ext, ApprovalMinutes: 5, Approval: &PendingApproval{ID: ext, Kind: kind, Minutes: mins, Cents: cents}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.state() != StateAwaitingApproval {
+		t.Fatalf("arm %s: state %s", ext, g.state())
+	}
 }
 
 func (g *rig) state() State {

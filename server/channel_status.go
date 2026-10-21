@@ -28,9 +28,9 @@ func chatStatusHook(sqlDB *sql.DB, router *channel.Router) func(notify.CreateNot
 		if err != nil {
 			return completionPhotos{}, err
 		}
-		// Fail closed: only a signed link to one of our objects leaves the
-		// platform. A photo that cannot be signed is left out — the text
-		// still goes, and the email carries the photos (D-16 I-R).
+		// Fail closed: only a signed link to one of our objects, under this
+		// task's key, leaves the platform. A photo that cannot be signed is
+		// left out — the text still goes (D-16 I-R).
 		var p completionPhotos
 		if photo.String != "" {
 			if signed, reason := signedTaskPhotoURL(photo.String, taskID, taskPhotoLinkTTL); reason != "" {

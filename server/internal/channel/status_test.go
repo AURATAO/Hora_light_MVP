@@ -179,7 +179,7 @@ func TestCompletedCarriesPhotoAndReceipt(t *testing.T) {
 	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: "COMPLETED", TaskID: "task-1", TaskTitle: "Laundry", ReceiptTotal: "$3.00"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(g.ad.sent) != 1 || !strings.Contains(g.ad.sent[0].Text, "Purchases: $3.00 (receipt in your email)") {
+	if len(g.ad.sent) != 1 || !strings.Contains(g.ad.sent[0].Text, "Purchases: $3.00") {
 		t.Fatalf("%+v", g.ad.sent)
 	}
 
@@ -197,39 +197,45 @@ func TestCompletedCarriesPhotoAndReceipt(t *testing.T) {
 	// own — and the receipt amount with where the photo is.
 	g = newRig("")
 	g.r.Status = target
-	g.ad.mediaErr = errors.New("media_url unreachable")
+	g.ad.mediaErr = &ProviderStatusError{Provider: "sendblue", Status: 400, Text: "media_url unreachable"}
 	if err := g.r.NotifyStatus(context.Background(), "user-1", ev); err != nil {
 		t.Fatal(err)
 	}
 	if len(g.ad.sent) != 2 || g.ad.sent[0].MediaURL != "" || !strings.HasPrefix(g.ad.sent[0].Text, "Done: “Bagel run”.") ||
-		g.ad.sent[1].MediaURL != "" || g.ad.sent[1].Text != "Receipt: $12.40. The photo is in your email." {
+		g.ad.sent[1].MediaURL != "" || g.ad.sent[1].Text != "Receipt: $12.40. (The photo couldn't be sent here.)" {
 		t.Fatalf("%+v", g.ad.sent)
 	}
 
 	// The receipt photo refused with no amount known: where it is.
 	g = newRig("")
 	g.r.Status = target
-	g.ad.mediaErr = errors.New("media_url unreachable")
+	g.ad.mediaErr = &ProviderStatusError{Provider: "sendblue", Status: 400, Text: "media_url unreachable"}
 	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: "COMPLETED", TaskID: "task-1", TaskTitle: "Laundry", ReceiptPhotoURL: "https://cdn/r.jpg"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(g.ad.sent) != 2 || g.ad.sent[1].Text != CopyReceiptPhotoInEmail {
+	if len(g.ad.sent) != 2 || g.ad.sent[1].Text != CopyReceiptPhotoNotSent {
 		t.Fatalf("%+v", g.ad.sent)
 	}
 
-	// The text-only retry fails too: the error surfaces, nothing else is
-	// tried; a not-configured adapter is not retried at all.
-	g = newRig("")
-	g.r.Status = target
-	g.ad.err = errors.New("provider down")
-	if err := g.r.NotifyStatus(context.Background(), "user-1", ev); err == nil || len(g.ad.sent) != 0 {
-		t.Fatalf("err %v sent %+v", err, g.ad.sent)
+	// A transport failure (the message may have gone through), an auth or
+	// rate-limit answer, or a not-configured adapter: one call, no retry.
+	for _, e := range []error{errors.New("dial tcp: i/o timeout"), ErrNotConfigured,
+		&ProviderStatusError{Provider: "whatsapp", Status: 401, Text: "bad token"}, &ProviderStatusError{Provider: "sendblue", Status: 429, Text: "slow down"},
+		&ProviderStatusError{Provider: "sendblue", Status: 500, Text: "oops"}} {
+		g = newRig("")
+		g.r.Status = target
+		g.ad.err = e
+		if err := g.r.NotifyStatus(context.Background(), "user-1", ev); !errors.Is(err, e) || g.ad.calls != 1 {
+			t.Fatalf("%v: err %v calls %d", e, err, g.ad.calls)
+		}
 	}
+	// A refusal of the request (4xx) is retried once as words; if that
+	// fails too the error surfaces and nothing else is tried.
 	g = newRig("")
 	g.r.Status = target
-	g.ad.err = ErrNotConfigured
-	if err := g.r.NotifyStatus(context.Background(), "user-1", ev); !errors.Is(err, ErrNotConfigured) {
-		t.Fatalf("%v", err)
+	g.ad.err = &ProviderStatusError{Provider: "sendblue", Status: 400, Text: "bad"}
+	if err := g.r.NotifyStatus(context.Background(), "user-1", ev); err == nil || g.ad.calls != 2 {
+		t.Fatalf("err %v calls %d", err, g.ad.calls)
 	}
 
 	// A channel that cannot carry the media is asked first: the words never
@@ -244,7 +250,31 @@ func TestCompletedCarriesPhotoAndReceipt(t *testing.T) {
 	if err := g.r.NotifyStatus(context.Background(), "user-1", heic); err != nil {
 		t.Fatal(err)
 	}
-	if len(g.ad.sent) != 1 || g.ad.sent[0].MediaURL != "" || !strings.Contains(g.ad.sent[0].Text, "Purchases: $12.40 (receipt in your email)") || strings.Contains(g.ad.sent[0].Text, "follows") {
+	if len(g.ad.sent) != 1 || g.ad.sent[0].MediaURL != "" || !strings.Contains(g.ad.sent[0].Text, "Purchases: $12.40\n") || strings.Contains(g.ad.sent[0].Text, "follows") || strings.Contains(g.ad.sent[0].Text, "receipt in") {
+		t.Fatalf("%+v", g.ad.sent)
+	}
+	// Mixed: the completion photo carried, the receipt not; and a caption
+	// over the cap drops the completion photo.
+	g = newRig("")
+	g.r.Adapters[WhatsApp] = &pickyAdapter{fakeSendAdapter: g.ad}
+	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: WhatsApp, Address: me}, LastInboundAt: &now}}
+	mixed := ev
+	mixed.ReceiptPhotoURL = heic.ReceiptPhotoURL
+	if err := g.r.NotifyStatus(context.Background(), "user-1", mixed); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.ad.sent) != 1 || g.ad.sent[0].MediaURL != ev.PhotoURL || !g.ad.sent[0].MediaExpires || strings.Contains(g.ad.sent[0].Text, "follows") {
+		t.Fatalf("%+v", g.ad.sent)
+	}
+	g = newRig("")
+	g.r.Adapters[WhatsApp] = &pickyAdapter{fakeSendAdapter: g.ad}
+	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: WhatsApp, Address: me}, LastInboundAt: &now}}
+	long := ev
+	long.TaskTitle = strings.Repeat("x", 1100)
+	if err := g.r.NotifyStatus(context.Background(), "user-1", long); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.ad.sent) != 2 || g.ad.sent[0].MediaURL != "" || g.ad.sent[1].MediaURL != ev.ReceiptPhotoURL {
 		t.Fatalf("%+v", g.ad.sent)
 	}
 	// …and carries what it can.

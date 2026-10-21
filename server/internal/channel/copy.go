@@ -51,9 +51,9 @@ const (
 	CopyApprovalFirst        = "Please answer your supporter’s request first — reply YES or NO — and then tell me about the new errand."
 	CopyConfirmReask         = "Reply YES to book, NO to drop it, or tell me what to change."
 	CopyReceipt              = "Receipt: %s."
-	CopyReceiptNoPhoto       = "Receipt: %s. The photo is in your email."
+	CopyReceiptNoPhoto       = "Receipt: %s. (The photo couldn't be sent here.)"
 	CopyReceiptPhotoOnly     = "The receipt:"
-	CopyReceiptPhotoInEmail  = "The receipt photo is in your email."
+	CopyReceiptPhotoNotSent  = "The receipt photo couldn't be sent here."
 	// I-P version B: a casual affirmative went to the supporter.
 	CopyPassedOn                  = "(Passed “%s” to %s.)"
 	CopyStillWaitingBooking       = "Still waiting on your YES or NO — book “%s” for %s."

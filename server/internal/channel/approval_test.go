@@ -120,6 +120,7 @@ func TestApprovalInterruptsADraftAndResumesIt(t *testing.T) {
 func TestResolutionElsewhereClearsTheQuestion(t *testing.T) {
 	g := approvalRig(t)
 	askTime(t, g)
+	g.booker.pendingExt = map[string]bool{} // resolved in the app
 	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{
 		Type: evResolved, TaskID: "task-1", Title: "You approved the request", Body: "You approved 15 more minutes.",
 	}); err != nil {
@@ -140,6 +141,7 @@ func TestResolutionElsewhereClearsTheQuestion(t *testing.T) {
 func TestTimeoutIsToldAndClears(t *testing.T) {
 	g := approvalRig(t)
 	askTime(t, g)
+	g.booker.pendingExt = map[string]bool{} // expired in the app
 	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{
 		Type: evResolved, TaskID: "task-1", Title: "A request timed out",
 		Body: "Your supporter asked for 15 more minutes on “Laundry pickup” and didn't hear back within 5 minutes, so it was declined automatically.",

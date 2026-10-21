@@ -48,18 +48,25 @@
   asked BEFORE the copy is composed whether it can carry the media
   (`MediaCarrier`): WhatsApp carries JPEG/PNG with a caption ≤1024; a
   `.heic` or an over-long caption means the photo is not sent and the
-  words say "receipt in your email" — never pasted as a link, which would
-  outlive its token. (5) A media send the provider REFUSES AT THE API CALL
-  falls back to the words once (a receipt photo → "Receipt: $X. The photo
-  is in your email."); a timeout after the provider accepted the message
-  repeats the words once (accepted: a duplicate "done" over a lost one);
-  an asynchronous media failure after a 200 (a status webhook) is not seen
-  and the message carried by that send is lost — the email still has it.
-  (6) Outside WhatsApp's 24h window nothing is sent (template, M4), as for
-  every status. The "Purchases: $X" line states the receipt amount, not a
-  share of the total: reimbursement is clamped to the approved budget plus
-  tolerance (billing.go), so "included in the total" would not always be
-  true. Privacy Policy: §1 already says completion and receipt
+  words promise nothing ("Purchases: $X", no second message) — the link is
+  never pasted, because it would outlive its token; a PUBLIC relay
+  attachment the channel cannot carry (M3.2: a PDF, a photo with a long
+  note) is still pasted as a link, as before (`Outbound.MediaExpires`
+  tells the two apart). Sendblue has no carrier check and relies on the
+  API's refusal. (5) A media send the provider REFUSES (a 4xx other than
+  401/403/429 — `ProviderStatusError`) falls back to the words once (a
+  receipt photo → "Receipt: $X. (The photo couldn't be sent here.)"); a
+  plan-limit 400 is indistinguishable from a media 400 and costs one more
+  refused call; a transport failure (the message may have gone through)
+  is NOT retried; an asynchronous media failure after a 200 (a status
+  webhook) is not seen — the message carried by that send is lost, and a
+  "(receipt photo follows)" already sent can then be false. (6) Outside
+  WhatsApp's 24h window nothing is sent (template, M4), as for every
+  status. (7) The copy never says where a photo that was not sent can be
+  found: the completion email carries the completion photo only, not the
+  receipt (a follow-up, PLAN §13). The "Purchases: $X" line states the
+  receipt amount, not a share of the total: reimbursement is clamped to
+  the approved budget plus tolerance (billing.go). Privacy Policy: §1 already says completion and receipt
   photos are shown to the requester through short-lived signed links; the
   iMessage/WhatsApp line in §1 and §5(b) must name the photos as sent via
   those providers (Aura's edit list, PLAN §11). Delivery is at-most-once
@@ -308,3 +315,33 @@ retry failing; not-configured not retried; escaped-slash/uppercase masks;
 signing path (the signer is a package `sync.Once`; injecting it is a
 refactor of frozen code — deferred) and a negative amount in
 `formatCentsUSD` (unreachable: `ReceiptTotal` is set only for cents > 0).
+
+### M3.6 — review round 3 — 2026-10-22 at `bf31d06` (Reviewer: new Sonnet session)
+
+**FAIL ×2 MAJOR.** (1) The copy said the receipt photo was "in your
+email" (three strings, a comment, and I-R) and the completion email
+carries only the completion photo — a promise without the thing, the
+same class as rounds 1–2. (2) The WhatsApp non-image drop was unconditional
+and so broke the M3.2 relay: a relayed PDF or a photo with a long note
+lost its link. MINOR: the no-retry test could not catch a regression;
+nothing proved `*WhatsAppAdapter` satisfies `MediaCarrier`; the own-key
+case could not tell "prefix passed" from "prefix rejected", and the test
+consumed the storage `sync.Once` with empty env; the fallback still
+retried on any error; I-R inaccuracies; a magic caption bound; test gaps
+(caption-length drop, mixed, `.JPG`, extensionless, double-escaped echo).
+
+Fixed (all): the copy promises nothing about where an unsent photo is —
+"Purchases: $X" / "Receipt: $X. (The photo couldn't be sent here.)" /
+"The receipt photo couldn't be sent here." — and I-R(7) records that the
+email has the completion photo only (receipt-in-email is a follow-up).
+`Outbound.MediaExpires` marks signed task photos: WhatsApp drops only
+those; a public relay attachment is pasted as a link as before.
+`ProviderStatusError` carries the provider's status, and the fallback
+retries only on a 4xx other than 401/403/429 — not on transport errors.
+`var _ MediaCarrier = (*WhatsAppAdapter)(nil)`. The receipt bound is the
+measured receipt text. `urlRun` also matches `\\/` and `\u002f`. Tests:
+call counts for timeout / not-configured / 401 / 429 / 500 (one call) and
+400 (two); own key → "storage not configured"; `sync.Once` reset in
+cleanup; relay PDF link kept vs expiring `.heic` dropped; `.JPG`,
+extensionless, 1024 boundary; mixed carry; caption-length drop;
+double-escaped and `\u002f` echoes.

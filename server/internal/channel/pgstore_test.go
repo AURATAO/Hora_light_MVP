@@ -9,10 +9,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"hora-auth/internal/channel/llm"
 )
 
 // DB-backed tests for PGStore. They run only when CHANNEL_TEST_DATABASE_URL
@@ -754,9 +757,11 @@ func TestPGDeferredApprovalRoundTrip(t *testing.T) {
 	}
 }
 
-// M3.2c round 2: the claim is one statement — armed, stamped and removed
-// from the hold together, only from a state the question may interrupt,
-// and only once.
+// M3.2c rounds 2–3: the claim is one statement — state and request set,
+// armed-at = ArmedUnconfirmed, the hold KEPT — only from a state the
+// question may interrupt, and only once; ConfirmArmed stamps the time and
+// drops the hold; ClearApproval is a compare-and-set on the request. A
+// draft underneath survives all three.
 func TestPGClaimHold(t *testing.T) {
 	db := testDB(t)
 	s := &PGStore{DB: db}
@@ -772,7 +777,8 @@ func TestPGClaimHold(t *testing.T) {
 	if err := db.QueryRow(`INSERT INTO extension_requests DEFAULT VALUES RETURNING id`).Scan(&ext2); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateHandoff}); err != nil {
+	draft := &PendingDraft{Draft: llm.TaskDraft{Title: "Laundry"}, QuoteCents: 2700}
+	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateHandoff, Pending: draft}); err != nil {
 		t.Fatal(err)
 	}
 	for _, e := range []string{ext, ext2} {
@@ -781,36 +787,79 @@ func TestPGClaimHold(t *testing.T) {
 		}
 	}
 	// Not from a handoff.
-	if ok, err := s.ClaimHold(ctx, a.ID, ext, time.Now()); err != nil || ok {
+	if ok, err := s.ClaimHold(ctx, a.ID, ext); err != nil || ok {
 		t.Fatalf("claimed from handoff: %v %v", ok, err)
 	}
-	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateIdle}); err != nil {
+	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateAwaitingConfirm, Pending: draft}); err != nil {
 		t.Fatal(err)
 	}
-	at := time.Now().Truncate(time.Microsecond)
-	if ok, err := s.ClaimHold(ctx, a.ID, ext, at); err != nil || !ok {
-		t.Fatalf("claim: %v %v", ok, err)
+	// Eight concurrent claims: one wins.
+	var wg sync.WaitGroup
+	var wins int32
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if ok, err := s.ClaimHold(ctx, a.ID, ext); err == nil && ok {
+				atomic.AddInt32(&wins, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	if wins != 1 {
+		t.Fatalf("claims won: %d", wins)
 	}
 	got, err := s.GetConversation(ctx, a.ID)
-	if err != nil || got.State != StateAwaitingApproval || got.PendingExtensionID != ext || got.ApprovalArmedAt == nil || !got.ApprovalArmedAt.Equal(at) ||
-		len(got.Deferred) != 1 || got.Deferred[0].ExtensionID != ext2 {
-		t.Fatalf("%+v %v", got, err)
+	if err != nil || got.State != StateAwaitingApproval || got.PendingExtensionID != ext || !got.Unconfirmed() ||
+		len(got.Deferred) != 2 || got.Pending == nil || got.Pending.QuoteCents != 2700 {
+		t.Fatalf("claimed: %+v %v", got, err)
 	}
-	// Once: a second claim of the same hold, and a claim of the other while
-	// one is armed, both fail.
-	if ok, _ := s.ClaimHold(ctx, a.ID, ext, time.Now()); ok {
-		t.Fatal("claimed twice")
-	}
-	if ok, _ := s.ClaimHold(ctx, a.ID, ext2, time.Now()); ok {
+	// Not while another question is armed.
+	if ok, _ := s.ClaimHold(ctx, a.ID, ext2); ok {
 		t.Fatal("claimed while another question is armed")
 	}
-	// A full-row save clears the armed stamp with the question.
-	got.State, got.PendingExtensionID, got.ApprovalArmedAt = StateIdle, "", nil
-	if err := s.SaveConversation(ctx, got); err != nil {
+	// Confirmed: stamped, hold gone, the other hold and the draft stay.
+	at := time.Now().Truncate(time.Microsecond)
+	if err := s.ConfirmArmed(ctx, a.ID, ext, at); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ = s.GetConversation(ctx, a.ID); got.ApprovalArmedAt != nil || len(got.Deferred) != 1 {
-		t.Fatalf("%+v", got)
+	if got, _ = s.GetConversation(ctx, a.ID); got.Unconfirmed() || !got.ApprovalArmedAt.Equal(at) || len(got.Deferred) != 1 || got.Deferred[0].ExtensionID != ext2 || got.Pending == nil {
+		t.Fatalf("confirmed: %+v", got)
+	}
+	// Confirming a request that is not the armed one changes nothing.
+	if err := s.ConfirmArmed(ctx, a.ID, ext2, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.GetConversation(ctx, a.ID); !got.ApprovalArmedAt.Equal(at) || len(got.Deferred) != 1 {
+		t.Fatalf("stray confirm: %+v", got)
+	}
+	// Clear: only for the armed request; the draft comes back.
+	if ok, err := s.ClearApproval(ctx, a.ID, ext2, StateAwaitingConfirm); err != nil || ok {
+		t.Fatalf("cleared the wrong request: %v %v", ok, err)
+	}
+	if ok, err := s.ClearApproval(ctx, a.ID, ext, StateAwaitingConfirm); err != nil || !ok {
+		t.Fatalf("clear: %v %v", ok, err)
+	}
+	if got, _ = s.GetConversation(ctx, a.ID); got.State != StateAwaitingConfirm || got.PendingExtensionID != "" || got.ApprovalArmedAt != nil || got.Pending == nil || len(got.Deferred) != 1 {
+		t.Fatalf("cleared: %+v", got)
+	}
+	// The SQL state list and canArmApproval agree.
+	for _, st := range []State{StateIdle, StateAwaitingConfirm, StateAwaitingTaskChoice, StateAwaitingBudget, StateAwaitingName, StateAwaitingApproval, StateHandoff, StatePosting, StateAwaitingSetup} {
+		if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: st, Pending: draft, PendingExtensionID: ""}); err != nil {
+			t.Fatal(err)
+		}
+		ok, err := s.ClaimHold(ctx, a.ID, ext2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok != canArmApproval(st) {
+			t.Fatalf("state %s: SQL %v, canArmApproval %v", st, ok, canArmApproval(st))
+		}
+		if ok {
+			if _, err := s.ClearApproval(ctx, a.ID, ext2, st); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	// LastInboundAt is read with the row.
 	when := time.Now().Truncate(time.Microsecond)

@@ -185,11 +185,16 @@ func (a *WhatsAppAdapter) Send(ctx context.Context, o Outbound) (string, error) 
 			delete(payload, "text")
 			payload["type"] = "image"
 			payload["image"] = map[string]any{"link": o.MediaURL, "caption": o.Text}
+		} else if o.MediaExpires {
+			// A short-lived signed link (a task photo): the words only. A
+			// link pasted into the chat would outlive its token and sit
+			// there dead (D-16 I-R). The router asked first, so the words
+			// never promise it.
+			log.Printf("[channel] whatsapp send: expiring media dropped (not an image link, or caption over the cap)")
 		} else {
-			// Anything else (a PDF, a long caption): the words only. A link
-			// pasted into the chat would outlive its signed token and sit
-			// there dead; the email carries the photo (D-16 I-R).
-			log.Printf("[channel] whatsapp send: media dropped (not an image link, or caption over the cap)")
+			// A public attachment (a relayed PDF, a photo with a long
+			// note): the words plus the link, as the relay always did.
+			payload["text"] = map[string]any{"body": o.Text + "\n" + o.MediaURL, "preview_url": true}
 		}
 	}
 	if o.ReplyToProviderID != "" {
@@ -224,7 +229,7 @@ func (a *WhatsAppAdapter) Send(ctx context.Context, o Outbound) (string, error) 
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		// Error 131047 = outside the 24h window; the caller must use a template.
-		return "", fmt.Errorf("whatsapp send: status %d: %s", resp.StatusCode, ProviderErrorText(respBody))
+		return "", &ProviderStatusError{Provider: "whatsapp", Status: resp.StatusCode, Text: ProviderErrorText(respBody)}
 	}
 	var r struct {
 		Messages []struct {
@@ -255,6 +260,8 @@ func unixOrNow(s string) time.Time {
 
 // looksLikeImageURL: Meta accepts only images on an image message; other
 // files go as a link in a text message.
+var _ MediaCarrier = (*WhatsAppAdapter)(nil)
+
 // CanCarryMedia: Meta's image message takes JPEG and PNG, with a caption of
 // at most 1024 characters. Anything else would be refused or, pasted as a
 // link, would outlive its token in the chat — so it is not carried.

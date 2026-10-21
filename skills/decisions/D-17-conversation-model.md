@@ -263,3 +263,48 @@ structured composition (M3.2 R6); authorization in both directions.
   window; PG `ClaimHold` (not from handoff, once, not while armed,
   `approval_armed_at`/`last_inbound_at` round-trip); DB `ExtensionPending`
   blocked pair; I-L on iMessage ignored.
+- **Round 3 (6239b6e) — FAIL.** MAJOR: (1) `ClaimHold` armed the question
+  BEFORE the send and removed the hold; a crash or a failed undo between
+  the two left an armed, never-delivered question that the next YES (meant
+  for the draft) would approve; (2) `NotifyStatus` still sent approval
+  questions directly (check → send → `askApproval`), so two requests
+  arriving together could both be sent with one armed — the YES read
+  against the unarmed one approves the other. MINOR: `onAwaitingApproval`/
+  `clearApproval` saved the full row (a claim landing in between was
+  wiped); a held question was not resumed when the armed one ended in the
+  app; the freshness guard failed open on a zero `ReceivedAt`; the undo
+  re-added the hold at the end and the hold writes touched `updated_at`
+  (the handoff's age); the end-of-message resume could put two questions
+  in one burst; test gaps (emission of the resolved id, direct-path race,
+  armed-ends-with-hold, PG draft survival/concurrency/state-list parity);
+  `$2` cast in the subquery.
+
+  Fixed (all): one arming path — every approval request is HELD, then
+  `resumeDeferred`: `ClaimHold` (one UPDATE: state + request +
+  `approval_armed_at = ArmedUnconfirmed`, hold KEPT, conditional on an
+  armable state) → send → `ConfirmArmed` (real stamp, hold dropped, CAS on
+  the request). Between claim and confirm nothing can answer it (every
+  message precedes the sentinel; a YES then gets "a question is waiting"),
+  and a claim older than `UnconfirmedResend` (3 min; routing's own timeout
+  is 60 s) is re-sent from the hold by the next resume point — a repeat
+  over a lost question. A failed send clears the claim on
+  `context.WithoutCancel`; the hold was never removed, so its place is
+  kept. `askApproval` deleted. `onAwaitingApproval` and `clearApproval`
+  end the question with `ClearApproval` (CAS on request id). A resolution
+  that clears the armed question tells the person, then resumes the next
+  held one. A zero `ReceivedAt` is refused and re-asked; no margin is
+  applied because the stamp is taken after the send returned (declared).
+  Hold writes no longer touch `updated_at`; `updated_at` is read with the
+  row for the claim's age. The end-of-message resume runs only when the
+  reply left the state idle, unchanged, or in the approval itself — never
+  on the heels of a new question of ours. `canArmApproval` and the SQL
+  list come from one slice. The store refuses to re-hold the armed request
+  (a repeated request event). Tests: end-to-end requester
+  `EXTENSION_RESOLVED` carries the id (through the real approve handler
+  and the chat hook) and `statusEvent` carries it; A's resolution asks
+  held B at once (after the resolution text); two concurrent requests →
+  one sent and armed, one held; unconfirmed claim → YES refused, re-ask,
+  re-sent after 3 min and then answerable; zero send time refused; no
+  burst after a new question of ours; PG: 8 concurrent claims → one win,
+  draft survives claim/confirm/clear, confirm/clear CAS, SQL state list ==
+  `canArmApproval` for every state.

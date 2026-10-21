@@ -280,8 +280,11 @@ func TestWhatsAppSend(t *testing.T) {
 func TestProviderErrorTextMasksLinksAndTokens(t *testing.T) {
 	for _, body := range []string{
 		`{"error":"media_url unreachable: https://x.supabase.co/storage/v1/object/sign/task-completions/c/1.jpg?token=eyJhbGciOi.secret for +1 (555) 123-4567, token=again"}`,
-		// Meta escapes slashes in its JSON bodies.
+		// Meta escapes slashes in its JSON bodies; a double-escaped or
+		// \u002f echo too.
 		`{"error":{"message":"Could not fetch HTTPS:\/\/x.supabase.co\/storage\/v1\/object\/sign\/task-completions\/c\/1.jpg?TOKEN=eyJhbGciOi.secret"}}`,
+		`{"error":"https:\\/\\/x.supabase.co\\/storage\\/task-completions?token=eyJhbGciOi"}`,
+		`{"error":"https:\u002f\u002fx.supabase.co\u002ftask-completions?token=eyJhbGciOi"}`,
 	} {
 		got := ProviderErrorText([]byte(body))
 		for _, bad := range []string{"supabase.co", "eyJhbGciOi", "token=again", "555", "task-completions"} {
@@ -499,15 +502,28 @@ func TestWhatsAppSendMedia(t *testing.T) {
 	if _, has := (*got)["text"]; has {
 		t.Fatalf("image message carries no text block: %+v", *got)
 	}
-	// Not an image (a PDF receipt, a .heic): the words only, never an image
-	// message Meta would reject — and never a pasted link, which would
-	// outlive its signed token in the chat (M3.6, D-16 I-R).
-	if _, err := a.Send(context.Background(), Outbound{To: "+15551234567", Text: "Receipt", MediaURL: "https://cdn.example/r.pdf?token=abc"}); err != nil {
+	// Not an image (a relayed PDF): never an image message Meta would
+	// reject — the words plus the link, as the relay always did.
+	if _, err := a.Send(context.Background(), Outbound{To: "+15551234567", Text: "Receipt", MediaURL: "https://cdn.example/r.pdf"}); err != nil {
 		t.Fatal(err)
 	}
 	txt, _ := (*got)["text"].(map[string]any)
+	if (*got)["type"] != "text" || txt["body"] != "Receipt\nhttps://cdn.example/r.pdf" || (*got)["image"] != nil {
+		t.Fatalf("%+v", *got)
+	}
+	// A short-lived signed link it cannot carry (a .heic task photo): the
+	// words only — a pasted link would outlive its token (M3.6, D-16 I-R).
+	delete(*got, "image")
+	if _, err := a.Send(context.Background(), Outbound{To: "+15551234567", Text: "Receipt", MediaURL: "https://cdn.example/r.heic?token=abc", MediaExpires: true}); err != nil {
+		t.Fatal(err)
+	}
+	txt, _ = (*got)["text"].(map[string]any)
 	if (*got)["type"] != "text" || txt["body"] != "Receipt" || txt["preview_url"] != false || (*got)["image"] != nil {
 		t.Fatalf("%+v", *got)
+	}
+	// Uppercase and extensionless keys.
+	if !a.CanCarryMedia("https://cdn.example/P.JPG?token=1", 10) || a.CanCarryMedia("https://cdn.example/photo?token=1", 10) || !a.CanCarryMedia("https://cdn.example/p.png", 1024) {
+		t.Fatal("CanCarryMedia edges")
 	}
 	// A caption over Meta's 1024 cap falls back the same way.
 	long := strings.Repeat("x", 1100)

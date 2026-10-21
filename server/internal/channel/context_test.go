@@ -193,9 +193,7 @@ func TestApprovalInterruptsTheNameQuestion(t *testing.T) {
 	if g.state() != StateAwaitingName {
 		t.Fatalf("state %s", g.state())
 	}
-	if err := g.r.askApproval(context.Background(), "id-"+me, "ext-3"); err != nil {
-		t.Fatal(err)
-	}
+	g.arm(t, "ext-3")
 	if g.state() != StateAwaitingApproval {
 		t.Fatalf("state %s", g.state())
 	}
@@ -421,9 +419,7 @@ func TestLastWriterIsATargetOnlyUntilAnswered(t *testing.T) {
 func TestEscapesKeepTheApprovalArmed(t *testing.T) {
 	g, chat, _, fc := contextRig(llm.IntentNewTask, bagelT)
 	g.say(t, "pick up my laundry tomorrow at 3") // draft pending
-	if err := g.r.askApproval(context.Background(), "id-"+me, "ext-5"); err != nil {
-		t.Fatal(err)
-	}
+	g.arm(t, "ext-5")
 	fc.intent = llm.IntentToSupporter
 	got := g.say(t, "for Sam, why $10 more?")
 	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
@@ -556,9 +552,7 @@ func TestCasualAffirmativeGoesToTheSupporterWhoJustWrote(t *testing.T) {
 	}
 	// Same for an approval: "sure" is relayed, "YES" approves.
 	g, chat, tasks, _ = contextRig(llm.IntentToSupporter, bagelT)
-	if err := g.r.askApproval(context.Background(), "id-"+me, "ext-2"); err != nil {
-		t.Fatal(err)
-	}
+	g.arm(t, "ext-2")
 	tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: ok if I take 15 more?", "task-2", time.Now().Add(-time.Minute)
 	got = g.say(t, "sure")
 	if len(chat.posted) != 1 || len(g.booker.resolved) != 0 || !strings.Contains(got, CopyStillWaitingApproval) {
@@ -747,9 +741,7 @@ func TestSecondRequestWhileOneIsArmedIsHeld(t *testing.T) {
 // double-tap on the booking's YES cannot approve the supporter's request.
 func TestAnswerFromBeforeTheQuestionIsNotAnAnswer(t *testing.T) {
 	g, _, _, _ := contextRig(llm.IntentToSupporter, bagelT)
-	if err := g.r.askApproval(context.Background(), "id-"+me, "ext-2"); err != nil {
-		t.Fatal(err)
-	}
+	g.arm(t, "ext-2")
 	in := Inbound{Channel: IMessage, ProviderMessageID: "early-yes", From: me, Text: "YES", ReceivedAt: time.Now().Add(-time.Minute)}
 	if err := g.r.HandleInbound(context.Background(), in); err != nil {
 		t.Fatal(err)
@@ -873,9 +865,7 @@ func TestCasualAffirmativeGateEdges(t *testing.T) {
 	g, chat, tasks, _ := contextRig(llm.IntentToSupporter, bagelT)
 	g.r.Adapters[WhatsApp] = g.ad
 	g.ids.link(me, "user-1")
-	if err := g.r.askApproval(context.Background(), "id-"+me, "ext-2"); err != nil {
-		t.Fatal(err)
-	}
+	g.arm(t, "ext-2")
 	tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: ok if I take 15 more?", "task-2", time.Now().Add(-time.Minute)
 	tasks.byMsg["prompt-1"] = "task-2"
 	in := Inbound{Channel: WhatsApp, ProviderMessageID: "ok1", From: me, Text: "ok", ReplyToProviderID: "prompt-1", ReceivedAt: time.Now()}
@@ -887,9 +877,7 @@ func TestCasualAffirmativeGateEdges(t *testing.T) {
 	}
 	// On iMessage the swipe carries nothing (P5): the word goes to Sam.
 	g, chat, tasks, _ = contextRig(llm.IntentToSupporter, bagelT)
-	if err := g.r.askApproval(context.Background(), "id-"+me, "ext-2"); err != nil {
-		t.Fatal(err)
-	}
+	g.arm(t, "ext-2")
 	tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: ok if I take 15 more?", "task-2", time.Now().Add(-time.Minute)
 	tasks.byMsg["prompt-1"] = "task-2"
 	in = Inbound{Channel: IMessage, ProviderMessageID: "ok1b", From: me, Text: "ok", ReplyToProviderID: "prompt-1", ReceivedAt: time.Now()}
@@ -902,9 +890,7 @@ func TestCasualAffirmativeGateEdges(t *testing.T) {
 
 	// The lookup fails: fail closed — nothing is approved, nothing posted.
 	g, chat, tasks, _ = contextRig(llm.IntentToSupporter, bagelT)
-	if err := g.r.askApproval(context.Background(), "id-"+me, "ext-2"); err != nil {
-		t.Fatal(err)
-	}
+	g.arm(t, "ext-2")
 	tasks.lastErr = errors.New("db down")
 	in = Inbound{Channel: IMessage, ProviderMessageID: "ok2", From: me, Text: "ok", ReceivedAt: time.Now()}
 	if err := g.r.HandleInbound(context.Background(), in); err == nil || len(chat.posted) != 0 || len(g.booker.resolved) != 0 {
@@ -913,12 +899,134 @@ func TestCasualAffirmativeGateEdges(t *testing.T) {
 
 	// 確認 is strict: approves even with the supporter's question open.
 	g, chat, tasks, _ = contextRig(llm.IntentToSupporter, bagelT)
-	if err := g.r.askApproval(context.Background(), "id-"+me, "ext-2"); err != nil {
-		t.Fatal(err)
-	}
+	g.arm(t, "ext-2")
 	tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: ok if I take 15 more?", "task-2", time.Now().Add(-time.Minute)
 	g.say(t, "確認")
 	if len(chat.posted) != 0 || len(g.booker.resolved) != 1 || !strings.HasSuffix(g.booker.resolved[0], ":ext-2:true") {
 		t.Fatalf("posted %v resolved %v", chat.posted, g.booker.resolved)
+	}
+}
+
+// I-O: when the armed question ends in the app (resolved or timed out), a
+// held one is asked right away — not at the person's next message.
+func TestHeldQuestionFollowsTheArmedOnesResolution(t *testing.T) {
+	g, _, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.arm(t, "ext-A")
+	g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: evTimeRequested, TaskID: "task-2", TaskTitle: "Bagel run", SupporterName: "Sam",
+		ExtensionID: "ext-B", ApprovalMinutes: 5, Approval: &PendingApproval{ID: "ext-B", Kind: "time", Minutes: 15}})
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.PendingExtensionID != "ext-A" || len(c.Deferred) != 1 {
+		t.Fatalf("%+v", c)
+	}
+	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: evResolved, TaskID: "task-2", ExtensionID: "ext-A", Title: "A request timed out", Body: "…declined automatically."}); err != nil {
+		t.Fatal(err)
+	}
+	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.State != StateAwaitingApproval || c.PendingExtensionID != "ext-B" || len(c.Deferred) != 0 || !strings.Contains(g.ad.last(), "15 more minutes") {
+		t.Fatalf("B must follow A's resolution: %+v last %q", c, g.ad.last())
+	}
+}
+
+// Two requests arriving together on the direct path: one is armed, the
+// other held — never both asked.
+func TestConcurrentRequestsAskOne(t *testing.T) {
+	g, _, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
+	evs := []StatusEvent{
+		{Type: evBudgetRequested, TaskID: "task-2", TaskTitle: "Bagel run", SupporterName: "Sam", ExtensionID: "ext-A", ApprovalMinutes: 5, Approval: &PendingApproval{ID: "ext-A", Kind: "budget", Cents: 1000}},
+		{Type: evTimeRequested, TaskID: "task-2", TaskTitle: "Bagel run", SupporterName: "Sam", ExtensionID: "ext-B", ApprovalMinutes: 5, Approval: &PendingApproval{ID: "ext-B", Kind: "time", Minutes: 15}},
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(ev StatusEvent) {
+			defer wg.Done()
+			if err := g.r.NotifyStatus(context.Background(), "user-1", ev); err != nil {
+				t.Error(err)
+			}
+		}(evs[i])
+	}
+	wg.Wait()
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if len(g.ad.sent) != 1 || c.State != StateAwaitingApproval || len(c.Deferred) != 1 || c.Deferred[0].ExtensionID == c.PendingExtensionID {
+		t.Fatalf("sent %d conv %+v", len(g.ad.sent), c)
+	}
+	// The one sent is the one armed.
+	if (c.PendingExtensionID == "ext-A") != strings.Contains(g.ad.last(), "$10") {
+		t.Fatalf("armed %s, sent %q", c.PendingExtensionID, g.ad.last())
+	}
+}
+
+// A claim whose delivery was never confirmed: nothing answers it, the
+// person is told a question waits, and once the claim is old enough it is
+// re-sent from the hold and confirmed.
+func TestUnconfirmedClaimIsUnanswerableThenResent(t *testing.T) {
+	g, _, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
+	d := DeferredApproval{UserID: "user-1", TaskID: "task-2", TaskTitle: "Bagel run", SupporterName: "Sam", ExtensionID: "ext-9",
+		Type: evBudgetRequested, Approval: PendingApproval{ID: "ext-9", Kind: "budget", Cents: 1000}, TimeoutMinutes: 10, AtUnix: time.Now().Unix()}
+	if err := g.convs.HoldApproval(context.Background(), "id-"+me, d); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := g.convs.ClaimHold(context.Background(), "id-"+me, "ext-9"); err != nil || !ok {
+		t.Fatal(err)
+	}
+	// (the process died here)
+	sent := len(g.ad.sent)
+	got := g.say(t, "YES")
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if len(g.booker.resolved) != 0 || !c.Unconfirmed() || len(c.Deferred) != 1 || got != CopyApprovalReask || len(g.ad.sent) != sent+1 {
+		t.Fatalf("resolved %v conv %+v last %q", g.booker.resolved, c, got)
+	}
+	// Old enough: re-sent and confirmed.
+	base := time.Now()
+	g.r.Now = func() time.Time { return base.Add(UnconfirmedResend + time.Second) }
+	g.r.resumeDeferred(context.Background(), Identity{ID: "id-" + me, UserID: "user-1", Channel: IMessage, Address: me})
+	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.Unconfirmed() || len(c.Deferred) != 0 || c.PendingExtensionID != "ext-9" || !strings.Contains(g.ad.last(), "$10 more") {
+		t.Fatalf("conv %+v last %q", c, g.ad.last())
+	}
+	// A YES sent after the real stamp answers it.
+	in := Inbound{Channel: IMessage, ProviderMessageID: "late-yes", From: me, Text: "YES", ReceivedAt: base.Add(UnconfirmedResend + 2*time.Second)}
+	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.booker.resolved) != 1 {
+		t.Fatalf("resolved %v", g.booker.resolved)
+	}
+}
+
+// A YES with no usable send time is refused and the question re-asked.
+func TestAnswerWithoutASendTimeIsRefused(t *testing.T) {
+	g, _, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.arm(t, "ext-2")
+	in := Inbound{Channel: IMessage, ProviderMessageID: "no-time", From: me, Text: "YES"}
+	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.booker.resolved) != 0 || g.ad.last() != CopyApprovalReask || g.state() != StateAwaitingApproval {
+		t.Fatalf("resolved %v last %q state %s", g.booker.resolved, g.ad.last(), g.state())
+	}
+}
+
+// The end-of-message resume waits when this turn just asked a question of
+// ours: no two questions in one burst.
+func TestHeldQuestionDoesNotFollowANewQuestionOfOurs(t *testing.T) {
+	g, _, _, _ := contextRig(llm.IntentNewTask, bagelT)
+	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
+	d := DeferredApproval{UserID: "user-1", TaskID: "task-2", TaskTitle: "Bagel run", SupporterName: "Sam", ExtensionID: "ext-9",
+		Type: evBudgetRequested, Approval: PendingApproval{ID: "ext-9", Kind: "budget", Cents: 1000}, TimeoutMinutes: 10, AtUnix: time.Now().Unix()}
+	if err := g.convs.HoldApproval(context.Background(), "id-"+me, d); err != nil {
+		t.Fatal(err)
+	}
+	g.say(t, "new task: pick up my laundry tomorrow at 3") // idle → awaiting_confirm: a question of ours
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.State != StateAwaitingConfirm || len(c.Deferred) != 1 || strings.Contains(g.ad.last(), "$10 more") {
+		t.Fatalf("conv %+v last %q", c, g.ad.last())
+	}
+	g.say(t, "YES") // booked → the held question follows the confirmation
+	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
+	if g.booker.posts != 1 || c.State != StateAwaitingApproval || c.PendingExtensionID != "ext-9" {
+		t.Fatalf("posts %d conv %+v", g.booker.posts, c)
 	}
 }

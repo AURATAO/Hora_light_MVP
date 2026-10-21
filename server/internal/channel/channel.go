@@ -64,9 +64,14 @@ type Outbound struct {
 	// Text. A setup link carries a raw token that must never be stored
 	// (S-11 amended, condition 3: only its SHA-256 hash is kept).
 	StoredText string
-	// MediaURL, when set, attaches a public image (a supporter's photo
-	// relayed from the task chat). Text still goes as the caption/body.
-	MediaURL string
+	// MediaURL, when set, attaches an image (a supporter's photo relayed
+	// from the task chat; a task photo). Text still goes as the
+	// caption/body. MediaExpires marks a short-lived signed link (a task
+	// photo, D-16 I-R): a channel that cannot carry it as media drops it
+	// rather than pasting a link that would die in the chat; a public relay
+	// image it cannot carry is pasted as a link, as before.
+	MediaURL     string
+	MediaExpires bool
 	// Relay marks a supporter's chat message passed on to the person. An
 	// inline reply to it is for the supporter (relay.go).
 	Relay bool
@@ -106,6 +111,19 @@ var ErrUnverified = errors.New("channel: webhook failed verification")
 // the channel cannot carry is never promised (M3.6, D-16 I-R).
 type MediaCarrier interface {
 	CanCarryMedia(mediaURL string, textLen int) bool
+}
+
+// ProviderStatusError is a provider's non-2xx answer, with its status, so a
+// caller can tell a refusal of the request (4xx) from a transport failure
+// where the message may have gone through. Its text is already scrubbed.
+type ProviderStatusError struct {
+	Provider string
+	Status   int
+	Text     string // ProviderErrorText of the body
+}
+
+func (e *ProviderStatusError) Error() string {
+	return fmt.Sprintf("%s send: status %d: %s", e.Provider, e.Status, e.Text)
 }
 
 // ErrNotConfigured means the adapter is missing credentials it needs.

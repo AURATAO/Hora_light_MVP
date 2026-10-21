@@ -415,9 +415,7 @@ func TestApprovalArrivingUnderAHoldIsArmedAndHoldResumes(t *testing.T) {
 	if g.state() != StateAwaitingTaskChoice {
 		t.Fatalf("state %s", g.state())
 	}
-	if err := g.r.askApproval(context.Background(), "id-"+me, "ext-1"); err != nil {
-		t.Fatal(err)
-	}
+	g.arm(t, "ext-1")
 	if g.state() != StateAwaitingApproval {
 		t.Fatalf("approval must be armed under a hold, state %s", g.state())
 	}
@@ -661,9 +659,7 @@ func TestApprovalArmedDuringPickIsKept(t *testing.T) {
 	g, chat, _ := relayRig(llm.IntentOther, laundryT, bagelT)
 	g.say(t, "please get everything bagels")
 	armed := &armingChat{fakeChat: chat, arm: func() {
-		if err := g.r.askApproval(context.Background(), "id-"+me, "ext-9"); err != nil {
-			t.Fatal(err)
-		}
+		g.arm(t, "ext-9")
 	}}
 	g.r.Chat = armed
 	g.say(t, "2")

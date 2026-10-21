@@ -213,11 +213,18 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 			return err
 		}
 	}
+	before := conv.State
 	err = r.handleState(ctx, in, id, conv, text)
 	if err == nil && len(conv.Deferred) > 0 {
 		// A question held while the thread could not take it follows the
-		// reply that moved the thread on (I-O). Re-read inside.
-		r.resumeDeferred(ctx, id)
+		// reply that moved the thread on (I-O) — unless that reply just
+		// put a new question of ours (a draft summary, budget, name, task
+		// choice): two questions in one burst invite a YES for the wrong
+		// one, so the supporter's waits for the next resume point.
+		if after, gerr := r.Conversations.GetConversation(ctx, id.ID); gerr == nil &&
+			(after.State == StateIdle || after.State == before || after.State == StateAwaitingApproval) {
+			r.resumeDeferred(ctx, id)
+		}
 	}
 	return err
 }

@@ -90,13 +90,14 @@ func StatusText(ev StatusEvent) (string, bool) {
 			fmt.Fprintf(&b, "\nTotal: %s", ev.FinalCost)
 		}
 		if ev.ReceiptTotal != "" {
-			// What the supporter bought for them, already inside the total.
-			// The receipt photo is a message of its own when it can be sent;
-			// "follows" promises nothing about order.
+			// The receipt amount the supporter entered. The receipt photo is
+			// a message of its own when it can be sent; "follows" promises
+			// nothing about order, and without a photo nothing is promised
+			// about where one is.
 			if ev.ReceiptPhotoURL != "" {
 				fmt.Fprintf(&b, "\nPurchases: %s (receipt photo follows)", ev.ReceiptTotal)
 			} else {
-				fmt.Fprintf(&b, "\nPurchases: %s (receipt in your email)", ev.ReceiptTotal)
+				fmt.Fprintf(&b, "\nPurchases: %s", ev.ReceiptTotal)
 			}
 		}
 		b.WriteString("\n\nYour receipt is on its way by email. Need something else? Just text me.")
@@ -197,40 +198,44 @@ func (r *Router) NotifyStatus(ctx context.Context, userID string, ev StatusEvent
 	if !found {
 		return nil // an app-only user: nothing to send
 	}
+	id := t.Identity
+	id.UserID = userID
 	if isApprovalRequest(ev.Type) && ev.ExtensionID != "" {
-		// Asked-but-ignored is the worst outcome (D-17 P4, I-O): if the
-		// thread cannot take the question now, it is not sent — the app
-		// notification and email carried it.
-		conv, err := r.Conversations.GetConversation(ctx, t.Identity.ID)
-		if err != nil {
-			return fmt.Errorf("NotifyStatus: %w", err)
+		// Every approval question is held first and then resumed — the one
+		// arming path (claim → send → confirm), so two requests arriving
+		// together are asked one at a time and a question is never sent
+		// without being armed (D-17 P4, I-O; S-11/5). If the thread cannot
+		// take it now it waits in the hold; the app notification and email
+		// carried it meanwhile.
+		d := DeferredApproval{UserID: userID, TaskID: ev.TaskID, TaskTitle: ev.TaskTitle, SupporterName: ev.SupporterName,
+			ExtensionID: ev.ExtensionID, Type: ev.Type, TimeoutMinutes: ev.ApprovalMinutes, AtUnix: r.now().Unix()}
+		if ev.Approval != nil {
+			d.Approval = *ev.Approval
 		}
-		if conv.State == StateAwaitingApproval && conv.PendingExtensionID == ev.ExtensionID {
+		// The store also refuses to re-hold the armed request; this is the
+		// early exit for the common repeat.
+		if conv, err := r.Conversations.GetConversation(ctx, id.ID); err != nil {
+			return fmt.Errorf("NotifyStatus: %w", err)
+		} else if conv.State == StateAwaitingApproval && conv.PendingExtensionID == ev.ExtensionID {
 			return nil // already asked and armed
 		}
-		if !canArmApproval(conv.State) {
-			// Held, not dropped (D-17 I-O): sent and armed as soon as the
-			// thread can take it — including while another question is
-			// armed (one at a time) — if the request is still the person's
-			// to answer then. Appended narrowly; one hold per request.
-			d := DeferredApproval{UserID: userID, TaskID: ev.TaskID, TaskTitle: ev.TaskTitle, SupporterName: ev.SupporterName,
-				ExtensionID: ev.ExtensionID, Type: ev.Type, TimeoutMinutes: ev.ApprovalMinutes, AtUnix: r.now().Unix()}
-			if ev.Approval != nil {
-				d.Approval = *ev.Approval
-			}
-			if err := r.Conversations.HoldApproval(ctx, t.Identity.ID, d); err != nil {
-				return fmt.Errorf("NotifyStatus: %w", err)
-			}
-			log.Printf("[channel] approval ext=%s deferred: conversation in state %s", ev.ExtensionID, conv.State)
-			return nil
+		if err := r.Conversations.HoldApproval(ctx, id.ID, d); err != nil {
+			return fmt.Errorf("NotifyStatus: %w", err)
 		}
+		r.resumeDeferred(ctx, id)
+		return nil
 	}
 	if ev.Type == evResolved {
 		// A held question is not cleared here: the resolution names only
-		// the task, and another request on it may still be live. Every
-		// hold is re-checked against the request when it is resumed.
-		if err := r.clearApproval(ctx, t.Identity.ID, userID, ev.ExtensionID); err != nil {
+		// the request, and another may still be live. Every hold is
+		// re-checked against its request when it is resumed — after the
+		// person has been told how this one ended.
+		cleared, err := r.clearApproval(ctx, id, ev.ExtensionID)
+		if err != nil {
 			return fmt.Errorf("NotifyStatus: %w", err)
+		}
+		if cleared {
+			defer r.resumeDeferred(ctx, id) // I-O: "as soon as the thread can take it"
 		}
 		if !ok {
 			return nil
@@ -244,7 +249,7 @@ func (r *Router) NotifyStatus(ctx context.Context, userID string, ev StatusEvent
 				log.Printf("[channel] status COMPLETED task=%s: completion photo not carried by %s", ev.TaskID, t.Identity.Channel)
 				ev.PhotoURL = ""
 			}
-			if ev.ReceiptPhotoURL != "" && !mc.CanCarryMedia(ev.ReceiptPhotoURL, len(CopyReceiptPhotoOnly)+32) {
+			if ev.ReceiptPhotoURL != "" && !mc.CanCarryMedia(ev.ReceiptPhotoURL, len(receiptText(ev))) {
 				log.Printf("[channel] status COMPLETED task=%s: receipt photo not carried by %s", ev.TaskID, t.Identity.Channel)
 				ev.ReceiptPhotoURL = ""
 			}
@@ -260,7 +265,7 @@ func (r *Router) NotifyStatus(ctx context.Context, userID string, ev StatusEvent
 	}
 	out := Outbound{Channel: t.Identity.Channel, To: t.Identity.Address, Text: text}
 	if ev.Type == "COMPLETED" && ev.PhotoURL != "" {
-		out.MediaURL = ev.PhotoURL
+		out.MediaURL, out.MediaExpires = ev.PhotoURL, true
 	}
 	if err := r.sendWithMediaFallback(ctx, out, ev.TaskID, ""); err != nil {
 		return fmt.Errorf("NotifyStatus: %w", err)
@@ -269,40 +274,46 @@ func (r *Router) NotifyStatus(ctx context.Context, userID string, ev StatusEvent
 		// The receipt, as its own message so the photo is unmistakable. If
 		// the photo cannot be delivered, the amount still is, with where
 		// the photo can be found.
-		rc := Outbound{Channel: t.Identity.Channel, To: t.Identity.Address, MediaURL: ev.ReceiptPhotoURL, Text: CopyReceiptPhotoOnly}
-		textOnly := CopyReceiptPhotoInEmail
+		rc := Outbound{Channel: t.Identity.Channel, To: t.Identity.Address, MediaURL: ev.ReceiptPhotoURL, MediaExpires: true, Text: receiptText(ev)}
+		textOnly := CopyReceiptPhotoNotSent
 		if ev.ReceiptTotal != "" {
-			rc.Text = fmt.Sprintf(CopyReceipt, ev.ReceiptTotal)
 			textOnly = fmt.Sprintf(CopyReceiptNoPhoto, ev.ReceiptTotal)
 		}
 		if err := r.sendWithMediaFallback(ctx, rc, ev.TaskID, textOnly); err != nil {
 			return fmt.Errorf("NotifyStatus: receipt: %w", err)
 		}
 	}
-	if isApprovalRequest(ev.Type) && ev.ExtensionID != "" {
-		// Armed only after the question was actually delivered.
-		if err := r.askApproval(ctx, t.Identity.ID, ev.ExtensionID); err != nil {
-			return fmt.Errorf("NotifyStatus: %w", err)
-		}
-	}
 	return nil
 }
 
+// receiptText is the receipt message's words: the amount when known.
+func receiptText(ev StatusEvent) string {
+	if ev.ReceiptTotal != "" {
+		return fmt.Sprintf(CopyReceipt, ev.ReceiptTotal)
+	}
+	return CopyReceiptPhotoOnly
+}
+
 // sendWithMediaFallback sends a message that may carry a photo; if the
-// provider refuses the media (unreachable link, unsupported type, timeout),
-// the words are sent once more on their own — the person's "done" message
-// must not be lost to a photo. textOnly, when set, replaces the text for
-// that second attempt. A failed media send is logged by Send; the error
-// never carries the link (ProviderErrorText).
+// provider REFUSES THE REQUEST (a 4xx other than auth or rate limit — an
+// unreachable link, an unsupported type), the words are sent once more on
+// their own — the person's "done" message must not be lost to a photo.
+// textOnly, when set, replaces the text for that second attempt. A
+// transport failure is not retried: the message may have gone through,
+// and a repeat is worse than the email's copy. A plan-limit 400 is
+// indistinguishable from a media 400 and costs one more refused call. The
+// error never carries the link (ProviderErrorText).
 func (r *Router) sendWithMediaFallback(ctx context.Context, out Outbound, taskID, textOnly string) error {
 	err := r.Send(ctx, out, taskID)
-	if err == nil || out.MediaURL == "" || errors.Is(err, ErrNotConfigured) {
+	if err == nil || out.MediaURL == "" {
 		return err
 	}
-	// A refusal at the API call. (A timeout after the provider accepted
-	// the message repeats the words once — declared in D-16 I-R.)
-	log.Printf("[channel] status task=%s: media send failed, sending text only: %v", taskID, err)
-	out.MediaURL = ""
+	var pe *ProviderStatusError
+	if !errors.As(err, &pe) || pe.Status < 400 || pe.Status > 499 || pe.Status == 401 || pe.Status == 403 || pe.Status == 429 {
+		return err
+	}
+	log.Printf("[channel] status task=%s: media refused, sending text only: %v", taskID, err)
+	out.MediaURL, out.MediaExpires = "", false
 	if textOnly != "" {
 		out.Text = textOnly
 	}

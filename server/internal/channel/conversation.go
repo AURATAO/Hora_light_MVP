@@ -136,6 +136,11 @@ type Conversation struct {
 	// LastInboundAt is the person's latest message (read-only here; stamped
 	// by TouchConversation). WhatsApp's 24h window is measured from it.
 	LastInboundAt *time.Time
+	// UpdatedAt is the row's last state write (read-only here). A claimed
+	// question whose delivery was never confirmed is re-sent only once the
+	// claim is older than UnconfirmedResend — a send in flight must not be
+	// repeated by a resume point running beside it.
+	UpdatedAt time.Time
 	// PendingTaskChoices are the task ids listed when asking which supporter
 	// a message is for; PendingRelayText is that message, relayed on pick.
 	PendingTaskChoices []string
@@ -211,34 +216,99 @@ type ConversationStore interface {
 	HoldApproval(ctx context.Context, identityID string, d DeferredApproval) error
 	RemoveHold(ctx context.Context, identityID, extensionID string) error
 	// ClaimHold arms a held question in one statement: the state becomes
-	// awaiting_approval for that request, armed at `at`, and the hold is
-	// removed — only if the thread is in a state the question may interrupt
-	// (not already asking one) and the hold is still there. False when
-	// another caller got there first or the state moved (D-17 I-O).
-	ClaimHold(ctx context.Context, identityID, extensionID string, at time.Time) (bool, error)
+	// awaiting_approval for that request with approval_armed_at set to
+	// ArmedUnconfirmed — only if the thread is in a state the question may
+	// interrupt (not already asking one) and the hold is still there. The
+	// hold itself stays until ConfirmArmed, so a crash between the claim
+	// and the send leaves a question that no message can answer and that
+	// the next resume point re-sends. False when another caller got there
+	// first or the state moved (D-17 I-O).
+	ClaimHold(ctx context.Context, identityID, extensionID string) (bool, error)
+	// ConfirmArmed, after the question was delivered: stamps the real
+	// armed-at time and drops the hold — if that request is still the
+	// armed one.
+	ConfirmArmed(ctx context.Context, identityID, extensionID string, at time.Time) error
+	// ClearApproval ends the armed question for THAT request and no other
+	// (compare-and-set on the request id): state becomes `resume`, request
+	// and stamp cleared. False when it was not the armed one any more.
+	ClearApproval(ctx context.Context, identityID, extensionID string, resume State) (bool, error)
 }
 
-// armableFromHold: the states a held question may be resumed into. Not
-// awaiting_approval — one question at a time.
-var armableFromHold = "{" + string(StateIdle) + "," + string(StateAwaitingConfirm) + "," + string(StateAwaitingTaskChoice) + "," + string(StateAwaitingBudget) + "," + string(StateAwaitingName) + "}"
+// ArmedUnconfirmed marks a claimed question whose delivery has not been
+// confirmed: nothing can be its answer (every message precedes it), and
+// the hold is still there to re-send from.
+var ArmedUnconfirmed = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
 
-func (s *PGStore) ClaimHold(ctx context.Context, identityID, extensionID string, at time.Time) (bool, error) {
+// Unconfirmed reports whether the armed question has not been confirmed
+// sent.
+func (c Conversation) Unconfirmed() bool {
+	return c.ApprovalArmedAt != nil && !c.ApprovalArmedAt.Before(ArmedUnconfirmed)
+}
+
+// UnconfirmedResend: how old a claim must be before an unconfirmed question
+// is re-sent from its hold. Routing runs under a 60 s timeout, so a live
+// send never gets this old.
+const UnconfirmedResend = 3 * time.Minute
+
+// armableStates: the states a supporter's question may interrupt — ours
+// (a draft summary, budget, name, task choice) and idle. Not
+// awaiting_approval: one question at a time. canArmApproval and the SQL
+// literal both come from this one list.
+var armableStates = []State{StateIdle, StateAwaitingConfirm, StateAwaitingTaskChoice, StateAwaitingBudget, StateAwaitingName}
+
+func armableStatesLiteral() string {
+	parts := make([]string, len(armableStates))
+	for i, s := range armableStates {
+		parts[i] = string(s)
+	}
+	return "{" + strings.Join(parts, ",") + "}"
+}
+
+func (s *PGStore) ClaimHold(ctx context.Context, identityID, extensionID string) (bool, error) {
 	var one int
 	err := s.DB.QueryRowContext(ctx, `
 		UPDATE channel_conversations SET
-		  state = $3, pending_extension_id = $2::uuid, approval_armed_at = $4,
-		  deferred_approval = (SELECT jsonb_agg(e ORDER BY ord) FROM jsonb_array_elements(coalesce(deferred_approval, '[]'::jsonb)) WITH ORDINALITY AS t(e, ord)
-		                        WHERE e->>'extension_id' <> $2),
-		  updated_at = now()
+		  state = $3, pending_extension_id = $2::uuid, approval_armed_at = $4, updated_at = now()
 		WHERE identity_id = $1 AND state = ANY($5::text[])
 		  AND coalesce(deferred_approval, '[]'::jsonb) @> jsonb_build_array(jsonb_build_object('extension_id', $2::text))
 		RETURNING 1
-	`, identityID, extensionID, string(StateAwaitingApproval), at, armableFromHold).Scan(&one)
+	`, identityID, extensionID, string(StateAwaitingApproval), ArmedUnconfirmed, armableStatesLiteral()).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("claim hold: %w", err)
+	}
+	return true, nil
+}
+
+func (s *PGStore) ConfirmArmed(ctx context.Context, identityID, extensionID string, at time.Time) error {
+	_, err := s.DB.ExecContext(ctx, `
+		UPDATE channel_conversations SET
+		  approval_armed_at = $3,
+		  deferred_approval = (SELECT jsonb_agg(e ORDER BY ord) FROM jsonb_array_elements(coalesce(deferred_approval, '[]'::jsonb)) WITH ORDINALITY AS t(e, ord)
+		                        WHERE e->>'extension_id' <> $2::text)
+		WHERE identity_id = $1 AND state = $4 AND pending_extension_id = $2::uuid
+	`, identityID, extensionID, at, string(StateAwaitingApproval))
+	if err != nil {
+		return fmt.Errorf("confirm armed: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) ClearApproval(ctx context.Context, identityID, extensionID string, resume State) (bool, error) {
+	var one int
+	err := s.DB.QueryRowContext(ctx, `
+		UPDATE channel_conversations SET
+		  state = $3, pending_extension_id = NULL, approval_armed_at = NULL, updated_at = now()
+		WHERE identity_id = $1 AND state = $4 AND pending_extension_id = $2::uuid
+		RETURNING 1
+	`, identityID, extensionID, string(resume), string(StateAwaitingApproval)).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("clear approval: %w", err)
 	}
 	return true, nil
 }
@@ -254,10 +324,10 @@ func (s *PGStore) HoldApproval(ctx context.Context, identityID string, d Deferre
 		ON CONFLICT (identity_id) DO UPDATE SET
 		  deferred_approval = CASE
 		    WHEN coalesce(channel_conversations.deferred_approval, '[]'::jsonb) @> jsonb_build_array(jsonb_build_object('extension_id', $3::text))
+		      OR (channel_conversations.state = 'awaiting_approval' AND channel_conversations.pending_extension_id::text = $3::text)
 		      THEN channel_conversations.deferred_approval
 		    ELSE coalesce(channel_conversations.deferred_approval, '[]'::jsonb) || $2::jsonb
-		  END,
-		  updated_at = now()
+		  END
 	`, identityID, string(b), d.ExtensionID)
 	if err != nil {
 		return fmt.Errorf("hold approval: %w", err)
@@ -269,8 +339,7 @@ func (s *PGStore) RemoveHold(ctx context.Context, identityID, extensionID string
 	_, err := s.DB.ExecContext(ctx, `
 		UPDATE channel_conversations SET
 		  deferred_approval = (SELECT jsonb_agg(e ORDER BY ord) FROM jsonb_array_elements(coalesce(deferred_approval, '[]'::jsonb)) WITH ORDINALITY AS t(e, ord)
-		                        WHERE e->>'extension_id' <> $2),
-		  updated_at = now()
+		                        WHERE e->>'extension_id' <> $2::text)
 		WHERE identity_id = $1
 	`, identityID, extensionID)
 	if err != nil {
@@ -321,15 +390,15 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 	var state string
 	var pending []byte
 	var name, ext, relay sql.NullString
-	var terms, armed, lastIn sql.NullTime
+	var terms, armed, lastIn, updated sql.NullTime
 	var choicesJSON string
 	var deferred sql.NullString
 	err := s.DB.QueryRowContext(ctx, `
 		SELECT state, pending_draft, pending_name, terms_accepted_at, pending_extension_id::text,
 		       COALESCE(array_to_json(pending_task_choices)::text, '[]'), pending_relay_text,
-		       deferred_approval::text, approval_armed_at, last_inbound_at
+		       deferred_approval::text, approval_armed_at, last_inbound_at, updated_at
 		FROM channel_conversations WHERE identity_id = $1
-	`, identityID).Scan(&state, &pending, &name, &terms, &ext, &choicesJSON, &relay, &deferred, &armed, &lastIn)
+	`, identityID).Scan(&state, &pending, &name, &terms, &ext, &choicesJSON, &relay, &deferred, &armed, &lastIn, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, nil
 	}
@@ -361,6 +430,9 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 	if lastIn.Valid {
 		t := lastIn.Time
 		c.LastInboundAt = &t
+	}
+	if updated.Valid {
+		c.UpdatedAt = updated.Time
 	}
 	if len(pending) > 0 && string(pending) != "null" {
 		var p PendingDraft

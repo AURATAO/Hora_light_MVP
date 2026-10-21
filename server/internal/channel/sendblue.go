@@ -161,7 +161,7 @@ func (a *SendblueAdapter) Send(ctx context.Context, out Outbound) (string, error
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		// Sendblue answers 400 (not 429) for plan-limit declines; never retry
 		// those blindly. The body may echo the recipient: scrubbed (S-12).
-		return "", fmt.Errorf("sendblue send: status %d: %s", resp.StatusCode, ProviderErrorText(respBody))
+		return "", &ProviderStatusError{Provider: "sendblue", Status: resp.StatusCode, Text: ProviderErrorText(respBody)}
 	}
 	var r struct {
 		MessageHandle string `json:"message_handle"`
@@ -204,7 +204,7 @@ func truncate(b []byte, n int) string {
 
 var (
 	digitRun = regexp.MustCompile(`\+?\d[\d\s().-]{5,}\d`)
-	urlRun   = regexp.MustCompile(`(?i)https?:(?:\\?/){2}[^\s"'<>]+`) // JSON-escaped slashes too
+	urlRun   = regexp.MustCompile(`(?i)https?:(?:\\*/|\\u002f){2}[^\s"'<>]+`) // JSON-escaped slashes too (\/, \\/, \u002f)
 	tokenRun = regexp.MustCompile(`(?i)\btoken=[^\s&"'<>]+`)
 )
 

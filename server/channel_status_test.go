@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
 	"hora-auth/internal/channel"
@@ -121,7 +123,8 @@ func TestPhotosOfFailsClosed(t *testing.T) {
 	if taskPhotoStorageClient != nil {
 		t.Skip("storage client already initialised in this binary")
 	}
-	_ = chatStatusHook(sqldb, nil) // installs the DB-backed photosOf
+	t.Cleanup(func() { taskPhotoStorageOnce = sync.Once{}; taskPhotoStorageClient = nil }) // consumed with empty env here
+	_ = chatStatusHook(sqldb, nil)                                                         // installs the DB-backed photosOf
 	set := func(photo, receipt string, cents int) {
 		t.Helper()
 		if _, err := db.Exec(ctx, `update public.tasks set completion_photo_url = nullif($2,''), receipt_photo_url = nullif($3,''), receipt_amount_cents = $4 where id = $1::uuid`,
@@ -140,6 +143,11 @@ func TestPhotosOfFailsClosed(t *testing.T) {
 	if p, err = photosOf(ctx, w.taskID); err != nil || p.Photo != "" || p.Receipt != "" || p.ReceiptTotal != "" {
 		t.Fatalf("%+v %v", p, err)
 	}
+	// The task's own key, as the upload handler writes it, passes the
+	// prefix check and stops only at the missing signer.
+	if _, reason := signedTaskPhotoURL("https://x.supabase.co/storage/v1/object/public/task-completions/completions/"+w.taskID+"/1.jpg", w.taskID, taskPhotoLinkTTL); reason != "storage not configured" {
+		t.Fatalf("own key: reason %q", reason)
+	}
 	// Ours, another task's key: stopped here (completeTask does not bind
 	// the key to the task), whatever the signer would say.
 	if _, reason := signedTaskPhotoURL("https://x.supabase.co/storage/v1/object/public/task-completions/completions/other-task/1.jpg", w.taskID, taskPhotoLinkTTL); reason != "not this task's photo" {
@@ -156,6 +164,52 @@ func TestFormatCentsUSD(t *testing.T) {
 	for cents, want := range map[int]string{0: "$0.00", 5: "$0.05", 99: "$0.99", 100: "$1.00", 123456: "$1234.56"} {
 		if got := formatCentsUSD(cents); got != want {
 			t.Errorf("%d: %q want %q", cents, got, want)
+		}
+	}
+}
+
+// M3.2c round 3: the requester's EXTENSION_RESOLVED names the request it
+// is about, end to end — extensions.go sets it, the chat event carries it —
+// so the chat clears the right armed question and no other.
+func TestResolutionNamesItsRequest(t *testing.T) {
+	setupStripeWebhookDB(t)
+	w := seedOpsWorld(t, "open")
+	setTaskBudget(t, w.taskID, 2000)
+	var mu sync.Mutex
+	var got []notify.CreateNotificationInput
+	prev := notify.ChatHook
+	notify.ChatHook = func(in notify.CreateNotificationInput) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, in)
+	}
+	t.Cleanup(func() { notify.ChatHook = prev })
+	_, body := requestBudgetAs(t, w.taskID, w.supporterID, `{"requested_cents": 800, "fallback": "skip_item"}`)
+	extID, _ := body["id"].(string)
+	if code, body := resolveExtensionAs(t, approveExtension, w.taskID, extID, w.requesterID); code != http.StatusOK {
+		t.Fatalf("approve: %d (%v)", code, body)
+	}
+	waitFor(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, in := range got {
+			if in.Type == "EXTENSION_RESOLVED" && in.UserID == w.requesterID {
+				return true
+			}
+		}
+		return false
+	}, "the requester's resolution reached the chat hook")
+	mu.Lock()
+	defer mu.Unlock()
+	for _, in := range got {
+		if in.Type != "EXTENSION_RESOLVED" {
+			continue
+		}
+		if in.UserID == w.requesterID && in.ExtensionID != extID {
+			t.Fatalf("requester copy must name the request: %+v", in)
+		}
+		if ev := statusEvent(in); in.UserID == w.requesterID && ev.ExtensionID != extID {
+			t.Fatalf("statusEvent must carry it: %+v", ev)
 		}
 	}
 }
