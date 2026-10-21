@@ -119,3 +119,47 @@ func TestStatusTextOnMyWayIsChatOnlyCopy(t *testing.T) {
 		t.Fatalf("%q %v", got, ok)
 	}
 }
+
+// M3.6: the done message carries the completion photo; purchases add a
+// second message with the receipt photo and the amount. Both are sent to
+// the booking thread, tagged with the task.
+func TestCompletedCarriesPhotoAndReceipt(t *testing.T) {
+	g := newRig("")
+	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
+	ev := StatusEvent{Type: "COMPLETED", TaskID: "task-1", TaskTitle: "Bagel run", SupporterName: "Sam", TotalLogged: "32 min", FinalCost: "$27.40",
+		PhotoURL:        "https://x.supabase.co/storage/v1/object/sign/task-completions/c/1.jpg?token=a",
+		ReceiptPhotoURL: "https://x.supabase.co/storage/v1/object/sign/task-completions/r/1.jpg?token=b", ReceiptTotal: "$12.40"}
+	if err := g.r.NotifyStatus(context.Background(), "user-1", ev); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.ad.sent) != 2 {
+		t.Fatalf("sent %d", len(g.ad.sent))
+	}
+	done, receipt := g.ad.sent[0], g.ad.sent[1]
+	if !strings.HasPrefix(done.Text, "Done: “Bagel run”.") || !strings.Contains(done.Text, "Purchases: $12.40 (receipt below)") || done.MediaURL != ev.PhotoURL {
+		t.Fatalf("done: %+v", done)
+	}
+	if receipt.Text != "Receipt for the purchases: $12.40." || receipt.MediaURL != ev.ReceiptPhotoURL {
+		t.Fatalf("receipt: %+v", receipt)
+	}
+	if g.st.lastOutboundTask() != "task-1" {
+		t.Fatal("receipt must be recorded against the task")
+	}
+	// No purchases: one message, with the photo; no photo: text only.
+	g = newRig("")
+	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
+	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: "COMPLETED", TaskID: "task-1", TaskTitle: "Laundry", PhotoURL: "https://cdn/p.jpg"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.ad.sent) != 1 || g.ad.sent[0].MediaURL != "https://cdn/p.jpg" || strings.Contains(g.ad.sent[0].Text, "Purchases") {
+		t.Fatalf("%+v", g.ad.sent)
+	}
+	g = newRig("")
+	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
+	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: "COMPLETED", TaskID: "task-1", TaskTitle: "Laundry"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.ad.sent) != 1 || g.ad.sent[0].MediaURL != "" {
+		t.Fatalf("%+v", g.ad.sent)
+	}
+}

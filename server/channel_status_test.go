@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -73,5 +74,31 @@ func TestChatStatusHookArmsTheRequestOfTheRightKind(t *testing.T) {
 	if len(rec.events) != 2 || rec.events[0].ExtensionID != "ext-budget" || rec.events[1].ExtensionID != "ext-time" ||
 		rec.events[0].Approval == nil || rec.events[0].Approval.Cents != 500 || rec.events[1].Approval == nil || rec.events[1].Approval.Minutes != 15 {
 		t.Fatalf("armed %+v", rec.events)
+	}
+}
+
+// M3.6: the hook attaches the task's photos to COMPLETED only, and a
+// lookup failure degrades to the text message.
+func TestChatStatusHookAttachesCompletionPhotos(t *testing.T) {
+	rec := &recNotifier{}
+	prev := photosOf
+	t.Cleanup(func() { photosOf = prev })
+	photosOf = func(_ context.Context, taskID string) (completionPhotos, error) {
+		return completionPhotos{Photo: "https://s/p.jpg?t=1", Receipt: "https://s/r.jpg?t=2", ReceiptTotal: "$8.00"}, nil
+	}
+	hook := statusHook(func(context.Context, string) (string, error) { return "requester-1", nil },
+		func(context.Context, string, string) (channel.PendingApproval, error) {
+			return channel.PendingApproval{}, nil
+		}, rec)
+	hook(notify.CreateNotificationInput{UserID: "requester-1", TaskID: "t1", Type: "COMPLETED", TaskTitle: "Bagels"})
+	hook(notify.CreateNotificationInput{UserID: "requester-1", TaskID: "t1", Type: "ORDER_ACCEPTED"})
+	if len(rec.events) != 2 || rec.events[0].PhotoURL != "https://s/p.jpg?t=1" || rec.events[0].ReceiptTotal != "$8.00" || rec.events[1].PhotoURL != "" {
+		t.Fatalf("%+v", rec.events)
+	}
+	photosOf = func(context.Context, string) (completionPhotos, error) { return completionPhotos{}, errors.New("db") }
+	rec.events = nil
+	hook(notify.CreateNotificationInput{UserID: "requester-1", TaskID: "t1", Type: "COMPLETED", TaskTitle: "Bagels"})
+	if len(rec.events) != 1 || rec.events[0].PhotoURL != "" {
+		t.Fatalf("a photo lookup failure must still send the text: %+v", rec.events)
 	}
 }

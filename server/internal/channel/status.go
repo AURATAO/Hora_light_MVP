@@ -35,6 +35,13 @@ type StatusEvent struct {
 	ExtensionID     string
 	ApprovalMinutes int
 	Approval        *PendingApproval
+	// Completion (M3.6): the supporter's completion photo rides along with
+	// the done message; purchases get a second message with the receipt
+	// photo and the amount. Short-lived signed links (the chat provider
+	// fetches them at send time; the photo may show a home — S-12/S-20).
+	PhotoURL        string
+	ReceiptPhotoURL string
+	ReceiptTotal    string // "$12.40"; "" when nothing was bought
 }
 
 // PendingApproval is the structured request behind an approval question.
@@ -81,6 +88,9 @@ func StatusText(ev StatusEvent) (string, bool) {
 		}
 		if ev.FinalCost != "" {
 			fmt.Fprintf(&b, "\nTotal: %s", ev.FinalCost)
+		}
+		if ev.ReceiptTotal != "" {
+			fmt.Fprintf(&b, "\nPurchases: %s (receipt below)", ev.ReceiptTotal)
 		}
 		b.WriteString("\n\nYour receipt is on its way by email. Need something else? Just text me.")
 		return b.String(), true
@@ -217,8 +227,20 @@ func (r *Router) NotifyStatus(ctx context.Context, userID string, ev StatusEvent
 			return nil
 		}
 	}
-	if err := r.Send(ctx, Outbound{Channel: t.Identity.Channel, To: t.Identity.Address, Text: text}, ev.TaskID); err != nil {
+	out := Outbound{Channel: t.Identity.Channel, To: t.Identity.Address, Text: text}
+	if ev.Type == "COMPLETED" && ev.PhotoURL != "" {
+		out.MediaURL = ev.PhotoURL
+	}
+	if err := r.Send(ctx, out, ev.TaskID); err != nil {
 		return fmt.Errorf("NotifyStatus: %w", err)
+	}
+	if ev.Type == "COMPLETED" && ev.ReceiptPhotoURL != "" {
+		// The receipt, as its own message so the photo is unmistakable.
+		rc := Outbound{Channel: t.Identity.Channel, To: t.Identity.Address, MediaURL: ev.ReceiptPhotoURL,
+			Text: fmt.Sprintf(CopyReceipt, firstNonEmpty(ev.ReceiptTotal, "see photo"))}
+		if err := r.Send(ctx, rc, ev.TaskID); err != nil {
+			return fmt.Errorf("NotifyStatus: receipt: %w", err)
+		}
 	}
 	if isApprovalRequest(ev.Type) && ev.ExtensionID != "" {
 		// Armed only after the question was actually delivered.

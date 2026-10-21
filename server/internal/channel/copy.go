@@ -50,6 +50,7 @@ const (
 	CopyApprovalStillPending = "(Still waiting on your YES or NO to your supporter’s request above.)"
 	CopyApprovalFirst        = "Please answer your supporter’s request first — reply YES or NO — and then tell me about the new errand."
 	CopyConfirmReask         = "Reply YES to book, NO to drop it, or tell me what to change."
+	CopyReceipt              = "Receipt for the purchases: %s."
 	// I-P version B: a casual affirmative went to the supporter.
 	CopyPassedOn                  = "(Passed “%s” to %s.)"
 	CopyStillWaitingBooking       = "Still waiting on your YES or NO — book “%s” for %s."

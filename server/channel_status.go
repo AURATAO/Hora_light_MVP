@@ -19,6 +19,27 @@ import (
 // (COMPLETED_SUPPORTER, a supporter-side TASK_REASSIGNED, …) must not reach
 // a number that happens to be linked to that supporter's account.
 func chatStatusHook(sqlDB *sql.DB, router *channel.Router) func(notify.CreateNotificationInput) {
+	photosOf = func(ctx context.Context, taskID string) (completionPhotos, error) {
+		var photo, receipt sql.NullString
+		var cents sql.NullInt64
+		err := sqlDB.QueryRowContext(ctx, `
+			SELECT completion_photo_url, receipt_photo_url, receipt_amount_cents
+			  FROM public.tasks WHERE id = $1::uuid`, taskID).Scan(&photo, &receipt, &cents)
+		if err != nil {
+			return completionPhotos{}, err
+		}
+		var p completionPhotos
+		if photo.String != "" {
+			p.Photo = signTaskPhotoURL(photo.String, taskPhotoLinkTTL)
+		}
+		if receipt.String != "" {
+			p.Receipt = signTaskPhotoURL(receipt.String, taskPhotoLinkTTL)
+			if cents.Int64 > 0 {
+				p.ReceiptTotal = formatCentsUSD(int(cents.Int64))
+			}
+		}
+		return p, nil
+	}
 	return statusHook(func(ctx context.Context, taskID string) (string, error) {
 		var requesterID string
 		err := sqlDB.QueryRowContext(ctx,
@@ -73,6 +94,15 @@ func approvalKind(notifType string) string {
 	return ""
 }
 
+// completionPhotos is what the chat attaches to a done message.
+type completionPhotos struct {
+	Photo        string // signed URL, or ""
+	Receipt      string // signed URL, or ""
+	ReceiptTotal string // "$12.40", or ""
+}
+
+var photosOf func(ctx context.Context, taskID string) (completionPhotos, error)
+
 func statusHook(requesterOf func(context.Context, string) (string, error), pendingExtensionOf func(ctx context.Context, taskID, kind string) (channel.PendingApproval, error), n statusNotifier) func(notify.CreateNotificationInput) {
 	return func(in notify.CreateNotificationInput) {
 		ev := statusEvent(in)
@@ -94,6 +124,16 @@ func statusHook(requesterOf func(context.Context, string) (string, error), pendi
 		}
 		if requesterID != in.UserID {
 			return
+		}
+		if in.Type == "COMPLETED" && photosOf != nil {
+			// M3.6: the completion photo and, with purchases, the receipt —
+			// signed for the chat's own short TTL, never the email's.
+			p, err := photosOf(ctx, in.TaskID)
+			if err != nil {
+				log.Printf("[channel] status COMPLETED task=%s: photo lookup: %v", in.TaskID, err)
+			} else {
+				ev.PhotoURL, ev.ReceiptPhotoURL, ev.ReceiptTotal = p.Photo, p.Receipt, p.ReceiptTotal
+			}
 		}
 		if kind := approvalKind(in.Type); kind != "" {
 			a, err := pendingExtensionOf(ctx, in.TaskID, kind)
