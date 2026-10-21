@@ -56,7 +56,7 @@ type PendingApproval struct {
 //   - supporter-side events.
 func StatusText(ev StatusEvent) (string, bool) {
 	task := quoted(ev.TaskTitle)
-	who := firstNonEmpty(DisplayName(ev.SupporterName), "Your supporter")
+	who := firstNonEmpty(DisplayName(FirstName(ev.SupporterName)), "Your supporter")
 	switch ev.Type {
 	case "ORDER_ACCEPTED":
 		return fmt.Sprintf("%s accepted %s. I'll text you when they arrive.", who, task), true

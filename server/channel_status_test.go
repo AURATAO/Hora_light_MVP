@@ -70,7 +70,8 @@ func TestChatStatusHookArmsTheRequestOfTheRightKind(t *testing.T) {
 	if len(asked) != 2 || asked[0] != "t1/budget" || asked[1] != "t1/time" {
 		t.Fatalf("lookups %v", asked)
 	}
-	if len(rec.events) != 2 || rec.events[0].ExtensionID != "ext-budget" || rec.events[1].ExtensionID != "ext-time" {
+	if len(rec.events) != 2 || rec.events[0].ExtensionID != "ext-budget" || rec.events[1].ExtensionID != "ext-time" ||
+		rec.events[0].Approval == nil || rec.events[0].Approval.Cents != 500 || rec.events[1].Approval == nil || rec.events[1].Approval.Minutes != 15 {
 		t.Fatalf("armed %+v", rec.events)
 	}
 }

@@ -360,3 +360,24 @@ func TestTalkJSWebhookRejectsStaleTimestamp(t *testing.T) {
 		t.Fatal("freshness check wrong")
 	}
 }
+
+// A stale (replayed) signed webhook is rejected only when the relay sink
+// exists; a push-only deploy accepts it and logs, so a wrong assumption
+// about the header's unit can never cut production pushes off.
+func TestTalkJSWebhookStaleTimestampGatedOnRelay(t *testing.T) {
+	t.Setenv("TALKJS_WEBHOOK_SECRET", testWebhookSecret)
+	body := []byte(`{"id":"evt","type":"message.sent","data":{"message":{"type":"SystemMessage"}}}`)
+	old := strconv.FormatInt(time.Now().Add(-10*time.Minute).UnixMilli(), 10)
+	sig := signTalkJS(t, testWebhookSecret, old, body)
+
+	prev := chatRelayHook
+	t.Cleanup(func() { chatRelayHook = prev })
+	chatRelayHook = nil
+	if w := postTalkJSWebhook(t, body, old, sig); w.Code != http.StatusOK {
+		t.Fatalf("relay off: stale timestamp must be accepted, got %d", w.Code)
+	}
+	chatRelayHook = func(context.Context, string, string, string, string, string, string) {}
+	if w := postTalkJSWebhook(t, body, old, sig); w.Code != http.StatusUnauthorized {
+		t.Fatalf("relay on: stale timestamp must be rejected, got %d", w.Code)
+	}
+}

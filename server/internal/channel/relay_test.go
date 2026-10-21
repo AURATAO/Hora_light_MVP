@@ -260,7 +260,7 @@ func TestRelayDuringPendingYesIsDisambiguated(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := g.ad.last()
-	if !strings.HasPrefix(got, "Maya · Laundry pickup: Want the large bag too?") || !strings.Contains(got, "A YES or NO sent on its own answers my question above") || !strings.Contains(got, "Laundry pickup") {
+	if !strings.HasPrefix(got, "Maya · Laundry pickup: Want the large bag too?") || !strings.Contains(got, "A YES, OK or NO sent on its own answers my question above") || !strings.Contains(got, "Laundry pickup") {
 		t.Fatalf("%q", got)
 	}
 	if !g.st.lastOutboundRelay() {

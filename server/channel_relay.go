@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -130,8 +132,10 @@ func (t *talkjsRelay) PostAsRequester(ctx context.Context, taskID, userID, text,
 		"type":   "UserMessage",
 	}
 	if key != "" {
-		// At most once across webhook retries and the recovery sweep.
-		msg["idempotencyKey"] = key
+		// At most once across webhook retries and the recovery sweep. Hashed:
+		// provider ids (a WhatsApp wamid) are long and of no fixed shape.
+		sum := sha256.Sum256([]byte(key))
+		msg["idempotencyKey"] = hex.EncodeToString(sum[:16])
 	}
 	status, _, err = talkjsRequest(ctx, http.MethodPost, convPath+"/messages", []map[string]any{msg})
 	if err != nil {
@@ -208,7 +212,7 @@ func talkjsUpsertUser(ctx context.Context, email, name string) error {
 func relayChatMessageToRequester(db *sql.DB, conversationID, taskID, senderUID string, msg talkjsMessage) {
 	defer func() {
 		if p := recover(); p != nil {
-			log.Printf("[talkjs][relay] task=%s panic: %v", taskID, p)
+			log.Printf("[talkjs][relay] task=%q panic: %v", taskID, p)
 		}
 	}()
 	hook := chatRelayHook

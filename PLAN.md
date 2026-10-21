@@ -133,7 +133,7 @@ reasoning on by default — measure latency with it on and off.
 | M0 | Oct 19 | PLAN.md; `channel` package skeleton; adapter interface; migration file (not applied) | ✅ see §15 |
 | M1 | Oct 20–22 | Sendblue inbound/outbound in sandbox; identity + setup page; dedupe | ✅ help-first flow booked a real task from an iPhone, Oct 20 — §15 |
 | M2 | Oct 23–25 | Draft → YES → hold → task; status updates via `notify.Create` hook | ✅ Oct 20 — booking + accepted/clock in/out/done all seen on an iPhone (staging, payments off) |
-| M3 | Oct 26–28 | Approvals YES/NO; chat relay; multi-task; ops handoff | 🟡 approvals ✅, multi-task ✅, handoff ✅, budget + auto-extend consent ✅, chat relay (M3.2) built `455d647` — **review in progress**; next M3.6 completion photo + receipt to the requester's chat |
+| M3 | Oct 26–28 | Approvals YES/NO; chat relay; multi-task; ops handoff | 🟡 approvals ✅, multi-task ✅, handoff ✅, budget + auto-extend consent ✅, chat relay (M3.2) ✅ **review PASS round 7** (Oct 21) — staging evidence owed; next M3.6 completion photo + receipt to the requester's chat |
 | M4 | Oct 29–31 | WhatsApp adapter on Meta test number; eval run; real-card E2E on both channels; demo | |
 
 ## 11. External dependencies (owner: Aura)
@@ -176,6 +176,13 @@ The setup step is the one to watch.
 - **M3.2 follow-up (R6 m-1):** a YES swiped on an *old* approval prompt
   approves whatever is pending now; to pin it to that prompt's request, record
   the extension id on the outbound row and match it in `routeReply`.
+- **M3.2 follow-ups (R7 minors):** (1) the approval arm is a single slot —
+  when request A resolves, carry its id on `EXTENSION_RESOLVED` and clear the
+  arm only if it matches (today a later YES to request B gets "Got it");
+  (2) a blocked supporter's approval note still reaches the phone, as the
+  app's push does — decide in safety; (3) an approval question can be sent
+  while the conversation is in a state that cannot arm it (name/setup/
+  budget/handoff) — check armability before sending.
 - **M3.2 staging evidence still owed (R3-4):** one real requester→supporter
   message (chat-only requester, supporter who never opened the chat) and one
   supporter→requester message with a photo, on the staging number.

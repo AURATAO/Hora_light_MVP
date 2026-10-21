@@ -131,12 +131,17 @@ func handleTalkJSWebhook(c *gin.Context, db *sql.DB) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	// A valid signature from long ago is a replay: since M3.2 this endpoint
-	// can put a message on a phone, so freshness is checked too.
+	// A valid signature from long ago is a replay. Enforced only where it
+	// matters — when the message can reach a phone (chat relay on); on a
+	// push-only deploy it is logged, so production pushes cannot be cut off
+	// by a wrong assumption about the header's unit (staging proves it).
 	if !talkjsTimestampFresh(c.GetHeader(talkjsTimestampHeader), time.Now()) {
-		log.Printf("[talkjs][webhook] stale timestamp — rejecting")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
+		if chatRelayHook != nil {
+			log.Printf("[talkjs][webhook] stale timestamp — rejecting")
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+		log.Printf("[talkjs][webhook] stale timestamp (relay off: accepted, logged)")
 	}
 
 	var ev talkjsWebhookEvent

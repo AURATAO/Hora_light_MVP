@@ -572,3 +572,13 @@ func foldConfusable(c rune) rune {
 	}
 	return c
 }
+
+// FirstName is the first word of a full name — what the relay prefix and
+// the status lines show.
+func FirstName(name string) string {
+	f := strings.Fields(name)
+	if len(f) == 0 {
+		return ""
+	}
+	return f[0]
+}
