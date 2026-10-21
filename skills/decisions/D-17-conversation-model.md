@@ -348,3 +348,31 @@ structured composition (M3.2 R6); authorization in both directions.
   residuals (declared): the undo after a failed send resumes to the
   current row's `ResumeState`; a re-send after 3 minutes may repeat a
   question whose first delivery succeeded but whose confirm write failed.
+- **Round 5 (4f183de) — PASS.** No MAJOR. Required MINORs, all applied
+  in the same commit: the upsert guard keeps all four approval fields
+  whenever the existing row is in `awaiting_approval` and the caller is
+  not handing off (a same-state save from a snapshot without stamps could
+  wipe the claim time or restamp the sentinel over a confirm);
+  `ReclaimUnconfirmed` (CAS on the claim time) so two repairs re-send
+  once; "Gone" only when the request is no longer live (a handoff mid-send
+  keeps the hold silently), with our own prompt appended; the undo after
+  a failed send only on a definite refusal (4xx other than 408/409/429) —
+  an uncertain failure leaves the claim unconfirmed for the repair;
+  `CopyApprovalStillPending`/`CopyApprovalReask` say "on its way" while
+  unconfirmed, and the copy adds "if it hasn't arrived in a few minutes,
+  text me again" (the repair runs on the next message, not a timer); a
+  repair that clears a dead claim answers the YES with "Gone" plus our
+  prompt; the resume line after an answer is kept unless a LIVE hold
+  follows. Tests: definite vs uncertain send failures; 8 concurrent
+  repairs → one re-send; dead claim cleared with a reply and the draft
+  not booked; PG: same-state save / touch / hold leave the claim time,
+  reclaim CAS, handoff leaves and a re-claim follows, `ClearApproval`
+  nulls the claim time. Accepted residuals (declared): the repair runs at
+  the next inbound or status event, not on a timer; a double-tapped YES at
+  the approval question lands its second YES on the re-shown draft
+  summary and books it (pre-existing — `onConfirm` has no sent-before
+  guard; a ruling is requested below).
+- **Ruling requested (Arbiter):** should `onConfirm` refuse a YES whose
+  provider send time precedes the moment the draft summary was shown
+  (symmetry with the approval guard)? It closes the double-tap-after-an-
+  approval case at the cost of a re-ask when a provider timestamp lags.

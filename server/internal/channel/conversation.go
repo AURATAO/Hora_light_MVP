@@ -225,6 +225,10 @@ type ConversationStore interface {
 	// the next resume point re-sends. False when another caller got there
 	// first or the state moved (D-17 I-O).
 	ClaimHold(ctx context.Context, identityID, extensionID string, at time.Time) (bool, error)
+	// ReclaimUnconfirmed renews the claim time on an unconfirmed question
+	// — only if it is still unconfirmed and its claim time is what the
+	// caller read — so of two repairs running at once exactly one re-sends.
+	ReclaimUnconfirmed(ctx context.Context, identityID, extensionID string, seen *time.Time, at time.Time) (bool, error)
 	// ConfirmArmed, after the question was delivered: stamps the real
 	// armed-at time and drops the hold — if that request is still the
 	// armed one (false otherwise: it ended while the send was in flight).
@@ -283,6 +287,27 @@ func (s *PGStore) ClaimHold(ctx context.Context, identityID, extensionID string,
 	}
 	if err != nil {
 		return false, fmt.Errorf("claim hold: %w", err)
+	}
+	return true, nil
+}
+
+func (s *PGStore) ReclaimUnconfirmed(ctx context.Context, identityID, extensionID string, seen *time.Time, at time.Time) (bool, error) {
+	var one int
+	var seenV any
+	if seen != nil {
+		seenV = *seen
+	}
+	err := s.DB.QueryRowContext(ctx, `
+		UPDATE channel_conversations SET approval_claimed_at = $4
+		WHERE identity_id = $1 AND state = $5 AND pending_extension_id = $2::uuid
+		  AND approval_armed_at >= $6 AND approval_claimed_at IS NOT DISTINCT FROM $3
+		RETURNING 1
+	`, identityID, extensionID, seenV, at, string(StateAwaitingApproval), ArmedUnconfirmed).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("reclaim unconfirmed: %w", err)
 	}
 	return true, nil
 }
@@ -484,13 +509,13 @@ func (s *PGStore) SaveConversation(ctx context.Context, c Conversation) error {
 		  -- (a handoff) — a stale full-row save must not silently disarm a
 		  -- question the person is about to answer (S-11/5). The claim's
 		  -- own fields travel with it; everything else is the caller's.
-		  state = CASE WHEN channel_conversations.state = 'awaiting_approval' AND EXCLUDED.state NOT IN ('awaiting_approval', 'handoff')
+		  state = CASE WHEN channel_conversations.state = 'awaiting_approval' AND EXCLUDED.state <> 'handoff'
 		               THEN channel_conversations.state ELSE EXCLUDED.state END,
-		  pending_extension_id = CASE WHEN channel_conversations.state = 'awaiting_approval' AND EXCLUDED.state NOT IN ('awaiting_approval', 'handoff')
+		  pending_extension_id = CASE WHEN channel_conversations.state = 'awaiting_approval' AND EXCLUDED.state <> 'handoff'
 		               THEN channel_conversations.pending_extension_id ELSE EXCLUDED.pending_extension_id END,
-		  approval_armed_at = CASE WHEN channel_conversations.state = 'awaiting_approval' AND EXCLUDED.state NOT IN ('awaiting_approval', 'handoff')
+		  approval_armed_at = CASE WHEN channel_conversations.state = 'awaiting_approval' AND EXCLUDED.state <> 'handoff'
 		               THEN channel_conversations.approval_armed_at ELSE EXCLUDED.approval_armed_at END,
-		  approval_claimed_at = CASE WHEN channel_conversations.state = 'awaiting_approval' AND EXCLUDED.state NOT IN ('awaiting_approval', 'handoff')
+		  approval_claimed_at = CASE WHEN channel_conversations.state = 'awaiting_approval' AND EXCLUDED.state <> 'handoff'
 		               THEN channel_conversations.approval_claimed_at ELSE NULL END,
 		  pending_draft = EXCLUDED.pending_draft,
 		  pending_name = EXCLUDED.pending_name,

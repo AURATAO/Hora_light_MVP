@@ -659,14 +659,30 @@ func TestDeferredApprovalIsSentWhenTheThreadCanTakeIt(t *testing.T) {
 		t.Fatalf("conv %+v", c)
 	}
 
-	// A send failure: the claim is undone and the hold put back.
-	g, _ = held(t)
-	g.booker.pendingExt = map[string]bool{"ext-9": true, "ext-10": true}
-	g.ad.err = errors.New("provider down")
-	_ = g.r.Release(context.Background(), Identity{ID: "id-" + me, UserID: "user-1", Channel: IMessage, Address: me})
-	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
-	if c.State != StateIdle || c.PendingExtensionID != "" || len(c.Deferred) != 2 {
-		t.Fatalf("conv %+v", c)
+	// A definite refusal of the send: the claim is undone, the hold kept
+	// in place. An uncertain failure (the question may have gone through):
+	// the claim stays unconfirmed for the repair.
+	for _, tc := range []struct {
+		err   error
+		state State
+	}{
+		{&ProviderStatusError{Provider: "sendblue", Status: 400, Text: "bad"}, StateIdle},
+		{errors.New("dial tcp: i/o timeout"), StateAwaitingApproval},
+		{&ProviderStatusError{Provider: "sendblue", Status: 408, Text: "timeout"}, StateAwaitingApproval},
+	} {
+		g, _ = held(t)
+		g.booker.pendingExt = map[string]bool{"ext-9": true, "ext-10": true}
+		c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
+		c.State = StateIdle
+		if err := g.convs.SaveConversation(context.Background(), c); err != nil {
+			t.Fatal(err)
+		}
+		g.ad.err = tc.err
+		g.r.resumeDeferred(context.Background(), Identity{ID: "id-" + me, UserID: "user-1", Channel: IMessage, Address: me})
+		c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
+		if c.State != tc.state || len(c.Deferred) != 2 || c.Deferred[0].ExtensionID != "ext-9" || (tc.state == StateAwaitingApproval && !c.Unconfirmed()) {
+			t.Fatalf("%v: conv %+v", tc.err, c)
+		}
 	}
 
 	// Held for another user's identity: dropped, never asked.
@@ -1104,5 +1120,56 @@ func TestHeldQuestionDoesNotFollowAReask(t *testing.T) {
 	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
 	if c.State != StateAwaitingConfirm || len(c.Deferred) != 1 || strings.Contains(g.ad.last(), "$10 more") {
 		t.Fatalf("conv %+v last %q", c, g.ad.last())
+	}
+}
+
+// Two repairs at once re-send once (the re-claim is a compare-and-set);
+// a dead hold is cleared with a reply, not re-sent.
+func TestRepairIsOnceAndClearsDeadHolds(t *testing.T) {
+	g, _, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
+	id := Identity{ID: "id-" + me, UserID: "user-1", Channel: IMessage, Address: me}
+	d := DeferredApproval{UserID: "user-1", TaskID: "task-2", TaskTitle: "Bagel run", SupporterName: "Sam", ExtensionID: "ext-9",
+		Type: evBudgetRequested, Approval: PendingApproval{ID: "ext-9", Kind: "budget", Cents: 1000}, TimeoutMinutes: 10, AtUnix: time.Now().Unix()}
+	base := time.Now()
+	if err := g.convs.HoldApproval(context.Background(), "id-"+me, d); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := g.convs.ClaimHold(context.Background(), "id-"+me, "ext-9", base); err != nil || !ok {
+		t.Fatal(err)
+	}
+	g.r.Now = func() time.Time { return base.Add(UnconfirmedResend + time.Second) }
+	before := len(g.ad.sent)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); g.r.resumeDeferred(context.Background(), id) }()
+	}
+	wg.Wait()
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if len(g.ad.sent)-before != 1 || c.Unconfirmed() || len(c.Deferred) != 0 {
+		t.Fatalf("sent %d conv %+v", len(g.ad.sent)-before, c)
+	}
+
+	// Dead by the app: cleared, and the YES that triggered it is answered.
+	g, _, _, _ = contextRig(llm.IntentNewTask, bagelT)
+	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
+	g.say(t, "new task: pick up my laundry tomorrow at 3") // a draft underneath
+	if err := g.convs.HoldApproval(context.Background(), "id-"+me, d); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := g.convs.ClaimHold(context.Background(), "id-"+me, "ext-9", base); err != nil || !ok {
+		t.Fatal(err)
+	}
+	g.booker.pendingExt = map[string]bool{}
+	g.r.Now = func() time.Time { return base.Add(UnconfirmedResend + time.Second) }
+	in := Inbound{Channel: IMessage, ProviderMessageID: "yes-dead", From: me, Text: "YES", ReceivedAt: base.Add(UnconfirmedResend)}
+	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.State != StateAwaitingConfirm || len(c.Deferred) != 0 || g.booker.posts != 0 || len(g.booker.resolved) != 0 ||
+		!strings.Contains(g.ad.last(), CopyApprovalGone) || !strings.Contains(g.ad.last(), "YES") {
+		t.Fatalf("conv %+v posts %d last %q", c, g.booker.posts, g.ad.last())
 	}
 }

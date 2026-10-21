@@ -831,13 +831,53 @@ func TestPGClaimHold(t *testing.T) {
 		t.Fatalf("armed hold removed: %+v", got)
 	}
 	// A stale full-row save (a handler that read its snapshot before the
-	// claim) does not disarm the question; a handoff does.
+	// claim) does not disarm the question — nor restamp it when the
+	// snapshot is itself in awaiting_approval; a touch or a hold write
+	// leaves the claim time alone.
+	claimedAt := *got.ApprovalClaimedAt
 	stale := Conversation{IdentityID: a.ID, State: StateAwaitingConfirm, Pending: draft}
 	if err := s.SaveConversation(ctx, stale); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ = s.GetConversation(ctx, a.ID); got.State != StateAwaitingApproval || got.PendingExtensionID != ext || !got.Unconfirmed() || got.ApprovalClaimedAt == nil {
 		t.Fatalf("stale save disarmed the question: %+v", got)
+	}
+	same := Conversation{IdentityID: a.ID, State: StateAwaitingApproval, PendingExtensionID: ext, Pending: draft} // no stamps in the snapshot
+	if err := s.SaveConversation(ctx, same); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TouchConversation(ctx, a.ID, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.HoldApproval(ctx, a.ID, DeferredApproval{UserID: "u", TaskID: "t", ExtensionID: ext2, AtUnix: 9}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.GetConversation(ctx, a.ID); !got.Unconfirmed() || got.ApprovalClaimedAt == nil || !got.ApprovalClaimedAt.Equal(claimedAt) {
+		t.Fatalf("same-state save / touch / hold changed the claim: %+v", got)
+	}
+	// The re-claim is a compare-and-set on the claim time.
+	if ok, err := s.ReclaimUnconfirmed(ctx, a.ID, ext, ptrTime(claimedAt.Add(time.Second)), time.Now()); err != nil || ok {
+		t.Fatalf("reclaim with a stale view: %v %v", ok, err)
+	}
+	renewed := time.Now().Truncate(time.Microsecond)
+	if ok, err := s.ReclaimUnconfirmed(ctx, a.ID, ext, &claimedAt, renewed); err != nil || !ok {
+		t.Fatalf("reclaim: %v %v", ok, err)
+	}
+	if got, _ = s.GetConversation(ctx, a.ID); got.ApprovalClaimedAt == nil || !got.ApprovalClaimedAt.Equal(renewed) {
+		t.Fatalf("%+v", got)
+	}
+	// A handoff may leave awaiting_approval through a full-row save.
+	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateHandoff, Pending: draft}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.GetConversation(ctx, a.ID); got.State != StateHandoff || got.PendingExtensionID != "" || got.ApprovalArmedAt != nil || got.ApprovalClaimedAt != nil {
+		t.Fatalf("handoff: %+v", got)
+	}
+	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateAwaitingConfirm, Pending: draft}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.ClaimHold(ctx, a.ID, ext, time.Now()); err != nil || !ok {
+		t.Fatalf("re-claim after handoff: %v %v", ok, err)
 	}
 	// Not while another question is armed.
 	if ok, _ := s.ClaimHold(ctx, a.ID, ext2, time.Now()); ok {
@@ -872,7 +912,7 @@ func TestPGClaimHold(t *testing.T) {
 	if ok, err := s.ClearApproval(ctx, a.ID, ext, StateAwaitingConfirm); err != nil || !ok {
 		t.Fatalf("clear: %v %v", ok, err)
 	}
-	if got, _ = s.GetConversation(ctx, a.ID); got.State != StateAwaitingConfirm || got.PendingExtensionID != "" || got.ApprovalArmedAt != nil || got.Pending == nil || len(got.Deferred) != 1 {
+	if got, _ = s.GetConversation(ctx, a.ID); got.State != StateAwaitingConfirm || got.PendingExtensionID != "" || got.ApprovalArmedAt != nil || got.ApprovalClaimedAt != nil || got.Pending == nil || len(got.Deferred) != 1 {
 		t.Fatalf("cleared: %+v", got)
 	}
 	// The SQL state list and canArmApproval agree.

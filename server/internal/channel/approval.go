@@ -2,6 +2,7 @@ package channel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -104,7 +105,15 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 		log.Printf("[channel] approval identity=%s ext=%s: answer refused, question unconfirmed", id.ID, conv.PendingExtensionID)
 		r.resumeDeferred(ctx, id)
 		if after, err := r.Conversations.GetConversation(ctx, id.ID); err == nil && !after.Unconfirmed() {
-			return nil // repaired just now: re-sent (or ended) above
+			if after.State == StateAwaitingApproval {
+				return nil // re-sent just now: that is the reply
+			}
+			// Cleared: the request was no longer theirs to answer.
+			reply := CopyApprovalGone
+			if back := r.resumeLine(ctx, id, after); back != "" {
+				reply += "\n\n" + back
+			}
+			return r.Reply(ctx, in, reply, "")
 		}
 		return r.Reply(ctx, in, CopyApprovalOnItsWay, "")
 	case (IsYes(text) || IsNo(text)) && conv.ApprovalArmedAt != nil && (in.ReceivedAt.IsZero() || in.ReceivedAt.Before(*conv.ApprovalArmedAt)):
@@ -115,7 +124,7 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 		// send returned, so a tap made after reading is later than it by
 		// the person's own reaction time; no margin is applied.
 		log.Printf("[channel] approval identity=%s ext=%s: answer refused, sent before the question", id.ID, conv.PendingExtensionID)
-		return r.Reply(ctx, in, CopyApprovalReask, "")
+		return r.Reply(ctx, in, approvalReask(conv), "")
 	case IsYes(text):
 		approve = true
 	case IsNo(text):
@@ -126,7 +135,7 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 		if handled, err := r.routeInContext(ctx, in, id, conv, text); handled {
 			return err
 		}
-		return r.Reply(ctx, in, CopyApprovalReask, "")
+		return r.Reply(ctx, in, approvalReask(conv), "")
 	}
 	if r.Booker == nil {
 		return fmt.Errorf("onAwaitingApproval: router not fully configured")
@@ -166,8 +175,8 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 	default:
 		reply = CopyApprovalGone
 	}
-	if len(conv.Deferred) == 0 {
-		// Our own question comes back — unless the next held question is
+	if !r.nextHoldLive(ctx, id, conv) {
+		// Our own question comes back — unless a live held question is
 		// about to follow (one question per burst; the draft's prompt
 		// returns after that answer).
 		if back := r.resumeLine(ctx, id, conv); back != "" {
@@ -339,6 +348,14 @@ func (r *Router) repairUnconfirmed(ctx context.Context, id Identity, conv Conver
 			return
 		}
 		if live {
+			won, err := r.Conversations.ReclaimUnconfirmed(ctx, id.ID, d.ExtensionID, conv.ApprovalClaimedAt, r.now())
+			if err != nil {
+				log.Printf("[channel] approval ext=%s: %v", d.ExtensionID, err)
+				return
+			}
+			if !won {
+				return // another repair is re-sending it
+			}
 			log.Printf("[channel] approval ext=%s: claim unconfirmed for %s, re-sending", d.ExtensionID, UnconfirmedResend)
 			r.sendClaimed(ctx, id, d)
 			return
@@ -400,7 +417,15 @@ func (r *Router) heldEvent(d DeferredApproval) StatusEvent {
 func (r *Router) sendClaimed(ctx context.Context, id Identity, d DeferredApproval) {
 	text, _ := approvalText(r.heldEvent(d))
 	if err := r.Send(ctx, Outbound{Channel: id.Channel, To: id.Address, Text: text}, d.TaskID); err != nil {
-		log.Printf("[channel] resume deferred ext=%s: send failed, hold kept: %v", d.ExtensionID, err)
+		var pe *ProviderStatusError
+		definite := errors.As(err, &pe) && pe.Status >= 400 && pe.Status <= 499 && pe.Status != 408 && pe.Status != 409 && pe.Status != 429
+		if !definite {
+			// It may have gone through: left unconfirmed, for the repair
+			// (re-sent or cleared once the claim is old enough).
+			log.Printf("[channel] resume deferred ext=%s: send uncertain, claim kept unconfirmed: %v", d.ExtensionID, err)
+			return
+		}
+		log.Printf("[channel] resume deferred ext=%s: send refused, hold kept: %v", d.ExtensionID, err)
 		undo := context.WithoutCancel(ctx)
 		conv, gerr := r.Conversations.GetConversation(undo, id.ID)
 		if gerr != nil {
@@ -420,9 +445,45 @@ func (r *Router) sendClaimed(ctx context.Context, id Identity, d DeferredApprova
 		return
 	}
 	if !confirmed {
+		// The claim went while the send was in flight: a resolution (the
+		// request ended — say so, and bring our own question back), or a
+		// handoff (the hold survives and is asked again after release —
+		// nothing to say).
+		live, err := r.holdLive(ctx, id, d)
+		if err != nil || live {
+			log.Printf("[channel] resume deferred ext=%s: claim gone while in flight (live=%t): %v", d.ExtensionID, live, err)
+			return
+		}
 		log.Printf("[channel] resume deferred ext=%s: ended while the question was in flight", d.ExtensionID)
-		if err := r.Send(ctx, Outbound{Channel: id.Channel, To: id.Address, Text: CopyApprovalGone}, d.TaskID); err != nil {
+		text := CopyApprovalGone
+		if conv, err := r.Conversations.GetConversation(ctx, id.ID); err == nil {
+			if back := r.resumeLine(ctx, id, conv); back != "" {
+				text += "\n\n" + back
+			}
+		}
+		if err := r.Send(ctx, Outbound{Channel: id.Channel, To: id.Address, Text: text}, d.TaskID); err != nil {
 			log.Printf("[channel] resume deferred ext=%s: %v", d.ExtensionID, err)
 		}
 	}
+}
+
+// nextHoldLive: whether any held question is still live — i.e. whether one
+// will follow the current reply (so our own prompt is kept for later).
+func (r *Router) nextHoldLive(ctx context.Context, id Identity, conv Conversation) bool {
+	for _, d := range conv.Deferred {
+		if live, err := r.holdLive(ctx, id, d); err == nil && live {
+			return true
+		}
+	}
+	return false
+}
+
+// approvalReask: the re-ask for an armed question — or, while its delivery
+// is unconfirmed, that it is on its way (never "reply YES" to a question
+// the person may not have).
+func approvalReask(conv Conversation) string {
+	if conv.Unconfirmed() {
+		return CopyApprovalOnItsWay
+	}
+	return CopyApprovalReask
 }

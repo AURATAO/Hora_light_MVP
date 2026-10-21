@@ -741,7 +741,7 @@ func (r *Router) routeInContextLabel(ctx context.Context, in Inbound, id Identit
 			}
 			reply := fmt.Sprintf(CopyRelayedDraftDropped, firstNonEmpty(DisplayName(t.SupporterName), "your supporter"))
 			if fresh.State == StateAwaitingApproval {
-				reply += "\n\n" + CopyApprovalStillPending
+				reply += "\n\n" + approvalStillPending(fresh)
 			}
 			return true, "", r.Reply(ctx, in, reply, t.ID)
 		}
@@ -904,9 +904,16 @@ func (r *Router) relayKeepingDraft(ctx context.Context, in Inbound, id Identity,
 			return r.Reply(ctx, in, CopyBudgetStillPending, "")
 		}
 	case StateAwaitingApproval:
-		return r.Reply(ctx, in, CopyApprovalStillPending, "")
+		return r.Reply(ctx, in, approvalStillPending(conv), "")
 	}
 	return nil
+}
+
+func approvalStillPending(conv Conversation) string {
+	if conv.Unconfirmed() {
+		return CopyApprovalOnItsWay
+	}
+	return CopyApprovalStillPending
 }
 
 // startDraftWhileActive drafts a new errand while a supporter is on the

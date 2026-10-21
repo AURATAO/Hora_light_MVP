@@ -119,10 +119,10 @@ func (m *memConversations) SaveConversation(_ context.Context, c Conversation) e
 		}
 		c.Deferred = old.Deferred // not in the upsert; HoldApproval/RemoveHold only
 		c.LastInboundAt = old.LastInboundAt
-		if old.State == StateAwaitingApproval && c.State != StateAwaitingApproval && c.State != StateHandoff {
-			// A stale snapshot must not disarm a question (the SQL CASE).
+		if old.State == StateAwaitingApproval && c.State != StateHandoff {
+			// A stale snapshot must not disarm or restamp a question (the SQL CASE).
 			c.State, c.PendingExtensionID, c.ApprovalArmedAt, c.ApprovalClaimedAt = old.State, old.PendingExtensionID, old.ApprovalArmedAt, old.ApprovalClaimedAt
-		} else if c.State != StateAwaitingApproval {
+		} else {
 			c.ApprovalClaimedAt = nil
 		}
 	} else {
@@ -198,6 +198,20 @@ func (m *memConversations) ClaimHold(_ context.Context, iid, ext string, at time
 	c.State, c.PendingExtensionID = StateAwaitingApproval, ext
 	sentinel := ArmedUnconfirmed
 	c.ApprovalArmedAt, c.ApprovalClaimedAt = &sentinel, &at
+	m.convs[iid] = c
+	return true, nil
+}
+func (m *memConversations) ReclaimUnconfirmed(_ context.Context, iid, ext string, seen *time.Time, at time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.convs[iid]
+	if !ok || !c.Unconfirmed() || c.PendingExtensionID != ext {
+		return false, nil
+	}
+	if (seen == nil) != (c.ApprovalClaimedAt == nil) || (seen != nil && !seen.Equal(*c.ApprovalClaimedAt)) {
+		return false, nil
+	}
+	c.ApprovalClaimedAt = &at
 	m.convs[iid] = c
 	return true, nil
 }
