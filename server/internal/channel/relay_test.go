@@ -53,11 +53,14 @@ func (f *fakeTasks) TaskForProviderMessage(_ context.Context, _ Channel, _, id s
 	tid, known := f.byMsg[id]
 	return tid, f.relay[id], known, nil
 }
-func (f *fakeTasks) LastRelayed(_ context.Context, _ Channel, _ string, since time.Time, _ string) (Relayed, error) {
+func (f *fakeTasks) LastRelayed(_ context.Context, _ Channel, _ string, since time.Time, exclude string) (Relayed, error) {
 	if f.lastText == "" || f.lastAt.Before(since) {
 		return Relayed{}, nil
 	}
-	return Relayed{Text: f.lastText, TaskID: f.lastTask, At: f.lastAt, Answered: f.lastAnswered, OK: true}, nil
+	// Mirrors the store: the message being routed never counts as the
+	// answer; a caller that forgets to pass its id sees "answered".
+	answered := f.lastAnswered || exclude == ""
+	return Relayed{Text: f.lastText, TaskID: f.lastTask, At: f.lastAt, Answered: answered, OK: true}, nil
 }
 func (f *fakeTasks) SetMessageTask(_ context.Context, _ Channel, id, task string) error {
 	f.set = append(f.set, id+"→"+task)

@@ -391,7 +391,7 @@ func (r *Router) onAwaitingTaskChoice(ctx context.Context, in Inbound, id Identi
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 			return fmt.Errorf("onAwaitingTaskChoice: %w", err)
 		}
-		return r.startDraft(ctx, in, id, conv, text)
+		return r.startDraftWhileActive(ctx, in, id, conv, text, active0)
 	}
 	all, err := r.Chat.ActiveTasks(ctx, id.UserID)
 	if err != nil {
@@ -653,9 +653,9 @@ const (
 var (
 	// "for Maya" / "for my supporter" / "tell Sam": the words were for them
 	// (D-17 P6). The name is checked against the active supporters.
-	forSupporterRE = regexp.MustCompile(`(?i)^\s*(?:for|tell)\s+(my\s+supporter|[\p{L}'-]+)\s*[:,.!]?\s*(.*)$`)
+	forSupporterRE = regexp.MustCompile(`(?is)^\s*(?:for|tell)\s+(my\s+supporter|[\p{L}'-]+)\s*[:,.!]?\s*(.*)$`)
 	// "new task: …" / "another errand …": force a draft.
-	newTaskRE = regexp.MustCompile(`(?i)^\s*(?:new\s+(?:task|errand|request)|another\s+(?:task|errand|request))\b[\s:,-]*(.*)$`)
+	newTaskRE = regexp.MustCompile(`(?is)^\s*(?:new\s+(?:task|errand|request)|another\s+(?:task|errand|request))\b[\s:,-]*(.*)$`)
 )
 
 // openQuestion names the question of ours the thread is waiting on, for the
@@ -705,14 +705,17 @@ func (r *Router) routeInContextLabel(ctx context.Context, in Inbound, id Identit
 	if m := forSupporterRE.FindStringSubmatch(text); m != nil {
 		if t, ok := supporterByName(active, m[1]); ok {
 			words := strings.TrimSpace(m[2])
+			dropDraft := false
 			if words == "" && conv.Pending != nil {
 				// "for Maya" alone: the draft's words were for her.
-				words = conv.Pending.Source
+				words, dropDraft = conv.Pending.Source, true
 			}
 			if words == "" {
 				return true, "", r.Reply(ctx, in, CopyWhichTaskNothingHeld, "")
 			}
-			if conv.Pending == nil {
+			if !dropDraft {
+				// "tell Sam I'm 5 min late": the words are new; whatever
+				// draft or question is open stays as it is.
 				return true, "", r.relayKeepingDraft(ctx, in, id, conv, t.ID, words)
 			}
 			// Deliver first; the draft is dropped only once the supporter
@@ -756,9 +759,10 @@ func (r *Router) routeInContextLabel(ctx context.Context, in Inbound, id Identit
 	if conv.State == StateIdle && supporterQuestionOpen(last, lastAt, answered, r.now()) && len(strings.Fields(text)) <= 12 {
 		return true, "", r.relayKeepingDraft(ctx, in, id, conv, lastTask, text)
 	}
-	// The one who last wrote is a target only until the person answered.
+	// The one who last wrote counts only until the person answered — as a
+	// target and as context.
 	if answered {
-		lastTask = ""
+		last, lastTask = "", ""
 	}
 	// Step 7b: the model, with the context. Error → to the supporter (P7).
 	// Without a context classifier, the plain one decides only "new
@@ -878,20 +882,6 @@ func supporterForms(active []ActiveTask) string {
 		return "\u201cfor my supporter\u201d"
 	}
 	return strings.Join(forms, " or ")
-}
-
-// supporterNames lists the active supporters' first names for copy.
-func supporterNames(active []ActiveTask) string {
-	var names []string
-	for _, t := range active {
-		if n := DisplayName(FirstName(t.SupporterName)); n != "" {
-			names = append(names, n)
-		}
-	}
-	if len(names) == 0 {
-		return "your supporter"
-	}
-	return strings.Join(names, " / ")
 }
 
 // relayKeepingDraft relays and, if a question of ours is open, says in one

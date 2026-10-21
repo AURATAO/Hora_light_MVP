@@ -426,7 +426,8 @@ func TestEscapesKeepTheApprovalArmed(t *testing.T) {
 	fc.intent = llm.IntentToSupporter
 	got := g.say(t, "for Sam, why $10 more?")
 	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
-	if len(chat.posted) != 1 || c.State != StateAwaitingApproval || c.PendingExtensionID != "ext-5" || c.Pending != nil || !strings.Contains(got, CopyApprovalStillPending) {
+	// Explicit words relay; the draft underneath and the approval both stay.
+	if len(chat.posted) != 1 || c.State != StateAwaitingApproval || c.PendingExtensionID != "ext-5" || c.Pending == nil || !strings.Contains(got, CopyApprovalStillPending) {
 		t.Fatalf("posted %v conv %+v reply %q", chat.posted, c, got)
 	}
 	got = g.say(t, "new task: walk my dog at 5")
@@ -495,5 +496,31 @@ func TestSupporterNameMatchIsCaseSensitive(t *testing.T) {
 	}
 	if t2, ok := supporterNamed([]ActiveTask{will, bagelT}, "Will, I'll be there in 5"); !ok || t2.ID != "t9" {
 		t.Fatal("the name itself must match")
+	}
+}
+
+// Round-3 minors: multi-line escapes; a bare yes during the budget question
+// answers us (re-asked), not the supporter; a correction mid-budget
+// re-drafts; "tell Sam <words>" leaves an unrelated draft alone.
+func TestRoundThreeMinors(t *testing.T) {
+	g, chat, _, fc := contextRig(llm.IntentToSupporter, bagelT)
+	got := g.say(t, "new task: laundry 3pm\nbring bags")
+	if g.state() == StateIdle || len(chat.posted) != 0 || !strings.Contains(got, "Reply YES") {
+		t.Fatalf("multi-line 'new task:' must draft: state %s posted %v", g.state(), chat.posted)
+	}
+	g.say(t, "tell Sam I'll be 5 min late\nthanks")
+	if len(chat.posted) != 1 || chat.posted[0] != "task-2:I'll be 5 min late\nthanks" || g.state() != StateAwaitingConfirm {
+		t.Fatalf("explicit words relay and keep the draft: posted %v state %s", chat.posted, g.state())
+	}
+
+	g, chat, _, fc = contextRig(llm.IntentToSupporter, bagelT)
+	g.parser.draft = bagelD
+	g.say(t, "new task: bring me a bagel from Russ & Daughters") // awaiting_budget
+	if got := g.say(t, "yes"); got != CopyAskBudgetAgain || len(chat.posted) != 0 || g.state() != StateAwaitingBudget {
+		t.Fatalf("bare yes mid-budget: %q posted %v state %s", got, chat.posted, g.state())
+	}
+	fc.intent = llm.IntentCorrection
+	if got := g.say(t, "actually two bagels"); !strings.Contains(got, "how much should I set aside") || len(chat.posted) != 0 {
+		t.Fatalf("a correction mid-budget re-drafts: %q posted %v", got, chat.posted)
 	}
 }

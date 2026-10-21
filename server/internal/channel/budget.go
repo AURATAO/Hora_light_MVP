@@ -137,10 +137,19 @@ func (r *Router) onAwaitingBudget(ctx context.Context, in Inbound, id Identity, 
 	default:
 		cents, ok := AmountCents(text)
 		if !ok {
+			// A bare yes answers "will your supporter be buying?" — but
+			// only an amount answers the question (step 4: ours).
+			if IsYes(text) {
+				return r.Reply(ctx, in, CopyAskBudgetAgain, "")
+			}
 			// Not an amount: with a supporter on the job it may be for
-			// them (D-17); otherwise ask again.
-			if handled, err := r.routeInContext(ctx, in, id, conv, text); handled {
+			// them (D-17); a correction re-drafts; otherwise ask again.
+			handled, label, err := r.routeInContextLabel(ctx, in, id, conv, text)
+			if handled {
 				return err
+			}
+			if label == llm.IntentCorrection {
+				return r.startDraft(ctx, in, id, conv, conv.Pending.Source+"\n"+text)
 			}
 			return r.Reply(ctx, in, CopyAskBudgetAgain, "")
 		}
