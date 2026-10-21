@@ -290,6 +290,7 @@ type fakeStore struct {
 	outbound  int
 	lastTask  string
 	lastID    string
+	lastRelay bool
 	stored    []string
 	err       error
 }
@@ -321,6 +322,7 @@ func (s *fakeStore) RecordOutbound(_ context.Context, o Outbound, providerID str
 	s.outbound++
 	s.lastTask = taskID
 	s.lastID = providerID
+	s.lastRelay = o.Relay
 	s.stored = append(s.stored, o.RecordedText())
 	return nil
 }
@@ -328,6 +330,11 @@ func (s *fakeStore) storedBodies() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.stored...)
+}
+func (s *fakeStore) lastOutboundRelay() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastRelay
 }
 func (s *fakeStore) lastOutboundID() string {
 	s.mu.Lock()

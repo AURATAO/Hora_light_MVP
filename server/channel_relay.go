@@ -174,9 +174,20 @@ func relayPair(ctx context.Context, db *sql.DB, taskID string) (relayPairRow, er
 }
 
 // talkjsUpsertUser makes sure the user exists in TalkJS (id = email, as
-// everywhere in this codebase). Idempotent.
+// everywhere in this codebase). An existing user is left exactly as the
+// clients set it; only a missing one is created.
 func talkjsUpsertUser(ctx context.Context, email, name string) error {
-	status, _, err := talkjsRequest(ctx, http.MethodPut, "/users/"+url.PathEscape(email), map[string]any{
+	status, _, err := talkjsRequest(ctx, http.MethodGet, "/users/"+url.PathEscape(email), nil)
+	if err != nil {
+		return fmt.Errorf("ensure talkjs user: %w", scrubURLErr(err))
+	}
+	if status == http.StatusOK {
+		return nil
+	}
+	if status != http.StatusNotFound {
+		return fmt.Errorf("ensure talkjs user: talkjs GET user returned %d", status)
+	}
+	status, _, err = talkjsRequest(ctx, http.MethodPut, "/users/"+url.PathEscape(email), map[string]any{
 		"name":  relayOr(strings.TrimSpace(name), "HO:RA user"),
 		"email": []string{email},
 	})
@@ -194,7 +205,7 @@ func talkjsUpsertUser(ctx context.Context, email, name string) error {
 // requester's own messages (posted by PostAsRequester, or from the app)
 // are not echoed back. Runs on a background context — never on the webhook
 // request path (S-32).
-func relayChatMessageToRequester(db *sql.DB, conversationID, taskID, senderUID, supporterName string, msg talkjsMessage) {
+func relayChatMessageToRequester(db *sql.DB, conversationID, taskID, senderUID string, msg talkjsMessage) {
 	defer func() {
 		if p := recover(); p != nil {
 			log.Printf("[talkjs][relay] task=%s panic: %v", taskID, p)
@@ -219,7 +230,9 @@ func relayChatMessageToRequester(db *sql.DB, conversationID, taskID, senderUID, 
 	if msg.Attachment != nil {
 		mediaURL = msg.Attachment.URL
 	}
-	hook(ctx, pair.requesterID, taskID, supporterName, pair.title, msg.Text, mediaURL)
+	// The name shown in HO:RA's voice is the profile's, never the TalkJS
+	// payload's (a client-set field).
+	hook(ctx, pair.requesterID, taskID, firstNameOf(pair.supporterName), pair.title, msg.Text, mediaURL)
 }
 
 // relayAllowedToRequester: only the assigned supporter's words, on an open

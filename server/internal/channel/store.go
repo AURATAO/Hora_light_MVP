@@ -66,10 +66,10 @@ func (s *PGStore) RecordOutbound(ctx context.Context, out Outbound, providerMess
 	_, err := s.DB.ExecContext(ctx, `
 		INSERT INTO channel_messages
 		  (channel, provider_message_id, direction, address, body, task_id,
-		   reply_to_provider_id, received_at, processed_at)
-		VALUES ($1, $2, 'outbound', $3, $4, NULLIF($5, '')::uuid, NULLIF($6, ''), now(), now())
+		   reply_to_provider_id, relay, received_at, processed_at)
+		VALUES ($1, $2, 'outbound', $3, $4, NULLIF($5, '')::uuid, NULLIF($6, ''), $7, now(), now())
 		ON CONFLICT (channel, provider_message_id) DO NOTHING
-	`, string(out.Channel), providerMessageID, out.To, out.RecordedText(), taskID, out.ReplyToProviderID)
+	`, string(out.Channel), providerMessageID, out.To, out.RecordedText(), taskID, out.ReplyToProviderID, out.Relay)
 	if err != nil {
 		return fmt.Errorf("record outbound: %w", err)
 	}
@@ -114,19 +114,20 @@ func (s *PGStore) RecentMessages(ctx context.Context, ch Channel, address string
 
 // TaskForProviderMessage: the task one of our (or their) earlier messages
 // was about, for inline replies. "" when unknown. (TaskLookup)
-func (s *PGStore) TaskForProviderMessage(ctx context.Context, ch Channel, providerMessageID string) (string, error) {
+func (s *PGStore) TaskForProviderMessage(ctx context.Context, ch Channel, providerMessageID string) (string, bool, error) {
 	var taskID sql.NullString
+	var relay bool
 	err := s.DB.QueryRowContext(ctx, `
-		SELECT task_id::text FROM channel_messages
+		SELECT task_id::text, relay FROM channel_messages
 		WHERE channel = $1 AND provider_message_id = $2
-	`, string(ch), providerMessageID).Scan(&taskID)
+	`, string(ch), providerMessageID).Scan(&taskID, &relay)
 	if err == sql.ErrNoRows {
-		return "", nil
+		return "", false, nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("task for message: %w", err)
+		return "", false, fmt.Errorf("task for message: %w", err)
 	}
-	return taskID.String, nil
+	return taskID.String, relay, nil
 }
 
 // SetMessageTask records which task an inbound message turned out to be

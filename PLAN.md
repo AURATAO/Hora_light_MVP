@@ -164,6 +164,17 @@ The setup step is the one to watch.
 - Dani: confirm approval timeouts and copy for budget/time requests by text.
 - **Post-freeze mobile change:** supporter task screen shows "Ask for a budget" at budget 0 (today gated on `hasBudget`), so a misread chat task is recoverable (see incident 2026-10-21).
 - Does Sendblue expose threaded-reply context? If not, step 5 falls back to 6–7.
+- **M3.2 accepted limitations (review rounds 1–3, 2026-10-21):** no dedupe of
+  TalkJS webhook retries on the supporter→requester side (same as the push
+  path); a held message has no TTL (purged with the account); supporter
+  messages outside the WhatsApp 24h window are logged, not sent (template,
+  M4); `SaveConversation` is a full-row write, so two messages typed within
+  a TalkJS round-trip can overwrite each other's hold; relayed text is
+  verbatim (prefixed with the profile name) — a link policy is a standard
+  proposal, not built.
+- **M3.2 staging evidence still owed (R3-4):** one real requester→supporter
+  message (chat-only requester, supporter who never opened the chat) and one
+  supporter→requester message with a photo, on the staging number.
 - **M3.6 — completion photo + receipt to the requester's chat (Aura, 2026-10-21):**
   after COMPLETED, send the completion photo with the done message; if the task
   had purchases, a second message "Receipt: $XX" with the receipt photo.

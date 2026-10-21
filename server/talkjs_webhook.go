@@ -187,7 +187,7 @@ func handleTalkJSWebhook(c *gin.Context, db *sql.DB) {
 	}
 	// Requesters who book by text get the supporter's words on their phone
 	// (channel_relay.go). Off the request path like the pushes.
-	go relayChatMessageToRequester(db, ev.Data.Conversation.ID, taskID, senderUID, strings.TrimSpace(ev.Data.Sender.Name), ev.Data.Message)
+	go relayChatMessageToRequester(db, ev.Data.Conversation.ID, taskID, senderUID, ev.Data.Message)
 
 	c.Status(http.StatusOK)
 }

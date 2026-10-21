@@ -91,6 +91,9 @@ func PhoneHint(e164 string) string {
 func (r *Router) handOff(ctx context.Context, in Inbound, id Identity, conv Conversation, reason HandoffReason) error {
 	conv.State = StateHandoff
 	conv.PendingExtensionID = ""
+	// A held relay message is dropped: ops now read the thread, and the
+	// words are in it.
+	conv.PendingTaskChoices, conv.PendingRelayText = nil, ""
 	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 		return fmt.Errorf("handOff: %w", err)
 	}

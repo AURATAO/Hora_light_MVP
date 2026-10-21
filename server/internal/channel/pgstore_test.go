@@ -627,16 +627,29 @@ func TestPGTaskChoiceAndMessageTaskRoundTrip(t *testing.T) {
 	if _, err := s.RecordInbound(ctx, in); err != nil {
 		t.Fatal(err)
 	}
-	if tid, err := s.TaskForProviderMessage(ctx, IMessage, "in-relay-1"); err != nil || tid != "" {
+	if tid, _, err := s.TaskForProviderMessage(ctx, IMessage, "in-relay-1"); err != nil || tid != "" {
 		t.Fatalf("untagged message: %q %v", tid, err)
 	}
 	if err := s.SetMessageTask(ctx, IMessage, "in-relay-1", t2); err != nil {
 		t.Fatal(err)
 	}
-	if tid, err := s.TaskForProviderMessage(ctx, IMessage, "in-relay-1"); err != nil || tid != t2 {
+	if tid, rl, err := s.TaskForProviderMessage(ctx, IMessage, "in-relay-1"); err != nil || tid != t2 || rl {
 		t.Fatalf("%q %v", tid, err)
 	}
-	if tid, err := s.TaskForProviderMessage(ctx, IMessage, "never-seen"); err != nil || tid != "" {
+	if tid, _, err := s.TaskForProviderMessage(ctx, IMessage, "never-seen"); err != nil || tid != "" {
 		t.Fatalf("unknown message: %q %v", tid, err)
+	}
+	// A relayed supporter message is remembered as such; our own prompt is not.
+	if err := s.RecordOutbound(ctx, Outbound{Channel: IMessage, To: "+15550000505", Text: "Maya · x: hi", Relay: true}, "out-relay", t2); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordOutbound(ctx, Outbound{Channel: IMessage, To: "+15550000505", Text: "Reply YES to approve"}, "out-prompt", t2); err != nil {
+		t.Fatal(err)
+	}
+	if tid, rl, err := s.TaskForProviderMessage(ctx, IMessage, "out-relay"); err != nil || tid != t2 || !rl {
+		t.Fatalf("relay bubble: %q %v %v", tid, rl, err)
+	}
+	if tid, rl, err := s.TaskForProviderMessage(ctx, IMessage, "out-prompt"); err != nil || tid != t2 || rl {
+		t.Fatalf("prompt bubble: %q %v %v", tid, rl, err)
 	}
 }

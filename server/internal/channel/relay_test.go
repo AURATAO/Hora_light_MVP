@@ -35,12 +35,13 @@ func (f *fakeChat) PostAsRequester(_ context.Context, taskID, _ string, text, ke
 }
 
 type fakeTasks struct {
-	byMsg map[string]string
+	byMsg map[string]string // provider id → task
+	relay map[string]bool   // provider id → was a relayed supporter message
 	set   []string
 }
 
-func (f *fakeTasks) TaskForProviderMessage(_ context.Context, _ Channel, id string) (string, error) {
-	return f.byMsg[id], nil
+func (f *fakeTasks) TaskForProviderMessage(_ context.Context, _ Channel, id string) (string, bool, error) {
+	return f.byMsg[id], f.relay[id], nil
 }
 func (f *fakeTasks) SetMessageTask(_ context.Context, _ Channel, id, task string) error {
 	f.set = append(f.set, id+"→"+task)
@@ -56,7 +57,7 @@ func relayRig(intent llm.Intent, active ...ActiveTask) (*rig, *fakeChat, *fakeTa
 	g := newRig(intent)
 	g.ids.link(me, "user-1")
 	chat := &fakeChat{active: active}
-	tasks := &fakeTasks{byMsg: map[string]string{}}
+	tasks := &fakeTasks{byMsg: map[string]string{}, relay: map[string]bool{}}
 	g.r.Chat, g.r.Tasks = chat, tasks
 	return g, chat, tasks
 }
@@ -254,29 +255,27 @@ func TestRelayDuringPendingYesIsDisambiguated(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := g.ad.last()
-	if !strings.HasPrefix(got, "Maya · Laundry pickup: Want the large bag too?") || !strings.Contains(got, "A plain YES or NO here still answers my question") || !strings.Contains(got, "Laundry pickup") {
+	if !strings.HasPrefix(got, "Maya · Laundry pickup: Want the large bag too?") || !strings.Contains(got, "A YES or NO sent on its own answers my question above") || !strings.Contains(got, "Laundry pickup") {
 		t.Fatalf("%q", got)
 	}
-	// An inline sentence to Maya's message is for Maya: nothing books.
-	tasks.byMsg[g.st.lastOutboundID()] = "task-1"
-	in := Inbound{Channel: IMessage, ProviderMessageID: "r1", From: me, Text: "yes, the large one", ReplyToProviderID: g.st.lastOutboundID(), ReceivedAt: time.Now()}
-	if err := g.r.HandleInbound(context.Background(), in); err != nil {
-		t.Fatal(err)
+	if !g.st.lastOutboundRelay() {
+		t.Fatal("a relayed supporter message must be recorded as a relay bubble")
 	}
-	if len(chat.posted) != 1 || chat.posted[0] != "task-1:yes, the large one" || g.booker.posts != 0 || g.state() != StateAwaitingConfirm {
+	maya := g.st.lastOutboundID()
+	tasks.byMsg[maya], tasks.relay[maya] = "task-1", true
+	// Anything in reply to Maya's bubble is for Maya — a "yes please" too:
+	// nothing books.
+	for i, text := range []string{"yes, the large one", "yes please"} {
+		in := Inbound{Channel: IMessage, ProviderMessageID: fmt.Sprintf("r%d", i), From: me, Text: text, ReplyToProviderID: maya, ReceivedAt: time.Now()}
+		if err := g.r.HandleInbound(context.Background(), in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(chat.posted) != 2 || chat.posted[1] != "task-1:yes please" || g.booker.posts != 0 || g.state() != StateAwaitingConfirm {
 		t.Fatalf("posted %v booked %d state %s", chat.posted, g.booker.posts, g.state())
 	}
-	if chat.keys[0] != "r1" {
+	if chat.keys[0] != "r0" {
 		t.Fatalf("idempotency key must be the inbound message id: %v", chat.keys)
-	}
-	// A bare YES — swiped on Maya's bubble or not — answers OUR question, as
-	// the footer says: the draft books, nothing goes to Maya.
-	in = Inbound{Channel: IMessage, ProviderMessageID: "r2", From: me, Text: "yes please", ReplyToProviderID: g.st.lastOutboundID(), ReceivedAt: time.Now()}
-	if err := g.r.HandleInbound(context.Background(), in); err != nil {
-		t.Fatal(err)
-	}
-	if g.booker.posts != 1 || len(chat.posted) != 1 {
-		t.Fatalf("booked %d posted %v", g.booker.posts, chat.posted)
 	}
 	// Nothing pending → no note.
 	if err := g.r.RelayToChat(context.Background(), "user-1", "task-1", "Maya", "Laundry pickup", "On my way", ""); err != nil {
@@ -298,7 +297,7 @@ func TestRelayDuringPendingApprovalIsDisambiguated(t *testing.T) {
 	if err := g.r.RelayToChat(context.Background(), "user-1", "task-1", "Maya", "Laundry pickup", "ok if I take 15 more?", ""); err != nil {
 		t.Fatal(err)
 	}
-	if got := g.ad.last(); !strings.Contains(got, "still answers my question about Maya’s request") {
+	if got := g.ad.last(); !strings.Contains(got, "answers my question above about Maya’s request") {
 		t.Fatalf("%q", got)
 	}
 }
@@ -429,7 +428,87 @@ func TestHoldEscapeHatchCapAndNilChat(t *testing.T) {
 	g, _, _ = relayRig(llm.IntentOther, laundryT, bagelT)
 	g.say(t, "please get everything bagels")
 	g.r.Chat = nil
-	if got := g.say(t, "1"); got != CopyWhichTaskNothingHeld || g.state() != StateIdle {
+	if got := g.say(t, "1"); got != CopyHoldGone || g.state() != StateIdle {
 		t.Fatalf("%q state %s", got, g.state())
+	}
+}
+
+// ── review round 3 ─────────────────────────────────────────────────────────
+
+// R3-2: the bubble decides. A sentence swiped on OUR approval prompt is an
+// answer to us (re-asked, never silently relayed); a bare YES swiped on an
+// old supporter bubble while a draft is pending goes to the supporter and
+// books nothing.
+func TestBubbleKindDecidesWhoGetsTheAnswer(t *testing.T) {
+	g, chat, tasks := relayRig(llm.IntentOther, laundryT)
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	c.State, c.PendingExtensionID = StateAwaitingApproval, "ext-1"
+	if err := g.convs.SaveConversation(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	tasks.byMsg["prompt-1"] = "task-1" // our prompt: relay=false
+	in := Inbound{Channel: IMessage, ProviderMessageID: "s1", From: me, Text: "yes, approve it", ReplyToProviderID: "prompt-1", ReceivedAt: time.Now()}
+	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if len(chat.posted) != 0 || g.ad.last() != CopyApprovalReask || g.state() != StateAwaitingApproval {
+		t.Fatalf("posted %v reply %q state %s", chat.posted, g.ad.last(), g.state())
+	}
+
+	g, chat, tasks = relayRig(llm.IntentNewTask, laundryT)
+	tasks.byMsg["maya-old"], tasks.relay["maya-old"] = "task-1", true
+	g.say(t, "laundry pickup") // draft pending
+	in = Inbound{Channel: IMessage, ProviderMessageID: "s2", From: me, Text: "yes", ReplyToProviderID: "maya-old", ReceivedAt: time.Now()}
+	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if g.booker.posts != 0 || len(chat.posted) != 1 || chat.posted[0] != "task-1:yes" || g.state() != StateAwaitingConfirm {
+		t.Fatalf("a YES aimed at Maya must not book: booked %d posted %v state %s", g.booker.posts, chat.posted, g.state())
+	}
+	// With nothing pending, a reply to our status line about a task names it.
+	g, chat, tasks = relayRig(llm.IntentOther, laundryT, bagelT)
+	tasks.byMsg["status-2"] = "task-2"
+	in = Inbound{Channel: IMessage, ProviderMessageID: "s3", From: me, Text: "thanks!", ReplyToProviderID: "status-2", ReceivedAt: time.Now()}
+	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if len(chat.posted) != 1 || chat.posted[0] != "task-2:thanks!" {
+		t.Fatalf("posted %v", chat.posted)
+	}
+}
+
+// R3-3: the hold survives a failed post when the list has shrunk to one;
+// no supporter left is said plainly, not acknowledged as sent.
+func TestHoldSurvivesWhenListShrinksToOne(t *testing.T) {
+	g, chat, _ := relayRig(llm.IntentOther, laundryT, bagelT)
+	g.say(t, "please get everything bagels")
+	chat.active = []ActiveTask{bagelT}
+	chat.post = errors.New("talkjs 503")
+	if got := g.say(t, "and a coffee"); got != CopyRelayFailed || g.state() != StateAwaitingTaskChoice {
+		t.Fatalf("%q state %s", got, g.state())
+	}
+	chat.post = nil
+	g.say(t, "2")
+	if len(chat.posted) != 1 || chat.posted[0] != "task-2:please get everything bagels\nand a coffee" {
+		t.Fatalf("posted %v", chat.posted)
+	}
+
+	g, chat, _ = relayRig(llm.IntentOther, laundryT, bagelT)
+	g.say(t, "please get everything bagels")
+	chat.active = nil
+	if got := g.say(t, "and a coffee"); got != CopyHoldGone || g.state() != StateIdle {
+		t.Fatalf("%q state %s", got, g.state())
+	}
+}
+
+// R3-7: a handoff drops the hold; release does not resurrect it.
+func TestHandoffDropsTheHold(t *testing.T) {
+	g, _, _ := relayRig(llm.IntentOther, laundryT, bagelT)
+	g.r.Ops, g.r.Thread = &memOps{}, &memThread{st: g.st}
+	g.say(t, "please get everything bagels")
+	g.say(t, "I want to talk to a human")
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.State != StateHandoff || len(c.PendingTaskChoices) != 0 || c.PendingRelayText != "" {
+		t.Fatalf("%+v", c)
 	}
 }

@@ -89,6 +89,10 @@ CREATE TABLE IF NOT EXISTS public.channel_messages (
   reply_to_provider_id  text,
   -- iMessage / SMS / RCS / whatsapp — what actually carried it.
   service               text,
+  -- true for a supporter's chat message relayed to the person (M3.2): an
+  -- inline reply to one of those is for the supporter, whatever it says; a
+  -- reply to one of our own prompts is an answer to us.
+  relay                 boolean NOT NULL DEFAULT false,
   body                  text NOT NULL DEFAULT '',
   received_at           timestamp with time zone NOT NULL DEFAULT now(),
   -- Set when the router finished with an inbound message. NULL after a crash
@@ -188,3 +192,13 @@ NOTIFY pgrst, 'reload schema';
 ALTER TABLE public.channel_conversations
   ADD COLUMN IF NOT EXISTS pending_task_choices uuid[],
   ADD COLUMN IF NOT EXISTS pending_relay_text   text;
+ALTER TABLE public.channel_messages
+  ADD COLUMN IF NOT EXISTS relay boolean NOT NULL DEFAULT false;
+-- The state set grew the same way; re-assert the CHECK so an older table
+-- accepts every state the router writes.
+ALTER TABLE public.channel_conversations
+  DROP CONSTRAINT IF EXISTS channel_conversations_state_check;
+ALTER TABLE public.channel_conversations
+  ADD CONSTRAINT channel_conversations_state_check CHECK (state IN (
+    'idle', 'drafting', 'awaiting_name', 'awaiting_confirm', 'awaiting_setup',
+    'awaiting_approval', 'awaiting_budget', 'awaiting_task_choice', 'handoff'));

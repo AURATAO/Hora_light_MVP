@@ -172,18 +172,19 @@ func TestRelayChatMessageToRequesterUsesRoomAndSender(t *testing.T) {
 	t.Cleanup(func() { chatRelayHook = prev })
 
 	msg := talkjsMessage{Text: "On my way!", Attachment: &talkjsFile{URL: "https://cdn.example.test/p.jpg"}}
-	relayChatMessageToRequester(sqldb, "task_"+w.taskID, w.taskID, w.supporterID, "Sam", msg)
+	relayChatMessageToRequester(sqldb, "task_"+w.taskID, w.taskID, w.supporterID, msg)
+	// The name is the profile's first name ("Sam Supporter"), never the TalkJS payload's.
 	if len(calls) != 1 || calls[0] != w.requesterID+"|"+w.taskID+"|Sam|Grocery run|On my way!|https://cdn.example.test/p.jpg" {
 		t.Fatalf("calls %v", calls)
 	}
-	relayChatMessageToRequester(sqldb, "task_"+w.taskID, w.taskID, w.requesterID, "Rita", msg) // own message
-	relayChatMessageToRequester(sqldb, "task_other", w.taskID, w.supporterID, "Sam", msg)      // wrong room, custom.taskId forged
-	relayChatMessageToRequester(sqldb, "task_"+w.taskID, "", w.supporterID, "Sam", msg)        // no task
+	relayChatMessageToRequester(sqldb, "task_"+w.taskID, w.taskID, w.requesterID, msg) // own message
+	relayChatMessageToRequester(sqldb, "task_other", w.taskID, w.supporterID, msg)     // wrong room, custom.taskId forged
+	relayChatMessageToRequester(sqldb, "task_"+w.taskID, "", w.supporterID, msg)       // no task
 	if len(calls) != 1 {
 		t.Fatalf("calls %v", calls)
 	}
 	chatRelayHook = nil
-	relayChatMessageToRequester(sqldb, "task_"+w.taskID, w.taskID, w.supporterID, "Sam", msg) // hook off: no panic
+	relayChatMessageToRequester(sqldb, "task_"+w.taskID, w.taskID, w.supporterID, msg) // hook off: no panic
 }
 
 var _ channel.TaskChat = (*talkjsRelay)(nil)

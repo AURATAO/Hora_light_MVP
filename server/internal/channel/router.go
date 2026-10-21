@@ -194,17 +194,15 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	if IsHumanRequest(text) {
 		return r.handOff(ctx, in, id, conv, HandoffHumanRequested)
 	}
-	// An inline reply to a message about an active task is for the supporter
-	// (relay.go step 5) — with one exception, stated in every relayed
-	// message while a question is pending (RelayToChat): a bare YES/NO then
-	// answers OUR question, whichever bubble it was swiped on. Our prompts
-	// are task-tagged too, so without this an inline YES to "reply YES to
-	// approve" would go to the supporter and approve nothing. To answer the
-	// supporter yes or no, the person writes a sentence.
-	if !(awaitingAnswer(conv.State) && (IsYes(text) || IsNo(text))) {
-		if tid := r.inlineTarget(ctx, in, id); tid != "" {
-			return r.relay(ctx, in, id, tid, text)
-		}
+	// Inline replies (relay.go step 5). The bubble decides: a reply to a
+	// supporter's relayed words is for the supporter, whatever it says — a
+	// "yes" swiped on "large bag too?" never books. A reply to one of our
+	// own prompts or status lines is an answer to us: it goes through the
+	// state machine (a YES on "reply YES to approve" approves; a sentence on
+	// it is re-asked, as before). With nothing pending, a reply to any
+	// message about an active task names that task.
+	if tid, isRelay := r.inlineTarget(ctx, in, id); tid != "" && (isRelay || !awaitingAnswer(conv.State)) {
+		return r.relay(ctx, in, id, tid, text)
 	}
 	switch conv.State {
 	case StateAwaitingName:

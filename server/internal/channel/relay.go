@@ -59,7 +59,10 @@ const relayTextCap = 1500
 // TaskLookup resolves which task one of our earlier messages was about, for
 // inline replies (Sendblue reply_to, WhatsApp context).
 type TaskLookup interface {
-	TaskForProviderMessage(ctx context.Context, ch Channel, providerMessageID string) (string, error)
+	// TaskForProviderMessage: the task a message was about ("" if none),
+	// and whether that message was a supporter's relayed words (as opposed
+	// to one of our own prompts or status lines).
+	TaskForProviderMessage(ctx context.Context, ch Channel, providerMessageID string) (taskID string, relay bool, err error)
 	// SetMessageTask records which task an inbound message turned out to be
 	// about, so a later inline reply to the supporter's answer threads back.
 	SetMessageTask(ctx context.Context, ch Channel, providerMessageID, taskID string) error
@@ -84,31 +87,31 @@ func taskChoice(text string) (int, bool) {
 // (step 5). "" when the message is not a reply, the replied-to message was
 // not about a task, or the lookup is unavailable (logged; the message then
 // routes by intent like any other).
-func (r *Router) inlineTarget(ctx context.Context, in Inbound, id Identity) string {
+func (r *Router) inlineTarget(ctx context.Context, in Inbound, id Identity) (taskID string, relay bool) {
 	if r.Chat == nil || r.Tasks == nil || !id.Linked() || in.ReplyToProviderID == "" {
-		return ""
+		return "", false
 	}
-	tid, err := r.Tasks.TaskForProviderMessage(ctx, in.Channel, in.ReplyToProviderID)
+	tid, isRelay, err := r.Tasks.TaskForProviderMessage(ctx, in.Channel, in.ReplyToProviderID)
 	if err != nil {
 		log.Printf("[channel] inline target identity=%s: %v", id.ID, err)
-		return ""
+		return "", false
 	}
 	if tid == "" {
-		return ""
+		return "", false
 	}
 	// Only an active task: a reply to "Maya finished!" routes like any
 	// other message instead of hitting a dead end.
 	active, err := r.Chat.ActiveTasks(ctx, id.UserID)
 	if err != nil {
 		log.Printf("[channel] inline target identity=%s: %v", id.ID, err)
-		return ""
+		return "", false
 	}
 	for _, t := range active {
 		if t.ID == tid {
-			return tid
+			return tid, isRelay
 		}
 	}
-	return ""
+	return "", false
 }
 
 // relayOr sends a non-errand message from a linked requester to their
@@ -220,9 +223,12 @@ func (r *Router) askWhichTask(ctx context.Context, in Inbound, conv Conversation
 // shown again (nothing is dropped unannounced).
 func (r *Router) onAwaitingTaskChoice(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
 	choices, held := conv.PendingTaskChoices, conv.PendingRelayText
-	if r.Chat == nil || held == "" {
-		// Relay switched off under a hold, or nothing to deliver: drop it.
+	if held == "" {
 		return r.clearHold(ctx, in, conv, CopyWhichTaskNothingHeld)
+	}
+	if r.Chat == nil {
+		// Relay switched off under a hold: say so, don't pretend.
+		return r.clearHold(ctx, in, conv, CopyHoldGone)
 	}
 	// The way out: "never mind" / "cancel" drops the hold (rule-matched).
 	if IsNo(text) {
@@ -264,13 +270,29 @@ func (r *Router) onAwaitingTaskChoice(ctx context.Context, in Inbound, id Identi
 	joined := capText(strings.TrimSpace(held + "\n" + text))
 	switch len(active) {
 	case 0:
-		return r.clearHold(ctx, in, conv, CopyAck)
+		// Every supporter finished meanwhile: the held words have nowhere
+		// to go, and the person is told so.
+		return r.clearHold(ctx, in, conv, CopyHoldGone)
 	case 1:
+		// Deliver first; the hold is cleared only once the supporter has it.
+		taskID := active[0].ID
+		if err := r.Chat.PostAsRequester(ctx, taskID, id.UserID, joined, in.ProviderMessageID); err != nil {
+			log.Printf("[channel] relay identity=%s task=%s: %v", id.ID, taskID, err)
+			if errors.Is(err, ErrTaskNotActive) {
+				return r.clearHold(ctx, in, conv, CopyRelayGone)
+			}
+			conv.PendingRelayText = joined
+			if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+				return fmt.Errorf("onAwaitingTaskChoice: %w", err)
+			}
+			return r.Reply(ctx, in, CopyRelayFailed, taskID)
+		}
 		conv.State, conv.PendingTaskChoices, conv.PendingRelayText = StateIdle, nil, ""
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 			return fmt.Errorf("onAwaitingTaskChoice: %w", err)
 		}
-		return r.relay(ctx, in, id, active[0].ID, joined)
+		r.noteRelayed(ctx, in, id, taskID, joined)
+		return nil
 	default:
 		return r.askWhichTask(ctx, in, conv, active, joined)
 	}
@@ -306,7 +328,10 @@ func (r *Router) RelayToChat(ctx context.Context, requesterID, taskID, supporter
 	whoLower := firstNonEmpty(strings.TrimSpace(supporterName), "your supporter")
 	body := capText(strings.TrimSpace(text))
 	if body == "" && mediaURL != "" {
-		body = "(photo)"
+		body = "(attachment)"
+		if looksLikeImageURL(mediaURL) {
+			body = "(photo)"
+		}
 	}
 	if body == "" {
 		return nil // a location, a sticker, a system line: nothing to say
@@ -320,7 +345,7 @@ func (r *Router) RelayToChat(ctx context.Context, requesterID, taskID, supporter
 	} else if note := r.pendingNote(conv, whoLower); note != "" {
 		b.WriteString("\n\n" + note)
 	}
-	out := Outbound{Channel: t.Identity.Channel, To: t.Identity.Address, Text: b.String(), MediaURL: mediaURL}
+	out := Outbound{Channel: t.Identity.Channel, To: t.Identity.Address, Text: b.String(), MediaURL: mediaURL, Relay: true}
 	return r.Send(ctx, out, taskID)
 }
 
@@ -334,7 +359,7 @@ func (r *Router) pendingNote(conv Conversation, who string) string {
 		}
 		return fmt.Sprintf(CopyRelayWhileConfirm, conv.Pending.Headline(), Dollars(conv.Pending.TotalCents()), who)
 	case StateAwaitingApproval:
-		return fmt.Sprintf(CopyRelayWhileApproval, who, who)
+		return fmt.Sprintf(CopyRelayWhileApproval, who)
 	}
 	return ""
 }

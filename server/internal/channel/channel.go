@@ -67,6 +67,9 @@ type Outbound struct {
 	// MediaURL, when set, attaches a public image (a supporter's photo
 	// relayed from the task chat). Text still goes as the caption/body.
 	MediaURL string
+	// Relay marks a supporter's chat message passed on to the person. An
+	// inline reply to it is for the supporter (relay.go).
+	Relay bool
 }
 
 // RecordedText is the body to store for o.

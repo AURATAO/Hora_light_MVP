@@ -35,8 +35,9 @@ const (
 	// Appended to a relayed supporter message while a YES/NO is pending, so
 	// the next bare YES/NO cannot be read two ways (money rule: the YES
 	// answers what the thread says it answers).
-	CopyRelayWhileConfirm  = "(A plain YES or NO here still answers my question — book “%s” for %s. To answer %s instead, write a sentence.)"
-	CopyRelayWhileApproval = "(A plain YES or NO here still answers my question about %s’s request. To answer %s instead, write a sentence.)"
+	CopyRelayWhileConfirm  = "(To answer %[3]s, reply to this message. A YES or NO sent on its own answers my question above — book “%[1]s” for %[2]s.)"
+	CopyRelayWhileApproval = "(To answer %[1]s, reply to this message. A YES or NO sent on its own answers my question above about %[1]s’s request.)"
+	CopyHoldGone           = "Your supporter has finished, so I couldn't pass that on. Tell me if you need something new."
 	CopyRelayGone          = "That task has finished, so I can't pass this on. Tell me if you need something new."
 	CopyHoldDropped        = "OK, I won't send that."
 	CopyBackToHold         = "Your earlier message is still waiting — which task is it for?"
