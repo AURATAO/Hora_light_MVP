@@ -113,10 +113,45 @@ func (m *memConversations) GetConversation(_ context.Context, iid string) (Conve
 func (m *memConversations) SaveConversation(_ context.Context, c Conversation) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if old, ok := m.convs[c.IdentityID]; ok && old.TermsAcceptedAt != nil {
-		c.TermsAcceptedAt = old.TermsAcceptedAt // COALESCE, like the SQL
+	if old, ok := m.convs[c.IdentityID]; ok {
+		if old.TermsAcceptedAt != nil {
+			c.TermsAcceptedAt = old.TermsAcceptedAt // COALESCE, like the SQL
+		}
+		c.Deferred = old.Deferred // not in the upsert; HoldApproval/RemoveHold only
+	} else {
+		c.Deferred = nil
 	}
 	m.convs[c.IdentityID] = c
+	return nil
+}
+func (m *memConversations) HoldApproval(_ context.Context, iid string, d DeferredApproval) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.convs[iid]
+	if !ok {
+		c = Conversation{IdentityID: iid, State: StateIdle}
+	}
+	for _, h := range c.Deferred {
+		if h.ExtensionID == d.ExtensionID {
+			return nil
+		}
+	}
+	c.Deferred = append(append([]DeferredApproval(nil), c.Deferred...), d)
+	m.convs[iid] = c
+	return nil
+}
+func (m *memConversations) RemoveHold(_ context.Context, iid, ext string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c := m.convs[iid]
+	var kept []DeferredApproval
+	for _, h := range c.Deferred {
+		if h.ExtensionID != ext {
+			kept = append(kept, h)
+		}
+	}
+	c.Deferred = kept
+	m.convs[iid] = c
 	return nil
 }
 func (m *memConversations) ConversationsForUser(_ context.Context, user string) ([]Conversation, []Identity, error) {
@@ -206,6 +241,7 @@ type fakeBooker struct {
 	mu         sync.Mutex
 	pendingExt map[string]bool // ExtensionPending answers
 	pendingErr error
+	during     func() // runs inside Post, while the thread is "posting"
 	quotes     int
 	posts      int
 	result     PostResult
@@ -228,6 +264,9 @@ func (b *fakeBooker) Quote(_ context.Context, _ llm.TaskDraft, budgetCents int) 
 }
 func (b *fakeBooker) Post(_ context.Context, _ string, d llm.TaskDraft, opts PostOptions) PostResult {
 	time.Sleep(b.delay)
+	if b.during != nil {
+		b.during()
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.posts++

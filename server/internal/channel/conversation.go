@@ -134,9 +134,11 @@ type Conversation struct {
 	// a message is for; PendingRelayText is that message, relayed on pick.
 	PendingTaskChoices []string
 	PendingRelayText   string
-	// DeferredApproval: an approval question held until the thread can
-	// take it (D-17 I-O). nil when none.
-	DeferredApproval *DeferredApproval
+	// Deferred: approval questions held until the thread can take them
+	// (D-17 I-O), oldest first. Read with the row; written ONLY through
+	// HoldApproval/RemoveHold — a full-row save never touches them, so a booking's own
+	// save cannot wipe a question that arrived while it was in flight.
+	Deferred []DeferredApproval
 }
 
 // ResumeState is where a conversation goes once an approval is answered:
@@ -158,14 +160,22 @@ func (c Conversation) ResumeState() State {
 }
 
 // DeferredApproval is an approval question that arrived while the thread
-// could not take it. Sent, armed and cleared by Router.resumeDeferred once
-// the state allows, if the request is still pending.
+// could not take it. Router.resumeDeferred recomposes it from the
+// structured request with the time still left, sends and arms it once the
+// state allows — if the request is still the person's to answer.
 type DeferredApproval struct {
-	UserID      string `json:"user_id"`
-	TaskID      string `json:"task_id"`
-	ExtensionID string `json:"extension_id"`
-	Text        string `json:"text"`
-	AtUnix      int64  `json:"at_unix"`
+	UserID        string          `json:"user_id"`
+	TaskID        string          `json:"task_id"`
+	TaskTitle     string          `json:"task_title"`
+	SupporterName string          `json:"supporter_name"`
+	ExtensionID   string          `json:"extension_id"`
+	Type          string          `json:"type"` // the notification type (time / budget request)
+	Approval      PendingApproval `json:"approval"`
+	// TimeoutMinutes is the auto-decline window the app applies; AtUnix is
+	// when the request was announced. What is left decides whether and how
+	// the question is asked.
+	TimeoutMinutes int   `json:"timeout_minutes"`
+	AtUnix         int64 `json:"at_unix"`
 }
 
 // ConversationStore loads and saves conversation state.
@@ -186,6 +196,50 @@ type ConversationStore interface {
 	// before a parallel YES finished booking would otherwise write the old
 	// state and draft back over the finished one and book it twice.
 	AcceptTerms(ctx context.Context, identityID string, at time.Time) error
+	// HoldApproval appends a held approval question, and RemoveHold drops
+	// one by request id — each narrowly and atomically in the store, like
+	// AcceptTerms: nothing else on the row is written, and no caller holds
+	// the list between a read and a write (D-17 I-O; a full save must never
+	// wipe a hold made while a booking was in flight). Holding the same
+	// request twice is a no-op.
+	HoldApproval(ctx context.Context, identityID string, d DeferredApproval) error
+	RemoveHold(ctx context.Context, identityID, extensionID string) error
+}
+
+func (s *PGStore) HoldApproval(ctx context.Context, identityID string, d DeferredApproval) error {
+	b, err := json.Marshal([]DeferredApproval{d})
+	if err != nil {
+		return fmt.Errorf("hold approval: encode: %w", err)
+	}
+	_, err = s.DB.ExecContext(ctx, `
+		INSERT INTO channel_conversations (identity_id, deferred_approval, updated_at)
+		VALUES ($1, $2::jsonb, now())
+		ON CONFLICT (identity_id) DO UPDATE SET
+		  deferred_approval = CASE
+		    WHEN coalesce(channel_conversations.deferred_approval, '[]'::jsonb) @> jsonb_build_array(jsonb_build_object('extension_id', $3::text))
+		      THEN channel_conversations.deferred_approval
+		    ELSE coalesce(channel_conversations.deferred_approval, '[]'::jsonb) || $2::jsonb
+		  END,
+		  updated_at = now()
+	`, identityID, string(b), d.ExtensionID)
+	if err != nil {
+		return fmt.Errorf("hold approval: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) RemoveHold(ctx context.Context, identityID, extensionID string) error {
+	_, err := s.DB.ExecContext(ctx, `
+		UPDATE channel_conversations SET
+		  deferred_approval = (SELECT jsonb_agg(e) FROM jsonb_array_elements(coalesce(deferred_approval, '[]'::jsonb)) e
+		                        WHERE e->>'extension_id' <> $2),
+		  updated_at = now()
+		WHERE identity_id = $1
+	`, identityID, extensionID)
+	if err != nil {
+		return fmt.Errorf("remove hold: %w", err)
+	}
+	return nil
 }
 
 func (s *PGStore) AcceptTerms(ctx context.Context, identityID string, at time.Time) error {
@@ -250,11 +304,9 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 	c.PendingExtensionID = ext.String
 	c.PendingRelayText = relay.String
 	if deferred.Valid && deferred.String != "" && deferred.String != "null" {
-		var d DeferredApproval
-		if err := json.Unmarshal([]byte(deferred.String), &d); err != nil {
-			return c, fmt.Errorf("get conversation: decode deferred approval: %w", err)
+		if err := json.Unmarshal([]byte(deferred.String), &c.Deferred); err != nil {
+			return c, fmt.Errorf("get conversation: decode deferred approvals: %w", err)
 		}
-		c.DeferredApproval = &d
 	}
 	if choicesJSON != "" && choicesJSON != "null" {
 		if err := json.Unmarshal([]byte(choicesJSON), &c.PendingTaskChoices); err != nil {
@@ -288,20 +340,12 @@ func (s *PGStore) SaveConversation(ctx context.Context, c Conversation) error {
 	if c.TermsAcceptedAt != nil {
 		terms = *c.TermsAcceptedAt
 	}
-	var deferredJSON any // NULL when none
-	if c.DeferredApproval != nil {
-		b, err := json.Marshal(c.DeferredApproval)
-		if err != nil {
-			return fmt.Errorf("save conversation: encode deferred approval: %w", err)
-		}
-		deferredJSON = string(b)
-	}
 	_, err := s.DB.ExecContext(ctx, `
 		INSERT INTO channel_conversations
 		  (identity_id, state, pending_draft, pending_name, terms_accepted_at, pending_extension_id,
-		   pending_task_choices, pending_relay_text, deferred_approval, updated_at)
+		   pending_task_choices, pending_relay_text, updated_at)
 		VALUES ($1, $2, $3::jsonb, NULLIF($4, ''), $5, NULLIF($6, '')::uuid,
-		        NULLIF($7, '{}')::uuid[], NULLIF($8, ''), $9::jsonb, now())
+		        NULLIF($7, '{}')::uuid[], NULLIF($8, ''), now())
 		ON CONFLICT (identity_id) DO UPDATE SET
 		  state = EXCLUDED.state,
 		  pending_draft = EXCLUDED.pending_draft,
@@ -310,10 +354,9 @@ func (s *PGStore) SaveConversation(ctx context.Context, c Conversation) error {
 		  pending_extension_id = EXCLUDED.pending_extension_id,
 		  pending_task_choices = EXCLUDED.pending_task_choices,
 		  pending_relay_text = EXCLUDED.pending_relay_text,
-		  deferred_approval = EXCLUDED.deferred_approval,
 		  updated_at = now()
 	`, c.IdentityID, string(c.State), pending, c.PendingName, terms, c.PendingExtensionID,
-		pgUUIDArray(c.PendingTaskChoices), c.PendingRelayText, deferredJSON)
+		pgUUIDArray(c.PendingTaskChoices), c.PendingRelayText)
 	if err != nil {
 		return fmt.Errorf("save conversation: %w", err)
 	}
@@ -366,7 +409,7 @@ var (
 	// strictYesRE / strictNoRE: the explicit words. With a supporter writing
 	// in the last minutes only these answer a question of ours; the casual
 	// affirmatives in yesRE go to the supporter (D-17 I-P, version B).
-	strictYesRE = regexp.MustCompile(`(?i)^\s*(yes|y|是|sí|si|confirm|confirmed)[\s!.]*$`)
+	strictYesRE = regexp.MustCompile(`(?i)^\s*(yes|y|是|確認|sí|si|confirm|confirmed)[\s!.]*$`)
 	strictNoRE  = regexp.MustCompile(`(?i)^\s*(no|n|不要|取消|cancel|stop)[\s!.]*$`)
 	yesRE       = regexp.MustCompile(`(?i)^\s*(yes|y|yep|yeah|yup|yes please|ok|okay|confirm|confirmed|book it|book|do it|go ahead|sure|👍|✅|是|好|好的|確認|sí|si)[\s!.]*$`)
 	noRE        = regexp.MustCompile(`(?i)^\s*(no|n|nope|nah|cancel|stop|never ?mind|don'?t|不要|取消|不用)[\s!.]*$`)

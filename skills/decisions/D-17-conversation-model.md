@@ -158,20 +158,66 @@ structured composition (M3.2 R6); authorization in both directions.
 ## M3.2c — the Arbiter's amendments, built (2026-10-21/22)
 
 - **I-O, defer-don't-drop:** `NotifyStatus` holds an approval question the
-  thread cannot take (`channel_conversations.deferred_approval`, unshipped
-  migration + staging ALTER) and `resumeDeferred` sends and arms it at the
-  resume points — handoff release, after a booking completes (every
-  outcome that leaves `posting`) — if `Booker.ExtensionPending` says the
-  request is still the requester's to answer; otherwise it is dropped. A
-  resolution while held clears it. Tests: held during handoff → sent+armed
-  on release → NO resolves; expired → dropped silently; resolved elsewhere
-  → cleared; held while posting → follows the booking confirmation.
-- **I-P version B:** `IsStrictYesNo` (yes/y/no/n and translations,
+  thread cannot take, as a structured record in
+  `channel_conversations.deferred_approval` (a JSON array, oldest first;
+  unshipped migration + staging ALTER). The hold is written only by two
+  narrow, atomic store methods — `HoldApproval` (append-if-absent by
+  request id) and `RemoveHold` (drop by request id) — and
+  `SaveConversation` does not carry the column, so a booking's own
+  full-row saves cannot wipe a question that arrived while it was in
+  flight. `resumeDeferred` runs at every resume point — handoff release,
+  after every booking outcome, after an approval is answered (for the next
+  held one), and at the end of every inbound message when something is
+  held — and asks the oldest question that is still the person's to
+  answer, one at a time, recomposed from the record with the minutes that
+  remain (`TimeoutMinutes − elapsed`; dropped if none). "Still theirs to
+  answer" is decided at resume, not at hold time: the clock (lazy expiry —
+  the row may read `pending` after the window), `Booker.ExtensionPending`
+  (pending, same requester, task open, supporter still assigned), and the
+  identity's user. A resolution event no longer clears holds by task — that
+  would have dropped a second live request on the same task. The question
+  is sent, then removed (at-least-once: a crash between repeats it, never
+  loses it). On WhatsApp outside the 24h window it is kept for a later
+  resume point. A booker error keeps the hold. Tests: two holds during a
+  handoff → the first asked on release, the second after the answer;
+  resolved in the app → dropped silently, the live one asked; timed out by
+  the clock → dropped whatever the row says; minutes recomputed; booker
+  error keeps the hold; held through the real claim-and-post path → follows
+  the booking confirmation; PG round-trip (append, no-op repeat, remove,
+  full-row save leaves it alone); DB `ExtensionPending` (fresh / stale /
+  not the requester / resolved / supporter gone / task closed).
+- **I-P version B:** `IsStrictYesNo` (yes/y/是/確認/sí/confirm, no/n/不要/取消/
   cancel/stop). In any awaiting state, a casual affirmative (ok, sure, 👍,
   book it…) with a supporter line in the last 10 minutes on an active task
   is relayed to that supporter and answered "(Passed “ok” to Sam.) Still
   waiting on your YES or NO — book “Laundry pickup” for $27." (per-state
-  variants). The footers on relayed lines now say "send YES or NO on its
-  own; anything else, ok and sure included, goes to Sam". With no supporter
-  line in the last 10 minutes the regex is unchanged. Tests: booking,
-  approval, the 11-minute boundary.
+  variants, card setup included). A casual word swiped on one of our own
+  prompts is an answer to us (I-L wins). If the supporter-line lookup
+  fails, the word is not treated as an answer (fail closed — S-11/5). If
+  the relay itself fails, the person is told and the still-waiting line
+  follows. Footers on relayed lines: "send YES or NO on its own. A plain
+  ok/sure, or a sentence for Sam, goes to Sam." With no supporter line in
+  the last 10 minutes the regex is unchanged. Tests: booking, approval, the
+  11-minute boundary, prompt bubble, lookup failure, 確認.
+
+### M3.2c review log
+
+- **Round 1 (65fcfe5) — FAIL.** MAJOR ×4: the hold was a field in the
+  full-row upsert, so `claimAndPost`/`afterPost` saves wiped a question
+  that arrived while posting (the exact case I-O exists for);
+  `ExtensionPending` ignored lazy expiry and task/supporter state; a
+  single hold slot lost the second request; clearing by task on
+  resolution dropped other live requests on that task. MINOR: hold writes
+  not narrow/atomic; clear-then-send could lose a question; no resume
+  point after `awaiting_setup`; `casualToSupporter` failed open on a
+  lookup error and ignored the prompt bubble; 確認 missing from the strict
+  set; `awaiting_setup` had no still-waiting copy; footer overstated
+  ("anything else"); stored text went stale ("within 5 minutes" with
+  `AtUnix` unused); WhatsApp window bypassed at resume; `d.UserID`
+  unchecked; tests did not go through the real posting path. Verifier:
+  only C-1/C-2 red. All fixed as described above (the hold is now a list
+  of structured records written by `HoldApproval`/`RemoveHold`; minutes
+  recomputed; generic resume point; send-then-remove; fail-closed gate).
+  Verify also surfaced a gitleaks hit on main's placeholder Stripe key in
+  `payments_phase3_test.go` (0bf9d39): a false positive, allowlisted by
+  fingerprint in `.gitleaksignore` with a note.

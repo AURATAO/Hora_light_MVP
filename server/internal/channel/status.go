@@ -200,9 +200,14 @@ func (r *Router) NotifyStatus(ctx context.Context, userID string, ev StatusEvent
 		}
 		if !canArmApproval(conv.State) {
 			// Held, not dropped (D-17 I-O): sent and armed as soon as the
-			// thread can take it, if the request is still pending then.
-			conv.DeferredApproval = &DeferredApproval{UserID: userID, TaskID: ev.TaskID, ExtensionID: ev.ExtensionID, Text: text, AtUnix: r.now().Unix()}
-			if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+			// thread can take it, if the request is still the person's to
+			// answer then. Appended narrowly; one hold per request.
+			d := DeferredApproval{UserID: userID, TaskID: ev.TaskID, TaskTitle: ev.TaskTitle, SupporterName: ev.SupporterName,
+				ExtensionID: ev.ExtensionID, Type: ev.Type, TimeoutMinutes: ev.ApprovalMinutes, AtUnix: r.now().Unix()}
+			if ev.Approval != nil {
+				d.Approval = *ev.Approval
+			}
+			if err := r.Conversations.HoldApproval(ctx, t.Identity.ID, d); err != nil {
 				return fmt.Errorf("NotifyStatus: %w", err)
 			}
 			log.Printf("[channel] approval ext=%s deferred: conversation in state %s", ev.ExtensionID, conv.State)
@@ -210,9 +215,9 @@ func (r *Router) NotifyStatus(ctx context.Context, userID string, ev StatusEvent
 		}
 	}
 	if ev.Type == evResolved {
-		if err := r.clearDeferred(ctx, t.Identity.ID, ev.TaskID); err != nil {
-			return fmt.Errorf("NotifyStatus: %w", err)
-		}
+		// A held question is not cleared here: the resolution names only
+		// the task, and another request on it may still be live. Every
+		// hold is re-checked against the request when it is resumed.
 		if err := r.clearApproval(ctx, t.Identity.ID); err != nil {
 			return fmt.Errorf("NotifyStatus: %w", err)
 		}

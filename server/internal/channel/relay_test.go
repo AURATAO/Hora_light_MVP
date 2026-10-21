@@ -44,6 +44,7 @@ type fakeTasks struct {
 	lastTask     string
 	lastAt       time.Time
 	lastAnswered bool
+	lastErr      error
 }
 
 func (f *fakeTasks) TaskForProviderMessage(_ context.Context, _ Channel, _, id string) (string, bool, bool, error) {
@@ -54,6 +55,9 @@ func (f *fakeTasks) TaskForProviderMessage(_ context.Context, _ Channel, _, id s
 	return tid, f.relay[id], known, nil
 }
 func (f *fakeTasks) LastRelayed(_ context.Context, _ Channel, _ string, since time.Time, exclude string) (Relayed, error) {
+	if f.lastErr != nil {
+		return Relayed{}, f.lastErr
+	}
 	if f.lastText == "" || f.lastAt.Before(since) {
 		return Relayed{}, nil
 	}

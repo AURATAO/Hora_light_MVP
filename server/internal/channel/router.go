@@ -213,6 +213,16 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 			return err
 		}
 	}
+	err = r.handleState(ctx, in, id, conv, text)
+	if err == nil && len(conv.Deferred) > 0 {
+		// A question held while the thread could not take it follows the
+		// reply that moved the thread on (I-O). Re-read inside.
+		r.resumeDeferred(ctx, id)
+	}
+	return err
+}
+
+func (r *Router) handleState(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
 	switch conv.State {
 	case StateAwaitingName:
 		return r.onName(ctx, in, id, conv, text)

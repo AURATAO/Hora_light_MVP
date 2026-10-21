@@ -188,3 +188,54 @@ func TestRelayChatMessageToRequesterUsesRoomAndSender(t *testing.T) {
 }
 
 var _ channel.TaskChat = (*talkjsRelay)(nil)
+
+// M3.2c: a held approval is only resumed while the request is still the
+// person's to answer — pending, inside the app's auto-decline window (expiry
+// is lazy, so the clock is checked here), on an open task that still has
+// that supporter.
+func TestExtensionPendingChecksAgeTaskAndSupporter(t *testing.T) {
+	setupLiveDB(t)
+	w := seedLiveWorld(t)
+	ctx := context.Background()
+	b := &chatBooker{sqlDB: sqldb}
+	seed := func(kind, age string) string { // one pending per kind per task
+		var id string
+		if err := db.QueryRow(ctx, `
+			insert into public.extension_requests (task_id, supporter_id, kind, requested_minutes, requested_cents, fallback, status, created_at)
+			values ($1::uuid, $2::uuid, $3,
+			        case when $3 = 'time' then 15 end, case when $3 = 'budget' then 800 end, case when $3 = 'budget' then 'skip_item' end,
+			        'pending', now() - $4::interval) returning id::text`,
+			w.taskID, w.supporterID, kind, age).Scan(&id); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		return id
+	}
+	fresh, stale := seed("time", "1 minute"), seed("budget", "6 minutes")
+	check := func(ext string, want bool, why string) {
+		t.Helper()
+		got, err := b.ExtensionPending(ctx, w.requesterID, ext)
+		if err != nil || got != want {
+			t.Fatalf("%s: got %v want %v (%v)", why, got, want, err)
+		}
+	}
+	check(fresh, true, "fresh pending request")
+	check(stale, false, "older than the auto-decline window, still 'pending' in the row")
+	if _, err := b.ExtensionPending(ctx, w.supporterID, fresh); err != nil {
+		t.Fatal(err)
+	} else if got, _ := b.ExtensionPending(ctx, w.supporterID, fresh); got {
+		t.Fatal("not the supporter's to answer")
+	}
+	if _, err := db.Exec(ctx, `update public.extension_requests set status = 'approved', resolved_at = now() where id = $1::uuid`, fresh); err != nil {
+		t.Fatal(err)
+	}
+	check(fresh, false, "resolved in the app")
+	other := seed("time", "1 minute")
+	if _, err := db.Exec(ctx, `update public.tasks set assigned_to_id = null, assigned_to = '' where id = $1::uuid`, w.taskID); err != nil {
+		t.Fatal(err)
+	}
+	check(other, false, "supporter no longer on the task")
+	if _, err := db.Exec(ctx, `update public.tasks set assigned_to_id = $2::uuid, assigned_to = $3, status = 'cancelled' where id = $1::uuid`, w.taskID, w.supporterID, w.supporterEmail); err != nil {
+		t.Fatal(err)
+	}
+	check(other, false, "task closed")
+}

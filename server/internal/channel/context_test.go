@@ -570,67 +570,95 @@ func TestCasualAffirmativeGoesToTheSupporterWhoJustWrote(t *testing.T) {
 }
 
 // I-O: an approval that arrives during a handoff is held, then sent and
-// armed when ops release the thread — if still pending; dropped otherwise.
+// armed when ops release the thread — if still the person's to answer;
+// dropped otherwise. Two holds are asked one at a time, oldest first.
 func TestDeferredApprovalIsSentWhenTheThreadCanTakeIt(t *testing.T) {
-	g, _, _, _ := contextRig(llm.IntentNewTask, bagelT)
-	g.r.Ops, g.r.Thread = &memOps{}, &memThread{st: g.st}
-	g.say(t, "I want to talk to a human")
-	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
 	ev := StatusEvent{Type: evBudgetRequested, TaskID: "task-2", TaskTitle: "Bagel run", SupporterName: "Sam",
 		ExtensionID: "ext-9", ApprovalMinutes: 5, Approval: &PendingApproval{ID: "ext-9", Kind: "budget", Cents: 1000}}
-	sent := len(g.ad.sent)
-	if err := g.r.NotifyStatus(context.Background(), "user-1", ev); err != nil {
-		t.Fatal(err)
+	ev2 := StatusEvent{Type: evTimeRequested, TaskID: "task-2", TaskTitle: "Bagel run", SupporterName: "Sam",
+		ExtensionID: "ext-10", ApprovalMinutes: 5, Approval: &PendingApproval{ID: "ext-10", Kind: "time", Minutes: 15}}
+	held := func(t *testing.T) (*rig, int) {
+		t.Helper()
+		g, _, _, _ := contextRig(llm.IntentNewTask, bagelT)
+		g.r.Ops, g.r.Thread = &memOps{}, &memThread{st: g.st}
+		g.say(t, "I want to talk to a human")
+		g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
+		sent := len(g.ad.sent)
+		for _, e := range []StatusEvent{ev, ev, ev2} { // the repeat must not double the hold
+			if err := g.r.NotifyStatus(context.Background(), "user-1", e); err != nil {
+				t.Fatal(err)
+			}
+		}
+		c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+		if len(g.ad.sent) != sent || len(c.Deferred) != 2 || c.Deferred[0].ExtensionID != "ext-9" || c.Deferred[1].ExtensionID != "ext-10" || c.State != StateHandoff {
+			t.Fatalf("must be held, not sent: sent %d conv %+v", len(g.ad.sent)-sent, c)
+		}
+		return g, sent
 	}
-	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
-	if len(g.ad.sent) != sent || c.DeferredApproval == nil || c.DeferredApproval.ExtensionID != "ext-9" || c.State != StateHandoff {
-		t.Fatalf("must be held, not sent: sent %d conv %+v", len(g.ad.sent)-sent, c)
+	release := func(t *testing.T, g *rig) Conversation {
+		t.Helper()
+		if err := g.r.Release(context.Background(), Identity{ID: "id-" + me, UserID: "user-1", Channel: IMessage, Address: me}); err != nil {
+			t.Fatal(err)
+		}
+		c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+		return c
 	}
-	// Released while still pending: sent and armed.
-	g.booker.pendingExt = map[string]bool{"ext-9": true}
-	if err := g.r.Release(context.Background(), Identity{ID: "id-" + me, UserID: "user-1", Channel: IMessage, Address: me}); err != nil {
-		t.Fatal(err)
-	}
-	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
-	if c.State != StateAwaitingApproval || c.PendingExtensionID != "ext-9" || c.DeferredApproval != nil || !strings.Contains(g.ad.last(), "Sam is asking for $10 more") {
+
+	// Released while both still pending: the first is sent and armed, the
+	// second follows the answer.
+	g, _ := held(t)
+	g.booker.pendingExt = map[string]bool{"ext-9": true, "ext-10": true}
+	c := release(t, g)
+	if c.State != StateAwaitingApproval || c.PendingExtensionID != "ext-9" || len(c.Deferred) != 1 || !strings.Contains(g.ad.last(), "Sam is asking for $10 more") {
 		t.Fatalf("conv %+v last %q", c, g.ad.last())
 	}
 	g.say(t, "NO")
-	if len(g.booker.resolved) != 1 || !strings.HasSuffix(g.booker.resolved[0], ":ext-9:false") {
+	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
+	if len(g.booker.resolved) != 1 || !strings.HasSuffix(g.booker.resolved[0], ":ext-9:false") ||
+		c.State != StateAwaitingApproval || c.PendingExtensionID != "ext-10" || len(c.Deferred) != 0 || !strings.Contains(g.ad.last(), "15 more minutes") {
+		t.Fatalf("resolved %v conv %+v last %q", g.booker.resolved, c, g.ad.last())
+	}
+	g.say(t, "YES")
+	if len(g.booker.resolved) != 2 || !strings.HasSuffix(g.booker.resolved[1], ":ext-10:true") {
 		t.Fatalf("resolved %v", g.booker.resolved)
 	}
 
-	// Expired before release: dropped without a message.
-	g, _, _, _ = contextRig(llm.IntentNewTask, bagelT)
-	g.r.Ops, g.r.Thread = &memOps{}, &memThread{st: g.st}
-	g.say(t, "I want to talk to a human")
-	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
-	if err := g.r.NotifyStatus(context.Background(), "user-1", ev); err != nil {
-		t.Fatal(err)
-	}
-	g.booker.pendingExt = map[string]bool{} // expired
-	if err := g.r.Release(context.Background(), Identity{ID: "id-" + me, UserID: "user-1", Channel: IMessage, Address: me}); err != nil {
-		t.Fatal(err)
-	}
-	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
-	if c.State != StateIdle || c.DeferredApproval != nil || strings.Contains(g.ad.last(), "asking for") {
+	// Resolved or expired in the app before release: dropped silently; the
+	// one still live is asked.
+	g, _ = held(t)
+	g.booker.pendingExt = map[string]bool{"ext-10": true}
+	c = release(t, g)
+	if c.State != StateAwaitingApproval || c.PendingExtensionID != "ext-10" || len(c.Deferred) != 0 || strings.Contains(g.ad.last(), "$10") {
 		t.Fatalf("conv %+v last %q", c, g.ad.last())
 	}
 
-	// Resolved elsewhere while held: the hold is cleared.
-	g, _, _, _ = contextRig(llm.IntentNewTask, bagelT)
-	g.r.Ops, g.r.Thread = &memOps{}, &memThread{st: g.st}
-	g.say(t, "I want to talk to a human")
-	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
-	if err := g.r.NotifyStatus(context.Background(), "user-1", ev); err != nil {
-		t.Fatal(err)
+	// Timed out by the clock while held (lazy expiry: the row may still
+	// read pending): dropped without asking, whatever the booker says.
+	g, _ = held(t)
+	g.booker.pendingExt = map[string]bool{"ext-9": true, "ext-10": true}
+	base := time.Now()
+	g.r.Now = func() time.Time { return base.Add(6 * time.Minute) }
+	c = release(t, g)
+	if c.State != StateIdle || len(c.Deferred) != 0 || strings.Contains(g.ad.last(), "asking") {
+		t.Fatalf("conv %+v last %q", c, g.ad.last())
 	}
-	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: evResolved, TaskID: "task-2"}); err != nil {
-		t.Fatal(err)
+
+	// Time left is recomputed: asked with the minutes that remain.
+	g, _ = held(t)
+	g.booker.pendingExt = map[string]bool{"ext-9": true}
+	base = time.Now()
+	g.r.Now = func() time.Time { return base.Add(3 * time.Minute) }
+	c = release(t, g)
+	if c.State != StateAwaitingApproval || !strings.Contains(g.ad.last(), "2 minutes") || strings.Contains(g.ad.last(), "5 minutes") {
+		t.Fatalf("conv %+v last %q", c, g.ad.last())
 	}
-	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
-	if c.DeferredApproval != nil {
-		t.Fatalf("resolved request must clear the hold: %+v", c)
+
+	// A booker error keeps the hold for the next resume point.
+	g, _ = held(t)
+	g.booker.pendingErr = errors.New("db down")
+	c = release(t, g)
+	if c.State != StateIdle || len(c.Deferred) != 2 {
+		t.Fatalf("conv %+v", c)
 	}
 }
 
@@ -639,31 +667,69 @@ func TestDeferredApprovalIsSentWhenTheThreadCanTakeIt(t *testing.T) {
 func TestDeferredApprovalFollowsTheBooking(t *testing.T) {
 	g, _, _, _ := contextRig(llm.IntentNewTask, bagelT)
 	g.say(t, "new task: pick up my laundry tomorrow at 3")
-	// Park the thread in "posting" by hand and let a request arrive.
-	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
-	c.State = StatePosting
-	if err := g.convs.SaveConversation(context.Background(), c); err != nil {
-		t.Fatal(err)
-	}
+	// The request arrives while the booking is in flight — through the real
+	// claim-and-post path, whose full-row saves must not wipe the hold.
 	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
 	ev := StatusEvent{Type: evTimeRequested, TaskID: "task-2", TaskTitle: "Bagel run", SupporterName: "Sam",
 		ExtensionID: "ext-4", ApprovalMinutes: 5, Approval: &PendingApproval{ID: "ext-4", Kind: "time", Minutes: 15}}
-	if err := g.r.NotifyStatus(context.Background(), "user-1", ev); err != nil {
-		t.Fatal(err)
-	}
-	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
-	if c.DeferredApproval == nil {
-		t.Fatal("must be held while posting")
-	}
-	// The booking completes.
-	c.State = StateAwaitingConfirm
-	if err := g.convs.SaveConversation(context.Background(), c); err != nil {
-		t.Fatal(err)
-	}
 	g.booker.pendingExt = map[string]bool{"ext-4": true}
+	g.booker.during = func() {
+		if err := g.r.NotifyStatus(context.Background(), "user-1", ev); err != nil {
+			t.Fatal(err)
+		}
+		c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+		if c.State != StatePosting || len(c.Deferred) != 1 {
+			t.Fatalf("must be held while posting: %+v", c)
+		}
+	}
 	g.say(t, "YES")
-	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
-	if g.booker.posts != 1 || c.State != StateAwaitingApproval || c.PendingExtensionID != "ext-4" || !strings.Contains(g.ad.last(), "15 more minutes") {
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if g.booker.posts != 1 || c.State != StateAwaitingApproval || c.PendingExtensionID != "ext-4" || len(c.Deferred) != 0 || !strings.Contains(g.ad.last(), "15 more minutes") {
 		t.Fatalf("booked %d conv %+v last %q", g.booker.posts, c, g.ad.last())
+	}
+	if n := len(g.ad.sent); !strings.Contains(g.ad.sent[n-2].Text, "Booked") && !strings.Contains(g.ad.sent[n-2].Text, "Posted") {
+		t.Fatalf("the question follows the booking, not the other way: %q", g.ad.sent[n-2].Text)
+	}
+}
+
+// I-P edges: a casual "ok" swiped on our own prompt answers us (I-L wins);
+// a lookup failure must not let the word answer us by accident; 確認 is a
+// strict YES.
+func TestCasualAffirmativeGateEdges(t *testing.T) {
+	// Swiped on the approval prompt: an answer, even with a fresh question.
+	g, chat, tasks, _ := contextRig(llm.IntentToSupporter, bagelT)
+	if err := g.r.askApproval(context.Background(), "id-"+me, "ext-2"); err != nil {
+		t.Fatal(err)
+	}
+	tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: ok if I take 15 more?", "task-2", time.Now().Add(-time.Minute)
+	tasks.byMsg["prompt-1"] = "task-2"
+	in := Inbound{Channel: IMessage, ProviderMessageID: "ok1", From: me, Text: "ok", ReplyToProviderID: "prompt-1", ReceivedAt: time.Now()}
+	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if len(chat.posted) != 0 || len(g.booker.resolved) != 1 {
+		t.Fatalf("posted %v resolved %v", chat.posted, g.booker.resolved)
+	}
+
+	// The lookup fails: fail closed — nothing is approved, nothing posted.
+	g, chat, tasks, _ = contextRig(llm.IntentToSupporter, bagelT)
+	if err := g.r.askApproval(context.Background(), "id-"+me, "ext-2"); err != nil {
+		t.Fatal(err)
+	}
+	tasks.lastErr = errors.New("db down")
+	in = Inbound{Channel: IMessage, ProviderMessageID: "ok2", From: me, Text: "ok", ReceivedAt: time.Now()}
+	if err := g.r.HandleInbound(context.Background(), in); err == nil || len(chat.posted) != 0 || len(g.booker.resolved) != 0 {
+		t.Fatalf("err %v posted %v resolved %v", err, chat.posted, g.booker.resolved)
+	}
+
+	// 確認 is strict: approves even with the supporter's question open.
+	g, chat, tasks, _ = contextRig(llm.IntentToSupporter, bagelT)
+	if err := g.r.askApproval(context.Background(), "id-"+me, "ext-2"); err != nil {
+		t.Fatal(err)
+	}
+	tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: ok if I take 15 more?", "task-2", time.Now().Add(-time.Minute)
+	g.say(t, "確認")
+	if len(chat.posted) != 0 || len(g.booker.resolved) != 1 || !strings.HasSuffix(g.booker.resolved[0], ":ext-2:true") {
+		t.Fatalf("posted %v resolved %v", chat.posted, g.booker.resolved)
 	}
 }

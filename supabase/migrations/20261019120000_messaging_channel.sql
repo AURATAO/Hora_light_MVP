@@ -149,10 +149,11 @@ CREATE TABLE IF NOT EXISTS public.channel_conversations (
   -- The message held while asking which task it is for (M3.2), relayed on
   -- the pick. Message text, like pending_draft; purged with the identity.
   pending_relay_text     text,
-  -- An approval question the thread could not take when it arrived
-  -- (handoff, booking in flight, card setup) — sent and armed as soon as it
-  -- can be, if the request is still pending (D-17 I-O). {task_id,
-  -- extension_id, text, user_id}; purged with the identity.
+  -- Approval questions the thread could not take when they arrived
+  -- (handoff, booking in flight, card setup) — a JSON array, oldest first,
+  -- each sent and armed as soon as it can be if the request is still the
+  -- person's to answer (D-17 I-O). Written only by HoldApproval/RemoveHold, never by
+  -- the full-row save. Purged with the identity.
   deferred_approval      jsonb,
   -- Last message FROM the person. WhatsApp free-form replies are allowed for
   -- 24h after this; later messages need an approved template.

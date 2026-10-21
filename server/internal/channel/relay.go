@@ -933,17 +933,26 @@ func supporterByName(active []ActiveTask, name string) (ActiveTask, bool) {
 // lastSupporterLine: the supporter's most recent relayed message on this
 // thread within the window, with its task and time.
 func (r *Router) lastSupporterLine(ctx context.Context, in Inbound, id Identity) (text, taskID string, at time.Time, answered bool) {
+	text, taskID, at, answered, err := r.lastSupporterLineErr(ctx, in, id)
+	if err != nil {
+		log.Printf("[channel] last relayed identity=%s: %v", id.ID, err)
+	}
+	return text, taskID, at, answered
+}
+
+// lastSupporterLineErr is lastSupporterLine with the lookup error, for the
+// one caller where a miss must fail closed (I-P).
+func (r *Router) lastSupporterLineErr(ctx context.Context, in Inbound, id Identity) (text, taskID string, at time.Time, answered bool, err error) {
 	if r.Tasks == nil {
-		return "", "", time.Time{}, false
+		return "", "", time.Time{}, false, nil
 	}
 	since := r.now().Add(-supporterContextWindow)
 	rl, err := r.Tasks.LastRelayed(ctx, in.Channel, in.From, since, in.ProviderMessageID)
 	if err != nil {
-		log.Printf("[channel] last relayed identity=%s: %v", id.ID, err)
-		return "", "", time.Time{}, false
+		return "", "", time.Time{}, false, fmt.Errorf("last relayed: %w", err)
 	}
 	if !rl.OK {
-		return "", "", time.Time{}, false
+		return "", "", time.Time{}, false, nil
 	}
 	text, taskID, at, answered = rl.Text, rl.TaskID, rl.At, rl.Answered
 	// The stored line is "Maya · Task: words[\n\n(footer)]"; hand the model
@@ -954,7 +963,7 @@ func (r *Router) lastSupporterLine(ctx context.Context, in Inbound, id Identity)
 	if i := strings.Index(text, "\n\n("); i >= 0 {
 		text = text[:i]
 	}
-	return strings.TrimSpace(text), taskID, at, answered
+	return strings.TrimSpace(text), taskID, at, answered, nil
 }
 
 // classifyActive labels a message with the context classifier (or, without
@@ -988,7 +997,16 @@ func (r *Router) casualToSupporter(ctx context.Context, in Inbound, id Identity,
 	if r.Chat == nil || !id.Linked() {
 		return false, nil
 	}
-	last, lastTask, lastAt, _ := r.lastSupporterLine(ctx, in, id)
+	// A reply swiped on one of our own prompts is an answer to us (I-L).
+	if kind, _, err := r.bubble(ctx, in, id); err != nil {
+		return true, err
+	} else if kind == bubblePrompt {
+		return false, nil
+	}
+	last, lastTask, lastAt, _, err := r.lastSupporterLineErr(ctx, in, id)
+	if err != nil {
+		return true, err // fail closed: the word must not answer us by accident
+	}
 	if last == "" || r.now().Sub(lastAt) > supporterQuestionWindow {
 		return false, nil
 	}
@@ -1001,8 +1019,12 @@ func (r *Router) casualToSupporter(ctx context.Context, in Inbound, id Identity,
 		return false, nil
 	}
 	sent, err := r.relaySent(ctx, in, id, t.ID, text)
-	if err != nil || !sent {
+	if err != nil {
 		return true, err
+	}
+	if !sent {
+		// Told it failed; the question still waits.
+		return true, r.Reply(ctx, in, stillWaiting(conv), "")
 	}
 	who := firstNonEmpty(DisplayName(FirstName(t.SupporterName)), "your supporter")
 	return true, r.Reply(ctx, in, fmt.Sprintf(CopyPassedOn, strings.TrimSpace(text), who)+" "+stillWaiting(conv), "")
@@ -1021,6 +1043,8 @@ func stillWaiting(conv Conversation) string {
 		return CopyStillWaitingBudget
 	case StateAwaitingName:
 		return CopyStillWaitingName
+	case StateAwaitingSetup:
+		return CopyStillWaitingSetup
 	}
 	return CopyStillWaitingGeneric
 }

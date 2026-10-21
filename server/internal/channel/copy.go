@@ -38,10 +38,10 @@ const (
 	// Footers while a question of ours is open. WhatsApp: a reply to the
 	// bubble is reliable context (I-L). iMessage: it is not (D-17 P5), so
 	// the person just writes.
-	CopyRelayWhileConfirm    = "(To answer %[3]s, reply to this message or just write. To answer me — book “%[1]s” for %[2]s — send YES or NO on its own; anything else, ok and sure included, goes to %[3]s.)"
-	CopyRelayWhileApproval   = "(To answer %[1]s, reply to this message or just write. To answer me about %[1]s’s request, send YES or NO on its own; anything else, ok and sure included, goes to %[1]s.)"
-	CopyRelayWhileConfirmIM  = "(To answer %[3]s, just write. To answer me — book “%[1]s” for %[2]s — send YES or NO on its own; anything else, ok and sure included, goes to %[3]s.)"
-	CopyRelayWhileApprovalIM = "(To answer %[1]s, just write. To answer me about %[1]s’s request, send YES or NO on its own; anything else, ok and sure included, goes to %[1]s.)"
+	CopyRelayWhileConfirm    = "(To answer %[3]s, reply to this message or just write. To answer me — book “%[1]s” for %[2]s — send YES or NO on its own. A plain ok/sure, or a sentence for %[3]s, goes to %[3]s.)"
+	CopyRelayWhileApproval   = "(To answer %[1]s, reply to this message or just write. To answer me about %[1]s’s request, send YES or NO on its own. A plain ok/sure, or a sentence for %[1]s, goes to %[1]s.)"
+	CopyRelayWhileConfirmIM  = "(To answer %[3]s, just write. To answer me — book “%[1]s” for %[2]s — send YES or NO on its own. A plain ok/sure, or a sentence for %[3]s, goes to %[3]s.)"
+	CopyRelayWhileApprovalIM = "(To answer %[1]s, just write. To answer me about %[1]s’s request, send YES or NO on its own. A plain ok/sure, or a sentence for %[1]s, goes to %[1]s.)"
 	CopyRelayWhileBudgetIM   = "(To answer %[1]s, just write your reply. An amount sent on its own answers my question above about the shopping budget.)"
 	CopyDraftWhileActive     = "Booking this as a new errand. If it was for your supporter instead, reply %s."
 	CopyRelayedDraftDropped  = "Passed that on to %s. The new errand is dropped."
@@ -57,6 +57,7 @@ const (
 	CopyStillWaitingApproval      = "Still waiting on your YES or NO to your supporter’s request."
 	CopyStillWaitingBudget        = "Still waiting on the shopping budget — an amount, or “nothing”."
 	CopyStillWaitingName          = "Still waiting on your first name."
+	CopyStillWaitingSetup         = "To book, finish the card setup link above."
 	CopyStillWaitingGeneric       = "Still waiting on your answer above."
 	CopyWhichSupporterMidQuestion = "Which supporter is that for? Start with their name — %s."
 	CopyHoldGone                  = "Your supporter has finished, so I couldn't pass that on. Tell me if you need something new."

@@ -238,12 +238,17 @@ func (b *chatBooker) NeedsPurchase(ctx context.Context, text string) (bool, erro
 // is theirs to answer.
 func (b *chatBooker) ExtensionPending(ctx context.Context, userID, extensionID string) (bool, error) {
 	var pending bool
+	// Expiry is lazy in this codebase (a request reads 'pending' until the
+	// supporter's screen or the sweep expires it), so the clock is checked
+	// here too; and the task must still be open with that supporter.
 	err := b.sqlDB.QueryRowContext(ctx, `
 		SELECT EXISTS (
 		  SELECT 1 FROM public.extension_requests e
 		    JOIN public.tasks t ON t.id = e.task_id
-		   WHERE e.id = $1::uuid AND e.status = $2 AND t.requester_id = $3::uuid)`,
-		extensionID, extensionStatusPending, userID).Scan(&pending)
+		   WHERE e.id = $1::uuid AND e.status = $2 AND t.requester_id = $3::uuid
+		     AND t.status = 'open' AND t.assigned_to_id = e.supporter_id
+		     AND e.created_at > now() - make_interval(mins => $4))`,
+		extensionID, extensionStatusPending, userID, Billing.ApprovalTimeoutMinutes).Scan(&pending)
 	if err != nil {
 		return false, fmt.Errorf("extension pending: %w", err)
 	}
