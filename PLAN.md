@@ -133,7 +133,7 @@ reasoning on by default — measure latency with it on and off.
 | M0 | Oct 19 | PLAN.md; `channel` package skeleton; adapter interface; migration file (not applied) | ✅ see §15 |
 | M1 | Oct 20–22 | Sendblue inbound/outbound in sandbox; identity + setup page; dedupe | ✅ help-first flow booked a real task from an iPhone, Oct 20 — §15 |
 | M2 | Oct 23–25 | Draft → YES → hold → task; status updates via `notify.Create` hook | ✅ Oct 20 — booking + accepted/clock in/out/done all seen on an iPhone (staging, payments off) |
-| M3 | Oct 26–28 | Approvals YES/NO; chat relay; multi-task; ops handoff | 🟡 approvals ✅ reviewed; multi-task + handoff built Oct 21, review PASS (round 3); chat relay next (needs TalkJS staging keys — set) |
+| M3 | Oct 26–28 | Approvals YES/NO; chat relay; multi-task; ops handoff | 🟡 approvals ✅, multi-task ✅, handoff ✅, budget + auto-extend consent ✅ (all reviewed, Oct 21); **chat relay (M3.2) next** — TalkJS staging keys set |
 | M4 | Oct 29–31 | WhatsApp adapter on Meta test number; eval run; real-card E2E on both channels; demo | |
 
 ## 11. External dependencies (owner: Aura)
@@ -415,7 +415,7 @@ money follows the *budget*, and the chat never asks for one (M2 known gap).
 Decision (CTO view): NO universal reimbursement — the requester must agree
 to a ceiling before money moves (money rule); the budget IS that consent.
 Fix in two layers:
-1. **Chat (M3.5, now):** after parsing, a second rule+model check "will the
+1. **Chat (M3.5, done 2026-10-21, review PASS round 2):** after parsing, a second rule+model check "will the
    supporter have to pay for something?" (purchase words, food/items, shops;
    model as tiebreak). If yes and no amount was given → ask in chat "Will
    your supporter be buying this? About how much should I set aside?" →
