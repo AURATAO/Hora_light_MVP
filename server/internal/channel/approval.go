@@ -98,6 +98,9 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 	if conv.Pending != nil {
 		// Back to the request they were confirming.
 		reply += "\n\n" + CopyBackToDraft + "\n" + r.Summary(conv.Pending)
+	} else if conv.State == StateAwaitingTaskChoice {
+		// Back to the message they were about to send a supporter.
+		reply += "\n\n" + CopyBackToHold + "\n" + r.taskList(ctx, id, conv.PendingTaskChoices)
 	}
 	return r.Reply(ctx, in, reply, res.TaskID)
 }
@@ -111,7 +114,9 @@ func (r *Router) askApproval(ctx context.Context, identityID, extensionID string
 		return fmt.Errorf("askApproval: %w", err)
 	}
 	switch conv.State {
-	case StateIdle, StateAwaitingConfirm, StateAwaitingApproval:
+	case StateIdle, StateAwaitingConfirm, StateAwaitingApproval, StateAwaitingTaskChoice:
+		// A held relay message (awaiting_task_choice) survives underneath,
+		// like a draft: ResumeState brings it back and the answer reminds.
 		conv.State = StateAwaitingApproval
 		conv.PendingExtensionID = extensionID
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {

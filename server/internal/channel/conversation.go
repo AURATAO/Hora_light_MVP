@@ -134,6 +134,9 @@ func (c Conversation) ResumeState() State {
 	if c.Pending != nil {
 		return StateAwaitingConfirm
 	}
+	if len(c.PendingTaskChoices) > 0 {
+		return StateAwaitingTaskChoice
+	}
 	return StateIdle
 }
 

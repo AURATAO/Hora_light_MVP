@@ -180,3 +180,11 @@ COMMENT ON TABLE public.channel_setup_tokens IS
   'Single-use, 30-minute setup links sent over the messaging channel; stored hashed. Go only. RLS deny-all, zero policies (S-10).';
 
 NOTIFY pgrst, 'reload schema';
+
+-- Columns added to channel_conversations while this migration was still
+-- unshipped (M3.1–M3.5, M3.2). CREATE TABLE IF NOT EXISTS above is a no-op
+-- where the table already exists (a staging branch, a local database), so
+-- they are added here as well, idempotently.
+ALTER TABLE public.channel_conversations
+  ADD COLUMN IF NOT EXISTS pending_task_choices uuid[],
+  ADD COLUMN IF NOT EXISTS pending_relay_text   text;

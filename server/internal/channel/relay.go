@@ -2,11 +2,13 @@ package channel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"hora-auth/internal/channel/llm"
 )
@@ -40,8 +42,19 @@ type TaskChat interface {
 	// ActiveTasks lists the requester's tasks with a supporter, newest first.
 	ActiveTasks(ctx context.Context, userID string) ([]ActiveTask, error)
 	// PostAsRequester puts text into the task's chat room as the requester.
-	PostAsRequester(ctx context.Context, taskID, userID, text string) error
+	// key is the inbound provider message id, for at-most-once delivery
+	// across the recovery sweep. ErrTaskNotActive (wrapped) when the task
+	// is no longer open with a supporter, or is not the sender's.
+	PostAsRequester(ctx context.Context, taskID, userID, text, key string) error
 }
+
+// ErrTaskNotActive: the task can no longer take a message (finished,
+// cancelled, no supporter, blocked, or not the sender's).
+var ErrTaskNotActive = errors.New("task not active")
+
+// relayTextCap bounds what is sent on (WhatsApp rejects >4096; a hold that
+// keeps growing must not become undeliverable).
+const relayTextCap = 1500
 
 // TaskLookup resolves which task one of our earlier messages was about, for
 // inline replies (Sendblue reply_to, WhatsApp context).
@@ -80,7 +93,22 @@ func (r *Router) inlineTarget(ctx context.Context, in Inbound, id Identity) stri
 		log.Printf("[channel] inline target identity=%s: %v", id.ID, err)
 		return ""
 	}
-	return tid
+	if tid == "" {
+		return ""
+	}
+	// Only an active task: a reply to "Maya finished!" routes like any
+	// other message instead of hitting a dead end.
+	active, err := r.Chat.ActiveTasks(ctx, id.UserID)
+	if err != nil {
+		log.Printf("[channel] inline target identity=%s: %v", id.ID, err)
+		return ""
+	}
+	for _, t := range active {
+		if t.ID == tid {
+			return tid
+		}
+	}
+	return ""
 }
 
 // relayOr sends a non-errand message from a linked requester to their
@@ -108,12 +136,48 @@ func (r *Router) relayOr(ctx context.Context, in Inbound, id Identity, conv Conv
 // about. The requester gets no echo: their own message is already on their
 // screen.
 func (r *Router) relay(ctx context.Context, in Inbound, id Identity, taskID, text string) error {
-	if err := r.Chat.PostAsRequester(ctx, taskID, id.UserID, text); err != nil {
+	if err := r.Chat.PostAsRequester(ctx, taskID, id.UserID, capText(text), in.ProviderMessageID); err != nil {
 		log.Printf("[channel] relay identity=%s task=%s: %v", id.ID, taskID, err)
+		if errors.Is(err, ErrTaskNotActive) {
+			return r.Reply(ctx, in, CopyRelayGone, "")
+		}
 		return r.Reply(ctx, in, CopyRelayFailed, taskID)
 	}
 	r.noteRelayed(ctx, in, id, taskID, text)
 	return nil
+}
+
+func capText(s string) string {
+	if len(s) <= relayTextCap {
+		return s
+	}
+	cut := relayTextCap
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
+}
+
+// taskList renders the numbered list for the held ids (titles looked up
+// fresh; an id no longer active is listed as finished).
+func (r *Router) taskList(ctx context.Context, id Identity, ids []string) string {
+	titles := map[string]string{}
+	if r.Chat != nil {
+		if active, err := r.Chat.ActiveTasks(ctx, id.UserID); err == nil {
+			for _, t := range active {
+				titles[t.ID] = t.Title
+				if t.SupporterName != "" {
+					titles[t.ID] += " (" + t.SupporterName + ")"
+				}
+			}
+		}
+	}
+	var b strings.Builder
+	for i, tid := range ids {
+		fmt.Fprintf(&b, "%d. %s\n", i+1, firstNonEmpty(titles[tid], "(finished)"))
+	}
+	b.WriteString("\n" + CopyWhichTaskHint)
+	return b.String()
 }
 
 func (r *Router) noteRelayed(ctx context.Context, in Inbound, id Identity, taskID, text string) {
@@ -156,16 +220,24 @@ func (r *Router) askWhichTask(ctx context.Context, in Inbound, conv Conversation
 // shown again (nothing is dropped unannounced).
 func (r *Router) onAwaitingTaskChoice(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
 	choices, held := conv.PendingTaskChoices, conv.PendingRelayText
+	if r.Chat == nil || held == "" {
+		// Relay switched off under a hold, or nothing to deliver: drop it.
+		return r.clearHold(ctx, in, conv, CopyWhichTaskNothingHeld)
+	}
+	// The way out: "never mind" / "cancel" drops the hold (rule-matched).
+	if IsNo(text) {
+		return r.clearHold(ctx, in, conv, CopyHoldDropped)
+	}
 	if n, ok := taskChoice(text); ok {
-		if n > len(choices) || held == "" {
-			if held == "" { // nothing to deliver: drop the hold
-				return r.clearHold(ctx, in, conv, CopyWhichTaskNothingHeld)
-			}
+		if n > len(choices) {
 			return r.Reply(ctx, in, CopyWhichTaskBadPick, "")
 		}
 		taskID := choices[n-1]
-		if err := r.Chat.PostAsRequester(ctx, taskID, id.UserID, held); err != nil {
+		if err := r.Chat.PostAsRequester(ctx, taskID, id.UserID, capText(held), in.ProviderMessageID); err != nil {
 			log.Printf("[channel] relay identity=%s task=%s: %v", id.ID, taskID, err)
+			if errors.Is(err, ErrTaskNotActive) {
+				return r.clearHold(ctx, in, conv, CopyRelayGone)
+			}
 			return r.Reply(ctx, in, CopyRelayFailedPick, taskID)
 		}
 		conv.State, conv.PendingTaskChoices, conv.PendingRelayText = StateIdle, nil, ""
@@ -189,7 +261,7 @@ func (r *Router) onAwaitingTaskChoice(ctx context.Context, in Inbound, id Identi
 	if err != nil {
 		return fmt.Errorf("onAwaitingTaskChoice: %w", err)
 	}
-	joined := strings.TrimSpace(held + "\n" + text)
+	joined := capText(strings.TrimSpace(held + "\n" + text))
 	switch len(active) {
 	case 0:
 		return r.clearHold(ctx, in, conv, CopyAck)
@@ -231,7 +303,8 @@ func (r *Router) RelayToChat(ctx context.Context, requesterID, taskID, supporter
 		return nil
 	}
 	who := firstNonEmpty(strings.TrimSpace(supporterName), "Your supporter")
-	body := strings.TrimSpace(text)
+	whoLower := firstNonEmpty(strings.TrimSpace(supporterName), "your supporter")
+	body := capText(strings.TrimSpace(text))
 	if body == "" && mediaURL != "" {
 		body = "(photo)"
 	}
@@ -244,7 +317,7 @@ func (r *Router) RelayToChat(ctx context.Context, requesterID, taskID, supporter
 	// YES/NO still means, so the supporter's question cannot capture it.
 	if conv, err := r.Conversations.GetConversation(ctx, t.Identity.ID); err != nil {
 		return fmt.Errorf("RelayToChat: %w", err)
-	} else if note := r.pendingNote(conv, who); note != "" {
+	} else if note := r.pendingNote(conv, whoLower); note != "" {
 		b.WriteString("\n\n" + note)
 	}
 	out := Outbound{Channel: t.Identity.Channel, To: t.Identity.Address, Text: b.String(), MediaURL: mediaURL}

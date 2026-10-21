@@ -3,6 +3,7 @@ package channel
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -14,16 +15,23 @@ type fakeChat struct {
 	active []ActiveTask
 	err    error
 	posted []string // "task:text"
+	keys   []string
 	post   error
 }
 
 func (f *fakeChat) ActiveTasks(context.Context, string) ([]ActiveTask, error) { return f.active, f.err }
-func (f *fakeChat) PostAsRequester(_ context.Context, taskID, _ string, text string) error {
+func (f *fakeChat) PostAsRequester(_ context.Context, taskID, _ string, text, key string) error {
 	if f.post != nil {
 		return f.post
 	}
-	f.posted = append(f.posted, taskID+":"+text)
-	return nil
+	for _, t := range f.active {
+		if t.ID == taskID {
+			f.posted = append(f.posted, taskID+":"+text)
+			f.keys = append(f.keys, key)
+			return nil
+		}
+	}
+	return fmt.Errorf("fake: %w", ErrTaskNotActive)
 }
 
 type fakeTasks struct {
@@ -249,19 +257,26 @@ func TestRelayDuringPendingYesIsDisambiguated(t *testing.T) {
 	if !strings.HasPrefix(got, "Maya · Laundry pickup: Want the large bag too?") || !strings.Contains(got, "A plain YES or NO here still answers my question") || !strings.Contains(got, "Laundry pickup") {
 		t.Fatalf("%q", got)
 	}
-	// An inline reply to Maya's message is for Maya: nothing books.
+	// An inline sentence to Maya's message is for Maya: nothing books.
 	tasks.byMsg[g.st.lastOutboundID()] = "task-1"
-	in := Inbound{Channel: IMessage, ProviderMessageID: "r1", From: me, Text: "yes please", ReplyToProviderID: g.st.lastOutboundID(), ReceivedAt: time.Now()}
+	in := Inbound{Channel: IMessage, ProviderMessageID: "r1", From: me, Text: "yes, the large one", ReplyToProviderID: g.st.lastOutboundID(), ReceivedAt: time.Now()}
 	if err := g.r.HandleInbound(context.Background(), in); err != nil {
 		t.Fatal(err)
 	}
-	if len(chat.posted) != 1 || chat.posted[0] != "task-1:yes please" || g.booker.posts != 0 || g.state() != StateAwaitingConfirm {
+	if len(chat.posted) != 1 || chat.posted[0] != "task-1:yes, the large one" || g.booker.posts != 0 || g.state() != StateAwaitingConfirm {
 		t.Fatalf("posted %v booked %d state %s", chat.posted, g.booker.posts, g.state())
 	}
-	// A bare YES, not in reply to anything, still answers the pending draft.
-	g.say(t, "YES")
-	if g.booker.posts != 1 {
-		t.Fatalf("booked %d", g.booker.posts)
+	if chat.keys[0] != "r1" {
+		t.Fatalf("idempotency key must be the inbound message id: %v", chat.keys)
+	}
+	// A bare YES — swiped on Maya's bubble or not — answers OUR question, as
+	// the footer says: the draft books, nothing goes to Maya.
+	in = Inbound{Channel: IMessage, ProviderMessageID: "r2", From: me, Text: "yes please", ReplyToProviderID: g.st.lastOutboundID(), ReceivedAt: time.Now()}
+	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if g.booker.posts != 1 || len(chat.posted) != 1 {
+		t.Fatalf("booked %d posted %v", g.booker.posts, chat.posted)
 	}
 	// Nothing pending → no note.
 	if err := g.r.RelayToChat(context.Background(), "user-1", "task-1", "Maya", "Laundry pickup", "On my way", ""); err != nil {
@@ -324,5 +339,97 @@ func TestRelayToChatSkipsEmptyBody(t *testing.T) {
 	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
 	if err := g.r.RelayToChat(context.Background(), "user-1", "task-1", "Maya", "Laundry", "   ", ""); err != nil || len(g.ad.sent) != 0 {
 		t.Fatalf("err %v sent %+v", err, g.ad.sent)
+	}
+}
+
+// ── review round 2 ─────────────────────────────────────────────────────────
+
+// N-1: an inline YES/NO swiped on the approval prompt approves — it is not
+// relayed to the supporter as the word "YES".
+func TestInlineYesOnApprovalPromptApproves(t *testing.T) {
+	g, chat, tasks := relayRig(llm.IntentOther, laundryT)
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	c.State, c.PendingExtensionID = StateAwaitingApproval, "ext-1"
+	if err := g.convs.SaveConversation(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	tasks.byMsg["prompt-1"] = "task-1" // the approval prompt is task-tagged
+	in := Inbound{Channel: IMessage, ProviderMessageID: "y1", From: me, Text: "YES", ReplyToProviderID: "prompt-1", ReceivedAt: time.Now()}
+	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if len(chat.posted) != 0 || len(g.booker.resolved) != 1 || !strings.HasSuffix(g.booker.resolved[0], ":ext-1:true") || g.state() != StateIdle {
+		t.Fatalf("posted %v resolved %v state %s", chat.posted, g.booker.resolved, g.state())
+	}
+}
+
+// N-2: a reply to a message about a finished task is not a dead end — it
+// routes like any other message (here: a new errand drafts).
+func TestInlineReplyToFinishedTaskRoutesNormally(t *testing.T) {
+	g, chat, tasks := relayRig(llm.IntentNewTask) // no active task any more
+	tasks.byMsg["done-msg"] = "task-9"
+	in := Inbound{Channel: IMessage, ProviderMessageID: "n1", From: me, Text: "book the same again tomorrow", ReplyToProviderID: "done-msg", ReceivedAt: time.Now()}
+	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if len(chat.posted) != 0 || g.state() != StateAwaitingConfirm {
+		t.Fatalf("posted %v state %s", chat.posted, g.state())
+	}
+	// A pick naming a task that closed between the list and the number:
+	// told once, hold dropped, no loop.
+	g, chat, _ = relayRig(llm.IntentOther, laundryT, bagelT)
+	g.say(t, "please get everything bagels")
+	chat.active = []ActiveTask{laundryT} // bagel run finished meanwhile
+	if got := g.say(t, "2"); got != CopyRelayGone || g.state() != StateIdle {
+		t.Fatalf("%q state %s", got, g.state())
+	}
+}
+
+// N-4: an approval request arriving under a hold is armed; the YES answers
+// it, and the hold comes back with its list.
+func TestApprovalArrivingUnderAHoldIsArmedAndHoldResumes(t *testing.T) {
+	g, chat, _ := relayRig(llm.IntentOther, laundryT, bagelT)
+	g.say(t, "please get everything bagels")
+	if g.state() != StateAwaitingTaskChoice {
+		t.Fatalf("state %s", g.state())
+	}
+	if err := g.r.askApproval(context.Background(), "id-"+me, "ext-1"); err != nil {
+		t.Fatal(err)
+	}
+	if g.state() != StateAwaitingApproval {
+		t.Fatalf("approval must be armed under a hold, state %s", g.state())
+	}
+	got := g.say(t, "YES")
+	if len(g.booker.resolved) != 1 || !strings.Contains(got, CopyBackToHold) || !strings.Contains(got, "1. Laundry pickup (Maya)") || g.state() != StateAwaitingTaskChoice {
+		t.Fatalf("resolved %v reply %q state %s", g.booker.resolved, got, g.state())
+	}
+	g.say(t, "2")
+	if len(chat.posted) != 1 || chat.posted[0] != "task-2:please get everything bagels" {
+		t.Fatalf("posted %v", chat.posted)
+	}
+}
+
+// N-7: "never mind" drops the hold; a hold is capped; relay switched off
+// under a hold does not panic.
+func TestHoldEscapeHatchCapAndNilChat(t *testing.T) {
+	g, chat, _ := relayRig(llm.IntentOther, laundryT, bagelT)
+	g.say(t, "please get everything bagels")
+	if got := g.say(t, "never mind"); got != CopyHoldDropped || g.state() != StateIdle || len(chat.posted) != 0 {
+		t.Fatalf("%q state %s posted %v", got, g.state(), chat.posted)
+	}
+
+	g, chat, _ = relayRig(llm.IntentOther, laundryT, bagelT)
+	g.say(t, strings.Repeat("x", 1400))
+	g.say(t, strings.Repeat("y", 1400))
+	g.say(t, "1")
+	if len(chat.posted) != 1 || len(chat.posted[0]) > relayTextCap+len("task-1:")+len("…") {
+		t.Fatalf("hold not capped: %d", len(chat.posted[0]))
+	}
+
+	g, _, _ = relayRig(llm.IntentOther, laundryT, bagelT)
+	g.say(t, "please get everything bagels")
+	g.r.Chat = nil
+	if got := g.say(t, "1"); got != CopyWhichTaskNothingHeld || g.state() != StateIdle {
+		t.Fatalf("%q state %s", got, g.state())
 	}
 }

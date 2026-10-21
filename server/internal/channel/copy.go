@@ -35,8 +35,11 @@ const (
 	// Appended to a relayed supporter message while a YES/NO is pending, so
 	// the next bare YES/NO cannot be read two ways (money rule: the YES
 	// answers what the thread says it answers).
-	CopyRelayWhileConfirm  = "(A plain YES or NO here still answers my question — book “%s” for %s. To answer %s instead, write a sentence or reply to this message.)"
-	CopyRelayWhileApproval = "(A plain YES or NO here still answers my question about %s’s request. To answer %s instead, write a sentence or reply to this message.)"
+	CopyRelayWhileConfirm  = "(A plain YES or NO here still answers my question — book “%s” for %s. To answer %s instead, write a sentence.)"
+	CopyRelayWhileApproval = "(A plain YES or NO here still answers my question about %s’s request. To answer %s instead, write a sentence.)"
+	CopyRelayGone          = "That task has finished, so I can't pass this on. Tell me if you need something new."
+	CopyHoldDropped        = "OK, I won't send that."
+	CopyBackToHold         = "Your earlier message is still waiting — which task is it for?"
 	CopyTooManyErrands     = "That's more than I can book in one go (up to %d at a time). Send me the first few and we'll take it from there."
 	CopyAskNameAgain       = "Just your first name is fine."
 	CopyOneStepToBook      = "One step to book, about a minute: confirm your email and add a card. Nothing is charged until the task is done.\n\n%s\n\nI'll book it as soon as you finish."

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -71,8 +72,11 @@ func (t *talkjsRelay) ActiveTasks(ctx context.Context, userID string) ([]channel
 }
 
 // PostAsRequester puts text into the task's chat as the requester.
-func (t *talkjsRelay) PostAsRequester(ctx context.Context, taskID, userID, text string) error {
+func (t *talkjsRelay) PostAsRequester(ctx context.Context, taskID, userID, text, key string) error {
 	pair, err := relayPair(ctx, t.sqlDB, taskID)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("post as requester: task %s: %w", taskID, channel.ErrTaskNotActive)
+	}
 	if err != nil {
 		return fmt.Errorf("post as requester: %w", err)
 	}
@@ -80,23 +84,28 @@ func (t *talkjsRelay) PostAsRequester(ctx context.Context, taskID, userID, text 
 	// came from ActiveTasks or from a channel_messages row, but the sender
 	// is re-checked here, not trusted.
 	if pair.requesterID == "" || pair.requesterID != userID {
-		return fmt.Errorf("post as requester: task %s is not the sender's", taskID)
+		return fmt.Errorf("post as requester: task %s is not the sender's: %w", taskID, channel.ErrTaskNotActive)
 	}
 	if pair.status != "open" || pair.supporterID == "" || pair.supporterEmail == "" || pair.requesterEmail == "" {
-		return fmt.Errorf("post as requester: task %s has no open chat pair", taskID)
+		return fmt.Errorf("post as requester: task %s has no open chat pair: %w", taskID, channel.ErrTaskNotActive)
 	}
 	if blocked, err := pairBlocked(ctx, t.sqlDB, pair.requesterID, pair.supporterID); err != nil {
 		return fmt.Errorf("post as requester: block check: %w", err)
 	} else if blocked {
-		return fmt.Errorf("post as requester: pair blocked")
+		return fmt.Errorf("post as requester: pair blocked: %w", channel.ErrTaskNotActive)
 	}
 	if _, _, ok := talkjsConfigured(); !ok {
 		return fmt.Errorf("post as requester: talkjs not configured")
 	}
 
-	// A requester who books by text has never opened a TalkJS client, so
-	// their user may not exist there yet. PUT /users is create-or-update.
+	// Neither side may exist in TalkJS yet: a requester who books by text
+	// never opened a chat client; a supporter may not have opened this
+	// task's chat. PUT /users is create-or-update (fields not sent are
+	// left as they are).
 	if err := talkjsUpsertUser(ctx, pair.requesterEmail, pair.requesterName); err != nil {
+		return fmt.Errorf("post as requester: %w", err)
+	}
+	if err := talkjsUpsertUser(ctx, pair.supporterEmail, pair.supporterName); err != nil {
 		return fmt.Errorf("post as requester: %w", err)
 	}
 	convPath := "/conversations/" + url.PathEscape(talkjsConversationID(taskID))
@@ -108,20 +117,25 @@ func (t *talkjsRelay) PostAsRequester(ctx context.Context, taskID, userID, text 
 		"custom":       map[string]string{"taskId": taskID},
 	})
 	if err != nil {
-		return fmt.Errorf("post as requester: ensure conversation: %w", err)
+		return fmt.Errorf("post as requester: ensure conversation: %w", scrubURLErr(err))
 	}
 	if status != http.StatusOK {
 		// Status only: TalkJS error bodies echo user ids, which are emails
 		// here (S-12).
 		return fmt.Errorf("post as requester: talkjs PUT conversation returned %d", status)
 	}
-	status, _, err = talkjsRequest(ctx, http.MethodPost, convPath+"/messages", []map[string]any{{
+	msg := map[string]any{
 		"text":   text,
 		"sender": pair.requesterEmail,
 		"type":   "UserMessage",
-	}})
+	}
+	if key != "" {
+		// At most once across webhook retries and the recovery sweep.
+		msg["idempotencyKey"] = key
+	}
+	status, _, err = talkjsRequest(ctx, http.MethodPost, convPath+"/messages", []map[string]any{msg})
 	if err != nil {
-		return fmt.Errorf("post as requester: send: %w", err)
+		return fmt.Errorf("post as requester: send: %w", scrubURLErr(err))
 	}
 	if status != http.StatusOK {
 		return fmt.Errorf("post as requester: talkjs POST message returned %d", status)
@@ -134,25 +148,28 @@ type relayPairRow struct {
 	status                         string
 	requesterID, supporterID       string
 	requesterEmail, supporterEmail string
-	requesterName, title           string
+	requesterName, supporterName   string
+	title                          string
 }
 
 func relayPair(ctx context.Context, db *sql.DB, taskID string) (relayPairRow, error) {
 	var p relayPairRow
-	var rid, sid, re, se, rn, title sql.NullString
+	var rid, sid, re, se, rn, sn, title sql.NullString
 	err := db.QueryRowContext(ctx, `
 		SELECT t.status, t.requester_id::text, t.assigned_to_id::text, t.title,
-		       ru.email, su.email, rp.name
+		       ru.email, su.email, rp.name, sp.name
 		  FROM public.tasks t
 		  LEFT JOIN public.users ru ON ru.id = t.requester_id
 		  LEFT JOIN public.users su ON su.id = t.assigned_to_id
 		  LEFT JOIN public.profiles rp ON rp.id = t.requester_id
-		 WHERE t.id = $1::uuid`, taskID).Scan(&p.status, &rid, &sid, &title, &re, &se, &rn)
+		  LEFT JOIN public.profiles sp ON sp.id = t.assigned_to_id
+		 WHERE t.id = $1::uuid`, taskID).Scan(&p.status, &rid, &sid, &title, &re, &se, &rn, &sn)
 	if err != nil {
 		return p, err
 	}
 	p.requesterID, p.supporterID, p.title = rid.String, sid.String, title.String
-	p.requesterEmail, p.supporterEmail, p.requesterName = re.String, se.String, rn.String
+	p.requesterEmail, p.supporterEmail = re.String, se.String
+	p.requesterName, p.supporterName = rn.String, sn.String
 	return p, nil
 }
 
@@ -160,12 +177,11 @@ func relayPair(ctx context.Context, db *sql.DB, taskID string) (relayPairRow, er
 // everywhere in this codebase). Idempotent.
 func talkjsUpsertUser(ctx context.Context, email, name string) error {
 	status, _, err := talkjsRequest(ctx, http.MethodPut, "/users/"+url.PathEscape(email), map[string]any{
-		"name":  relayOr(strings.TrimSpace(name), "Requester"),
+		"name":  relayOr(strings.TrimSpace(name), "HO:RA user"),
 		"email": []string{email},
-		"role":  "requester",
 	})
 	if err != nil {
-		return fmt.Errorf("ensure talkjs user: %w", err)
+		return fmt.Errorf("ensure talkjs user: %w", scrubURLErr(err))
 	}
 	if status != http.StatusOK {
 		return fmt.Errorf("ensure talkjs user: talkjs PUT user returned %d", status)
@@ -225,6 +241,16 @@ func relayAllowedToRequester(ctx context.Context, db *sql.DB, taskID, senderUID 
 		return pair, false
 	}
 	return pair, !blocked
+}
+
+// scrubURLErr drops the URL from a transport error: TalkJS paths carry user
+// ids, which are emails (S-12).
+func scrubURLErr(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return fmt.Errorf("%s talkjs: %w", ue.Op, ue.Err)
+	}
+	return err
 }
 
 func relayOr(v, def string) string {

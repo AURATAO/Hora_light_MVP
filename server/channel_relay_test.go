@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -55,6 +58,22 @@ func TestActiveTasksListsOnlyOpenAssignedUnblocked(t *testing.T) {
 	if got, _ := relay.ActiveTasks(ctx, w.requesterID); len(got) != 0 {
 		t.Fatalf("blocked pair listed: %+v", got)
 	}
+	// And the other direction: the supporter blocking the requester.
+	if _, err := sqldb.ExecContext(ctx, `DELETE FROM public.user_blocks`); err != nil {
+		t.Fatal(err)
+	}
+	blockPair(t, w.supporterID, w.requesterID)
+	if got, _ := relay.ActiveTasks(ctx, w.requesterID); len(got) != 0 {
+		t.Fatalf("supporter-initiated block listed: %+v", got)
+	}
+}
+
+func TestScrubURLErrDropsTheEmail(t *testing.T) {
+	err := &url.Error{Op: "Put", URL: "https://api.talkjs.com/v1/app/users/aura@example.test", Err: errors.New("dial tcp: timeout")}
+	got := scrubURLErr(fmt.Errorf("wrap: %w", err))
+	if strings.Contains(got.Error(), "aura@") || !strings.Contains(got.Error(), "timeout") {
+		t.Fatalf("%v", got)
+	}
 }
 
 func TestPostAsRequesterRefusesBeforeTalkJS(t *testing.T) {
@@ -69,9 +88,14 @@ func TestPostAsRequesterRefusesBeforeTalkJS(t *testing.T) {
 
 	wantErr := func(userID, want string) {
 		t.Helper()
-		err := relay.PostAsRequester(ctx, w.taskID, userID, "hi")
+		err := relay.PostAsRequester(ctx, w.taskID, userID, "hi", "k1")
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("user %q: got %v, want %q", userID, err, want)
+		}
+		// Every refusal except "not configured" is a not-active, so the
+		// router tells the person instead of "try again".
+		if isActive := !errors.Is(err, channel.ErrTaskNotActive); isActive != (want == "talkjs not configured") {
+			t.Fatalf("user %q: ErrTaskNotActive wrapping wrong for %v", userID, err)
 		}
 	}
 	wantErr(w.supporterID, "not the sender's") // the supporter cannot speak as the requester
@@ -93,8 +117,8 @@ func TestPostAsRequesterRefusesBeforeTalkJS(t *testing.T) {
 	blockPair(t, w.supporterID, w.requesterID)
 	wantErr(w.requesterID, "pair blocked")
 
-	if err := relay.PostAsRequester(ctx, "00000000-0000-0000-0000-000000000009", w.requesterID, "hi"); err == nil {
-		t.Fatal("unknown task must fail")
+	if err := relay.PostAsRequester(ctx, "00000000-0000-0000-0000-000000000009", w.requesterID, "hi", "k2"); !errors.Is(err, channel.ErrTaskNotActive) {
+		t.Fatalf("unknown task must fail as not-active: %v", err)
 	}
 }
 

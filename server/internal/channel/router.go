@@ -194,13 +194,17 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	if IsHumanRequest(text) {
 		return r.handOff(ctx, in, id, conv, HandoffHumanRequested)
 	}
-	// An inline reply to a supporter's message is for the supporter, whatever
-	// it says and whatever is pending (relay.go step 5): "yes please" replied
-	// to "toasted?" is an answer to Maya, not a booking YES. The pending
-	// question stays pending; a bare YES/NO not in reply to anything still
-	// answers it (and a relayed message says so — RelayToChat).
-	if tid := r.inlineTarget(ctx, in, id); tid != "" {
-		return r.relay(ctx, in, id, tid, text)
+	// An inline reply to a message about an active task is for the supporter
+	// (relay.go step 5) — with one exception, stated in every relayed
+	// message while a question is pending (RelayToChat): a bare YES/NO then
+	// answers OUR question, whichever bubble it was swiped on. Our prompts
+	// are task-tagged too, so without this an inline YES to "reply YES to
+	// approve" would go to the supporter and approve nothing. To answer the
+	// supporter yes or no, the person writes a sentence.
+	if !(awaitingAnswer(conv.State) && (IsYes(text) || IsNo(text))) {
+		if tid := r.inlineTarget(ctx, in, id); tid != "" {
+			return r.relay(ctx, in, id, tid, text)
+		}
 	}
 	switch conv.State {
 	case StateAwaitingName:
@@ -218,6 +222,15 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	default:
 		return r.onIdle(ctx, in, id, conv, text)
 	}
+}
+
+// awaitingAnswer: states where the next bare YES/NO is an answer to us.
+func awaitingAnswer(s State) bool {
+	switch s {
+	case StateAwaitingConfirm, StateAwaitingApproval, StateAwaitingBudget, StateAwaitingName, StateAwaitingSetup:
+		return true
+	}
+	return false
 }
 
 func (r *Router) classify(ctx context.Context, text string) llm.Intent {
