@@ -44,7 +44,7 @@ type StatusEvent struct {
 //   - supporter-side events.
 func StatusText(ev StatusEvent) (string, bool) {
 	task := quoted(ev.TaskTitle)
-	who := firstNonEmpty(ev.SupporterName, "Your supporter")
+	who := firstNonEmpty(DisplayName(ev.SupporterName), "Your supporter")
 	switch ev.Type {
 	case "ORDER_ACCEPTED":
 		return fmt.Sprintf("%s accepted %s. I'll text you when they arrive.", who, task), true

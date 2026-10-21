@@ -11,6 +11,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"golang.org/x/text/unicode/norm"
+
 	"hora-auth/internal/channel/llm"
 )
 
@@ -171,7 +173,9 @@ func (r *Router) routeReply(ctx context.Context, in Inbound, id Identity, conv C
 		}
 		return false, nil
 	case bubblePrompt:
-		if awaitingAnswer(conv.State) {
+		if awaitingAnswer(conv.State) || conv.State == StateAwaitingTaskChoice || tid == "" {
+			// A question of ours is open (the list included), or the bubble
+			// is not about a task: the state machine decides.
 			return false, nil
 		}
 		if bare {
@@ -343,36 +347,39 @@ func (r *Router) onAwaitingTaskChoice(ctx context.Context, in Inbound, id Identi
 		}
 		return r.startDraft(ctx, in, id, conv, text)
 	}
-	active, err := r.Chat.ActiveTasks(ctx, id.UserID)
+	all, err := r.Chat.ActiveTasks(ctx, id.UserID)
 	if err != nil {
 		return fmt.Errorf("onAwaitingTaskChoice: %w", err)
+	}
+	// The held words were for the tasks on the list they were held for;
+	// a task assigned since is not among the candidates.
+	var active []ActiveTask
+	for _, t := range all {
+		if contains(choices, t.ID) {
+			active = append(active, t)
+		}
 	}
 	joined := capText(strings.TrimSpace(held + "\n" + text))
 	switch len(active) {
 	case 0:
-		// Every supporter finished meanwhile: the held words have nowhere
-		// to go, and the person is told so.
-		return r.clearHold(ctx, in, conv, CopyHoldGone)
+		// Every supporter on the list finished meanwhile: the held words
+		// have nowhere to go. Say so, and route the new message on its own.
+		if err := r.clearHold(ctx, in, conv, CopyHoldGone); err != nil {
+			return err
+		}
+		conv.State, conv.PendingTaskChoices, conv.PendingRelayText = StateIdle, nil, ""
+		return r.onIdle(ctx, in, id, conv, text)
 	case 1:
 		taskID := active[0].ID
-		if !contains(choices, taskID) {
-			// A different supporter than the ones the hold was for: the
-			// held words are not theirs. Drop them, say so, and route the
-			// new message on its own.
-			if err := r.clearHold(ctx, in, conv, CopyHoldGone); err != nil {
-				return err
-			}
-			conv.State, conv.PendingTaskChoices, conv.PendingRelayText = StateIdle, nil, ""
-			return r.onIdle(ctx, in, id, conv, text)
-		}
 		// Deliver first; the hold is cleared only once the supporter has it.
 		if err := r.Chat.PostAsRequester(ctx, taskID, id.UserID, joined, in.ProviderMessageID); err != nil {
 			log.Printf("[channel] relay identity=%s task=%s: %v", id.ID, taskID, err)
 			if errors.Is(err, ErrTaskNotActive) {
 				return r.clearHold(ctx, in, conv, CopyRelayGone)
 			}
-			conv.PendingRelayText = joined
-			if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+			// Keep the grown hold, on a fresh row (an approval may have
+			// been armed meanwhile).
+			if err := r.updateHold(ctx, id, joined); err != nil {
 				return fmt.Errorf("onAwaitingTaskChoice: %w", err)
 			}
 			return r.Reply(ctx, in, CopyRelayFailed, taskID)
@@ -398,6 +405,16 @@ func (r *Router) releaseHold(ctx context.Context, id Identity) error {
 	if conv.State == StateAwaitingTaskChoice {
 		conv.State = StateIdle
 	}
+	return r.Conversations.SaveConversation(ctx, conv)
+}
+
+// updateHold rewrites the held text on a freshly loaded row.
+func (r *Router) updateHold(ctx context.Context, id Identity, text string) error {
+	conv, err := r.Conversations.GetConversation(ctx, id.ID)
+	if err != nil {
+		return err
+	}
+	conv.PendingRelayText = text
 	return r.Conversations.SaveConversation(ctx, conv)
 }
 
@@ -479,23 +496,79 @@ func (r *Router) pendingNote(conv Conversation, who string) string {
 }
 
 // DisplayName is what a supporter's name may look like in HO:RA's own
-// voice on a trusted number: one line, letters and ordinary name
-// punctuation only, at most 24 characters, and never one that reads as us
-// ("HO:RA", "hora support"). Anything else → "" (the caller falls back to
-// "your supporter"). The name is the person's own profile field, so this
-// is where it is vetted, not where it is typed.
+// voice on a trusted number. The name is the person's own profile field, so
+// this is where it is vetted, not where it is typed. Allowed: one line of
+// letters (one script — no Latin/Cyrillic mixing), spaces, ' and -, at most
+// 24 characters, NFKC-normalised (fullwidth letters fold to ASCII). Refused:
+// digits, punctuation, anything whose confusable-folded letters contain a
+// reserved word (hora, admin, support, staff, official, system, billing,
+// security, team, help). Refused → "" and the caller says "your supporter".
 func DisplayName(name string) string {
+	name = norm.NFKC.String(name)
 	name = strings.Join(strings.Fields(name), " ") // one line, single spaces
+	if name == "" || utf8.RuneCountInString(name) > 24 {
+		return ""
+	}
+	var folded strings.Builder
+	latin, other := false, false
 	for _, c := range name {
-		if !(unicode.IsLetter(c) || unicode.IsNumber(c) || c == ' ' || c == '\'' || c == '-' || c == '.') {
+		switch {
+		case c == ' ' || c == '\'' || c == '-':
+			continue
+		case !unicode.IsLetter(c):
+			return ""
+		}
+		if unicode.Is(unicode.Latin, c) {
+			latin = true
+		} else {
+			other = true
+		}
+		folded.WriteRune(foldConfusable(unicode.ToLower(c)))
+	}
+	if latin && other {
+		return "" // mixed scripts: the classic look-alike trick
+	}
+	f := folded.String()
+	for _, w := range reservedNameWords {
+		if strings.Contains(f, w) {
 			return ""
 		}
 	}
-	if utf8.RuneCountInString(name) > 24 {
-		return ""
-	}
-	if strings.Contains(strings.ToLower(strings.ReplaceAll(name, " ", "")), "hora") {
-		return ""
-	}
 	return name
+}
+
+var reservedNameWords = []string{"hora", "admin", "support", "staff", "official", "system", "billing", "security", "team", "help"}
+
+// foldConfusable maps the common Cyrillic and Greek look-alikes of Latin
+// letters onto them, for the reserved-word check only.
+func foldConfusable(c rune) rune {
+	switch c {
+	case 'а', 'α':
+		return 'a'
+	case 'е', 'ε':
+		return 'e'
+	case 'о', 'ο':
+		return 'o'
+	case 'р', 'ρ':
+		return 'p'
+	case 'с':
+		return 'c'
+	case 'х', 'χ':
+		return 'x'
+	case 'у', 'γ':
+		return 'y'
+	case 'н', 'η':
+		return 'h'
+	case 'і', 'ι':
+		return 'i'
+	case 'т', 'τ':
+		return 't'
+	case 'к', 'κ':
+		return 'k'
+	case 'м':
+		return 'm'
+	case 'в':
+		return 'b'
+	}
+	return c
 }

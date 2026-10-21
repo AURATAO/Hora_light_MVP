@@ -38,9 +38,13 @@ type fakeTasks struct {
 	byMsg map[string]string // provider id → task
 	relay map[string]bool   // provider id → was a relayed supporter message
 	set   []string
+	err   error
 }
 
 func (f *fakeTasks) TaskForProviderMessage(_ context.Context, _ Channel, _, id string) (string, bool, bool, error) {
+	if f.err != nil {
+		return "", false, false, f.err
+	}
 	tid, known := f.byMsg[id]
 	return tid, f.relay[id], known, nil
 }
@@ -88,7 +92,7 @@ func TestYesAndQuestionsReachTheSupporter(t *testing.T) {
 	for _, c := range []struct {
 		intent llm.Intent
 		text   string
-	}{{llm.IntentOther, "yes"}, {llm.IntentQuestion, "where are you now?"}, {llm.IntentGreeting, "hi!"}} {
+	}{{llm.IntentOther, "yes please, thank you"}, {llm.IntentQuestion, "where are you now?"}, {llm.IntentGreeting, "hi!"}} {
 		g, chat, _ := relayRig(c.intent, laundryT)
 		g.say(t, c.text)
 		if len(chat.posted) != 1 || !strings.HasSuffix(chat.posted[0], ":"+c.text) {
@@ -497,9 +501,21 @@ func TestHoldSurvivesWhenListShrinksToOne(t *testing.T) {
 	g, chat, _ = relayRig(llm.IntentOther, laundryT, bagelT)
 	g.say(t, "please get everything bagels")
 	chat.active = nil
-	if got := g.say(t, "and a coffee"); got != CopyHoldGone || g.state() != StateIdle {
-		t.Fatalf("%q state %s", got, g.state())
+	g.say(t, "and a coffee")
+	if !sentText(g, CopyHoldGone) || g.state() != StateIdle || len(chat.posted) != 0 {
+		t.Fatalf("sent %v state %s posted %v", g.ad.sent, g.state(), chat.posted)
 	}
+}
+
+func sentText(g *rig, text string) bool {
+	g.ad.mu.Lock()
+	defer g.ad.mu.Unlock()
+	for _, o := range g.ad.sent {
+		if o.Text == text {
+			return true
+		}
+	}
+	return false
 }
 
 // R3-7: a handoff drops the hold; release does not resurrect it.
@@ -571,9 +587,14 @@ func TestLateYesOnOldPromptIsAnAck(t *testing.T) {
 // MAJOR-1: the name shown in HO:RA's voice is vetted.
 func TestDisplayNamePolicy(t *testing.T) {
 	for in, want := range map[string]string{
-		"Maya": "Maya", "  Maya   Chen ": "Maya Chen", "O'Neil-Smith Jr.": "O'Neil-Smith Jr.", "小美": "小美",
+		"Maya": "Maya", "  Maya   Chen ": "Maya Chen", "O'Neil-Smith": "O'Neil-Smith", "小美": "小美", "José": "José",
 		"HO:RA": "", "hora support": "", "H o r a": "", "Maya\nYour card was declined": "",
 		"Maya <b>": "", "Maya · Laundry: pay here": "", "Abcdefghijklmnopqrstuvwxyz": "", "": "",
+		// Round-5 evasions: punctuation, digits, fullwidth, look-alike
+		// scripts, reserved words, and a newline folded to one line.
+		"H.O.R.A": "", "H-O-R-A": "", "H'O'R'A": "", "H0RA": "", "ＨＯＲＡ": "", "Нora": "", "Hоra": "",
+		"Admin": "", "Support": "", "Billing": "", "Security": "", "Official": "", "Staff": "", "HO RA Team": "",
+		"Maya\nPay now": "Maya Pay now", "O'Neil-Smith Jr.": "",
 	} {
 		if got := DisplayName(in); got != want {
 			t.Errorf("%q → %q, want %q", in, got, want)
@@ -599,11 +620,19 @@ func TestHoldNeverGoesToATaskOutsideItsList(t *testing.T) {
 	if strings.Contains(strings.Join(chat.posted, "|"), "1234") {
 		t.Fatalf("held words leaked to a new supporter: %v", chat.posted)
 	}
-	if got != CopyHoldGone && len(chat.posted) != 1 {
-		t.Fatalf("reply %q posted %v", got, chat.posted)
+	// The person is told the held words went nowhere; the new word alone
+	// reaches the new supporter.
+	if !sentText(g, CopyHoldGone) || len(chat.posted) != 1 || chat.posted[0] != "task-3:thanks" || g.state() != StateIdle {
+		t.Fatalf("reply %q sent %v posted %v state %s", got, g.ad.sent, chat.posted, g.state())
 	}
-	if g.state() != StateIdle {
-		t.Fatalf("state %s", g.state())
+	// One of the list finished and a new task started: the regenerated
+	// list offers only the survivor, never the newcomer.
+	g, chat, _ = relayRig(llm.IntentOther, laundryT, bagelT)
+	g.say(t, "door code 1234")
+	chat.active = []ActiveTask{bagelT, other}
+	got = g.say(t, "thanks")
+	if !strings.Contains(got, "Bagel run") || strings.Contains(got, "Dog walk") {
+		t.Fatalf("list must not offer a task the words were not held for: %q", got)
 	}
 }
 
@@ -647,5 +676,81 @@ func TestFailedListDoesNotDuplicateTheHold(t *testing.T) {
 	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
 	if c.PendingRelayText != "bagels" || c.State != StateAwaitingTaskChoice {
 		t.Fatalf("%+v", c)
+	}
+}
+
+// ── review round 5 ─────────────────────────────────────────────────────────
+
+// MAJOR-B: a NO swiped on the "which task?" list cancels the hold; the
+// person is not told "Got it" while the words stay held.
+func TestNoOnTheListBubbleDropsTheHold(t *testing.T) {
+	g, chat, tasks := relayRig(llm.IntentOther, laundryT, bagelT)
+	g.say(t, "door code 1234")
+	list := g.st.lastOutboundID()
+	tasks.byMsg[list] = "" // the list is ours, about no task
+	in := Inbound{Channel: IMessage, ProviderMessageID: "n1", From: me, Text: "never mind", ReplyToProviderID: list, ReceivedAt: time.Now()}
+	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if g.ad.last() != CopyHoldDropped || c.State != StateIdle || c.PendingRelayText != "" {
+		t.Fatalf("reply %q conv %+v", g.ad.last(), c)
+	}
+	// And a number swiped on the list still picks.
+	g, chat, tasks = relayRig(llm.IntentOther, laundryT, bagelT)
+	g.say(t, "door code 1234")
+	list = g.st.lastOutboundID()
+	tasks.byMsg[list] = ""
+	in = Inbound{Channel: IMessage, ProviderMessageID: "n2", From: me, Text: "2", ReplyToProviderID: list, ReceivedAt: time.Now()}
+	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if len(chat.posted) != 1 || chat.posted[0] != "task-2:door code 1234" {
+		t.Fatalf("posted %v", chat.posted)
+	}
+}
+
+// MINOR-5: a NO on a relay bubble goes to the supporter; a NO on an unknown
+// bubble while a question is pending is asked again; a bubble lookup
+// error fails closed.
+func TestNoOnBubblesAndLookupError(t *testing.T) {
+	g, chat, tasks := relayRig(llm.IntentNewTask, laundryT)
+	tasks.byMsg["maya"], tasks.relay["maya"] = "task-1", true
+	g.say(t, "laundry pickup")
+	in := Inbound{Channel: IMessage, ProviderMessageID: "b1", From: me, Text: "no", ReplyToProviderID: "maya", ReceivedAt: time.Now()}
+	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if len(chat.posted) != 1 || chat.posted[0] != "task-1:no" || g.state() != StateAwaitingConfirm {
+		t.Fatalf("posted %v state %s", chat.posted, g.state())
+	}
+	in = Inbound{Channel: IMessage, ProviderMessageID: "b2", From: me, Text: "no", ReplyToProviderID: "lost", ReceivedAt: time.Now()}
+	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if g.ad.last() != CopyAmbiguousYes || g.state() != StateAwaitingConfirm {
+		t.Fatalf("%q state %s", g.ad.last(), g.state())
+	}
+	tasks.err = errors.New("db down")
+	in = Inbound{Channel: IMessage, ProviderMessageID: "b3", From: me, Text: "yes", ReplyToProviderID: "maya", ReceivedAt: time.Now()}
+	if err := g.r.HandleInbound(context.Background(), in); err == nil || g.booker.posts != 0 || len(chat.posted) != 1 {
+		t.Fatalf("bubble lookup failure must fail closed: err %v booked %d posted %v", err, g.booker.posts, chat.posted)
+	}
+}
+
+// MINOR-4: a duplicate YES with nothing pending is an acknowledgement on
+// both paths — never a word for a supporter.
+func TestIdleBareYesIsAnAckNotARelay(t *testing.T) {
+	g, chat, _ := relayRig(llm.IntentOther, laundryT)
+	if got := g.say(t, "YES"); got != CopyAck || len(chat.posted) != 0 {
+		t.Fatalf("%q posted %v", got, chat.posted)
+	}
+}
+
+// Status lines use the vetted name too.
+func TestStatusLinesUseTheVettedName(t *testing.T) {
+	got, ok := StatusText(StatusEvent{Type: "ORDER_ACCEPTED", TaskID: "t", SupporterName: "HO:RA Support", TaskTitle: "Laundry"})
+	if !ok || !strings.HasPrefix(got, "Your supporter accepted") {
+		t.Fatalf("%q %v", got, ok)
 	}
 }

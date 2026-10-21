@@ -73,13 +73,15 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 	// acknowledgement, not "couldn't pass that on".
 	if _, _, ok := talkjsConfigured(); ok {
 		router.Chat = &talkjsRelay{sqlDB: sqlDB}
-	} else {
-		log.Printf("[channel] WARNING: TALKJS_APP_ID/TALKJS_SECRET_KEY not set — chat relay off")
-	}
-	chatRelayHook = func(ctx context.Context, requesterID, taskID, supporterName, taskTitle, text, mediaURL string) {
-		if err := router.RelayToChat(ctx, requesterID, taskID, supporterName, taskTitle, text, mediaURL); err != nil {
-			log.Printf("[channel] relay to chat task=%s: %v", taskID, err)
+		chatRelayHook = func(ctx context.Context, requesterID, taskID, supporterName, taskTitle, text, mediaURL string) {
+			if err := router.RelayToChat(ctx, requesterID, taskID, supporterName, taskTitle, text, mediaURL); err != nil {
+				log.Printf("[channel] relay to chat task=%s: %v", taskID, err)
+			}
 		}
+	} else {
+		// Neither direction: a one-way relay would tell the person "Got it"
+		// while the supporter hears nothing.
+		log.Printf("[channel] WARNING: TALKJS_APP_ID/TALKJS_SECRET_KEY not set — chat relay off (both directions)")
 	}
 	// Task status updates to the chat (channel_status.go). Set here, before
 	// the server starts, and only when the flag is on.

@@ -242,9 +242,10 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 	// A bare YES/NO with nothing pending (a late duplicate YES after the
 	// booking went through, a NO to nothing) never starts a draft: "YES" is
 	// not an errand, and parsing it as one would book nonsense.
+	// (A YES/NO for a supporter is a reply to their bubble or a sentence.)
 	if IsYes(text) || IsNo(text) {
 		if id.Linked() {
-			return r.relayOr(ctx, in, id, conv, text, CopyAck)
+			return r.Reply(ctx, in, CopyAck, "")
 		}
 		return r.Reply(ctx, in, CopyWelcome, "")
 	}

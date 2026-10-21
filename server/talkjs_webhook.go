@@ -170,7 +170,12 @@ func handleTalkJSWebhook(c *gin.Context, db *sql.DB) {
 	if senderTalkJSID == "" {
 		senderTalkJSID = ev.Data.Message.SenderID
 	}
-	senderUID, _ := userIDForTalkJSID(c.Request.Context(), db, senderTalkJSID)
+	senderUID, senderErr := userIDForTalkJSID(c.Request.Context(), db, senderTalkJSID)
+	if senderErr != nil {
+		// The pushes below still go out (as before); the relay to a phone
+		// does not, because it is gated on who the sender is (S-31: logged).
+		log.Printf("[talkjs][webhook] sender lookup failed talkjs_id=%s err=%v", senderTalkJSID, senderErr)
+	}
 
 	for _, talkjsID := range recipients {
 		userID, err := userIDForTalkJSID(c.Request.Context(), db, talkjsID)
@@ -196,7 +201,9 @@ func handleTalkJSWebhook(c *gin.Context, db *sql.DB) {
 	}
 	// Requesters who book by text get the supporter's words on their phone
 	// (channel_relay.go). Off the request path like the pushes.
-	go relayChatMessageToRequester(db, ev.Data.Conversation.ID, taskID, senderUID, ev.Data.Message)
+	if senderErr == nil {
+		go relayChatMessageToRequester(db, ev.Data.Conversation.ID, taskID, senderUID, ev.Data.Message)
+	}
 
 	c.Status(http.StatusOK)
 }

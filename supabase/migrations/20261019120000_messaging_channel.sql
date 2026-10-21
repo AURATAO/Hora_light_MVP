@@ -1,7 +1,7 @@
 -- Messaging entry point: requesters text HO:RA over iMessage (Sendblue) or
 -- WhatsApp (Meta Cloud API). See PLAN.md §5 and server/internal/channel.
 --
--- WHAT THIS ADDS (new tables only — nothing existing is altered)
+-- WHAT THIS ADDS (new tables; the trailing block alters only those tables)
 --
 --   public.channel_identities     a phone number on a channel, and the HO:RA
 --                                 user it belongs to once set up. user_id is
