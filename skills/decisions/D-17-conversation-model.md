@@ -733,7 +733,10 @@ Recorded as given, in the order asked; nothing below is built yet.
   are stripped (repeated, never down to nothing, only after a Chinese
   character), so 不要啦 is 不要 too; 吧 and 嘛 are NOT stripped — 好吧 /
   可以吧 can be reluctant or a question, so they are asked again; a
-  question particle (嗎) is never stripped.
+  question particle (嗎) is never stripped. Limit (declared after review):
+  only a particle at the END of the whole message is stripped — "不要啦，
+  太貴了" and "好啊 thanks" are not read as 不要 / 好 + message; they go to
+  the supporter with the request kept open (fail-safe). Pinned by tests.
 - **I-AE confirmed:** a "yes + message" whose message is one of the closed
   shapes (thanks…, please, hurry, tell him/her/them/NAME to hurry /
   thanks, let him/her/them/NAME know) approves AND passes the message to

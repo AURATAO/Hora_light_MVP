@@ -353,3 +353,30 @@ func TestAgentEscalationOverAnUnconfirmedClaim(t *testing.T) {
 		t.Fatalf("notices %+v", ops.notices)
 	}
 }
+
+// The runner's SAME grade rests on this: with one errand active, the
+// agent's relay (with or without the label), reply and ask all reach that
+// errand's supporter — idle, at the summary and with an approval armed.
+func TestOneErrandRelayReplyAskAgree(t *testing.T) {
+	props := []llm.Proposal{
+		{Action: llm.ActionRelay, Task: 0}, {Action: llm.ActionRelay, Task: -1},
+		{Action: llm.ActionReply, Task: -1}, {Action: llm.ActionAsk, Task: -1},
+	}
+	for _, state := range []string{"idle", "confirm", "approval"} {
+		for _, p := range props {
+			g, chat, _, fa := agentRig(p, bagelT)
+			switch state {
+			case "confirm":
+				g.r.Agent = nil
+				g.say(t, "new task: pick up my laundry tomorrow at 3")
+				g.r.Agent = fa
+			case "approval":
+				g.arm(t, "ext-2")
+			}
+			g.say(t, "the doorman's name is Joe")
+			if len(fa.calls) != 1 || len(chat.posted) != 1 || !strings.HasPrefix(chat.posted[0], "task-2:") {
+				t.Errorf("%s / %s: calls %d posted %v", state, p.Action, len(fa.calls), chat.posted)
+			}
+		}
+	}
+}

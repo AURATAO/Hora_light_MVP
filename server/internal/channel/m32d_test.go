@@ -720,3 +720,37 @@ func TestThatsFineAndChineseParticles(t *testing.T) {
 		}
 	}
 }
+
+// Review (words r1): the negative side of I-AL / I-AM, pinned.
+func TestThatsFineAndParticlesNegatives(t *testing.T) {
+	for _, tc := range []struct {
+		f    ApprovalFacts
+		want ApprovalVerdict
+	}{
+		{ApprovalFacts{Text: "可以吧", QuestionIsLast: true}, VerdictNotAnAnswer},
+		{ApprovalFacts{Text: "好嘛", QuestionIsLast: true}, VerdictNotAnAnswer},
+		{ApprovalFacts{Text: "可以啊嗎", QuestionIsLast: true}, VerdictNotAnAnswer},
+		{ApprovalFacts{Text: "好啊不要", QuestionIsLast: true}, VerdictNotAnAnswer},
+		{ApprovalFacts{Text: "ok啊", QuestionIsLast: true}, VerdictNotAnAnswer},
+		{ApprovalFacts{Text: "不要，可以啊", QuestionIsLast: true}, VerdictPassOnKeep},
+		// I-AM limit (declared): a particle mid-message is not stripped —
+		// the message goes to the supporter, the request stays open.
+		{ApprovalFacts{Text: "不要啦，太貴了", QuestionIsLast: true}, VerdictNotAnAnswer},
+		{ApprovalFacts{Text: "好啊 thanks", QuestionIsLast: true}, VerdictNotAnAnswer},
+		{ApprovalFacts{Text: "yes that's fine?", QuestionIsLast: true}, VerdictPassOnKeep},
+		{ApprovalFacts{Text: "yes, that's fine for now", QuestionIsLast: true}, VerdictPassOnKeep},
+		{ApprovalFacts{Text: "ok it's fine I guess", QuestionIsLast: true}, VerdictPassOnKeep},
+		{ApprovalFacts{Text: "no, that's fine", QuestionIsLast: true}, VerdictPassOnKeep},
+		{ApprovalFacts{Text: "nope, it's fine", QuestionIsLast: true}, VerdictPassOnKeep},
+		{ApprovalFacts{Text: "great that's fine", QuestionIsLast: false}, VerdictReask},
+		// A plain yes swiped on another message approves, as "ok" does
+		// (I-AG: plain-consent words are not limited) — pinned on purpose.
+		{ApprovalFacts{Text: "yes that's fine", QuestionIsLast: true, SwipedElsewhere: true}, VerdictApprove},
+		{ApprovalFacts{Text: "可以啊", QuestionIsLast: true, SupporterLive: true}, VerdictToSupporter},
+		{ApprovalFacts{Text: "不要啦", QuestionIsLast: true, SupporterLive: true}, VerdictToSupporter},
+	} {
+		if got := DecideApproval(tc.f); got != tc.want {
+			t.Errorf("%+v: %d, want %d", tc.f, got, tc.want)
+		}
+	}
+}

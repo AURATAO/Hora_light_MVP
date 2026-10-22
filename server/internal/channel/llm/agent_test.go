@@ -1,6 +1,10 @@
 package llm
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -95,6 +99,23 @@ func TestDecodeErrorsCarryNoModelText(t *testing.T) {
 	for _, out := range []string{`{"action":"leak-me","task":"","escalation":""}`, `leak-me {`} {
 		if _, err := DecodeProposal(out, AgentContext{}); err == nil || strings.Contains(err.Error(), "leak-me") {
 			t.Errorf("%q: %v", out, err)
+		}
+	}
+}
+
+// Errors from the provider carry the status only — never the body, which
+// can echo the prompt (S-12); the runner's retry matches this format.
+func TestProviderErrorsCarryStatusOnly(t *testing.T) {
+	for _, code := range []int{429, 500, 503} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(code)
+			_, _ = w.Write([]byte(`{"error":"echo: secret-person-words"}`)) // test server: the write's error is irrelevant
+		}))
+		o := &OpenAICompat{BaseURL: srv.URL, APIKey: "secret-key", Model: "m"}
+		_, err := o.Propose(context.Background(), "secret-person-words", AgentContext{})
+		srv.Close()
+		if err == nil || strings.Contains(err.Error(), "secret") || !strings.Contains(err.Error(), fmt.Sprintf("llm: status %d", code)) {
+			t.Errorf("%d: %v", code, err)
 		}
 	}
 }

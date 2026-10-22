@@ -41,6 +41,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -206,7 +207,9 @@ type Result struct {
 	Why       string `json:"why,omitempty"`
 	Server    string `json:"server,omitempty"` // the rules' verdict (approval open)
 	Outcome   string `json:"outcome"`          // what production would do
-	LatencyMS int64  `json:"latency_ms"`
+	LatencyMS int64  `json:"latency_ms"`       // the attempt that answered (what production would wait)
+	TotalMS   int64  `json:"total_ms"`         // all attempts and backoff
+	Retries   int    `json:"retries"`          // rate-limit / 5xx retries (production does not retry)
 	Raw       string `json:"raw,omitempty"`
 }
 
@@ -408,6 +411,7 @@ func runOne(model *llm.OpenAICompat, f File, c Case, run int, timeout time.Durat
 	}
 	var raw string
 	backoff := 2 * time.Second
+	start := time.Now()
 	for attempt := 1; ; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		t0 := time.Now()
@@ -417,9 +421,11 @@ func runOne(model *llm.OpenAICompat, f File, c Case, run int, timeout time.Durat
 		if err == nil || attempt == 6 || !retryable(err) {
 			break
 		}
+		r.Retries++
 		time.Sleep(backoff + time.Duration(rand.Int63n(int64(time.Second))))
 		backoff *= 2
 	}
+	r.TotalMS = time.Since(start).Milliseconds()
 	if err != nil {
 		r.Grade, r.Why = "ERROR", err.Error()
 		r.Outcome = outcome(r.Server, llm.SafeProposal())
@@ -436,18 +442,20 @@ func runOne(model *llm.OpenAICompat, f File, c Case, run int, timeout time.Durat
 	return r
 }
 
-// retryable: rate limits and provider errors (the error carries the status
-// only — no body).
-func retryable(err error) bool {
-	m := err.Error()
-	return strings.Contains(m, "status 429") || strings.Contains(m, "status 5") || strings.Contains(m, "deadline exceeded")
-}
+// retryableRE: the provider's rate limit (429) and server errors (5xx), as
+// completeJSON formats them ("llm: status N" — the status only, never the
+// body, S-12). A timeout is NOT retried: production has no retry, so a
+// timeout there is the safe relay and is graded ERROR here (review).
+var retryableRE = regexp.MustCompile(`\bllm: status (429|5\d\d)\b`)
+
+func retryable(err error) bool { return retryableRE.MatchString(err.Error()) }
 
 func report(results []Result, verbose bool) int {
 	count := map[string]int{}
-	code := 0
+	code, retries := 0, 0
 	for _, r := range results {
 		count[r.Grade]++
+		retries += r.Retries
 		mark := map[string]string{"PASS": "  ", "SAME": "≈ ", "FAIL": "✗ ", "UNSAFE": "!!", "ERROR": "? "}[r.Grade]
 		if (r.Grade != "PASS" && r.Grade != "SAME") || verbose {
 			fmt.Printf("%s #%d.%d [%s] %q → %s %s  (%s)  %s\n", mark, r.Case, r.Run, r.Group, r.Msg, r.Action, r.Task, r.Outcome, r.Why)
@@ -463,6 +471,9 @@ func report(results []Result, verbose bool) int {
 		}
 	}
 	fmt.Printf("\n%d results: %d PASS, %d SAME (other action, same production outcome — -v to list), %d FAIL, %d UNSAFE, %d ERROR\n", len(results), count["PASS"], count["SAME"], count["FAIL"], count["UNSAFE"], count["ERROR"])
+	if retries > 0 {
+		fmt.Printf("%d rate-limit / 5xx retries (production does not retry: there these would have been the safe relay)\n", retries)
+	}
 	return code
 }
 
