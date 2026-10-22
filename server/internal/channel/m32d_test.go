@@ -50,15 +50,14 @@ func TestBookingYesWithoutSendTimeIsReasked(t *testing.T) {
 	}
 }
 
-// R-2: a no with a reason, and "no thanks", decline; "no problem" never
-// does; with the supporter mid-conversation only a bare no declines.
+// R-2: a no with a reason, and "no thanks", decline ("no problem" never
+// does — it approves, TestNoProblemApprovesRightAfterTheQuestion); with the supporter mid-conversation only a bare no declines.
 func TestApprovalNoWithReason(t *testing.T) {
 	for _, tc := range []struct {
 		msg      string
 		declined bool
 	}{
 		{"No, he needs to finish now", true}, {"no thanks", true}, {"nope, too much", true},
-		{"no problem", false}, {"no worries", false},
 	} {
 		g, _, _, _ := contextRig(llm.IntentToSupporter, bagelT)
 		g.arm(t, "ext-2")
@@ -662,5 +661,28 @@ func TestWhatsAppSwipesRound5(t *testing.T) {
 	send(t, g, "YES", "status-1")
 	if len(g.booker.resolved) != 1 {
 		t.Fatalf("empty pid, YES: resolved %v", g.booker.resolved)
+	}
+}
+
+// Arbiter 2026-10-22: "no problem" / "no worries" approve — as reaction
+// words, so only when our last message is the question ("no worries" to
+// "Sam is running 5 min late" is about that, and is asked again).
+func TestNoProblemApprovesRightAfterTheQuestion(t *testing.T) {
+	for _, msg := range []string{"no problem", "No worries!", "no problem 👍"} {
+		g, _, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+		g.arm(t, "ext-2")
+		g.say(t, msg)
+		if len(g.booker.resolved) != 1 || !strings.HasSuffix(g.booker.resolved[0], ":ext-2:true") {
+			t.Errorf("%q: resolved %v", msg, g.booker.resolved)
+		}
+	}
+	g, _, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.arm(t, "ext-2")
+	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: "CLOCK_IN", TaskID: "task-2", TaskTitle: "Bagel run", SupporterName: "Sam"}); err != nil {
+		t.Fatal(err)
+	}
+	g.say(t, "no worries")
+	if len(g.booker.resolved) != 0 || g.ad.last() != CopyApprovalReask {
+		t.Fatalf("after a status line: resolved %v last %q", g.booker.resolved, g.ad.last())
 	}
 }

@@ -38,6 +38,7 @@ var weakHeads = wordSet("y", "ya", "yea", "si", "k", "kk", "book", "book it", "c
 // message in the thread IS the approval question (D-17 R-3).
 var reactionYes = wordSet(
 	"great", "perfect", "awesome", "amazing", "wonderful", "fine",
+	"no problem", "no worries", // Arbiter 2026-10-22: approve — as reactions, since they also answer "running 5 min late"
 	"👍", "🙌", "👌",
 )
 

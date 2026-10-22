@@ -503,7 +503,8 @@ Recorded as given, in the order asked; nothing below is built yet.
   (relayed, request kept open). Repeated emoji count once ("👍👍").
 - **I-AD** (round 3) Spelling variants accepted beyond the ruled list's
   exact forms: "lets do it", "im down", "im in" (no apostrophe) and "sì"
-  (Italian grave accent beside "sí"). Arbiter may remove them.
+  (Italian grave accent beside "sí"). **Confirmed by the Arbiter
+  2026-10-22 13:51.**
 - **I-AE** (round 3, amended round 4) A "yes + message" approves only
   when the WHOLE message after the yes is one of these closed shapes
   (after an optional but / and / also / just / oh; the request's
@@ -537,8 +538,7 @@ Recorded as given, in the order asked; nothing below is built yet.
   si / k / kk / book / book it / confirm / do it / 是 never start a "yes +
   message" (as a whole message they are still a yes). The 8-word cap is
   removed with the deny-list (I-U): the closed shapes are all shorter.
-  "no problem" / "no worries" alone are not in the ruled list and are
-  relayed, not approved — Arbiter to add if wanted.
+  "no problem" / "no worries" alone: see I-AK.
 - **I-AH** (round 5) The supporter's name in a tail. A supporter named
   Max or Min (any ruled marker) never makes "thanks Max" approve: the
   marker veto runs first, so it is relayed (fail-closed, cost: a relay).
@@ -705,3 +705,15 @@ Recorded as given, in the order asked; nothing below is built yet.
   to fail on e25acef.
 
 **M3.2d: PASS.**
+
+### Arbiter answers — 2026-10-22 13:51 (Aura)
+
+- "no problem" / "no worries" on their own approve. **I-AK** (declared):
+  they are added as REACTION words, not plain ones — they also answer a
+  status line ("Sam is running 5 min late" → "no worries"), so like
+  "great" they approve only when our last message is the approval
+  question, and a WhatsApp swipe on another message is asked again.
+  Arbiter may make them plain. Built after the round-5 PASS; to be
+  reviewed with the next T3 change.
+- I-AD spelling variants confirmed.
+- Booking list (I-S): explained, answer pending.

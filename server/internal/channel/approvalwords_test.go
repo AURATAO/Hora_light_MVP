@@ -15,7 +15,7 @@ func TestApprovalWords(t *testing.T) {
 		{"Great", true, true, false}, {"Perfect!", true, true, false}, {"👍", true, true, false}, {"Fine.", true, true, false},
 		{"no", false, false, true}, {"no thanks", false, false, true}, {"No, he needs to finish now", false, false, true},
 		{"nope, too much", false, false, true}, {"不要", false, false, true},
-		{"no problem", false, false, false}, {"no worries", false, false, false}, {"not ok", false, false, false},
+		{"no problem", true, true, false}, {"no worries", true, true, false}, {"No worries!", true, true, false}, {"not ok", false, false, false},
 		{"okay so", false, false, false}, {"ok不要", false, false, false}, {"yeah right, $10 for milk?", false, false, false},
 	} {
 		y, r := approvalYes(tc.msg)
