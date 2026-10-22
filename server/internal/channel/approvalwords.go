@@ -438,7 +438,17 @@ func approvalAnswerish(text string) bool {
 func approvalStrictAnswer(text string) bool {
 	// Particles only — not the rest of normalise (letter collapsing, emoji
 	// trimming), so "nooo 😂" is not made strict (review r4).
-	return IsStrictYesNo(text) || strictNoRE.MatchString(trimParticles(strings.TrimSpace(text)))
+	return IsStrictYesNo(text) || strictNoRE.MatchString(strictForm(text))
+}
+
+// strictForm: NFKC and lower case (clean), trailing punctuation and spaces
+// removed around the particles — "不要啦！", "不要啦～", "ＮＯ", "no," — but
+// no letter collapsing and no emoji trimming ("nooo", "no 😂" stay
+// casual). Review r5.
+func strictForm(text string) string {
+	punct := func(r rune) bool { return unicode.IsPunct(r) || unicode.IsSpace(r) || r == '~' || r == '～' }
+	s := strings.TrimRightFunc(clean(text), punct)
+	return strings.TrimRightFunc(trimParticles(s), punct)
 }
 
 // approvalCasual is I-P (version B) for an approval question: an answer

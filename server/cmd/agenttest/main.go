@@ -20,7 +20,8 @@
 //	go run ./cmd/agenttest -json cmd/agenttest/report.json   # machine-readable report (git-ignored there)
 //
 // Exit codes: 0 all pass; 1 failures (safe); 2 the model proposed approve or
-// decline where forbidden (the prompt is wrong — production re-asks); 3 a
+// decline where forbidden (the prompt is wrong — production re-asks with a
+// question open, relays with nothing open); 3 a
 // case's "server" outcome disagrees with the rules (the backend or the case
 // is wrong). `go run` reports any non-zero code as 1; build it
 // (`go build -o agenttest ./cmd/agenttest`) to see the real code.

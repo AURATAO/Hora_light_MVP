@@ -819,17 +819,34 @@ func TestIPThroughTheRouter(t *testing.T) {
 			t.Errorf("%q: resolved %v posted %v", tc.msg, g.booker.resolved, chat.posted)
 		}
 	}
-	// Booking with the supporter writing: 不要啦 is not a strict no there
-	// (I-S): nothing is booked and the draft is not dropped by it.
-	g, _, tasks, _ := contextRig(llm.IntentToSupporter, bagelT)
-	g.say(t, "new task: pick up my laundry tomorrow at 3")
-	tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: which one?", "task-2", time.Now().Add(-2*time.Minute)
-	g.say(t, "不要啦")
-	c, err := g.convs.GetConversation(context.Background(), "id-"+me)
-	if err != nil {
-		t.Fatal(err)
+	// Strict forms with punctuation or full width decline too.
+	for _, msg := range []string{"不要啦！", "不要啦～", "ＮＯ", "no,"} {
+		g, chat, tasks, _ := contextRig(llm.IntentToSupporter, bagelT)
+		g.arm(t, "ext-2")
+		tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: which one?", "task-2", time.Now().Add(-2*time.Minute)
+		g.say(t, msg)
+		if len(g.booker.resolved) != 1 || !strings.HasSuffix(g.booker.resolved[0], ":false") || len(chat.posted) != 0 {
+			t.Errorf("%q: resolved %v posted %v", msg, g.booker.resolved, chat.posted)
+		}
 	}
-	if g.booker.posts != 0 || c.Pending == nil {
-		t.Fatalf("booking: posts %d pending %v state %s", g.booker.posts, c.Pending != nil, c.State)
+	// Booking with the supporter writing: I-AN does not apply (I-S). "ok"
+	// is caught by the I-P gate (no model call); "不要啦" is not — it goes
+	// on to the summary's own handling (the model is asked).
+	for _, tc := range []struct {
+		msg       string
+		modelCall int
+	}{{"ok", 0}, {"不要啦", 1}} {
+		g, chat, tasks, fc := contextRig(llm.IntentToSupporter, bagelT)
+		g.say(t, "new task: pick up my laundry tomorrow at 3")
+		tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: which one?", "task-2", time.Now().Add(-2*time.Minute)
+		before := len(fc.calls)
+		g.say(t, tc.msg)
+		c, err := g.convs.GetConversation(context.Background(), "id-"+me)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := len(fc.calls) - before; got != tc.modelCall || g.booker.posts != 0 || c.Pending == nil || len(chat.posted) != 1 {
+			t.Errorf("booking %q: model calls %d posts %d pending %v posted %v", tc.msg, got, g.booker.posts, c.Pending != nil, chat.posted)
+		}
 	}
 }

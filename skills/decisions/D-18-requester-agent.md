@@ -339,5 +339,30 @@ yes+no → relay). Next: `-runs 5` (money cases must pass every run).
   place detail → relay; "also … tomorrow 8am" → draft; "you overcharged
   me" → escalate; price question + injection → relay).
 
-  v0.3.3–v0.3.7 have not had a model run yet: the next baseline runs
-  v0.3.7.
+  v0.3.3–v0.3.7 have not had a model run yet.
+
+- **Round 5 (7192650) — FAIL.** MAJOR: rule 6 still had a third branch
+  ("new-errand words … 'also can you … tomorrow 8am'", a time and no
+  amount) and the `draft_task` definition still read "a different place,
+  time or purpose … 'also can you…'" — both beyond the ruling; "also can
+  you grab milk" would draft. MINOR: `approvalStrictAnswer` lost
+  punctuation trimming ("不要啦！", "ＮＯ" no longer strict); the booking
+  check in the router test could not tell the paths apart; rule 10's last
+  sentence contradicted its precedence and cases copied prompt strings;
+  readme described grader v1; `money` flag inconsistent (#81–#83); stale
+  pins and D-17 version.
+
+  Fixed: prompt v0.3.8 — the `draft_task` definition and rule 6 say only
+  what was ruled (cannot be about a listed errand, or BOTH its own time
+  AND amount; "also", a time alone or an amount alone stay relay); rule
+  10 — a wrong-charge complaint escalates even as a question, a question
+  about the supporter's request for more money is relay. `strictForm`
+  (NFKC, trailing punctuation around particles; no letter collapsing, no
+  emoji trimming). The router test checks which path ran (model called
+  or not) for "ok" and "不要啦" at the summary, and "不要啦！", "不要啦～",
+  "ＮＯ", "no," decline under I-P. Cases #97 replaced (time AND amount),
+  #98 reworded, #100 (wrong charge as a question), #101 (time alone →
+  relay), #102 ("also" → relay); #81–#83 flagged money; readme for grader
+  v2. **For the Arbiter:** "also + its own time, no amount" ("also pick up
+  my dry cleaning tomorrow") — new booking or for the supporter? Today:
+  for the supporter.

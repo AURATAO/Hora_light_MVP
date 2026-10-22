@@ -766,4 +766,5 @@ Recorded as given, in the order asked; nothing below is built yet.
   NO.
 - **#52 (agent):** a whole new errand with its own time and amount is a
   new booking even while a similar errand is active — prompt rule 6
-  (D-18, v0.3.6).
+  (D-18, v0.3.8: time AND amount; "also" or a time alone stays with the
+  supporter until ruled otherwise).
