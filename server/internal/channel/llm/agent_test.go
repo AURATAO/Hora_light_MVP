@@ -131,11 +131,11 @@ func TestProviderErrorPathsCarryNoSecrets(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	for _, base := range []string{srv.URL, "http://127.0.0.1:1"} {
+	for base, want := range map[string]string{srv.URL: "provider response is not JSON", "http://127.0.0.1:1": "llm request"} {
 		o := &OpenAICompat{BaseURL: base, APIKey: "secret-key", Model: "m"}
 		_, err := o.Propose(context.Background(), "secret-person-words", AgentContext{})
-		if err == nil || strings.Contains(err.Error(), "secret") {
-			t.Errorf("%s: %v", base, err)
+		if err == nil || strings.Contains(err.Error(), "secret") || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v (want %q)", base, err, want)
 		}
 	}
 }

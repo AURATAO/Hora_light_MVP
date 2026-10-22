@@ -56,7 +56,7 @@ var yesLikeTails = wordSet("no problem", "no worries", "no rush", "thing", "100%
 // noWithReasonRE: a no-word, then punctuation, then a reason — "no, he
 // needs to finish now", "nope, too much". The punctuation is required, so
 // "no problem" / "no worries" never match (R-2).
-var noWithReasonRE = regexp.MustCompile(`^(no|nope|nah|no thanks|nvm|不要|不用|不行)\s*[,.!;:，。！]\s*(.+)$`)
+var noWithReasonRE = regexp.MustCompile(`^(no|nope|nah|no thanks|nvm|不要|不用|不行)[啊呀喔哦囉啦]*\s*[,.!;:，。！]\s*(.+)$`)
 
 // rulingMarkerRE: R-3's ruled markers — an amount, a digit, a cap or a
 // floor. Checked on the raw tail BEFORE the supporter's name is put in, so
@@ -429,4 +429,12 @@ func approvalAnswerish(text string) bool {
 	}
 	_, _, _, ok := yesWithMessage(text)
 	return ok
+}
+
+// approvalStrictAnswer is I-P's strict YES/NO for an approval question. A
+// strict no-word with a particle ("不要啦", "取消啦") is a strict no too
+// (Arbiter 2026-10-22 17:14: a decline, not words for the supporter). A
+// yes-word with a particle ("是啊") is not made strict without a ruling.
+func approvalStrictAnswer(text string) bool {
+	return IsStrictYesNo(text) || strictNoRE.MatchString(normalise(text))
 }

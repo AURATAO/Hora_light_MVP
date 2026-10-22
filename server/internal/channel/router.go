@@ -215,7 +215,11 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	if conv.State == StateAwaitingApproval {
 		looksLikeAnswer = approvalAnswerish(text) // R-2/R-3's wider words
 	}
-	if awaitingAnswer(conv.State) && looksLikeAnswer && !IsStrictYesNo(text) {
+	strict := IsStrictYesNo(text)
+	if conv.State == StateAwaitingApproval {
+		strict = approvalStrictAnswer(text) // 不要啦 is a strict no (Arbiter 2026-10-22)
+	}
+	if awaitingAnswer(conv.State) && looksLikeAnswer && !strict {
 		if handled, err := r.casualToSupporter(ctx, in, id, conv, text); handled {
 			return err
 		}

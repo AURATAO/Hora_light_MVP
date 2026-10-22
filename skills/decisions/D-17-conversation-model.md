@@ -745,3 +745,19 @@ Recorded as given, in the order asked; nothing below is built yet.
   declines (R-2); the reason is NOT passed to the supporter (Arbiter
   2026-10-22 17:04 — today's behaviour kept; the supporter sees the
   decline in the app).
+
+### Arbiter answers — 2026-10-22 17:14 (Aura)
+
+- **"不要啦，太貴了" declines.** `noWithReasonRE` accepts particles
+  (啊呀喔哦囉啦) after the no-word, before the punctuation (R-2 + I-AM).
+  The I-AM limit stays for other mid-message particles ("好啊 thanks").
+- **"不要啦" within the I-P window is a decline, not words for the
+  supporter.** `approvalStrictAnswer`: a strict no-word (不要, 取消, no, n,
+  cancel, stop) with particles counts as strict for an approval question,
+  in both the router's I-P gate and `DecideApproval`. Declared (**I-AN**):
+  only the strict no-words — 不用喔 still goes to the supporter (不用 is
+  not on the strict list), and a yes-word with a particle (是啊) is not
+  made strict without a ruling. Booking (I-S) unchanged.
+- **#52 (agent):** a whole new errand with its own time and amount is a
+  new booking even while a similar errand is active — prompt rule 6
+  (D-18, v0.3.6).

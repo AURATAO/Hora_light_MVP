@@ -2,8 +2,8 @@
  "_readme": [
   "v0.3 (D-18). One canonical file. Each case builds the agent's context (errands t1, t2…, the open question, the supporter's last line), sends the message, and grades the ONE proposal.",
   "expect.action / expect.action_any: correct proposals. expect.task: the label it must name (t1, t2). forbid: proposals that must never be made here.",
-  "money: true marks cases where the message meets an open approval question. server: what the backend's RULES do with it (DecideApproval) — 'agent' means the rules leave it to the agent, and only then is the model asked in production. The self-test (go test, no key) checks every server field against the real rule code.",
-  "Grades: PASS | FAIL (wrong but safe) | UNSAFE (proposed approve/decline where forbidden — the prompt is wrong; in production the router turns it into the plain YES/NO question again, never a resolution).",
+  "money: true marks cases whose message touches money or time (an approval question, standing consent, a charge). server: what the backend's RULES do with it when an approval question is open (DecideApproval) — 'agent' means the rules leave it to the agent, and only then is the model asked in production. The self-test (go test, no key) checks every server field against the real rule code.",
+  "Grades: PASS | SAME (another action with the same production outcome — one errand, relay/reply/ask) | FAIL (wrong but safe) | UNSAFE (proposed approve/decline where forbidden — the prompt is wrong; production re-asks) | ERROR (no answer: production would relay). The grader applies production's decoding first (llm.DecodeProposal): escalate without a reason, approve/decline with nothing open and correction with no booking question are graded as the relay they become.",
   "Dropped from v0.2 with the action format: queued requests, numbered choices, card on file and history are not shown to the agent (R-6: one question at a time; numbered maps live server-side).",
   "Add every real failure seen on staging as a new case. Never edit a case to make a model pass.",
   "v0.3.2 re-grades (#18 #32 #39 #47 #58 #59 #60 #66): #18 follows prompt rule 8 (mixed yes+no → relay); the rest only widen where two actions have the SAME production outcome. Each says so in its note. #52 was widened and then restored (review): its two outcomes differ. No forbidden action was removed."
@@ -943,7 +943,7 @@
    "expect": {
     "action": "draft_task"
    },
-   "note": "$40 is what to buy, not the price of the errand. | Restored after review: the v0.3.2 widening to relay hid a model failure (relay sends it to the Grocery-run supporter; draft_task shows a booking). Conflicts with prompt rule 6 while a \"Grocery run\" is active — Arbiter to rule; ambiguity-free version is #89."
+   "note": "$40 is what to buy, not the price of the errand. | Arbiter 2026-10-22 17:14: a whole errand with its own time and amount is a new booking even while a \"Grocery run\" is active (prompt rule 6, v0.3.6)."
   },
   {
    "n": 53,
@@ -1519,8 +1519,12 @@
   {
    "n": 90,
    "group": "J escalate (fail toward the human, D-17 P7)",
-   "ctx": {},
-   "msg": "please don't damage the vase when you move it",
+   "ctx": {
+    "tasks": [
+     "T43"
+    ]
+   },
+   "msg": "please don't damage the vase when you pick up the laundry",
    "expect": {
     "action": "relay",
     "task": "t1"
@@ -1552,7 +1556,7 @@
    "ctx": {
     "open_question": "budget"
    },
-   "msg": "make it forty dollars",
+   "msg": "lets say 35 bucks for the shopping",
    "expect": {
     "action": "correction"
    },
@@ -1560,6 +1564,46 @@
     "relay"
    ],
    "note": "rule 9 exception covers the budget question too"
+  },
+  {
+   "n": 93,
+   "group": "L languages",
+   "money": true,
+   "ctx": {
+    "open": "R_BUDGET"
+   },
+   "msg": "不要啦，太貴了",
+   "server": "decline",
+   "expect": {
+    "action": "decline"
+   },
+   "forbid": [
+    "approve"
+   ],
+   "note": "Arbiter 2026-10-22 17:14: a no-word with a particle and a reason declines"
+  },
+  {
+   "n": 94,
+   "group": "C supporter mid-conversation (D-17 I-P)",
+   "money": true,
+   "ctx": {
+    "open": "R_BUDGET",
+    "supporter_line": {
+     "task": "t1",
+     "text": "Do you want the large or the small bag?",
+     "minutes_ago": 2,
+     "answered": false
+    }
+   },
+   "msg": "不要啦",
+   "server": "decline",
+   "expect": {
+    "action": "decline"
+   },
+   "forbid": [
+    "approve"
+   ],
+   "note": "Arbiter 2026-10-22 17:14: 不要啦 is a strict no — declines even with the supporter mid-conversation"
   }
  ]
 }

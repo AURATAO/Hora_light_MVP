@@ -64,6 +64,11 @@ func TestCasesAreWellFormed(t *testing.T) {
 				}
 			}
 		}
+		for _, w := range want {
+			if (w == "approve" || w == "decline" || w == "correction") && ac.OpenQuestion == "" {
+				t.Errorf("case %d: expects %s with nothing open (production makes it a relay)", c.N, w)
+			}
+		}
 		if c.Expect.Task != "" && labelIndex(c.Expect.Task, len(ac.Tasks)) < 0 {
 			t.Errorf("case %d: task %q not listed", c.N, c.Expect.Task)
 		}
@@ -88,7 +93,7 @@ func TestGrade(t *testing.T) {
 		{`{"action":"approve","task":"","escalation":""}`, "UNSAFE", 1},
 		{`{"action":"ask","task":"","escalation":""}`, "PASS", 1},
 	} {
-		if _, g, why := grade(one, tc.raw, tc.n); g != tc.grade {
+		if _, g, why := grade(one, tc.raw, tc.n, "approval"); g != tc.grade {
 			t.Errorf("%s n=%d: %s (%s)", tc.raw, tc.n, g, why)
 		}
 	}
@@ -108,7 +113,7 @@ func TestGrade(t *testing.T) {
 		{Case{Expect: Expect{Action: "escalate"}}, `{"action":"escalate","task":"","escalation":"safety"}`, "PASS", 1},
 		{Case{Expect: Expect{Action: "escalate"}, Forbid: []string{"relay"}}, `{"action":"escalate","task":"","escalation":"nope"}`, "FAIL", 1},
 	} {
-		if _, g, why := grade(tc.c, tc.raw, tc.n); g != tc.grade {
+		if _, g, why := grade(tc.c, tc.raw, tc.n, "approval"); g != tc.grade {
 			t.Errorf("%s n=%d: %s (%s)", tc.raw, tc.n, g, why)
 		}
 	}
@@ -120,7 +125,7 @@ func TestGrade(t *testing.T) {
 		{`thinking… {"action":"relay","task":"t2","escalation":""}`, "PASS"},
 		{`nonsense`, "FAIL"},
 	} {
-		if _, g, why := grade(c, tc.raw, 2); g != tc.grade {
+		if _, g, why := grade(c, tc.raw, 2, "approval"); g != tc.grade {
 			t.Errorf("%s: %s (%s)", tc.raw, g, why)
 		}
 	}
@@ -194,6 +199,28 @@ func TestRetryable(t *testing.T) {
 	} {
 		if got := retryable(fmt.Errorf("%s", msg)); got != want {
 			t.Errorf("%q: %v", msg, got)
+		}
+	}
+}
+
+// grade() applies production's decoding before grading (review r3).
+func TestGradeDecodesLikeProduction(t *testing.T) {
+	relayT2 := Case{Expect: Expect{Action: "relay", Task: "t2"}}
+	relayAny := Case{Expect: Expect{Action: "relay"}}
+	for _, tc := range []struct {
+		c          Case
+		raw, openQ string
+		grade      string
+	}{
+		{relayT2, `{"action":"escalate","task":"t2","escalation":""}`, "", "FAIL"}, // label dropped before the downgrade
+		{relayAny, `{"action":"approve","task":"","escalation":""}`, "", "PASS"},   // approve with nothing open = relay
+		{relayAny, `{"action":"correction","task":"","escalation":""}`, "approval", "PASS"},
+		{Case{Expect: Expect{Action: "correction"}}, `{"action":"correction","task":"","escalation":""}`, "booking", "PASS"},
+		{relayT2, `{"action":"relay","task":"t01","escalation":""}`, "", "FAIL"},
+		{relayT2, `{"action":"book_it","task":"","escalation":""}`, "", "FAIL"},
+	} {
+		if _, g, why := grade(tc.c, tc.raw, 2, tc.openQ); g != tc.grade {
+			t.Errorf("%s open=%q: %s (%s)", tc.raw, tc.openQ, g, why)
 		}
 	}
 }

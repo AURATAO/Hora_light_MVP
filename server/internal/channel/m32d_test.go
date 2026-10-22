@@ -733,9 +733,10 @@ func TestThatsFineAndParticlesNegatives(t *testing.T) {
 		{ApprovalFacts{Text: "好啊不要", QuestionIsLast: true}, VerdictNotAnAnswer},
 		{ApprovalFacts{Text: "ok啊", QuestionIsLast: true}, VerdictNotAnAnswer},
 		{ApprovalFacts{Text: "不要，可以啊", QuestionIsLast: true}, VerdictPassOnKeep},
-		// I-AM limit (declared): a particle mid-message is not stripped —
-		// the message goes to the supporter, the request stays open.
-		{ApprovalFacts{Text: "不要啦，太貴了", QuestionIsLast: true}, VerdictNotAnAnswer},
+		// Arbiter 2026-10-22 17:14: a no-word with a particle and a reason
+		// declines. Other mid-message particles are not stripped (I-AM).
+		{ApprovalFacts{Text: "不要啦，太貴了", QuestionIsLast: true}, VerdictDecline},
+		{ApprovalFacts{Text: "不行喔，太晚了", QuestionIsLast: true}, VerdictDecline},
 		{ApprovalFacts{Text: "好啊 thanks", QuestionIsLast: true}, VerdictNotAnAnswer},
 		{ApprovalFacts{Text: "yes that's fine?", QuestionIsLast: true}, VerdictPassOnKeep},
 		{ApprovalFacts{Text: "yes, that's fine for now", QuestionIsLast: true}, VerdictPassOnKeep},
@@ -747,10 +748,26 @@ func TestThatsFineAndParticlesNegatives(t *testing.T) {
 		// (I-AG: plain-consent words are not limited) — pinned on purpose.
 		{ApprovalFacts{Text: "yes that's fine", QuestionIsLast: true, SwipedElsewhere: true}, VerdictApprove},
 		{ApprovalFacts{Text: "可以啊", QuestionIsLast: true, SupporterLive: true}, VerdictToSupporter},
-		{ApprovalFacts{Text: "不要啦", QuestionIsLast: true, SupporterLive: true}, VerdictToSupporter},
+		// Arbiter 2026-10-22 17:14: 不要啦 is a strict no — a decline even
+		// with the supporter mid-conversation; 可以啊 still goes to them.
+		{ApprovalFacts{Text: "不要啦", QuestionIsLast: true, SupporterLive: true}, VerdictDecline},
+		{ApprovalFacts{Text: "取消啦", QuestionIsLast: true, SupporterLive: true}, VerdictDecline},
+		{ApprovalFacts{Text: "不用喔", QuestionIsLast: true, SupporterLive: true}, VerdictToSupporter},
 	} {
 		if got := DecideApproval(tc.f); got != tc.want {
 			t.Errorf("%+v: %d, want %d", tc.f, got, tc.want)
 		}
+	}
+}
+
+// Arbiter 2026-10-22 17:14, end to end: with the supporter writing in the
+// last minutes, "不要啦" declines the request instead of going to them.
+func TestBuYaoLaDeclinesUnderIP(t *testing.T) {
+	g, chat, tasks, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.arm(t, "ext-2")
+	tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: which one?", "task-2", time.Now().Add(-2*time.Minute)
+	g.say(t, "不要啦")
+	if len(g.booker.resolved) != 1 || !strings.HasSuffix(g.booker.resolved[0], ":ext-2:false") || len(chat.posted) != 0 {
+		t.Fatalf("resolved %v posted %v", g.booker.resolved, chat.posted)
 	}
 }

@@ -298,3 +298,19 @@ yes+no → relay). Next: `-runs 5` (money cases must pass every run).
   for that supporter? (b) "不要啦，太貴了" — decline (R-2 + I-AM), or pass
   on as today? (c) "不要啦" within 10 minutes of a supporter line — to the
   supporter as today (I-P strict list), or a decline?
+
+- **Round 3 (39c8ed3) — PASS.** MINOR (all fixed after): the grader kept
+  the label through the escalate downgrade and lacked production's other
+  downgrades (approve/decline with nothing open, correction with no
+  question) — now applied, with the raw action kept in the report and a
+  well-formedness guard; rule 10 had narrowed below the escalate
+  definition — v0.3.5 points back to every escalate reason and separates
+  "why is it more?" (relay) from "you overcharged me" (escalate); #90
+  reworded to fit its errand; #92 no longer copies a prompt example;
+  `_readme` grades and `money` wording corrected; the decode-error test
+  now asserts the fixed text; the runner's default timeout is
+  production's 45 s; read-response 503 pinned.
+
+  Arbiter 2026-10-22 17:14 answered (a)–(c): #52 is a new booking
+  (prompt rule 6, v0.3.6); "不要啦，太貴了" declines; "不要啦" in the I-P
+  window declines (D-17 I-AN). Cases #93, #94.

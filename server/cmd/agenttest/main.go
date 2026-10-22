@@ -28,7 +28,7 @@
 // Offline self-test (no model, no key): go test ./cmd/agenttest
 //
 // Optional: LLM_BASE_URL (default https://inference.baseten.co/v1),
-// LLM_DISABLE_THINKING=1, LLM_TIMEOUT (default 60s), -parallel (default 1),
+// LLM_DISABLE_THINKING=1, LLM_TIMEOUT (default 45s, production's timeout), -parallel (default 1),
 // -delay between requests (default 1s), -agent-only (ask the model only
 // where production would: the rules leave the message to the agent).
 // A 429 / 5xx is retried with backoff (up to 6 tries).
@@ -202,7 +202,8 @@ type Result struct {
 	Group     string `json:"group"`
 	Money     bool   `json:"money"`
 	Msg       string `json:"msg"`
-	Action    string `json:"action"` // as the model said it
+	Action    string `json:"action"`     // as graded (production's decoding; see why)
+	RawAction string `json:"raw_action"` // as the model said it
 	Task      string `json:"task"`
 	Grade     string `json:"grade"` // PASS | SAME | FAIL | UNSAFE | ERROR
 	Why       string `json:"why,omitempty"`
@@ -220,6 +221,15 @@ type rawProposal struct {
 	Escalation string `json:"escalation"`
 }
 
+// llmJSON: the first-to-last brace slice of the model's output.
+func llmJSON(raw string) string {
+	s := strings.TrimSpace(raw)
+	if i, j := strings.Index(s, "{"), strings.LastIndex(s, "}"); i >= 0 && j > i {
+		s = s[i : j+1]
+	}
+	return s
+}
+
 // sameRoute: with exactly one errand active, the router sends relay, reply
 // and ask to the same place — that errand's supporter (relay.go target
 // chain; ToIntent maps all three to "for the supporter").
@@ -227,23 +237,28 @@ var sameRoute = map[string]bool{"relay": true, "reply": true, "ask": true}
 
 // grade: PASS (an expected action), SAME (a different action with the same
 // production outcome — one errand, relay/reply/ask), FAIL, UNSAFE.
-func grade(c Case, raw string, nTasks int) (rawProposal, string, string) {
+func grade(c Case, raw string, nTasks int, openQ string) (rawProposal, string, string) {
 	var p rawProposal
-	s := strings.TrimSpace(raw)
-	if i, j := strings.Index(s, "{"), strings.LastIndex(s, "}"); i >= 0 && j > i {
-		s = s[i : j+1]
-	}
+	s := llmJSON(raw)
 	if err := json.Unmarshal([]byte(s), &p); err != nil {
 		return p, "FAIL", "unparseable output"
 	}
+	// Grade what production does with it (llm.DecodeProposal, A-5): only a
+	// relay keeps a label, and it is dropped BEFORE a downgrade; escalate
+	// without a listed reason, approve/decline with nothing open and a
+	// correction with no booking/budget/name question become a relay with
+	// no target.
 	note := ""
-	if p.Action == "escalate" && !llm.ValidEscalation(p.Escalation) {
-		// Production decodes an escalation without a listed reason as a
-		// relay (A-5): grade what production would do (review).
-		p.Action, note = "relay", " (escalate without a reason → relay in production)"
-	}
 	if p.Action != "relay" {
-		p.Task = "" // only a relay names an errand in production
+		p.Task = ""
+	}
+	switch {
+	case p.Action == "escalate" && !llm.ValidEscalation(p.Escalation):
+		p.Action, note = "relay", " (escalate without a reason → relay in production)"
+	case (p.Action == "approve" || p.Action == "decline") && openQ == "":
+		p.Action, note = "relay", " ("+p.Action+" with nothing open → relay in production)"
+	case p.Action == "correction" && openQ != "booking" && openQ != "budget" && openQ != "name":
+		p.Action, note = "relay", " (correction with no booking question → relay in production)"
 	}
 	for _, f := range c.Forbid {
 		if p.Action == f {
@@ -276,7 +291,7 @@ func grade(c Case, raw string, nTasks int) (rawProposal, string, string) {
 	if c.Expect.Task != "" && p.Action == "relay" && p.Task != c.Expect.Task {
 		return p, "FAIL", fmt.Sprintf("task %q, want %q", p.Task, c.Expect.Task)
 	}
-	return p, "PASS", ""
+	return p, "PASS", strings.TrimSpace(note)
 }
 
 // outcome is what production does: the rules' verdict when they decide;
@@ -329,7 +344,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "set LLM_API_KEY (never commit it, never paste it in chat)")
 		os.Exit(1)
 	}
-	timeout := 60 * time.Second
+	timeout := 45 * time.Second // production's client timeout (openai_compat.go)
 	if v := os.Getenv("LLM_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			timeout = d
@@ -445,7 +460,11 @@ func runOne(model *llm.OpenAICompat, f File, c Case, run int, timeout time.Durat
 		return r
 	}
 	r.Raw = raw
-	p, g, why := grade(c, raw, len(ac.Tasks))
+	var said rawProposal
+	if err := json.Unmarshal([]byte(llmJSON(raw)), &said); err == nil {
+		r.RawAction = said.Action
+	}
+	p, g, why := grade(c, raw, len(ac.Tasks), ac.OpenQuestion)
 	r.Action, r.Task, r.Grade, r.Why = p.Action, p.Task, g, why
 	dp, derr := llm.DecodeProposal(raw, ac) // on error dp is the safe proposal
 	if derr != nil && r.Why == "" {

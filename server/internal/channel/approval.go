@@ -140,7 +140,7 @@ type ApprovalFacts struct {
 func DecideApproval(f ApprovalFacts) ApprovalVerdict {
 	text := f.Text
 	answerish := approvalAnswerish(text)
-	if f.SupporterLive && answerish && !IsStrictYesNo(text) {
+	if f.SupporterLive && answerish && !approvalStrictAnswer(text) {
 		return VerdictToSupporter
 	}
 	plain, reaction := approvalYes(text)
