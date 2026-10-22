@@ -742,5 +742,6 @@ Recorded as given, in the order asked; nothing below is built yet.
   thanks, let him/her/them/NAME know) approves AND passes the message to
   the supporter; the leading yes is the answer. Any other message after a
   yes is passed on with the request kept open. A leading no with a reason
-  declines (R-2); whether that reason is also passed to the supporter is
-  asked of the Arbiter (today it is not).
+  declines (R-2); the reason is NOT passed to the supporter (Arbiter
+  2026-10-22 17:04 — today's behaviour kept; the supporter sees the
+  decline in the app).
