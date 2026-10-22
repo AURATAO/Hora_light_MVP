@@ -27,6 +27,7 @@ const (
 	HandoffHumanRequested HandoffReason = "human_requested"
 	HandoffNotUnderstood  HandoffReason = "not_understood"
 	HandoffPayment3DS     HandoffReason = "payment_3ds"
+	HandoffAgentEscalated HandoffReason = "agent_escalated" // D-18: the agent judged a person must handle it
 )
 
 // ThreadMessage is one line of the conversation, for ops.

@@ -69,6 +69,13 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		Thread:   store,
 		Tasks:    store,
 	}
+	// D-18: the requester agent replaces the context classifier only when
+	// CHANNEL_AGENT=1 (off by default; staging first). It proposes; the
+	// router's rules decide (money and time never through it).
+	if os.Getenv("CHANNEL_AGENT") == "1" {
+		router.Agent = model
+		log.Printf("[channel] requester agent ON (D-18)")
+	}
 	// Chat relay both ways (channel_relay.go) — only with TalkJS REST
 	// credentials; without them a requester's small talk gets the plain
 	// acknowledgement, not "couldn't pass that on".

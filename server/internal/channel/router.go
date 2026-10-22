@@ -131,6 +131,9 @@ type Router struct {
 	// InContext labels a message when a supporter is on the job (D-17 P2);
 	// nil = the plain Classifier with "to the supporter" as the default.
 	InContext llm.ContextClassifier
+	// Agent, when set, replaces InContext (D-18, behind CHANNEL_AGENT): it
+	// proposes what a message is; the rules decide. nil = today's routing.
+	Agent llm.Agent
 	// Go runs a reply off the request path when the caller is an HTTP
 	// request (S-32: the setup page's finish step must not wait on
 	// Sendblue/Meta). Default `go f()`; tests run it inline.

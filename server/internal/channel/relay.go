@@ -774,13 +774,28 @@ func (r *Router) routeInContextLabel(ctx context.Context, in Inbound, id Identit
 	// Without a context classifier, the plain one decides only "new
 	// errand or not"; everything else is for the supporter.
 	intent := llm.IntentToSupporter
-	if r.InContext == nil {
+	agentTarget, agentAsks := "", false
+	switch {
+	case r.Agent != nil:
+		// D-18: the agent proposes; the rules above have already run, and
+		// nothing below moves money or time.
+		p := r.propose(ctx, id, text, active, conv, last, lastTask, lastAt, answered)
+		if p.Action == llm.ActionEscalate {
+			log.Printf("[channel] agent escalation identity=%s reason=%s", id.ID, p.Escalation)
+			return true, "", r.handOff(ctx, in, id, conv, HandoffAgentEscalated)
+		}
+		intent = llm.ToIntent(p)
+		if p.Task >= 0 && p.Task < len(active) {
+			agentTarget = active[p.Task].ID
+		}
+		agentAsks = p.Action == llm.ActionAsk
+	case r.InContext == nil:
 		if r.Classifier != nil {
 			if got, err := r.Classifier.Classify(ctx, text); err == nil && got == llm.IntentNewTask {
 				intent = llm.IntentNewTask
 			}
 		}
-	} else {
+	default:
 		c := llm.Context{LastSupporterLine: last, OpenQuestion: openQuestion(conv.State)}
 		for _, t := range active {
 			c.ActiveTasks = append(c.ActiveTasks, llm.ContextTask{Title: t.Title, SupporterName: DisplayName(FirstName(t.SupporterName))})
@@ -805,10 +820,15 @@ func (r *Router) routeInContextLabel(ctx context.Context, in Inbound, id Identit
 		// wrote, else the only one; several and no signal → the list
 		// (idle), or a line naming the way out (mid-question, where the
 		// list cannot hold).
+		// With the agent (D-18): a supporter named in the words still wins;
+		// then the errand the agent named; an agent that cannot tell skips
+		// the "who last wrote" guess.
 		target := ""
 		if t, ok := supporterNamed(active, text); ok {
 			target = t.ID
-		} else if lastTask != "" {
+		} else if agentTarget != "" {
+			target = agentTarget
+		} else if lastTask != "" && !agentAsks {
 			target = lastTask
 		} else if len(active) == 1 {
 			target = active[0].ID
@@ -983,6 +1003,12 @@ func (r *Router) lastSupporterLineErr(ctx context.Context, in Inbound, id Identi
 // one, the plain classifier for "new errand or not"); any failure is
 // "to the supporter" (P7).
 func (r *Router) classifyActive(ctx context.Context, text string, active []ActiveTask, conv Conversation) llm.Intent {
+	if r.Agent != nil {
+		// Only "new errand or not" is read here (a held relay's choice
+		// list): an escalation or a target is not acted on mid-choice.
+		p := r.propose(ctx, Identity{}, text, active, conv, "", "", time.Time{}, false)
+		return llm.ToIntent(p)
+	}
 	if r.InContext == nil {
 		if r.Classifier != nil {
 			if got, err := r.Classifier.Classify(ctx, text); err == nil && got == llm.IntentNewTask {
@@ -1067,4 +1093,35 @@ func stillWaiting(conv Conversation) string {
 		return CopyStillWaitingSetup
 	}
 	return CopyStillWaitingGeneric
+}
+
+// propose asks the requester agent (D-18) with the thread's context: the
+// active errands (t1, t2… — no ids), our open question, and the
+// supporter's last line. Any failure is the safe proposal: for the
+// supporter, no target (D-17 P7). The person's words and the proposal's
+// fields are never logged beyond the action.
+func (r *Router) propose(ctx context.Context, id Identity, text string, active []ActiveTask, conv Conversation, last, lastTask string, lastAt time.Time, answered bool) llm.Proposal {
+	c := llm.AgentContext{OpenQuestion: openQuestion(conv.State)}
+	for _, t := range active {
+		c.Tasks = append(c.Tasks, llm.AgentTask{Title: t.Title, Supporter: DisplayName(FirstName(t.SupporterName))})
+	}
+	if last != "" {
+		l := &llm.AgentLine{Task: -1, Text: last, Answered: answered}
+		for i, t := range active {
+			if t.ID == lastTask {
+				l.Task = i
+			}
+		}
+		if !lastAt.IsZero() {
+			l.MinutesAgo = int(r.now().Sub(lastAt).Minutes())
+		}
+		c.SupporterLine = l
+	}
+	p, err := r.Agent.Propose(ctx, text, c)
+	if err != nil {
+		log.Printf("[channel] agent (using %s): %v", llm.SafeProposal().Action, err)
+		return llm.SafeProposal()
+	}
+	log.Printf("[channel] agent identity=%s action=%s", id.ID, p.Action)
+	return p
 }
