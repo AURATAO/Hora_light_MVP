@@ -463,9 +463,16 @@ Recorded as given, in the order asked; nothing below is built yet.
   don't, never) and "wait / hold on", plus 不超過 / 只要 / 如果 / 最多 /
   最少 / 不要 / 不用 / 不. Wrongly conditional costs one more message;
   wrongly unconditional would approve.
-- **I-V** A `TouchOutbound` failure is logged, not failed (the message is
-  out); it can only make the reaction-word rule miss a message that
-  followed the question.
+- **I-V** (rewritten, round 2) The outbound stamp is taken BEFORE every
+  send, and a failure to take it FAILS the send (fail closed for the
+  reaction-word rule). Consequence, accepted: on a database error a
+  message that used to go out does not — a booking confirmation after the
+  charge (the inbound is replayed and gets "Got it" instead of "Booked";
+  no double booking: the claim and R-1 hold), the 3DS handoff notice, a
+  status/receipt message (not retried; email and push still carry it), an
+  ops message, the setup link. On first contact (no conversation row) the
+  stamp is zero and the send proceeds; a zero question stamp is stored as
+  NULL, so reaction words are refused.
 - **I-W** Approve-then-relay: if the relay fails after the approval, the
   approval stands and the person is told the message could not be passed
   on.
@@ -477,10 +484,30 @@ Recorded as given, in the order asked; nothing below is built yet.
 - **I-Y** (round 1) Under I-P, a yes + message goes whole to the supporter
   of the LAST supporter line, which may not be the approval's task; the
   person is told whom it went to, and nothing moves.
-- **I-Z** (round 1) R-1 compares the provider's send time with our clock.
-  A provider clock running seconds behind ours would re-ask every booking
-  YES for that person; each refusal is logged with the gap so it shows up.
-  Accepted under the no-margin ruling; revisit if the logs show it.
+- **I-Z** (round 1, extended round 2) R-1 compares the provider's send
+  time with our clock. A provider clock running seconds behind ours would
+  re-ask every booking YES for that person; each refusal is logged with
+  the gap so it shows up. And our stamps are "the provider API returned",
+  not "the phone received it": a YES sent after the API returned but
+  before delivery (Sendblue answers "queued") passes. Both accepted under
+  the no-margin ruling; revisit if the logs show it.
+- **I-AA** (round 2) Stamp order is not delivery order: a message stamped
+  just before the question but delivered after it leaves the question
+  "last", so a reaction word about it could approve. The window is the
+  gap between two sends to one thread (milliseconds; most likely a
+  supporter chat line arriving with a request). Accepted; serialising
+  sends per thread would close it.
+- **I-AB** (round 2) The R-3 emoji rule: only listed friendly emoji
+  (🙏 😊 🙂 😀 😄 😁 😃 😂 🤣 😎 💪 🎉 🥳 💯 ❤) and the answer emoji (👍 ✅
+  🙌 👌) may follow a yes; any other emoji in a tail makes it conditional
+  (relayed, request kept open). Repeated emoji count once ("👍👍").
+- **I-AC** (round 2) The condition list cannot be complete; two
+  structural backstops: a tail longer than 8 words is conditional, and
+  the ambiguous heads y / ya / yea / si / k / kk / book / book it /
+  confirm / do it / 是 never start a "yes + message" (as a whole message
+  they are still a yes). Each backstop errs toward relaying. "no problem"
+  / "no worries" alone are not in the ruled list and are relayed, not
+  approved — Arbiter to add if wanted.
 
 ### M3.2d review log
 
@@ -525,3 +552,33 @@ Recorded as given, in the order asked; nothing below is built yet.
   no task id, guards over the wider words, fail-closed send, PG: the
   question's own stamp kept across an intervening message, unknown
   address, forward-only mark, handoff and re-claim resets.
+- **Round 2 (1914e50) — FAIL.** MAJOR: (1) `conditionRE` ran on
+  letter-collapsed text, so its own doubled spellings could never match —
+  the ruled "unless" and "less", "three dollars", "steep", "too"; `più`
+  after `\b` was dead (RE2's `\b` is ASCII); (2) the unknown-bubble guard
+  in `routeReply` still used yesRE, so the wider words resolved an
+  approval swiped on a message we cannot identify; (3) the failed-booking
+  retry prompt had no pre-send stamp — a YES processed while it was being
+  sent retried the charge; (4) marker-free tails still approved
+  (conditional phrases, hedges, auxiliary questions, more contractions,
+  Chinese deferrals, es/it), ambiguous heads ("y tho", "si es barato")
+  and laughter heads ("kkkkk, lol"). MINOR: I-V contradicted the code;
+  stamp order vs delivery order; API-return vs delivery; `mixedNo` too
+  broad on negated affirmatives; the emoji rule undeclared; plain yeses
+  relayed ("yes thanks", "👍👍"); a nil draft could panic in the R-1
+  re-show; a failed pass-on lacked the still-waiting line. Verifier: no
+  RED (I-05 INCOMPLETE).
+
+  Fixed (all): markers matched on the cleaned, uncollapsed tail (and the
+  collapsed one); non-ASCII words outside `\b`; the ruled R-3 markers
+  tested verbatim; `routeReply` uses the approval words in
+  `awaiting_approval`; the retry prompts stamped before the send as well
+  as after; condition classes added; I-AC backstops (length cap, weak
+  heads; a head must be a real list word); `mixedNo` treats a negated
+  reason as a decline; polite and repeated-emoji tails are a plain yes;
+  `showSummary` guards a nil draft; a failed pass-on still says the
+  question waits; I-V rewritten; I-Z extended; I-AA, I-AB, I-AC declared.
+  Tests: ruled markers verbatim, the round-2 not-approved table, plain
+  yeses that must keep working, negated reasons, unknown bubble × wider
+  words, a YES processed during the retry prompt (shown to fail without
+  the fix), failed pass-on.

@@ -567,11 +567,12 @@ func (r *Router) passOnKeepingQuestion(ctx context.Context, in Inbound, id Ident
 	if conv.ApprovalTaskID == "" || r.Chat == nil {
 		return r.Reply(ctx, in, approvalReask(conv), "")
 	}
-	sent, err := r.relaySent(ctx, in, id, conv.ApprovalTaskID, text)
-	if err != nil || !sent {
-		return err // relaySent told them it failed
+	who := r.supporterFirstName(ctx, id, conv.ApprovalTaskID)
+	line := fmt.Sprintf(CopyCouldntPassOn, strings.TrimSpace(text), who)
+	if r.relayQuiet(ctx, in, id, conv.ApprovalTaskID, text) {
+		line = fmt.Sprintf(CopyPassedOn, strings.TrimSpace(text), who)
 	}
-	return r.Reply(ctx, in, fmt.Sprintf(CopyPassedOn, strings.TrimSpace(text), r.supporterFirstName(ctx, id, conv.ApprovalTaskID))+" "+stillWaiting(conv), "")
+	return r.Reply(ctx, in, line+" "+stillWaiting(conv), "") // the question still waits either way
 }
 
 // supporterFirstName for a task, for "(Passed … to Alex.)".

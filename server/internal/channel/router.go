@@ -412,6 +412,11 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 }
 
 func (r *Router) showSummary(ctx context.Context, in Inbound, conv Conversation) error {
+	if conv.Pending == nil {
+		// Nothing to summarise (a stale snapshot left awaiting_confirm
+		// without a draft): say so instead of failing.
+		return r.Reply(ctx, in, CopyAck, "")
+	}
 	if r.AutoExtendMinutes <= 0 && !conv.Pending.NoAutoExtend {
 		// The summary would state a consent with no figure. Configuration
 		// error: fail the route (retried) rather than misstate exposure.
@@ -642,6 +647,8 @@ func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Co
 	case PostOwesBalance, PostDeclined:
 		// Keep the draft: once the card or balance is sorted, YES retries.
 		conv.State = StateAwaitingConfirm
+		shown := r.now() // the retry prompt is a question of ours (R-1): stamped before it goes out, again after
+		conv.QuestionShownAt = &shown
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 			log.Printf("[channel] save after post identity=%s: %v", id.ID, err)
 		}
@@ -671,6 +678,8 @@ func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Co
 		})
 	default:
 		conv.State = StateAwaitingConfirm
+		shown := r.now() // as above (R-1)
+		conv.QuestionShownAt = &shown
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 			log.Printf("[channel] save after post identity=%s: %v", id.ID, err)
 		}

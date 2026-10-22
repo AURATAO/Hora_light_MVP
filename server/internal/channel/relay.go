@@ -170,6 +170,9 @@ func (r *Router) routeReply(ctx context.Context, in Inbound, id Identity, conv C
 		return true, err
 	}
 	bare := IsYes(text) || IsNo(text)
+	if conv.State == StateAwaitingApproval {
+		bare = approvalAnswerish(text) // the wider approval words (D-17 R-2/R-3)
+	}
 	switch kind {
 	case bubbleRelay:
 		if r.Chat == nil {

@@ -29,7 +29,7 @@ func TestApprovalWords(t *testing.T) {
 		ok             bool
 	}{
 		{"yes but tell him to hurry", "but tell him to hurry", false, false, true},
-		{"Ok, thanks Alex!", "thanks alex!", false, false, true},
+		{"Ok, thanks Alex!", "thanks alex", false, false, true},
 		{"Yesss — and grab napkins", "and grab napkins", false, false, true},
 		{"yes but max $5", "but max $5", false, true, true},
 		{"yes if it's organic", "if it's organic", false, true, true},
@@ -112,6 +112,45 @@ func TestApprovalWordsEdges(t *testing.T) {
 		}
 	}
 	for _, msg := range []string{"no, he needs to finish now", "nope, too much", "no thanks", "不要，太貴"} {
+		if !approvalNo(msg) || mixedNo(msg) {
+			t.Errorf("%q: a decline (no=%v mixed=%v)", msg, approvalNo(msg), mixedNo(msg))
+		}
+	}
+}
+
+// Review round 2 (M3.2d): the Arbiter's R-3 markers, verbatim, each as a
+// tail; spellings that collapsing repeated letters would have broken;
+// hedges, conditional phrases, auxiliary questions, contractions; weak and
+// laughter heads; the length cap.
+func TestApprovalTailsRound2(t *testing.T) {
+	ruled := []string{"$5", "5", "max", "min", "only", "if", "unless", "under", "over", "less", "more than", "up to", "at most", "不超過", "只要", "如果", "最多"}
+	for _, m := range ruled {
+		msg := "yes " + m + " x"
+		if _, _, c, ok := yesWithMessage(msg); !ok || !c {
+			t.Errorf("ruled marker %q: ok=%v conditional=%v", m, ok, c)
+		}
+	}
+	notApproved := []string{
+		"yes unless he's late", "ok, less please", "yes three dollars", "ok that's steep", "sì, più tardi",
+		"ok maybe", "yes as long as he's quick", "sure we'll see", "ok did he finish", "ok but he didnt call",
+		"好，我再想想", "yes, mañana", "ok idk", "yes provided it's fresh",
+		"y tho", "si es barato", "ya veremos", "k whatever", "kkkkk, lol", "yyyy hmm",
+		"yes and also could you grab some extra napkins and a lemon on the way back",
+	}
+	for _, msg := range notApproved {
+		_, _, c, ok := yesWithMessage(msg)
+		if y, _ := approvalYes(msg); y || (ok && !c) {
+			t.Errorf("%q approves: plain=%v ok=%v conditional=%v", msg, y, ok, c)
+		}
+	}
+	// Plain yeses that must keep working.
+	for _, msg := range []string{"Yes👍", "👍👍", "yes 👍👍", "ok 😂", "yes 💪", "Yes, please", "yes thanks", "yes thank you so much", "sì", "ok ✅"} {
+		if y, _ := approvalYes(msg); !y {
+			t.Errorf("%q: should be a plain yes", msg)
+		}
+	}
+	// A negated reason is a decline; an affirming or asking one is mixed.
+	for _, msg := range []string{"no, I'm not fine with that", "no, not ok", "no, he can't wait"} {
 		if !approvalNo(msg) || mixedNo(msg) {
 			t.Errorf("%q: a decline (no=%v mixed=%v)", msg, approvalNo(msg), mixedNo(msg))
 		}

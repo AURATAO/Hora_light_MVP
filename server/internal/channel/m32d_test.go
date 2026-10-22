@@ -293,3 +293,54 @@ func TestSendFailsClosedWithoutAStamp(t *testing.T) {
 		t.Fatalf("err %v sent %d", err, len(g.ad.sent)-sent)
 	}
 }
+
+// Review round 2: a reply swiped on a message we cannot identify is asked
+// again — the wider approval words included, not only yesRE.
+func TestUnknownBubbleCoversTheWiderWords(t *testing.T) {
+	for _, msg := range []string{"Sounds good", "100%", "Great", "yes but tell him to hurry", "no thanks"} {
+		g, _, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+		g.arm(t, "ext-2")
+		in := Inbound{Channel: IMessage, ProviderMessageID: "u-" + msg, From: me, Text: msg, ReplyToProviderID: "not-on-record", ReceivedAt: time.Now()}
+		if err := g.r.HandleInbound(context.Background(), in); err != nil {
+			t.Fatal(err)
+		}
+		if len(g.booker.resolved) != 0 || g.ad.last() != CopyAmbiguousYes {
+			t.Errorf("%q: resolved %v last %q", msg, g.booker.resolved, g.ad.last())
+		}
+	}
+}
+
+// Review round 2, R-1: a YES processed WHILE the retry prompt is being
+// sent (after the old summary, before the new prompt) does not retry the
+// charge.
+func TestYesDuringTheRetryPromptDoesNotRetry(t *testing.T) {
+	g, _, _, _ := contextRig(llm.IntentNewTask, bagelT)
+	g.say(t, "new task: pick up my laundry tomorrow at 3")
+	g.booker.result = PostResult{Outcome: PostDeclined, Message: "Your card was declined."}
+	hooked := &hookedAdapter{fakeSendAdapter: g.ad}
+	g.r.Adapters[IMessage] = hooked
+	sentAfterSummary := time.Now()
+	time.Sleep(2 * time.Millisecond)
+	hooked.during = func() { // the first YES's reply ("declined… YES to retry") is going out
+		hooked.during = nil
+		in := Inbound{Channel: IMessage, ProviderMessageID: "yes-2", From: me, Text: "YES", ReceivedAt: sentAfterSummary}
+		if err := g.r.HandleInbound(context.Background(), in); err != nil {
+			t.Error(err)
+		}
+	}
+	g.say(t, "YES")
+	if g.booker.posts != 1 {
+		t.Fatalf("the second YES retried the charge: posts %d", g.booker.posts)
+	}
+}
+
+// Review round 2: a pass-on that fails still says the question waits.
+func TestFailedPassOnStillSaysTheQuestionWaits(t *testing.T) {
+	g, chat, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.arm(t, "ext-2")
+	chat.post = errors.New("talkjs 503")
+	got := g.say(t, "yes but max $5")
+	if len(g.booker.resolved) != 0 || !strings.Contains(got, "Couldn't pass") || !strings.Contains(got, CopyStillWaitingApproval) {
+		t.Fatalf("resolved %v reply %q", g.booker.resolved, got)
+	}
+}
