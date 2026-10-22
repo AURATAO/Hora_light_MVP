@@ -716,4 +716,5 @@ Recorded as given, in the order asked; nothing below is built yet.
   Arbiter may make them plain. Built after the round-5 PASS; to be
   reviewed with the next T3 change.
 - I-AD spelling variants confirmed.
-- Booking list (I-S): explained, answer pending.
+- Booking list (I-S): **keep the current list** (Arbiter 2026-10-22 14:02) —
+  the booking YES stays on `yesRE`; the wider approval words never book.

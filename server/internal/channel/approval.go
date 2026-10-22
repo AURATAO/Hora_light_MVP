@@ -93,25 +93,115 @@ func quotedNote(s string) string {
 	return "\u201c" + s + "\u201d"
 }
 
+// ApprovalVerdict is what the server does with one message while an
+// approval question is armed. It is decided by rules only (S-11/5, D-17
+// R-4): the router acts on it, and the requester agent's test gate
+// (cmd/agenttest, D-18) calls the same function — a model's proposal is
+// carried out only when this verdict agrees.
+type ApprovalVerdict int
+
+const (
+	VerdictNotAnAnswer   ApprovalVerdict = iota // a sentence: the context router decides; never moves money
+	VerdictUnconfirmed                          // the question may not have reached them: nothing answers it
+	VerdictSentBefore                           // sent before the question was asked: asked again
+	VerdictReask                                // a reaction or swipe that may be about another message: asked again
+	VerdictApprove                              // approve
+	VerdictApprovePassOn                        // approve, then pass the whole message to the supporter (R-3)
+	VerdictDecline                              // decline
+	VerdictPassOnKeep                           // pass the words on; neither approved nor declined (R-2, R-3)
+	VerdictToSupporter                          // I-P: a casual word while the supporter is mid-conversation
+)
+
+// ApprovalFacts are the facts the verdict depends on besides the words.
+type ApprovalFacts struct {
+	Text string
+	// Supporter returns the request's supporter's first name; called only
+	// when a "yes + message" needs it (round 5). nil = unknown.
+	Supporter func() string
+	// Unconfirmed: the question was claimed but its delivery not confirmed.
+	Unconfirmed bool
+	// SentBefore: the message was sent before the question was armed, or
+	// has no usable send time (R-1).
+	SentBefore bool
+	// SwipedElsewhere: a WhatsApp reply swiped on a message other than the
+	// question (I-AG).
+	SwipedElsewhere bool
+	// QuestionIsLast: our last message in the thread is the question (R-3).
+	QuestionIsLast bool
+	// SupporterLive: the supporter wrote within the I-P window on an active
+	// task, and the message was not swiped on one of our prompts. Only the
+	// router's earlier I-P step reads it; DecideApproval applies it too so
+	// the agent gate sees the whole path.
+	SupporterLive bool
+}
+
+// DecideApproval is the rule decision for a message answering an armed
+// approval question (D-17 R-1…R-3, I-P version B).
+func DecideApproval(f ApprovalFacts) ApprovalVerdict {
+	text := f.Text
+	answerish := approvalAnswerish(text)
+	if f.SupporterLive && answerish && !IsStrictYesNo(text) {
+		return VerdictToSupporter
+	}
+	plain, reaction := approvalYes(text)
+	_, restReaction, conditional, withMessage := yesWithMessage(text)
+	if withMessage && conditional && f.Supporter != nil {
+		if n := f.Supporter(); n != "" {
+			_, restReaction, conditional, withMessage = yesWithMessage(text, n)
+		}
+	}
+	switch {
+	case answerish && f.Unconfirmed:
+		return VerdictUnconfirmed
+	case answerish && f.SentBefore:
+		return VerdictSentBefore
+	case f.SwipedElsewhere && ((plain && reaction) || (withMessage && !conditional)):
+		return VerdictReask
+	case (plain && reaction) || (withMessage && !conditional && restReaction):
+		if !f.QuestionIsLast {
+			return VerdictReask
+		}
+		if withMessage {
+			return VerdictApprovePassOn
+		}
+		return VerdictApprove
+	case plain:
+		return VerdictApprove
+	case approvalNo(text):
+		return VerdictDecline
+	case mixedNo(text):
+		return VerdictPassOnKeep
+	case withMessage && conditional:
+		return VerdictPassOnKeep
+	case withMessage:
+		return VerdictApprovePassOn
+	}
+	return VerdictNotAnAnswer
+}
+
 // onAwaitingApproval answers the pending request with this message.
 func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
 	var approve bool
 	var passOn string // the person's words to pass to the supporter after a YES (R-3)
-	answerish := approvalAnswerish(text)
-	plain, reaction := approvalYes(text)
-	_, restReaction, conditional, withMessage := yesWithMessage(text)
-	if withMessage && conditional && conv.ApprovalTaskID != "" {
+	facts := ApprovalFacts{
+		Text:        text,
+		Unconfirmed: conv.Unconfirmed(),
+		SentBefore:  conv.ApprovalArmedAt != nil && (in.ReceivedAt.IsZero() || in.ReceivedAt.Before(*conv.ApprovalArmedAt)),
+		// A WhatsApp reply swiped on some OTHER message than the question
+		// (reply context is real there): a reaction word or an approving
+		// yes + message may be about that message.
+		SwipedElsewhere: in.Channel == WhatsApp && in.ReplyToProviderID != "" && in.ReplyToProviderID != conv.ApprovalQuestionPID,
+		QuestionIsLast:  questionIsLast(conv),
+		// SupporterLive stays false: the router's I-P step (casualToSupporter)
+		// ran before this state handler.
+	}
+	if conv.ApprovalTaskID != "" {
 		// Only a yes + message needs the supporter's name ("thanks Sam"):
 		// looked up then, not on every message (round 5).
-		supporter := r.supporterFirstName(ctx, id, conv.ApprovalTaskID)
-		_, restReaction, conditional, withMessage = yesWithMessage(text, supporter)
+		facts.Supporter = func() string { return r.supporterFirstName(ctx, id, conv.ApprovalTaskID) }
 	}
-	// A WhatsApp reply swiped on some OTHER message than the question
-	// (reply context is real there): a reaction word or an approving yes +
-	// message may be about that message.
-	swipedElsewhere := in.Channel == WhatsApp && in.ReplyToProviderID != "" && in.ReplyToProviderID != conv.ApprovalQuestionPID
-	switch {
-	case answerish && conv.Unconfirmed():
+	switch DecideApproval(facts) {
+	case VerdictUnconfirmed:
 		// Claimed but never confirmed delivered: nothing can answer it.
 		// Re-sent from the hold once the claim is old enough; until then
 		// the person is told a question is on its way — not to reply YES
@@ -137,7 +227,7 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 			return nil
 		}
 		return r.Reply(ctx, in, CopyApprovalOnItsWay, "")
-	case answerish && conv.ApprovalArmedAt != nil && (in.ReceivedAt.IsZero() || in.ReceivedAt.Before(*conv.ApprovalArmedAt)):
+	case VerdictSentBefore:
 		// Sent before the question was asked (a second tap on YES for the
 		// booking, say), or with no usable send time: it cannot be taken as
 		// answering it. The question is put again; nothing moves (S-11/5).
@@ -146,41 +236,25 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 		// the person's own reaction time; no margin is applied.
 		log.Printf("[channel] approval identity=%s ext=%s: answer refused, sent %s before the question", id.ID, conv.PendingExtensionID, sentBefore(in, conv.ApprovalArmedAt))
 		return r.Reply(ctx, in, approvalReask(conv), "")
-	case swipedElsewhere && ((plain && reaction) || (withMessage && !conditional)):
-		// Asked again (round 4: a swipe on the question itself answers it;
-		// a conditional message is still passed on below).
+	case VerdictReask:
+		// A swipe on another message (round 4), or a reaction word after a
+		// later message of ours (R-3): asked again; nothing moves.
+		log.Printf("[channel] approval identity=%s ext=%s: reaction or swipe not on the question, re-asked", id.ID, conv.PendingExtensionID)
 		return r.Reply(ctx, in, approvalReask(conv), "")
-	case (plain && reaction) || (withMessage && !conditional && restReaction):
-		// A reaction word ("Great", 👍) is a yes only if our last message
-		// is this question — otherwise it may be about whatever we sent
-		// after it (D-17 R-3). Asked again; nothing moves.
-		if !questionIsLast(conv) {
-			log.Printf("[channel] approval identity=%s ext=%s: reaction word after a later message, re-asked", id.ID, conv.PendingExtensionID)
-			return r.Reply(ctx, in, approvalReask(conv), "")
-		}
+	case VerdictApprove:
 		approve = true
-		if withMessage {
-			passOn = text // the person's whole message, as written
-		}
-	case plain:
-		approve = true
-	case approvalNo(text):
-		approve = false
-	case mixedNo(text):
-		// "no! go ahead", "no, it's fine", "no, why?": a no-word that its
-		// own reason contradicts or questions — neither approved nor
-		// declined; passed to the supporter (R-2).
-		return r.passOnKeepingQuestion(ctx, in, id, conv, text)
-	case withMessage && conditional:
-		// "yes but max $5", "yes if it's organic": not an approval and
-		// not a decline — the words go to the supporter, the request
-		// stays open (R-3).
-		return r.passOnKeepingQuestion(ctx, in, id, conv, text)
-	case withMessage:
+	case VerdictApprovePassOn:
 		// "yes but tell him to hurry": approve, then pass the message on —
 		// whole and as written (the decision reads the part after the yes).
 		approve = true
 		passOn = text
+	case VerdictDecline:
+		approve = false
+	case VerdictPassOnKeep:
+		// "no! go ahead", "yes but max $5", "yes if it's organic": neither
+		// approved nor declined — the words go to the supporter, the
+		// request stays open (R-2, R-3).
+		return r.passOnKeepingQuestion(ctx, in, id, conv, text)
 	default:
 		// A sentence while the request is pending may be for the
 		// supporter ("why $10 more?") — relayed, the question stays open.
