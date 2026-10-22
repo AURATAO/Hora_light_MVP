@@ -457,13 +457,12 @@ Recorded as given, in the order asked; nothing below is built yet.
 - **I-T** `question_shown_at` also moves when an approval ends in any way
   (answered, resolved in the app, cleared): a YES sent before that moment
   was about the approval and never books.
-- **I-U** (superseded in round 3 by I-AE) `conditionRE` lists what makes
-  a tail conditional — amounts and digits, `?`, the ruled R-3 markers,
-  conditional phrases, hedges, negations and contractions, deferrals,
-  question and auxiliary words, complaints, number words and units,
-  Spanish/Italian and Chinese markers (the code is the list). Since round
-  3 it is one check among several: a tail approves only when it is ALSO
-  on the harmless list (I-AE).
+- **I-U** (superseded by I-AE; code removed in round 5) The open
+  condition deny-list (`conditionRE`) is gone: a tail is decided by the
+  closed shapes of I-AE alone, after one veto — R-3's ruled markers
+  (`rulingMarkerRE`: an amount or digit, max / min / only / up to / at
+  most / at least / under / over / less / more / budget / cap / limit)
+  checked on the raw tail before the supporter's name is put in.
 - **I-V** (rewritten, round 2) The outbound stamp is taken BEFORE every
   send, and a failure to take it FAILS the send (fail closed for the
   reaction-word rule). Consequence, accepted: on a database error a
@@ -534,13 +533,37 @@ Recorded as given, in the order asked; nothing below is built yet.
   declines); "don't worry" / "no worries" / "no problem" reassure ("no,
   don't worry, it's fine" is mixed). A concurrent handler's `markShown`
   can clear another question's in-flight mark (I-AA class, accepted).
-- **I-AC** (round 2) The condition list cannot be complete; two
-  structural backstops: a tail longer than 8 words is conditional, and
-  the ambiguous heads y / ya / yea / si / k / kk / book / book it /
-  confirm / do it / 是 never start a "yes + message" (as a whole message
-  they are still a yes). Each backstop errs toward relaying. "no problem"
-  / "no worries" alone are not in the ruled list and are relayed, not
-  approved — Arbiter to add if wanted.
+- **I-AC** (round 2, trimmed round 5) The ambiguous heads y / ya / yea /
+  si / k / kk / book / book it / confirm / do it / 是 never start a "yes +
+  message" (as a whole message they are still a yes). The 8-word cap is
+  removed with the deny-list (I-U): the closed shapes are all shorter.
+  "no problem" / "no worries" alone are not in the ruled list and are
+  relayed, not approved — Arbiter to add if wanted.
+- **I-AH** (round 5) The supporter's name in a tail. A supporter named
+  Max or Min (any ruled marker) never makes "thanks Max" approve: the
+  marker veto runs first, so it is relayed (fail-closed, cost: a relay).
+  The name is matched as whole words on spaces, not `\b`, so non-ASCII
+  names (José, Zoë, 王小明) substitute; a multi-word first name matches as
+  a phrase. If the name lookup fails, the fallback is "your supporter",
+  which no shape contains as a bare name — relayed. The lookup is made
+  only for a yes + message that would otherwise be relayed.
+- **I-AI** (round 5) Negation in a no-reason is read within its own
+  clause (split on , . ; !): "no, never mind, go ahead" and "no, I don't
+  care, go ahead" are mixed — passed on, kept open — not declined.
+  "never mind" / "nvm" are read as reassurance there. Contractions negate
+  ("no, I can't approve this", "no, I won't approve" decline).
+- **I-AG wording, clarified (round 5)** "A strict YES works anywhere"
+  means: on WhatsApp any plain, non-reaction yes word ("ok", "sure", "go
+  ahead", "100%"), and a yes with a yes-like tail, approves wherever it is
+  swiped (R-3: plain-consent words are not limited); a bare NO swiped on
+  any of our messages declines; a conditional message swiped on a bubble
+  about another task goes to the APPROVAL task's supporter, named in the
+  reply (I-Y class). With no question pid stored (provider returned
+  none), every swipe is "elsewhere": reactions are asked again, plain yes
+  still works.
+- **I-AJ** (round 5) A stale `awaiting_confirm` with no draft is saved as
+  idle and the message is then read as if idle — an errand typed then is
+  drafted, a bare YES is acknowledged.
 
 ### M3.2d review log
 
@@ -659,3 +682,26 @@ Recorded as given, in the order asked; nothing below is built yet.
   the shapes that still approve, negated / reassuring reasons, swipes on
   the question / elsewhere / conditional / strict YES, draft-less confirm
   with a valid stamp, recovery after a resolution left the mark.
+- **Round 5 (e25acef) — PASS.** Both round-4 MAJORs closed; no new
+  money path (`ResolveExtension` one call site; `claimAndPost` only from a
+  strict YES behind R-1 or from setup). MINOR: (1) `negatedBefore` crossed
+  clauses, so "no, never mind, go ahead" declined (regression of round 4);
+  (2) a supporter named Max / Min washed out a ruled marker; (3) non-ASCII
+  names never substituted; (4) the `n't` alternative was dead; (5) dead
+  code and stale I-U / I-AC; (6) a draft-less confirm swallowed an errand;
+  (7) a supporter lookup on every message; (8) I-AG wording; (9) test
+  gaps. Verifier: no RED (I-05 INCOMPLETE: no supabase CLI / docker here).
+
+  Fixed (all, after the PASS): clause-scoped negation and contractions
+  (I-AI); ruled-marker veto on the raw tail and whole-word Unicode name
+  match (I-AH); `conditionRE`, `maxTailWords`, `collapse2` removed (I-U,
+  I-AC rewritten); draft-less confirm re-read as idle (I-AJ); lazy name
+  lookup; I-AG clarified. Tests: the reviewer's four mixed inputs and five
+  contraction declines; names Max, Min, José, Zoë, 王小明, Him, Please,
+  Ty, "Sam Lee", wrong name, failed lookup; an errand at a draft-less
+  confirm; WhatsApp yes + message on the question / elsewhere and the
+  empty-pid case; the PG test now asserts the pid is cleared on handoff
+  and re-claim and kept on a stale save. Each new router test was shown
+  to fail on e25acef.
+
+**M3.2d: PASS.**

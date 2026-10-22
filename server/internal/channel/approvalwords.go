@@ -34,11 +34,6 @@ var plainYes = wordSet(
 // whatever", "book a cab too". As a head they make the message a non-answer.
 var weakHeads = wordSet("y", "ya", "yea", "si", "k", "kk", "book", "book it", "confirm", "confirmed", "do it", "是")
 
-// maxTailWords: a "yes + a message" tail longer than this is not read as
-// an instruction — conditional (R-3 backstop: no list of conditions is
-// ever complete; a long tail is a conversation, not a footnote).
-const maxTailWords = 8
-
 // reactionYes: also reactions to news. Count as yes only when our last
 // message in the thread IS the approval question (D-17 R-3).
 var reactionYes = wordSet(
@@ -60,24 +55,11 @@ var yesLikeTails = wordSet("no problem", "no worries", "no rush", "thing", "100%
 // "no problem" / "no worries" never match (R-2).
 var noWithReasonRE = regexp.MustCompile(`^(no|nope|nah|no thanks|nvm|不要|不用|不行)\s*[,.!;:，。！]\s*(.+)$`)
 
-// conditionRE: what makes a "yes, …" tail not an approval (R-3, I-U). It
-// errs toward conditional: a wrong "conditional" costs one more message, a
-// wrong "unconditional" approves money. Read on a normalised tail.
-var conditionRE = regexp.MustCompile(strings.Join([]string{
-	`[$€£¥\d?]`, // amounts, digits (NFKC folds fullwidth), questions
-	`\b(max|maximum|min|minimum|only|just|if|unless|under|over|less|more|than|up to|at most|at least|cheaper|instead|without|except|limit|budget|cap)\b`,
-	`\b(as long as|so long as|provided|providing|assuming|depending|depends|otherwise|until|in case|as soon as)\b`,
-	`\b(maybe|perhaps|probably|possibly|i guess|i think|guess|whatever|idk|dunno|hmm+|we'll see|well see|let's see|lets see|let's talk|lets talk|not sure|unsure)\b`,
-	`\b(n|no|not|nope|nah|nvm|never|nevermind|none|nothing|non|cancel|stop)\b`,
-	`\b(don'?t|can'?t|won'?t|shouldn'?t|couldn'?t|wouldn'?t|isn'?t|aren'?t|wasn'?t|weren'?t|didn'?t|doesn'?t|haven'?t|hasn'?t|hadn'?t|mustn'?t|needn'?t|ain'?t)\b`,
-	`\b(wait|hold on|hang on|let me|lemme|think|check|ask|later|first|before|after|so|tomorrow|tonight|next)\b`,
-	`\b(what|why|how|who|when|where|which|can|could|should|would|is|are|do|does|did|will|has|have|was|were|may|might|need)\b`,
-	`\b(too|much|expensive|pricey|a lot|steep|crazy|ridiculous|forget|right)\b`,
-	`\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty|fifty|hundred|half|dollars?|bucks?|cents?|minutes?|mins?|hours?|hrs?)\b`,
-	`\b(pero|ma|solo|mas|meno|menos|sin|senza|luego|domani|manana|piu|si|se|mucho|troppo|caro|penso|pienso|vale)\b|più|però|mañana|sólo|más|è`,
-	`\b(i'?ll|we'?ll|you'?ll|he'?ll|she'?ll|get back|let you know|consider|decide|figure|see)\b`, // Spanish / Italian (non-ASCII words outside \b: RE2's \b is ASCII)
-	`不超過|只要|如果|最多|最少|不要|不用|取消|除非|只能|只有|別|不|想|考慮|看看|等|先|再|問|晚點|待會|明天|但|太|貴|多|高|有點|覺得|[一二三四五六七八九十百千兩半塊元分]`,
-}, "|"))
+// rulingMarkerRE: R-3's ruled markers — an amount, a digit, a cap or a
+// floor. Checked on the raw tail BEFORE the supporter's name is put in, so
+// a supporter named Max or Min never turns "thanks Max" into an approval
+// (round 5). Every other tail is decided by harmlessTailRE alone.
+var rulingMarkerRE = regexp.MustCompile(`[$€£¥\d]|\b(max|maximum|min|minimum|only|up to|at most|at least|under|over|less|more|budget|cap|limit)\b`)
 
 // friendlyEmoji may close a message without changing it.
 var friendlyEmoji = map[rune]bool{'🙏': true, '😊': true, '🙂': true, '😀': true, '😄': true, '😁': true, '😃': true,
@@ -229,14 +211,24 @@ var affirmingRE = regexp.MustCompile(`\b(go ahead|it's fine|its fine|that's fine
 // negationRE: a reason that negates is a decline reason ("no, I'm not fine
 // with that"), not a contradiction — unless a strong yes sits beside it
 // (strongAffirmRE: "no, don't worry, go ahead").
-var negationRE = regexp.MustCompile(`\b(not|never|don'?t|can'?t|won'?t|isn'?t|aren'?t|no longer)\b`)
+var negationRE = regexp.MustCompile(`\b(not|never|no longer|\w+n't|dont|cant|wont|isnt|arent|didnt|doesnt|shouldnt|couldnt|wouldnt)\b`)
 var strongAffirmRE = regexp.MustCompile(`\b(i don'?t mind|go ahead|go for it|do it|approve|approved|yes|yeah|yep|sure|it'?s fine|that'?s fine|sounds good|fine)\b`)
 
 // reassuranceRE: phrases that look negative but reassure — read as "fine".
-var reassuranceRE = regexp.MustCompile(`\b(don'?t worry|no worries|not a problem|no problem)\b`)
+var reassuranceRE = regexp.MustCompile(`\b(don'?t worry|no worries|not a problem|no problem|never ?mind|nvm)\b`)
 
-// negatedBefore: a not / n't / never within the two words before index i.
-var negatedBefore = regexp.MustCompile(`\b(not|never|n't|don'?t|do not|dont)\s+(\S+\s+)?$`)
+// negatedBefore: a not / n't / never within the two words before index i,
+// in the same clause (the caller passes only the clause — round 5).
+var negatedBefore = regexp.MustCompile(`(\bnot|\bnever|\w+n't|\b(?:dont|cant|wont|isnt|arent|didnt|shouldnt|couldnt|wouldnt))\s+(\S+\s+)?$`)
+
+// clauseStart: where the clause holding index i begins (after the last
+// , . ; ! before it).
+func clauseStart(r string, i int) int {
+	if j := strings.LastIndexAny(r[:i], ",.;!"); j >= 0 {
+		return j + 1
+	}
+	return 0
+}
 
 func mixedReason(reason string) bool {
 	r := strings.Join(strings.Fields(clean(reason)), " ")
@@ -245,7 +237,7 @@ func mixedReason(reason string) bool {
 	}
 	r = reassuranceRE.ReplaceAllString(r, "fine")
 	for _, m := range strongAffirmRE.FindAllStringIndex(r, -1) {
-		if strings.HasPrefix(r[m[0]:m[1]], "i don") || !negatedBefore.MatchString(r[:m[0]]) {
+		if strings.HasPrefix(r[m[0]:m[1]], "i don") || !negatedBefore.MatchString(r[clauseStart(r, m[0]):m[0]]) {
 			return true // "no, I don't mind", "no, don't worry, go ahead": contradicts the no
 		}
 	}
@@ -348,33 +340,28 @@ func tailConditional(tail string, supporter ...string) bool {
 		return r
 	}, c)
 	c = strings.Join(strings.Fields(c), " ")
+	if rulingMarkerRE.MatchString(c) {
+		return true
+	}
 	if len(supporter) > 0 {
-		if n := strings.ToLower(strings.TrimSpace(supporter[0])); n != "" && n != "name" {
-			c = regexp.MustCompile(`\b`+regexp.QuoteMeta(n)+`\b`).ReplaceAllString(c, "name")
+		// Whole-word on spaces, not \b (ASCII-only in RE2): "José", "Zoë"
+		// and "王小明" substitute too (round 5).
+		if n := strings.ToLower(strings.Join(strings.Fields(clean(supporter[0])), " ")); n != "" && n != "name" {
+			w := strings.Fields(" " + c + " ")
+			nw := strings.Fields(n)
+			out := make([]string, 0, len(w))
+			for i := 0; i < len(w); i++ {
+				if i+len(nw) <= len(w) && strings.Join(w[i:i+len(nw)], " ") == n {
+					out = append(out, "name")
+					i += len(nw) - 1
+					continue
+				}
+				out = append(out, w[i])
+			}
+			c = strings.Join(out, " ")
 		}
 	}
 	return !harmlessTailRE.MatchString(c)
-}
-
-// collapse2 caps runs of a repeated ASCII letter at two: "lesss" → "less",
-// "unlesss" → "unless", "steeep" → "steep".
-func collapse2(s string) string {
-	var b strings.Builder
-	var prev rune
-	run := 0
-	for _, r := range s {
-		if r == prev && r < unicode.MaxASCII && unicode.IsLetter(r) {
-			run++
-			if run >= 2 {
-				continue
-			}
-		} else {
-			run = 0
-		}
-		b.WriteRune(r)
-		prev = r
-	}
-	return b.String()
 }
 
 // prefixEnd: if lr starts with word (repeated letters allowed, as in

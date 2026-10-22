@@ -466,8 +466,13 @@ func (r *Router) onName(ctx context.Context, in Inbound, id Identity, conv Conve
 func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
 	if conv.Pending == nil {
 		// awaiting_confirm with no draft (a stale snapshot): nothing to
-		// book — back to idle, whatever the message (round 4).
-		return r.showSummary(ctx, in, conv)
+		// book. Back to idle, and the message is read as if idle — a real
+		// errand typed now is drafted, not swallowed (round 5).
+		conv.State = StateIdle
+		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+			return fmt.Errorf("onConfirm: %w", err)
+		}
+		return r.onIdle(ctx, in, id, conv, text)
 	}
 	switch {
 	case IsNo(text):

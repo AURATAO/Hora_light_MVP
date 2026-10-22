@@ -99,11 +99,13 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 	var passOn string // the person's words to pass to the supporter after a YES (R-3)
 	answerish := approvalAnswerish(text)
 	plain, reaction := approvalYes(text)
-	supporter := ""
-	if conv.ApprovalTaskID != "" {
-		supporter = r.supporterFirstName(ctx, id, conv.ApprovalTaskID)
+	_, restReaction, conditional, withMessage := yesWithMessage(text)
+	if withMessage && conditional && conv.ApprovalTaskID != "" {
+		// Only a yes + message needs the supporter's name ("thanks Sam"):
+		// looked up then, not on every message (round 5).
+		supporter := r.supporterFirstName(ctx, id, conv.ApprovalTaskID)
+		_, restReaction, conditional, withMessage = yesWithMessage(text, supporter)
 	}
-	_, restReaction, conditional, withMessage := yesWithMessage(text, supporter)
 	// A WhatsApp reply swiped on some OTHER message than the question
 	// (reply context is real there): a reaction word or an approving yes +
 	// message may be about that message.

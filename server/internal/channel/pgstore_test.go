@@ -1072,12 +1072,15 @@ func TestPGHandoffAndReclaimResetApprovalFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, _ := s.GetConversation(ctx, a.ID)
-	if got.State != StateHandoff || got.ApprovalTaskID != "" || got.ApprovalQuestionOutAt != nil || got.ApprovalArmedAt != nil {
+	if got.State != StateHandoff || got.ApprovalTaskID != "" || got.ApprovalQuestionOutAt != nil || got.ApprovalArmedAt != nil || got.ApprovalQuestionPID != "" {
 		t.Fatalf("handoff kept approval fields: %+v", got)
 	}
 	arm()
 	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateIdle}); err != nil { // stale: kept
 		t.Fatal(err)
+	}
+	if got, _ = s.GetConversation(ctx, a.ID); got.ApprovalQuestionPID != "pid-q" || got.ApprovalTaskID != task {
+		t.Fatalf("a stale-snapshot save must keep the question's pid: %+v", got)
 	}
 	if _, err := s.ClearApproval(ctx, a.ID, ext, StateIdle, time.Now()); err != nil {
 		t.Fatal(err)
@@ -1088,7 +1091,7 @@ func TestPGHandoffAndReclaimResetApprovalFields(t *testing.T) {
 	if ok, err := s.ClaimHold(ctx, a.ID, ext, task, time.Now()); err != nil || !ok {
 		t.Fatalf("re-claim: %v %v", ok, err)
 	}
-	if got, _ = s.GetConversation(ctx, a.ID); got.ApprovalQuestionOutAt != nil || !got.Unconfirmed() {
+	if got, _ = s.GetConversation(ctx, a.ID); got.ApprovalQuestionOutAt != nil || got.ApprovalQuestionPID != "" || !got.Unconfirmed() {
 		t.Fatalf("a new claim must not carry the old question stamp: %+v", got)
 	}
 }

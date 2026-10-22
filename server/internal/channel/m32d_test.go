@@ -536,3 +536,131 @@ func TestConfirmEdgesRound4(t *testing.T) {
 		t.Fatalf("after the re-show: posts %d", g.booker.posts)
 	}
 }
+
+// Round 5, finding 1: negation is read within its own clause — "no, never
+// mind, go ahead" is not a decline (it is mixed: passed on, kept open);
+// a negated yes-word is a decline, contractions included (finding 4).
+func TestNegationIsScopedToItsClause(t *testing.T) {
+	for _, msg := range []string{"no, never mind, go ahead", "no, I don't care, go ahead", "nope, never mind, sure", "no, don't ask, do it", "no, nvm, go ahead"} {
+		if !mixedNo(msg) || approvalNo(msg) {
+			t.Errorf("%q: must be mixed (passed on), not declined", msg)
+		}
+	}
+	for _, msg := range []string{"no, I can't approve this", "no, I won't approve", "no, I'm not fine with that", "no, I didn't say yes", "no, it shouldn't be approved"} {
+		if !approvalNo(msg) {
+			t.Errorf("%q: must decline", msg)
+		}
+	}
+	// End to end: the mixed no is not a decline.
+	g, chat, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.arm(t, "ext-2")
+	g.say(t, "no, never mind, go ahead")
+	if len(g.booker.resolved) != 0 || len(chat.posted) != 1 || g.state() != StateAwaitingApproval {
+		t.Fatalf("resolved %v posted %v state %s", g.booker.resolved, chat.posted, g.state())
+	}
+}
+
+// Round 5, findings 2–3 and 7: the supporter's name. A ruled marker in the
+// raw tail is never washed out by the name (Max, Min); non-ASCII names
+// substitute; names that are shape words change nothing; a failed lookup
+// fails closed (relayed, kept open).
+func TestSupporterNameInTheTail(t *testing.T) {
+	for _, tc := range []struct {
+		name, msg string
+		approve   bool
+	}{
+		{"Max", "yes, thanks Max", false},
+		{"Min", "ok thanks min!", false},
+		{"José", "yes, thanks José", true},
+		{"Zoë", "sure, tell Zoë to hurry", true},
+		{"王小明", "yes thanks 王小明", true},
+		{"Him", "yes, tell him to hurry", true},
+		{"Please", "yes please", true},
+		{"Ty", "yes ty", true},
+		{"Sam Lee", "yes thanks Sam", true},
+		{"Sam", "yes thanks Bob", false},
+	} {
+		g, chat, _, _ := contextRig(llm.IntentToSupporter, ActiveTask{ID: "task-2", Title: "Bagel run", SupporterName: tc.name})
+		g.arm(t, "ext-2")
+		g.say(t, tc.msg)
+		approved := len(g.booker.resolved) == 1 && strings.HasSuffix(g.booker.resolved[0], ":ext-2:true")
+		if approved != tc.approve || (!tc.approve && (len(g.booker.resolved) != 0 || len(chat.posted) != 1)) {
+			t.Errorf("%s / %q: resolved %v posted %v", tc.name, tc.msg, g.booker.resolved, chat.posted)
+		}
+	}
+	// ActiveTasks failing: "thanks Sam" cannot be checked — relayed... and
+	// with the chat down, nothing approved either way.
+	g, chat, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.arm(t, "ext-2")
+	chat.err = errors.New("talkjs 503")
+	g.say(t, "yes, thanks Sam")
+	if len(g.booker.resolved) != 0 {
+		t.Fatalf("lookup failed: resolved %v", g.booker.resolved)
+	}
+}
+
+// Round 5, finding 6: a stale draft-less awaiting_confirm reads the
+// message as if idle — a real errand is drafted, not swallowed.
+func TestDraftlessConfirmDraftsTheErrand(t *testing.T) {
+	g, _, _, _ := contextRig(llm.IntentNewTask, bagelT)
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	c.State, c.Pending = StateAwaitingConfirm, nil
+	g.convs.mu.Lock()
+	g.convs.convs["id-"+me] = c
+	g.convs.mu.Unlock()
+	g.say(t, "new task: book a cab at 5")
+	if c2, _ := g.convs.GetConversation(context.Background(), "id-"+me); c2.Pending == nil {
+		t.Fatalf("the errand was swallowed: state %s last %q", c2.State, g.ad.last())
+	}
+}
+
+// Round 5, finding 9: an approving yes + message swiped on the question
+// approves; swiped elsewhere it is asked again; an empty question pid
+// (none returned) makes every swiped reaction a re-ask, a bare YES still
+// approves.
+func TestWhatsAppSwipesRound5(t *testing.T) {
+	setup := func(t *testing.T) (*rig, string) {
+		t.Helper()
+		g, _, tasks, _ := contextRig(llm.IntentToSupporter, bagelT)
+		g.r.Adapters[WhatsApp] = g.ad
+		g.ids.link(me, "user-1")
+		g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: WhatsApp, Address: me}, LastInboundAt: ptrTime(time.Now())}}
+		g.convs.setLastInbound("id-"+me, ptrTime(time.Now()))
+		g.arm(t, "ext-2")
+		c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+		tasks.byMsg[c.ApprovalQuestionPID] = "task-2"
+		tasks.byMsg["status-1"] = "task-2"
+		return g, c.ApprovalQuestionPID
+	}
+	send := func(t *testing.T, g *rig, text, replyTo string) {
+		t.Helper()
+		in := Inbound{Channel: WhatsApp, ProviderMessageID: "w-" + text + replyTo, From: me, Text: text, ReplyToProviderID: replyTo, ReceivedAt: time.Now()}
+		if err := g.r.HandleInbound(context.Background(), in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g, q := setup(t)
+	send(t, g, "yes please hurry", q)
+	if len(g.booker.resolved) != 1 {
+		t.Fatalf("on the question: resolved %v", g.booker.resolved)
+	}
+	g, _ = setup(t)
+	send(t, g, "yes please hurry", "status-1")
+	if len(g.booker.resolved) != 0 || g.ad.last() != CopyApprovalReask {
+		t.Fatalf("elsewhere: resolved %v last %q", g.booker.resolved, g.ad.last())
+	}
+	g, _ = setup(t)
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	c.ApprovalQuestionPID = ""
+	g.convs.mu.Lock()
+	g.convs.convs["id-"+me] = c
+	g.convs.mu.Unlock()
+	send(t, g, "Great", "status-1")
+	if len(g.booker.resolved) != 0 {
+		t.Fatalf("empty pid, reaction: resolved %v", g.booker.resolved)
+	}
+	send(t, g, "YES", "status-1")
+	if len(g.booker.resolved) != 1 {
+		t.Fatalf("empty pid, YES: resolved %v", g.booker.resolved)
+	}
+}
