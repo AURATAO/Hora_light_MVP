@@ -505,17 +505,18 @@ Recorded as given, in the order asked; nothing below is built yet.
 - **I-AD** (round 3) Spelling variants accepted beyond the ruled list's
   exact forms: "lets do it", "im down", "im in" (no apostrophe) and "sì"
   (Italian grave accent beside "sí"). Arbiter may remove them.
-- **I-AE** (round 3) A "yes + message" approves only when the message
-  after the yes is positively harmless: it begins (after but / and / also
-  / plus / just / oh) with thanks, thank, thx, ty, cheers, appreciate,
-  tell, let, please, hurry, grab, get, pick, bring, send, text, great,
-  perfect, awesome, nice, cool, lol, haha; is plain ASCII apart from the
-  friendly emoji; has no condition marker (I-U); and has at most 8 words.
-  Everything else — any other English, any Chinese, Spanish or Italian —
-  is passed to the supporter with the request kept open. The cost is more
-  relays of things that meant yes ("yes, you can go ahead", "好，謝謝");
-  the gain is that the open-ended class (round 1–3 findings) is closed by
-  construction.
+- **I-AE** (round 3, amended round 4) A "yes + message" approves only
+  when the WHOLE message after the yes is one of these closed shapes
+  (after an optional but / and / also / just / oh; the request's
+  supporter's first name stands in for NAME): "thanks", "thank you",
+  "thx", "ty", "cheers", each with an optional NAME; "please"; "(please)
+  hurry (up)"; "(please) tell him / her / them / NAME to hurry (up) /
+  thanks / thank you"; "(please) let him / her / them / NAME know".
+  Everything else — any other English however harmless it looks ("and
+  grab napkins", "get it", "thanks anyway", "thanks Bob" when the
+  supporter is Alex), any Chinese, Spanish or Italian — is passed to the
+  supporter with the request kept open. The set is closed by construction;
+  the cost is more relays of things that meant yes.
 - **I-AF** (round 3) R-1's "summary shown" is an in-flight mark while the
   question is being sent (`ShownUnconfirmed`; no booking YES counts
   then) and the delivery time after; a draft from before R-1 (no stamp)
@@ -523,6 +524,16 @@ Recorded as given, in the order asked; nothing below is built yet.
   draft returns to idle. On WhatsApp, a reaction word or a yes + message
   swiped on any message is asked again (the reply may be about that
   message).
+- **I-AG** (round 4) WhatsApp swipes: the armed question's own provider
+  message id is kept (`approval_question_pid`, new forward-only
+  migration). A swipe on the question itself answers it like any reply; a
+  reaction word or approving yes + message swiped on ANOTHER message is
+  asked again; a conditional message is passed on wherever it was swiped;
+  a strict YES works anywhere. Negation scoping in a no-reason: a negation
+  within two words before a yes-word negates it ("no, don't do it"
+  declines); "don't worry" / "no worries" / "no problem" reassure ("no,
+  don't worry, it's fine" is mixed). A concurrent handler's `markShown`
+  can clear another question's in-flight mark (I-AA class, accepted).
 - **I-AC** (round 2) The condition list cannot be complete; two
   structural backstops: a tail longer than 8 words is conditional, and
   the ambiguous heads y / ya / yea / si / k / kk / book / book it /
@@ -629,3 +640,22 @@ Recorded as given, in the order asked; nothing below is built yet.
   reviewer listed, harmless instructions that still approve, mixed with
   negation, a YES after the stamp during the retry prompt (shown to fail
   without the fix), legacy and empty drafts, a WhatsApp swipe.
+- **Round 4 (cffffbf) — FAIL.** MAJOR: (1) the allowlist checked only
+  the first word, so "yes, get the cheapest", "sure lol", "ok thanks
+  anyway", "yes, tell him to skip it" approved; (2) the WhatsApp swipe
+  rule bounced a conditional message unrelayed and could not tell a swipe
+  on the question itself from one elsewhere. MINOR: negation scoping in
+  `mixedReason` both ways; over-conditional tails (accepted, I-AE); the
+  draft-less confirm handled only behind the R-1 guard; no SQL test of
+  the in-flight mark; the concurrent-clear case undeclared. Verifier: no
+  RED (I-05 INCOMPLETE).
+
+  Fixed (all): I-AE amended to closed whole shapes with the supporter's
+  name; I-AG — the question's message id kept, swipes resolved against it,
+  conditional swipes passed on; negation scoping and reassurance phrases;
+  `onConfirm` sends a draft-less confirm to idle first; PG test of the
+  in-flight mark (kept by GREATEST, replaced by `MarkQuestionShown`) and
+  of the pid. Tests: the reviewer's approving inputs (now all passed on),
+  the shapes that still approve, negated / reassuring reasons, swipes on
+  the question / elsewhere / conditional / strict YES, draft-less confirm
+  with a valid stamp, recovery after a resolution left the mark.

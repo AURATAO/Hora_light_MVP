@@ -99,7 +99,15 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 	var passOn string // the person's words to pass to the supporter after a YES (R-3)
 	answerish := approvalAnswerish(text)
 	plain, reaction := approvalYes(text)
-	_, restReaction, conditional, withMessage := yesWithMessage(text)
+	supporter := ""
+	if conv.ApprovalTaskID != "" {
+		supporter = r.supporterFirstName(ctx, id, conv.ApprovalTaskID)
+	}
+	_, restReaction, conditional, withMessage := yesWithMessage(text, supporter)
+	// A WhatsApp reply swiped on some OTHER message than the question
+	// (reply context is real there): a reaction word or an approving yes +
+	// message may be about that message.
+	swipedElsewhere := in.Channel == WhatsApp && in.ReplyToProviderID != "" && in.ReplyToProviderID != conv.ApprovalQuestionPID
 	switch {
 	case answerish && conv.Unconfirmed():
 		// Claimed but never confirmed delivered: nothing can answer it.
@@ -136,10 +144,9 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 		// the person's own reaction time; no margin is applied.
 		log.Printf("[channel] approval identity=%s ext=%s: answer refused, sent %s before the question", id.ID, conv.PendingExtensionID, sentBefore(in, conv.ApprovalArmedAt))
 		return r.Reply(ctx, in, approvalReask(conv), "")
-	case in.Channel == WhatsApp && in.ReplyToProviderID != "" && ((plain && reaction) || withMessage):
-		// WhatsApp's reply context is real: a reaction word or a yes with
-		// words swiped on a message may be about THAT message, not our
-		// question — asked again (round 3).
+	case swipedElsewhere && ((plain && reaction) || (withMessage && !conditional)):
+		// Asked again (round 4: a swipe on the question itself answers it;
+		// a conditional message is still passed on below).
 		return r.Reply(ctx, in, approvalReask(conv), "")
 	case (plain && reaction) || (withMessage && !conditional && restReaction):
 		// A reaction word ("Great", 👍) is a yes only if our last message
@@ -482,7 +489,7 @@ func (r *Router) heldEvent(d DeferredApproval) StatusEvent {
 // read is not left standing.
 func (r *Router) sendClaimed(ctx context.Context, id Identity, d DeferredApproval) {
 	text, _ := approvalText(r.heldEvent(d))
-	questionOut, err := r.sendStamped(ctx, Outbound{Channel: id.Channel, To: id.Address, Text: text}, d.TaskID)
+	questionOut, questionPID, err := r.sendStamped(ctx, Outbound{Channel: id.Channel, To: id.Address, Text: text}, d.TaskID)
 	if err != nil {
 		var pe *ProviderStatusError
 		definite := errors.As(err, &pe) && pe.Status >= 400 && pe.Status <= 499 && pe.Status != 408 && pe.Status != 409 && pe.Status != 429
@@ -504,7 +511,7 @@ func (r *Router) sendClaimed(ctx context.Context, id Identity, d DeferredApprova
 		}
 		return
 	}
-	confirmed, err := r.Conversations.ConfirmArmed(context.WithoutCancel(ctx), id.ID, d.ExtensionID, r.now(), questionOut)
+	confirmed, err := r.Conversations.ConfirmArmed(context.WithoutCancel(ctx), id.ID, d.ExtensionID, r.now(), questionOut, questionPID)
 	if err != nil {
 		// Still armed as unconfirmed: unanswerable, re-sent at the next
 		// resume point (a repeat over a lost question).

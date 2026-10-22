@@ -364,15 +364,36 @@ func TestHarmlessTailAllowlist(t *testing.T) {
 			t.Errorf("%q approves: plain=%v ok=%v conditional=%v", msg, y, ok, c)
 		}
 	}
-	for _, msg := range []string{"yes but tell him to hurry", "ok, thanks Alex!", "yes and grab napkins", "sure, let him know I'm home", "yes please hurry", "ok get it"} {
-		if _, _, c, ok := yesWithMessage(msg); !ok || c {
-			t.Errorf("%q: a harmless instruction should approve and pass on (ok=%v cond=%v)", msg, ok, c)
+	for _, msg := range []string{"yes but tell him to hurry", "ok, thanks Alex!", "yes please hurry", "sure, let him know", "yes, tell Alex thanks", "ok thank you alex", "ok hurry up!"} {
+		if _, _, c, ok := yesWithMessage(msg, "Alex"); !ok || c {
+			t.Errorf("%q: a harmless shape should approve and pass on (ok=%v cond=%v)", msg, ok, c)
 		}
 	}
-	// A strong yes beside a negation is mixed, not a decline.
-	for _, msg := range []string{"no, don't worry, go ahead", "no, I don't mind", "no, I approve"} {
+	// Round 4: anything outside the closed shapes is passed on — the
+	// first word being harmless is not enough.
+	for _, msg := range []string{
+		"yes, get the cheapest", "ok pick the smaller", "yes get the small", "ok get the generic",
+		"yeah, nice try", "sure lol", "ok, cool story",
+		"ok thanks anyway", "ok thanks, I'd rather he left", "ok thanks, I'm good",
+		"yes, tell him sorry I changed my mind", "yes hurry, I'm changing my mind",
+		"ok get someone else", "ok pick another", "ok thanks, demasiado",
+		"yes, tell him to skip it", "yes, tell him to leave", "yes and grab napkins", "ok, thanks Bob",
+	} {
+		_, _, c, ok := yesWithMessage(msg, "Alex")
+		if y, _ := approvalYes(msg); y || (ok && !c) {
+			t.Errorf("%q approves: plain=%v ok=%v conditional=%v", msg, y, ok, c)
+		}
+	}
+	// A strong yes beside a negation is mixed, not a decline; a negated
+	// yes is a decline (round 4).
+	for _, msg := range []string{"no, don't worry, go ahead", "no, I don't mind", "no, I approve", "no, don't worry, it's fine", "no, don't worry, sounds good", "nope, no worries"} {
 		if approvalNo(msg) || !mixedNo(msg) {
 			t.Errorf("%q: mixed (no=%v mixed=%v)", msg, approvalNo(msg), mixedNo(msg))
+		}
+	}
+	for _, msg := range []string{"no, don't do it", "no, don't go ahead", "no, I don't approve", "no, not sure"} {
+		if !approvalNo(msg) || mixedNo(msg) {
+			t.Errorf("%q: a decline (no=%v mixed=%v)", msg, approvalNo(msg), mixedNo(msg))
 		}
 	}
 }
@@ -432,21 +453,86 @@ func TestLegacyAndEmptyDrafts(t *testing.T) {
 	}
 }
 
-// WhatsApp: "Great" swiped on another message is asked again, not an
-// approval of the question.
-func TestWhatsAppSwipedReactionIsReasked(t *testing.T) {
-	g, _, tasks, _ := contextRig(llm.IntentToSupporter, bagelT)
-	g.r.Adapters[WhatsApp] = g.ad
-	g.ids.link(me, "user-1")
-	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: WhatsApp, Address: me}, LastInboundAt: ptrTime(time.Now())}}
-	g.convs.setLastInbound("id-"+me, ptrTime(time.Now()))
+// WhatsApp swipes (round 4): on the question itself "Great" answers it;
+// on another message a reaction is asked again, a conditional message is
+// still passed on, and a strict YES still approves.
+func TestWhatsAppSwipes(t *testing.T) {
+	setup := func(t *testing.T) (*rig, *fakeChat, *fakeTasks, string) {
+		t.Helper()
+		g, chat, tasks, _ := contextRig(llm.IntentToSupporter, bagelT)
+		g.r.Adapters[WhatsApp] = g.ad
+		g.ids.link(me, "user-1")
+		g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: WhatsApp, Address: me}, LastInboundAt: ptrTime(time.Now())}}
+		g.convs.setLastInbound("id-"+me, ptrTime(time.Now()))
+		g.arm(t, "ext-2")
+		c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+		if c.ApprovalQuestionPID == "" {
+			t.Fatal("the question's own message id must be kept")
+		}
+		tasks.byMsg[c.ApprovalQuestionPID] = "task-2"
+		tasks.byMsg["status-1"] = "task-2" // a status line of ours, same task
+		return g, chat, tasks, c.ApprovalQuestionPID
+	}
+	send := func(t *testing.T, g *rig, text, replyTo string) {
+		t.Helper()
+		in := Inbound{Channel: WhatsApp, ProviderMessageID: "w-" + text + replyTo, From: me, Text: text, ReplyToProviderID: replyTo, ReceivedAt: time.Now()}
+		if err := g.r.HandleInbound(context.Background(), in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g, _, _, q := setup(t)
+	send(t, g, "Great", q)
+	if len(g.booker.resolved) != 1 {
+		t.Fatalf("swipe on the question: resolved %v", g.booker.resolved)
+	}
+	g, _, _, _ = setup(t)
+	send(t, g, "Great", "status-1")
+	if len(g.booker.resolved) != 0 || g.ad.last() != CopyApprovalReask || g.state() != StateAwaitingApproval {
+		t.Fatalf("swipe elsewhere: resolved %v last %q state %s", g.booker.resolved, g.ad.last(), g.state())
+	}
+	g, chat, _, _ := setup(t)
+	send(t, g, "yes but max $5", "status-1")
+	if len(g.booker.resolved) != 0 || len(chat.posted) != 1 || g.state() != StateAwaitingApproval {
+		t.Fatalf("conditional swipe: resolved %v posted %v state %s", g.booker.resolved, chat.posted, g.state())
+	}
+	g, _, _, _ = setup(t)
+	send(t, g, "yes", "status-1")
+	if len(g.booker.resolved) != 1 {
+		t.Fatalf("strict YES swiped elsewhere: resolved %v", g.booker.resolved)
+	}
+}
+
+// Round 4: a draft-less awaiting_confirm with a valid, delivered stamp
+// goes idle on any message; and after a resolution that left the in-flight
+// mark (no resume line was sent), the next YES re-shows the summary and the
+// one after books.
+func TestConfirmEdgesRound4(t *testing.T) {
+	g, _, _, _ := contextRig(llm.IntentNewTask, bagelT)
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	c.State, c.Pending, c.QuestionShownAt = StateAwaitingConfirm, nil, ptrTime(time.Now().Add(-time.Hour))
+	g.convs.mu.Lock()
+	g.convs.convs["id-"+me] = c
+	g.convs.mu.Unlock()
+	g.say(t, "YES")
+	if g.state() != StateIdle || g.booker.posts != 0 {
+		t.Fatalf("state %s posts %d", g.state(), g.booker.posts)
+	}
+	g, _, _, _ = contextRig(llm.IntentToSupporter, bagelT)
+	g.say(t, "new task: pick up my laundry tomorrow at 3")
 	g.arm(t, "ext-2")
-	tasks.byMsg["status-1"] = "task-2" // a status line of ours, task-tagged
-	in := Inbound{Channel: WhatsApp, ProviderMessageID: "w1", From: me, Text: "Great", ReplyToProviderID: "status-1", ReceivedAt: time.Now()}
-	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+	g.booker.pendingExt = map[string]bool{}
+	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: evResolved, TaskID: "task-2", ExtensionID: "ext-2", Title: "A request timed out"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(g.booker.resolved) != 0 {
-		t.Fatalf("resolved %v", g.booker.resolved)
+	if g.state() != StateAwaitingConfirm {
+		t.Fatalf("state %s", g.state())
+	}
+	g.say(t, "YES") // in-flight mark left by the clear: re-shown
+	if g.booker.posts != 0 {
+		t.Fatalf("posts %d", g.booker.posts)
+	}
+	g.say(t, "YES")
+	if g.booker.posts != 1 {
+		t.Fatalf("after the re-show: posts %d", g.booker.posts)
 	}
 }

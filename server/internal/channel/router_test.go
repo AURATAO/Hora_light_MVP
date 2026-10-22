@@ -123,9 +123,9 @@ func (m *memConversations) SaveConversation(_ context.Context, c Conversation) e
 		if old.State == StateAwaitingApproval && c.State != StateHandoff {
 			// A stale snapshot must not disarm or restamp a question (the SQL CASE).
 			c.State, c.PendingExtensionID, c.ApprovalArmedAt, c.ApprovalClaimedAt = old.State, old.PendingExtensionID, old.ApprovalArmedAt, old.ApprovalClaimedAt
-			c.ApprovalTaskID, c.ApprovalQuestionOutAt = old.ApprovalTaskID, old.ApprovalQuestionOutAt
+			c.ApprovalTaskID, c.ApprovalQuestionOutAt, c.ApprovalQuestionPID = old.ApprovalTaskID, old.ApprovalQuestionOutAt, old.ApprovalQuestionPID
 		} else {
-			c.ApprovalClaimedAt, c.ApprovalQuestionOutAt, c.ApprovalTaskID = nil, nil, ""
+			c.ApprovalClaimedAt, c.ApprovalQuestionOutAt, c.ApprovalTaskID, c.ApprovalQuestionPID = nil, nil, "", ""
 		}
 		c.LastOutboundAt = old.LastOutboundAt // not in the upsert
 		if old.QuestionShownAt != nil && (c.QuestionShownAt == nil || old.QuestionShownAt.After(*c.QuestionShownAt)) {
@@ -236,7 +236,7 @@ func (m *memConversations) ClaimHold(_ context.Context, iid, ext, task string, a
 	if !found {
 		return false, nil
 	}
-	c.State, c.PendingExtensionID, c.ApprovalTaskID, c.ApprovalQuestionOutAt = StateAwaitingApproval, ext, task, nil
+	c.State, c.PendingExtensionID, c.ApprovalTaskID, c.ApprovalQuestionOutAt, c.ApprovalQuestionPID = StateAwaitingApproval, ext, task, nil, ""
 	sentinel := ArmedUnconfirmed
 	c.ApprovalArmedAt, c.ApprovalClaimedAt = &sentinel, &at
 	m.convs[iid] = c
@@ -256,7 +256,7 @@ func (m *memConversations) ReclaimUnconfirmed(_ context.Context, iid, ext string
 	m.convs[iid] = c
 	return true, nil
 }
-func (m *memConversations) ConfirmArmed(_ context.Context, iid, ext string, at, questionOut time.Time) (bool, error) {
+func (m *memConversations) ConfirmArmed(_ context.Context, iid, ext string, at, questionOut time.Time, questionPID string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	c, ok := m.convs[iid]
@@ -270,7 +270,7 @@ func (m *memConversations) ConfirmArmed(_ context.Context, iid, ext string, at, 
 		}
 	}
 	c.Deferred, c.ApprovalArmedAt = kept, &at
-	c.ApprovalQuestionOutAt = nil
+	c.ApprovalQuestionOutAt, c.ApprovalQuestionPID = nil, questionPID
 	if !questionOut.IsZero() {
 		c.ApprovalQuestionOutAt = &questionOut // the question's own stamp
 	}
@@ -285,7 +285,7 @@ func (m *memConversations) ClearApproval(_ context.Context, iid, ext string, res
 		return false, nil
 	}
 	c.State, c.PendingExtensionID, c.ApprovalArmedAt, c.ApprovalClaimedAt = resume, "", nil, nil
-	c.ApprovalTaskID, c.ApprovalQuestionOutAt = "", nil
+	c.ApprovalTaskID, c.ApprovalQuestionOutAt, c.ApprovalQuestionPID = "", nil, ""
 	if c.QuestionShownAt == nil || shownAt.After(*c.QuestionShownAt) {
 		c.QuestionShownAt = &shownAt
 	}

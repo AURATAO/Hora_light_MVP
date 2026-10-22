@@ -230,15 +230,24 @@ var affirmingRE = regexp.MustCompile(`\b(go ahead|it's fine|its fine|that's fine
 // with that"), not a contradiction — unless a strong yes sits beside it
 // (strongAffirmRE: "no, don't worry, go ahead").
 var negationRE = regexp.MustCompile(`\b(not|never|don'?t|can'?t|won'?t|isn'?t|aren'?t|no longer)\b`)
-var strongAffirmRE = regexp.MustCompile(`\b(go ahead|go for it|do it|approve|approved|yes|yeah|yep|sure|i don'?t mind|don'?t mind)\b`)
+var strongAffirmRE = regexp.MustCompile(`\b(i don'?t mind|go ahead|go for it|do it|approve|approved|yes|yeah|yep|sure|it'?s fine|that'?s fine|sounds good|fine)\b`)
+
+// reassuranceRE: phrases that look negative but reassure — read as "fine".
+var reassuranceRE = regexp.MustCompile(`\b(don'?t worry|no worries|not a problem|no problem)\b`)
+
+// negatedBefore: a not / n't / never within the two words before index i.
+var negatedBefore = regexp.MustCompile(`\b(not|never|n't|don'?t|do not|dont)\s+(\S+\s+)?$`)
 
 func mixedReason(reason string) bool {
 	r := strings.Join(strings.Fields(clean(reason)), " ")
 	if strings.ContainsAny(r, "?？") {
 		return true // "no, why?" asks: passed on
 	}
-	if strongAffirmRE.MatchString(r) {
-		return true // "no, I don't mind", "no, don't worry, go ahead": contradicts the no
+	r = reassuranceRE.ReplaceAllString(r, "fine")
+	for _, m := range strongAffirmRE.FindAllStringIndex(r, -1) {
+		if strings.HasPrefix(r[m[0]:m[1]], "i don") || !negatedBefore.MatchString(r[:m[0]]) {
+			return true // "no, I don't mind", "no, don't worry, go ahead": contradicts the no
+		}
 	}
 	if negationRE.MatchString(r) {
 		return false // "no, I'm not fine with that": a decline
@@ -257,9 +266,9 @@ func mixedReason(reason string) bool {
 // (cleaned). conditional: the rest carries a condition, a number, a
 // negation, a deferral, a question or a complaint — not an approval (R-3).
 // A rest that only repeats the yes is approvalYes's case, not this one.
-func yesWithMessage(text string) (rest string, reaction, conditional, ok bool) {
+func yesWithMessage(text string, supporter ...string) (rest string, reaction, conditional, ok bool) {
 	c := clean(text)
-	rest, reaction, cond, ok := splitYes(c)
+	rest, reaction, cond, ok := splitYes(c, supporter...)
 	if !ok || yesLikeTail(rest) {
 		return "", false, false, false
 	}
@@ -268,7 +277,7 @@ func yesWithMessage(text string) (rest string, reaction, conditional, ok bool) {
 
 // splitYes finds the longest yes-word prefix followed by a separator in a
 // cleaned string.
-func splitYes(c string) (rest string, reaction, conditional, ok bool) {
+func splitYes(c string, supporter ...string) (rest string, reaction, conditional, ok bool) {
 	lr := []rune(c)
 	best := -1
 	for _, set := range []map[string]bool{plainYes, reactionYes} {
@@ -299,7 +308,7 @@ func splitYes(c string) (rest string, reaction, conditional, ok bool) {
 	if tail == "" {
 		return "", false, false, false // the whole message is the word
 	}
-	return tail, reaction, tailConditional(tail), true
+	return tail, reaction, tailConditional(tail, supporter...), true
 }
 
 // approvalYesWord: is this exact (cleaned) prefix a list word, and which
@@ -309,49 +318,42 @@ func approvalYesWord(s string) (yes, reaction bool) {
 	return plainYes[n] || reactionYes[n], reactionYes[n] && !plainYes[n]
 }
 
-// benignStarts: how a tail that may ride along with a yes begins — thanks,
-// an instruction to pass on, a nudge (R-3, I-AE). Matched on the first
-// word after an optional connector (but, and, also, plus, just, oh).
-var benignStarts = map[string]bool{
-	"thanks": true, "thank": true, "thx": true, "ty": true, "cheers": true, "appreciate": true, "appreciated": true,
-	"tell": true, "let": true, "please": true, "pls": true, "plz": true, "hurry": true,
-	"grab": true, "get": true, "pick": true, "bring": true, "send": true, "text": true,
-	"great": true, "perfect": true, "awesome": true, "nice": true, "cool": true, "lol": true, "haha": true,
-}
+// harmlessTailRE: the ONLY tails that may ride along with an approving
+// yes (R-3, I-AE as amended in round 4) — exact whole shapes, matched on
+// the cleaned tail with the supporter's first name put in as NAME:
+// thanks (to the supporter), tell / let him know, please, hurry. Anything
+// else, however harmless it looks, is passed to the supporter with the
+// request kept open: the set is closed, not a growing list of exceptions.
+var harmlessTailRE = regexp.MustCompile(`^(?:(?:but|and|also|just|oh)\s+)?(?:` + strings.Join([]string{
+	`(?:thanks|thank you|thx|ty|cheers)(?:\s+name)?`,
+	`please`,
+	`(?:please\s+)?hurry(?:\s+up)?`,
+	`(?:please\s+)?tell (?:him|her|them|name) (?:to hurry(?: up)?|thanks|thank you)`,
+	`(?:please\s+)?let (?:him|her|them|name) know`,
+}, "|") + `)$`)
 
-var tailConnectors = map[string]bool{"but": true, "and": true, "also": true, "plus": true, "just": true, "oh": true, "&": true}
-
-// tailConditional: true unless the tail is positively harmless (I-AE). The
-// default is conditional — relayed, request kept open — because no list of
-// conditions is ever complete; a harmless tail is a short English
-// instruction or thanks, with no condition marker, nothing outside ASCII
-// but the friendly emoji, and at most maxTailWords words.
-func tailConditional(tail string) bool {
+// tailConditional: true unless the whole tail is one of the harmless
+// shapes. supporter is the request's supporter's first name, if known.
+func tailConditional(tail string, supporter ...string) bool {
 	t := normalise(tail)
 	if yesLikeTails[t] {
 		return false
 	}
 	c := strings.Join(strings.Fields(clean(tail)), " ")
 	c = strings.TrimRightFunc(c, trailingNoise)
-	// The markers are written as spelled ("unless", "steep"); matched on
-	// the cleaned tail, on a form with letter runs capped at two ("lesss"
-	// → "less"), and on the fully collapsed one ("waaait" → "wait").
-	if conditionRE.MatchString(c) || conditionRE.MatchString(collapse2(c)) || conditionRE.MatchString(t) {
-		return true
-	}
-	words := strings.Fields(c)
-	if len(words) == 0 || len(words) > maxTailWords {
-		return true
-	}
-	for _, r := range c {
-		if r > unicode.MaxASCII && !friendlyEmoji[r] && !answerEmoji[r] {
-			return true // CJK, accented Latin, unknown emoji: not on the harmless list
+	c = strings.Map(func(r rune) rune {
+		if strings.ContainsRune(",.;:!", r) {
+			return ' '
+		}
+		return r
+	}, c)
+	c = strings.Join(strings.Fields(c), " ")
+	if len(supporter) > 0 {
+		if n := strings.ToLower(strings.TrimSpace(supporter[0])); n != "" && n != "name" {
+			c = regexp.MustCompile(`\b`+regexp.QuoteMeta(n)+`\b`).ReplaceAllString(c, "name")
 		}
 	}
-	for len(words) > 1 && tailConnectors[strings.Trim(words[0], ",.;:!")] {
-		words = words[1:]
-	}
-	return !benignStarts[strings.Trim(words[0], ",.;:!'")]
+	return !harmlessTailRE.MatchString(c)
 }
 
 // collapse2 caps runs of a repeated ASCII letter at two: "lesss" → "less",

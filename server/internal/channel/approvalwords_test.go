@@ -29,8 +29,8 @@ func TestApprovalWords(t *testing.T) {
 		ok             bool
 	}{
 		{"yes but tell him to hurry", "but tell him to hurry", false, false, true},
-		{"Ok, thanks Alex!", "thanks alex", false, false, true},
-		{"Yesss — and grab napkins", "and grab napkins", false, false, true},
+		{"Ok, thanks Alex!", "thanks alex", false, true, true},              // a name not known as the supporter: passed on (round 4)
+		{"Yesss — and grab napkins", "and grab napkins", false, true, true}, // not a harmless shape (round 4)
 		{"yes but max $5", "but max $5", false, true, true},
 		{"yes if it's organic", "if it's organic", false, true, true},
 		{"sure, why?", "why?", false, true, true},

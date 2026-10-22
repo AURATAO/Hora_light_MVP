@@ -464,6 +464,11 @@ func (r *Router) onName(ctx context.Context, in Inbound, id Identity, conv Conve
 }
 
 func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
+	if conv.Pending == nil {
+		// awaiting_confirm with no draft (a stale snapshot): nothing to
+		// book — back to idle, whatever the message (round 4).
+		return r.showSummary(ctx, in, conv)
+	}
 	switch {
 	case IsNo(text):
 		return r.dropDraft(ctx, in, conv)
@@ -753,7 +758,7 @@ func (r *Router) Reply(ctx context.Context, in Inbound, text, taskID string) err
 // Send delivers one message and records it. A send failure is returned so the
 // inbound row stays unprocessed for the recovery sweep.
 func (r *Router) Send(ctx context.Context, out Outbound, taskID string) error {
-	_, err := r.sendStamped(ctx, out, taskID)
+	_, _, err := r.sendStamped(ctx, out, taskID)
 	return err
 }
 
@@ -763,18 +768,18 @@ func (r *Router) Send(ctx context.Context, out Outbound, taskID string) error {
 // the stamp, so the reaction-word rule (D-17 R-3) can only err toward
 // asking again — never toward reading "Great" as an answer to a question
 // that something else followed.
-func (r *Router) sendStamped(ctx context.Context, out Outbound, taskID string) (time.Time, error) {
+func (r *Router) sendStamped(ctx context.Context, out Outbound, taskID string) (time.Time, string, error) {
 	a, ok := r.Adapters[out.Channel]
 	if !ok {
-		return time.Time{}, fmt.Errorf("send: no adapter for channel %q", out.Channel)
+		return time.Time{}, "", fmt.Errorf("send: no adapter for channel %q", out.Channel)
 	}
 	stamp, err := r.Conversations.TouchOutbound(ctx, out.Channel, out.To)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("send to %s: %w", Redact(out.To), err)
+		return time.Time{}, "", fmt.Errorf("send to %s: %w", Redact(out.To), err)
 	}
 	pid, err := a.Send(ctx, out)
 	if err != nil {
-		return stamp, fmt.Errorf("send to %s: %w", Redact(out.To), err)
+		return stamp, "", fmt.Errorf("send to %s: %w", Redact(out.To), err)
 	}
 	if err := r.Messages.RecordOutbound(ctx, out, pid, taskID); err != nil {
 		// Sent but not recorded: the person got the message; only reply-to
@@ -782,7 +787,7 @@ func (r *Router) sendStamped(ctx context.Context, out Outbound, taskID string) (
 		log.Printf("[channel] record outbound id=%s: %v", pid, err)
 	}
 	log.Printf("[channel] outbound channel=%s id=%s to=%s len=%d", out.Channel, pid, Redact(out.To), len(out.Text))
-	return stamp, nil
+	return stamp, pid, nil
 }
 
 // markShown: a question of ours was just delivered to this thread (D-17

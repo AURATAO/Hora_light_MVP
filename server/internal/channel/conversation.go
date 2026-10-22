@@ -152,6 +152,9 @@ type Conversation struct {
 	// read-only here.
 	LastOutboundAt        *time.Time
 	ApprovalQuestionOutAt *time.Time
+	// ApprovalQuestionPID: the armed question's own provider message id (a
+	// WhatsApp swipe on it answers it). Read-only here.
+	ApprovalQuestionPID string
 	// QuestionShownAt is when a question of ours was last put to the
 	// person (a draft summary shown, or our thread returning to it). Only
 	// moves forward. A booking YES sent before it cannot be its answer
@@ -249,7 +252,7 @@ type ConversationStore interface {
 	// armed one (false otherwise: it ended while the send was in flight).
 	// questionOut is the question's own outbound stamp (TouchOutbound's
 	// result for that send): the reaction-word rule compares against it.
-	ConfirmArmed(ctx context.Context, identityID, extensionID string, at, questionOut time.Time) (bool, error)
+	ConfirmArmed(ctx context.Context, identityID, extensionID string, at, questionOut time.Time, questionPID string) (bool, error)
 	// MarkQuestionShown moves question_shown_at forward to at — called after
 	// a question of ours was delivered (D-17 R-1).
 	MarkQuestionShown(ctx context.Context, identityID string, at time.Time) error
@@ -339,7 +342,7 @@ func (s *PGStore) ClaimHold(ctx context.Context, identityID, extensionID, taskID
 	err := s.DB.QueryRowContext(ctx, `
 		UPDATE channel_conversations SET
 		  state = $3, pending_extension_id = $2::uuid, approval_armed_at = $4, approval_claimed_at = $6,
-		  approval_task_id = NULLIF($7, '')::uuid, approval_question_out_at = NULL, updated_at = now()
+		  approval_task_id = NULLIF($7, '')::uuid, approval_question_out_at = NULL, approval_question_pid = NULL, updated_at = now()
 		WHERE identity_id = $1 AND state = ANY($5::text[])
 		  AND coalesce(deferred_approval, '[]'::jsonb) @> jsonb_build_array(jsonb_build_object('extension_id', $2::text))
 		RETURNING 1
@@ -374,17 +377,18 @@ func (s *PGStore) ReclaimUnconfirmed(ctx context.Context, identityID, extensionI
 	return true, nil
 }
 
-func (s *PGStore) ConfirmArmed(ctx context.Context, identityID, extensionID string, at, questionOut time.Time) (bool, error) {
+func (s *PGStore) ConfirmArmed(ctx context.Context, identityID, extensionID string, at, questionOut time.Time, questionPID string) (bool, error) {
 	var one int
 	err := s.DB.QueryRowContext(ctx, `
 		UPDATE channel_conversations SET
 		  approval_armed_at = $3,
 		  approval_question_out_at = $5, -- the question's own stamp
+		  approval_question_pid = NULLIF($6, ''),
 		  deferred_approval = (SELECT jsonb_agg(e ORDER BY ord) FROM jsonb_array_elements(coalesce(deferred_approval, '[]'::jsonb)) WITH ORDINALITY AS t(e, ord)
 		                        WHERE e->>'extension_id' <> $2::text)
 		WHERE identity_id = $1 AND state = $4 AND pending_extension_id = $2::uuid
 		RETURNING 1
-	`, identityID, extensionID, at, string(StateAwaitingApproval), nullTime(questionOut)).Scan(&one)
+	`, identityID, extensionID, at, string(StateAwaitingApproval), nullTime(questionOut), questionPID).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -399,7 +403,7 @@ func (s *PGStore) ClearApproval(ctx context.Context, identityID, extensionID str
 	err := s.DB.QueryRowContext(ctx, `
 		UPDATE channel_conversations SET
 		  state = $3, pending_extension_id = NULL, approval_armed_at = NULL, approval_claimed_at = NULL,
-		  approval_task_id = NULL, approval_question_out_at = NULL,
+		  approval_task_id = NULL, approval_question_out_at = NULL, approval_question_pid = NULL,
 		  question_shown_at = GREATEST(question_shown_at, $5), updated_at = now()
 		WHERE identity_id = $1 AND state = $4 AND pending_extension_id = $2::uuid
 		RETURNING 1
@@ -493,15 +497,16 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 	var name, ext, relay sql.NullString
 	var terms, armed, lastIn, claimed, lastOut, qOut, shown sql.NullTime
 	var choicesJSON string
-	var deferred, apTask sql.NullString
+	var deferred, apTask, qPID sql.NullString
 	err := s.DB.QueryRowContext(ctx, `
 		SELECT state, pending_draft, pending_name, terms_accepted_at, pending_extension_id::text,
 		       COALESCE(array_to_json(pending_task_choices)::text, '[]'), pending_relay_text,
 		       deferred_approval::text, approval_armed_at, last_inbound_at, approval_claimed_at,
-		       approval_task_id::text, last_outbound_at, approval_question_out_at, question_shown_at
+		       approval_task_id::text, last_outbound_at, approval_question_out_at, question_shown_at,
+		       approval_question_pid
 		FROM channel_conversations WHERE identity_id = $1
 	`, identityID).Scan(&state, &pending, &name, &terms, &ext, &choicesJSON, &relay, &deferred, &armed, &lastIn, &claimed,
-		&apTask, &lastOut, &qOut, &shown)
+		&apTask, &lastOut, &qOut, &shown, &qPID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, nil
 	}
@@ -539,6 +544,7 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 		c.ApprovalClaimedAt = &t
 	}
 	c.ApprovalTaskID = apTask.String
+	c.ApprovalQuestionPID = qPID.String
 	for _, f := range []struct {
 		v   sql.NullTime
 		dst **time.Time
@@ -601,6 +607,8 @@ func (s *PGStore) SaveConversation(ctx context.Context, c Conversation) error {
 		               THEN channel_conversations.approval_task_id ELSE NULL END,
 		  approval_question_out_at = CASE WHEN channel_conversations.state = 'awaiting_approval' AND EXCLUDED.state <> 'handoff'
 		               THEN channel_conversations.approval_question_out_at ELSE NULL END,
+		  approval_question_pid = CASE WHEN channel_conversations.state = 'awaiting_approval' AND EXCLUDED.state <> 'handoff'
+		               THEN channel_conversations.approval_question_pid ELSE NULL END,
 		  -- Only forward: a stale snapshot never moves it back.
 		  question_shown_at = GREATEST(channel_conversations.question_shown_at, EXCLUDED.question_shown_at),
 		  pending_draft = EXCLUDED.pending_draft,
