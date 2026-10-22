@@ -363,6 +363,29 @@ yes+no → relay). Next: `-runs 5` (money cases must pass every run).
   "ＮＯ", "no," decline under I-P. Cases #97 replaced (time AND amount),
   #98 reworded, #100 (wrong charge as a question), #101 (time alone →
   relay), #102 ("also" → relay); #81–#83 flagged money; readme for grader
-  v2. **For the Arbiter:** "also + its own time, no amount" ("also pick up
-  my dry cleaning tomorrow") — new booking or for the supporter? Today:
-  for the supporter.
+  v2.
+
+- **Round 6 (f6cc26a) — PASS.** MINOR (fixed after): the open Arbiter
+  question was mis-described (a message that cannot be about a listed
+  errand is drafted anyway — the real open case is a whole request
+  beside a SIMILAR errand with a time but no amount); rule 6's examples
+  contradicted its first branch; `strictForm` trimmed all punctuation
+  ("no?", "no :)" became strict); money flags inconsistent; cases copied
+  prompt strings; rule 10 had no tie-break for "charged more" while a
+  request is pending; #94 not derivable from rule 5.
+
+  Fixed: prompt v0.3.9 — rule 6 states both draft branches with examples
+  tied to the listed errand; rule 10 — past tense (money taken) escalates,
+  a present/future question with an approval open is relay; rule 5 lists
+  不要 / 取消 (with particles). `strictForm` trims only ! . , ~ … and
+  their full-width forms. Every case with a booking / budget / name
+  question is `money`. Prompt examples no longer match case text. Cases
+  #103 (open question, below) and #104 (present-tense charge question →
+  relay).
+
+  **For the Arbiter:** "pick up my laundry tomorrow at 3, 12 Main St"
+  while a laundry errand is active — a whole request with its own time
+  and place but no amount: new booking, or for the supporter? Today
+  (v0.3.9, as ruled: time AND amount): for the supporter.
+
+  No model run yet for v0.3.3–v0.3.9: the next baseline runs v0.3.9.

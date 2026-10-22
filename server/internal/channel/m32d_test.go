@@ -850,3 +850,16 @@ func TestIPThroughTheRouter(t *testing.T) {
 		}
 	}
 }
+
+// Review r6: strictForm trims only trailing ! . , ~ (half and full width)
+// around particles — never "?" or an emoticon.
+func TestStrictFormEdges(t *testing.T) {
+	for msg, want := range map[string]bool{
+		"不要啦！": true, "不要啦～": true, "不要啦。": true, "取消啦...": true, "ＮＯ": true, "no,": true, "No!!": true,
+		"no?": false, "不要啦??": false, "no :)": false, "no!?": false, "nooo": false, "no 😂": false, "不要！啦": false,
+	} {
+		if got := approvalStrictAnswer(msg); got != want {
+			t.Errorf("%q: strict=%v, want %v", msg, got, want)
+		}
+	}
+}

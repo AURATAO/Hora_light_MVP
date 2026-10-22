@@ -436,8 +436,8 @@ func approvalAnswerish(text string) bool {
 // (Arbiter 2026-10-22 17:14: a decline, not words for the supporter). A
 // yes-word with a particle ("是啊") is not made strict without a ruling.
 func approvalStrictAnswer(text string) bool {
-	// Particles only — not the rest of normalise (letter collapsing, emoji
-	// trimming), so "nooo 😂" is not made strict (review r4).
+	// strictForm: particles and trailing ! . , ~ only — not letter
+	// collapsing or emoji trimming, so "nooo 😂" is not made strict (r4, r6).
 	return IsStrictYesNo(text) || strictNoRE.MatchString(strictForm(text))
 }
 
@@ -446,7 +446,9 @@ func approvalStrictAnswer(text string) bool {
 // no letter collapsing and no emoji trimming ("nooo", "no 😂" stay
 // casual). Review r5.
 func strictForm(text string) string {
-	punct := func(r rune) bool { return unicode.IsPunct(r) || unicode.IsSpace(r) || r == '~' || r == '～' }
+	// Only what normalise trims as trailing noise — never "?" (a question)
+	// and never ":)" (review r6).
+	punct := func(r rune) bool { return unicode.IsSpace(r) || strings.ContainsRune("!.,~…！。，、～", r) }
 	s := strings.TrimRightFunc(clean(text), punct)
 	return strings.TrimRightFunc(trimParticles(s), punct)
 }
