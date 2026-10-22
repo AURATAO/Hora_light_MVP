@@ -771,3 +771,65 @@ func TestBuYaoLaDeclinesUnderIP(t *testing.T) {
 		t.Fatalf("resolved %v posted %v", g.booker.resolved, chat.posted)
 	}
 }
+
+// Review r4: I-AN's edges — particles only (not letter collapsing or emoji),
+// English no-words take no particles, and the router's I-P gate and
+// DecideApproval agree.
+func TestIANEdges(t *testing.T) {
+	for _, tc := range []struct {
+		f    ApprovalFacts
+		want ApprovalVerdict
+	}{
+		{ApprovalFacts{Text: "nooo 😂", QuestionIsLast: true, SupporterLive: true}, VerdictToSupporter},
+		{ApprovalFacts{Text: "Nooo", QuestionIsLast: true, SupporterLive: true}, VerdictToSupporter},
+		{ApprovalFacts{Text: "no 👍", QuestionIsLast: true, SupporterLive: true}, VerdictToSupporter},
+		{ApprovalFacts{Text: "no啦, too much", QuestionIsLast: true}, VerdictNotAnAnswer},
+		{ApprovalFacts{Text: "nope啦, too much", QuestionIsLast: true}, VerdictNotAnAnswer},
+		{ApprovalFacts{Text: "不要啦！", QuestionIsLast: true}, VerdictDecline},
+		{ApprovalFacts{Text: "不行喔，可以啊", QuestionIsLast: true}, VerdictPassOnKeep},
+		{ApprovalFacts{Text: "不要啦太貴了", QuestionIsLast: true}, VerdictNotAnAnswer},
+		{ApprovalFacts{Text: "不用啦，好", QuestionIsLast: true}, VerdictPassOnKeep},
+	} {
+		if got := DecideApproval(tc.f); got != tc.want {
+			t.Errorf("%+v: %d, want %d", tc.f, got, tc.want)
+		}
+	}
+}
+
+// Review r4: the same I-P table through the router (casualToSupporter),
+// and the booking state unchanged by I-AN.
+func TestIPThroughTheRouter(t *testing.T) {
+	for _, tc := range []struct {
+		msg      string
+		declined bool
+		relayed  bool
+	}{
+		{"不要啦", true, false},
+		{"不用喔", false, true},
+		{"可以啊", false, true},
+		{"ok", false, true},
+		{"no", true, false},
+	} {
+		g, chat, tasks, _ := contextRig(llm.IntentToSupporter, bagelT)
+		g.arm(t, "ext-2")
+		tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: which one?", "task-2", time.Now().Add(-2*time.Minute)
+		g.say(t, tc.msg)
+		declined := len(g.booker.resolved) == 1 && strings.HasSuffix(g.booker.resolved[0], ":false")
+		if declined != tc.declined || (len(chat.posted) == 1) != tc.relayed || (tc.relayed && len(g.booker.resolved) != 0) {
+			t.Errorf("%q: resolved %v posted %v", tc.msg, g.booker.resolved, chat.posted)
+		}
+	}
+	// Booking with the supporter writing: 不要啦 is not a strict no there
+	// (I-S): nothing is booked and the draft is not dropped by it.
+	g, _, tasks, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.say(t, "new task: pick up my laundry tomorrow at 3")
+	tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: which one?", "task-2", time.Now().Add(-2*time.Minute)
+	g.say(t, "不要啦")
+	c, err := g.convs.GetConversation(context.Background(), "id-"+me)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.booker.posts != 0 || c.Pending == nil {
+		t.Fatalf("booking: posts %d pending %v state %s", g.booker.posts, c.Pending != nil, c.State)
+	}
+}

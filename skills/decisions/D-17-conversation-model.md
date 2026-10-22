@@ -757,7 +757,13 @@ Recorded as given, in the order asked; nothing below is built yet.
   in both the router's I-P gate and `DecideApproval`. Declared (**I-AN**):
   only the strict no-words — 不用喔 still goes to the supporter (不用 is
   not on the strict list), and a yes-word with a particle (是啊) is not
-  made strict without a ruling. Booking (I-S) unchanged.
+  made strict without a ruling. Booking (I-S) unchanged. After review r4:
+  only particles are removed for this check (not letter-collapsing or
+  emoji — "nooo 😂" still goes to the supporter); particles follow only
+  the Chinese no-words ("no啦, too much" is not a decline); the router's
+  I-P gate and `DecideApproval` share `approvalCasual`. The relay footer
+  ("send YES or NO on its own") is not reworded: 不要啦 is read as that
+  NO.
 - **#52 (agent):** a whole new errand with its own time and amount is a
   new booking even while a similar errand is active — prompt rule 6
   (D-18, v0.3.6).

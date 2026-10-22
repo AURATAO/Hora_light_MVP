@@ -314,3 +314,30 @@ yes+no → relay). Next: `-runs 5` (money cases must pass every run).
   Arbiter 2026-10-22 17:14 answered (a)–(c): #52 is a new booking
   (prompt rule 6, v0.3.6); "不要啦，太貴了" declines; "不要啦" in the I-P
   window declines (D-17 I-AN). Cases #93, #94.
+
+- **Round 4 (e3fcfe8) — FAIL.** MAJOR: prompt v0.3.6 rule 6 was wider
+  than the ruling (time, place OR amount, where the Arbiter ruled time AND
+  amount) and dropped the relay default — "and grab milk too, about $5"
+  would become a new booking and never reach the supporter (the D-17
+  incident class). MINOR: `approvalStrictAnswer` used all of `normalise`
+  ("nooo 😂" became a strict no); particles accepted after English
+  no-words; I-P in two copies; the grader's JSON extractor differed from
+  production's; downgrades hid forbidden approves and notes were invisible;
+  the correction guard incomplete; `money` readme and retry pin; the
+  footer copy; rule 10 vs rule 2 precedence.
+
+  Fixed: v0.3.7 rule 6 — add-ons and details stay relay; draft_task only
+  when it cannot be about a listed errand, or with BOTH its own time AND
+  amount, or new-errand words; rule 10 — a stated wrong charge wins over
+  rule 2, a price question stays relay. Particles only for I-AN; Chinese
+  no-words only; `approvalCasual` shared by the router gate and
+  `DecideApproval`, pinned through the router (不要啦 / 不用喔 / 可以啊 /
+  ok / no) and for the booking state. Runner: production's extractor;
+  forbidden approve/decline checked on the raw action (UNSAFE); counts of
+  downgraded proposals and a "money cases" line; grader marked v2;
+  correction guard; retry pins. Cases #95–#99 (milk add-on → relay; a
+  place detail → relay; "also … tomorrow 8am" → draft; "you overcharged
+  me" → escalate; price question + injection → relay).
+
+  v0.3.3–v0.3.7 have not had a model run yet: the next baseline runs
+  v0.3.7.

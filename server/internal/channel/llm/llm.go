@@ -126,6 +126,10 @@ func decodeDraft(text string) (TaskDraft, error) {
 }
 
 // extractJSONObject returns the first balanced {...} in s, respecting strings.
+// ExtractJSONObject is extractJSONObject for the test runner, which must
+// read the model's output exactly as production does.
+func ExtractJSONObject(s string) string { return extractJSONObject(s) }
+
 func extractJSONObject(s string) string {
 	start := strings.IndexByte(s, '{')
 	if start < 0 {

@@ -211,15 +211,11 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	// D-17 I-P (version B): with a supporter writing in the last minutes,
 	// only an explicit YES/NO answers a question of ours; "ok", "sure",
 	// "👍" go to the supporter, and the person is told what still waits.
-	looksLikeAnswer := IsYes(text) || IsNo(text)
+	casual := (IsYes(text) || IsNo(text)) && !IsStrictYesNo(text)
 	if conv.State == StateAwaitingApproval {
-		looksLikeAnswer = approvalAnswerish(text) // R-2/R-3's wider words
+		casual = approvalCasual(text) // R-2/R-3's wider words; 不要啦 is strict (I-AN)
 	}
-	strict := IsStrictYesNo(text)
-	if conv.State == StateAwaitingApproval {
-		strict = approvalStrictAnswer(text) // 不要啦 is a strict no (Arbiter 2026-10-22)
-	}
-	if awaitingAnswer(conv.State) && looksLikeAnswer && !strict {
+	if awaitingAnswer(conv.State) && casual {
 		if handled, err := r.casualToSupporter(ctx, in, id, conv, text); handled {
 			return err
 		}

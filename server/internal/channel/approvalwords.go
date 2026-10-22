@@ -56,7 +56,7 @@ var yesLikeTails = wordSet("no problem", "no worries", "no rush", "thing", "100%
 // noWithReasonRE: a no-word, then punctuation, then a reason — "no, he
 // needs to finish now", "nope, too much". The punctuation is required, so
 // "no problem" / "no worries" never match (R-2).
-var noWithReasonRE = regexp.MustCompile(`^(no|nope|nah|no thanks|nvm|不要|不用|不行)[啊呀喔哦囉啦]*\s*[,.!;:，。！]\s*(.+)$`)
+var noWithReasonRE = regexp.MustCompile(`^(no|nope|nah|no thanks|nvm|(?:不要|不用|不行)[啊呀喔哦囉啦]*)\s*[,.!;:，。！]\s*(.+)$`)
 
 // rulingMarkerRE: R-3's ruled markers — an amount, a digit, a cap or a
 // floor. Checked on the raw tail BEFORE the supporter's name is put in, so
@@ -436,5 +436,15 @@ func approvalAnswerish(text string) bool {
 // (Arbiter 2026-10-22 17:14: a decline, not words for the supporter). A
 // yes-word with a particle ("是啊") is not made strict without a ruling.
 func approvalStrictAnswer(text string) bool {
-	return IsStrictYesNo(text) || strictNoRE.MatchString(normalise(text))
+	// Particles only — not the rest of normalise (letter collapsing, emoji
+	// trimming), so "nooo 😂" is not made strict (review r4).
+	return IsStrictYesNo(text) || strictNoRE.MatchString(trimParticles(strings.TrimSpace(text)))
+}
+
+// approvalCasual is I-P (version B) for an approval question: an answer
+// word that is not a strict YES/NO goes to a supporter who wrote in the
+// last minutes. The router's gate (HandleInbound) and DecideApproval both
+// use it — one rule, one place (review r4).
+func approvalCasual(text string) bool {
+	return approvalAnswerish(text) && !approvalStrictAnswer(text)
 }
