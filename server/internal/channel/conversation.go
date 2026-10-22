@@ -142,6 +142,21 @@ type Conversation struct {
 	// re-sent only once it is older than UnconfirmedResend — a send in
 	// flight must not be repeated by a resume point running beside it.
 	ApprovalClaimedAt *time.Time
+	// ApprovalTaskID is the task the armed request belongs to (ClaimHold),
+	// so the person's words around a YES/NO reach that supporter (R-3).
+	ApprovalTaskID string
+	// LastOutboundAt is our latest message in the thread (TouchOutbound);
+	// ApprovalQuestionOutAt is its value when the armed question was
+	// confirmed sent. Equal = nothing of ours since the question, so a
+	// reaction word ("Great", 👍) can only be about it (D-17 R-3). Both
+	// read-only here.
+	LastOutboundAt        *time.Time
+	ApprovalQuestionOutAt *time.Time
+	// QuestionShownAt is when a question of ours was last put to the
+	// person (a draft summary shown, or our thread returning to it). Only
+	// moves forward. A booking YES sent before it cannot be its answer
+	// (D-17 R-1: the double tap after an approval).
+	QuestionShownAt *time.Time
 	// PendingTaskChoices are the task ids listed when asking which supporter
 	// a message is for; PendingRelayText is that message, relayed on pick.
 	PendingTaskChoices []string
@@ -224,7 +239,7 @@ type ConversationStore interface {
 	// and the send leaves a question that no message can answer and that
 	// the next resume point re-sends. False when another caller got there
 	// first or the state moved (D-17 I-O).
-	ClaimHold(ctx context.Context, identityID, extensionID string, at time.Time) (bool, error)
+	ClaimHold(ctx context.Context, identityID, extensionID, taskID string, at time.Time) (bool, error)
 	// ReclaimUnconfirmed renews the claim time on an unconfirmed question
 	// — only if it is still unconfirmed and its claim time is what the
 	// caller read — so of two repairs running at once exactly one re-sends.
@@ -236,7 +251,24 @@ type ConversationStore interface {
 	// ClearApproval ends the armed question for THAT request and no other
 	// (compare-and-set on the request id): state becomes `resume`, request
 	// and stamp cleared. False when it was not the armed one any more.
-	ClearApproval(ctx context.Context, identityID, extensionID string, resume State) (bool, error)
+	// shownAt: the thread returns to our earlier question now (QuestionShownAt
+	// moves forward to it).
+	ClearApproval(ctx context.Context, identityID, extensionID string, resume State, shownAt time.Time) (bool, error)
+	// TouchOutbound stamps our latest message in the thread with this
+	// address (the reaction-word rule, D-17 R-3).
+	TouchOutbound(ctx context.Context, ch Channel, address string) error
+}
+
+func (s *PGStore) TouchOutbound(ctx context.Context, ch Channel, address string) error {
+	_, err := s.DB.ExecContext(ctx, `
+		UPDATE channel_conversations c SET last_outbound_at = clock_timestamp()
+		  FROM channel_identities i
+		 WHERE i.id = c.identity_id AND i.channel = $1 AND i.address = $2
+	`, string(ch), address)
+	if err != nil {
+		return fmt.Errorf("touch outbound: %w", err)
+	}
+	return nil
 }
 
 // ArmedUnconfirmed marks a claimed question whose delivery has not been
@@ -273,15 +305,16 @@ func armableStatesLiteral() string {
 	return "{" + strings.Join(parts, ",") + "}"
 }
 
-func (s *PGStore) ClaimHold(ctx context.Context, identityID, extensionID string, at time.Time) (bool, error) {
+func (s *PGStore) ClaimHold(ctx context.Context, identityID, extensionID, taskID string, at time.Time) (bool, error) {
 	var one int
 	err := s.DB.QueryRowContext(ctx, `
 		UPDATE channel_conversations SET
-		  state = $3, pending_extension_id = $2::uuid, approval_armed_at = $4, approval_claimed_at = $6, updated_at = now()
+		  state = $3, pending_extension_id = $2::uuid, approval_armed_at = $4, approval_claimed_at = $6,
+		  approval_task_id = NULLIF($7, '')::uuid, approval_question_out_at = NULL, updated_at = now()
 		WHERE identity_id = $1 AND state = ANY($5::text[])
 		  AND coalesce(deferred_approval, '[]'::jsonb) @> jsonb_build_array(jsonb_build_object('extension_id', $2::text))
 		RETURNING 1
-	`, identityID, extensionID, string(StateAwaitingApproval), ArmedUnconfirmed, armableStatesLiteral(), at).Scan(&one)
+	`, identityID, extensionID, string(StateAwaitingApproval), ArmedUnconfirmed, armableStatesLiteral(), at, taskID).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -317,6 +350,7 @@ func (s *PGStore) ConfirmArmed(ctx context.Context, identityID, extensionID stri
 	err := s.DB.QueryRowContext(ctx, `
 		UPDATE channel_conversations SET
 		  approval_armed_at = $3,
+		  approval_question_out_at = last_outbound_at, -- the question itself, just sent
 		  deferred_approval = (SELECT jsonb_agg(e ORDER BY ord) FROM jsonb_array_elements(coalesce(deferred_approval, '[]'::jsonb)) WITH ORDINALITY AS t(e, ord)
 		                        WHERE e->>'extension_id' <> $2::text)
 		WHERE identity_id = $1 AND state = $4 AND pending_extension_id = $2::uuid
@@ -331,14 +365,16 @@ func (s *PGStore) ConfirmArmed(ctx context.Context, identityID, extensionID stri
 	return true, nil
 }
 
-func (s *PGStore) ClearApproval(ctx context.Context, identityID, extensionID string, resume State) (bool, error) {
+func (s *PGStore) ClearApproval(ctx context.Context, identityID, extensionID string, resume State, shownAt time.Time) (bool, error) {
 	var one int
 	err := s.DB.QueryRowContext(ctx, `
 		UPDATE channel_conversations SET
-		  state = $3, pending_extension_id = NULL, approval_armed_at = NULL, approval_claimed_at = NULL, updated_at = now()
+		  state = $3, pending_extension_id = NULL, approval_armed_at = NULL, approval_claimed_at = NULL,
+		  approval_task_id = NULL, approval_question_out_at = NULL,
+		  question_shown_at = GREATEST(question_shown_at, $5), updated_at = now()
 		WHERE identity_id = $1 AND state = $4 AND pending_extension_id = $2::uuid
 		RETURNING 1
-	`, identityID, extensionID, string(resume), string(StateAwaitingApproval)).Scan(&one)
+	`, identityID, extensionID, string(resume), string(StateAwaitingApproval), shownAt).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -426,15 +462,17 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 	var state string
 	var pending []byte
 	var name, ext, relay sql.NullString
-	var terms, armed, lastIn, claimed sql.NullTime
+	var terms, armed, lastIn, claimed, lastOut, qOut, shown sql.NullTime
 	var choicesJSON string
-	var deferred sql.NullString
+	var deferred, apTask sql.NullString
 	err := s.DB.QueryRowContext(ctx, `
 		SELECT state, pending_draft, pending_name, terms_accepted_at, pending_extension_id::text,
 		       COALESCE(array_to_json(pending_task_choices)::text, '[]'), pending_relay_text,
-		       deferred_approval::text, approval_armed_at, last_inbound_at, approval_claimed_at
+		       deferred_approval::text, approval_armed_at, last_inbound_at, approval_claimed_at,
+		       approval_task_id::text, last_outbound_at, approval_question_out_at, question_shown_at
 		FROM channel_conversations WHERE identity_id = $1
-	`, identityID).Scan(&state, &pending, &name, &terms, &ext, &choicesJSON, &relay, &deferred, &armed, &lastIn, &claimed)
+	`, identityID).Scan(&state, &pending, &name, &terms, &ext, &choicesJSON, &relay, &deferred, &armed, &lastIn, &claimed,
+		&apTask, &lastOut, &qOut, &shown)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, nil
 	}
@@ -471,6 +509,16 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 		t := claimed.Time
 		c.ApprovalClaimedAt = &t
 	}
+	c.ApprovalTaskID = apTask.String
+	for _, f := range []struct {
+		v   sql.NullTime
+		dst **time.Time
+	}{{lastOut, &c.LastOutboundAt}, {qOut, &c.ApprovalQuestionOutAt}, {shown, &c.QuestionShownAt}} {
+		if f.v.Valid {
+			t := f.v.Time
+			*f.dst = &t
+		}
+	}
 	if len(pending) > 0 && string(pending) != "null" {
 		var p PendingDraft
 		if err := json.Unmarshal(pending, &p); err != nil {
@@ -490,19 +538,22 @@ func (s *PGStore) SaveConversation(ctx context.Context, c Conversation) error {
 		}
 		pending = string(b)
 	}
-	var terms, armed any
+	var terms, armed, shown any
 	if c.TermsAcceptedAt != nil {
 		terms = *c.TermsAcceptedAt
 	}
 	if c.ApprovalArmedAt != nil {
 		armed = *c.ApprovalArmedAt
 	}
+	if c.QuestionShownAt != nil {
+		shown = *c.QuestionShownAt
+	}
 	_, err := s.DB.ExecContext(ctx, `
 		INSERT INTO channel_conversations
 		  (identity_id, state, pending_draft, pending_name, terms_accepted_at, pending_extension_id,
-		   pending_task_choices, pending_relay_text, approval_armed_at, updated_at)
+		   pending_task_choices, pending_relay_text, approval_armed_at, approval_task_id, question_shown_at, updated_at)
 		VALUES ($1, $2, $3::jsonb, NULLIF($4, ''), $5, NULLIF($6, '')::uuid,
-		        NULLIF($7, '{}')::uuid[], NULLIF($8, ''), $9, now())
+		        NULLIF($7, '{}')::uuid[], NULLIF($8, ''), $9, NULLIF($10, '')::uuid, $11, now())
 		ON CONFLICT (identity_id) DO UPDATE SET
 		  -- An armed question (a claim that landed after this caller read
 		  -- its snapshot) is kept unless the caller is ending it on purpose
@@ -517,6 +568,12 @@ func (s *PGStore) SaveConversation(ctx context.Context, c Conversation) error {
 		               THEN channel_conversations.approval_armed_at ELSE EXCLUDED.approval_armed_at END,
 		  approval_claimed_at = CASE WHEN channel_conversations.state = 'awaiting_approval' AND EXCLUDED.state <> 'handoff'
 		               THEN channel_conversations.approval_claimed_at ELSE NULL END,
+		  approval_task_id = CASE WHEN channel_conversations.state = 'awaiting_approval' AND EXCLUDED.state <> 'handoff'
+		               THEN channel_conversations.approval_task_id ELSE EXCLUDED.approval_task_id END,
+		  approval_question_out_at = CASE WHEN channel_conversations.state = 'awaiting_approval' AND EXCLUDED.state <> 'handoff'
+		               THEN channel_conversations.approval_question_out_at ELSE NULL END,
+		  -- Only forward: a stale snapshot never moves it back.
+		  question_shown_at = GREATEST(channel_conversations.question_shown_at, EXCLUDED.question_shown_at),
 		  pending_draft = EXCLUDED.pending_draft,
 		  pending_name = EXCLUDED.pending_name,
 		  terms_accepted_at = COALESCE(channel_conversations.terms_accepted_at, EXCLUDED.terms_accepted_at),
@@ -524,7 +581,7 @@ func (s *PGStore) SaveConversation(ctx context.Context, c Conversation) error {
 		  pending_relay_text = EXCLUDED.pending_relay_text,
 		  updated_at = now()
 	`, c.IdentityID, string(c.State), pending, c.PendingName, terms, c.PendingExtensionID,
-		pgUUIDArray(c.PendingTaskChoices), c.PendingRelayText, armed)
+		pgUUIDArray(c.PendingTaskChoices), c.PendingRelayText, armed, c.ApprovalTaskID, shown)
 	if err != nil {
 		return fmt.Errorf("save conversation: %w", err)
 	}

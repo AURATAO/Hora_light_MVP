@@ -208,7 +208,11 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	// D-17 I-P (version B): with a supporter writing in the last minutes,
 	// only an explicit YES/NO answers a question of ours; "ok", "sure",
 	// "👍" go to the supporter, and the person is told what still waits.
-	if awaitingAnswer(conv.State) && (IsYes(text) || IsNo(text)) && !IsStrictYesNo(text) {
+	looksLikeAnswer := IsYes(text) || IsNo(text)
+	if conv.State == StateAwaitingApproval {
+		looksLikeAnswer = approvalAnswerish(text) // R-2/R-3's wider words
+	}
+	if awaitingAnswer(conv.State) && looksLikeAnswer && !IsStrictYesNo(text) {
 		if handled, err := r.casualToSupporter(ctx, in, id, conv, text); handled {
 			return err
 		}
@@ -416,6 +420,8 @@ func (r *Router) showSummary(ctx context.Context, in Inbound, conv Conversation)
 	summary := r.leadIn(conv.Pending) + r.Summary(conv.Pending)
 	conv.Pending.SummaryShown = summary
 	conv.State = StateAwaitingConfirm
+	shown := r.now()
+	conv.QuestionShownAt = &shown
 	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 		return fmt.Errorf("showSummary: %w", err)
 	}
@@ -454,6 +460,13 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 		if conv.Pending != nil {
 			conv.Pending.NoAutoExtend = true
 		}
+		return r.showSummary(ctx, in, conv)
+	case IsYes(text) && conv.QuestionShownAt != nil && (in.ReceivedAt.IsZero() || in.ReceivedAt.Before(*conv.QuestionShownAt)):
+		// Sent before this summary was (re)shown — the second tap of a
+		// double YES that answered something else — or with no usable
+		// send time: not a booking. The summary is put again (D-17 R-1;
+		// no margin, Arbiter).
+		log.Printf("[channel] booking identity=%s: YES sent before the summary, re-asked", id.ID)
 		return r.showSummary(ctx, in, conv)
 	case IsYes(text):
 		now := r.now()
@@ -727,6 +740,12 @@ func (r *Router) Send(ctx context.Context, out Outbound, taskID string) error {
 	pid, err := a.Send(ctx, out)
 	if err != nil {
 		return fmt.Errorf("send to %s: %w", Redact(out.To), err)
+	}
+	if err := r.Conversations.TouchOutbound(ctx, out.Channel, out.To); err != nil {
+		// Logged, not failed (the message is out). A missed stamp matters
+		// only to the reaction-word rule (D-17 R-3): a message following an
+		// approval question might then go unnoticed by it. Declared.
+		log.Printf("[channel] touch outbound channel=%s: %v", out.Channel, err)
 	}
 	if err := r.Messages.RecordOutbound(ctx, out, pid, taskID); err != nil {
 		// Sent but not recorded: the person got the message; only reply-to

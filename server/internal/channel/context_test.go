@@ -988,7 +988,7 @@ func TestUnconfirmedClaimIsUnanswerableThenResent(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := time.Now()
-	if ok, err := g.convs.ClaimHold(context.Background(), "id-"+me, "ext-9", base); err != nil || !ok {
+	if ok, err := g.convs.ClaimHold(context.Background(), "id-"+me, "ext-9", "task-2", base); err != nil || !ok {
 		t.Fatal(err)
 	}
 	// (the process died here) — a YES is refused and told a question is
@@ -1135,7 +1135,7 @@ func TestRepairIsOnceAndClearsDeadHolds(t *testing.T) {
 	if err := g.convs.HoldApproval(context.Background(), "id-"+me, d); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := g.convs.ClaimHold(context.Background(), "id-"+me, "ext-9", base); err != nil || !ok {
+	if ok, err := g.convs.ClaimHold(context.Background(), "id-"+me, "ext-9", "task-2", base); err != nil || !ok {
 		t.Fatal(err)
 	}
 	g.r.Now = func() time.Time { return base.Add(UnconfirmedResend + time.Second) }
@@ -1158,7 +1158,7 @@ func TestRepairIsOnceAndClearsDeadHolds(t *testing.T) {
 	if err := g.convs.HoldApproval(context.Background(), "id-"+me, d); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := g.convs.ClaimHold(context.Background(), "id-"+me, "ext-9", base); err != nil || !ok {
+	if ok, err := g.convs.ClaimHold(context.Background(), "id-"+me, "ext-9", "task-2", base); err != nil || !ok {
 		t.Fatal(err)
 	}
 	g.booker.pendingExt = map[string]bool{}

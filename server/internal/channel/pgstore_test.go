@@ -546,7 +546,7 @@ func TestPGPendingExtensionRoundTrip(t *testing.T) {
 	if kept, _ := s.GetConversation(ctx, a.ID); kept.State != StateAwaitingApproval || kept.PendingExtensionID != ext {
 		t.Fatalf("a full-row save disarmed the question: %+v", kept)
 	}
-	if ok, err := s.ClearApproval(ctx, a.ID, ext, StateIdle); err != nil || !ok {
+	if ok, err := s.ClearApproval(ctx, a.ID, ext, StateIdle, time.Now()); err != nil || !ok {
 		t.Fatalf("clear: %v %v", ok, err)
 	}
 	again, err := s.GetConversation(ctx, a.ID)
@@ -795,7 +795,7 @@ func TestPGClaimHold(t *testing.T) {
 		}
 	}
 	// Not from a handoff.
-	if ok, err := s.ClaimHold(ctx, a.ID, ext, time.Now()); err != nil || ok {
+	if ok, err := s.ClaimHold(ctx, a.ID, ext, "", time.Now()); err != nil || ok {
 		t.Fatalf("claimed from handoff: %v %v", ok, err)
 	}
 	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateAwaitingConfirm, Pending: draft}); err != nil {
@@ -808,7 +808,7 @@ func TestPGClaimHold(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if ok, err := s.ClaimHold(ctx, a.ID, ext, time.Now()); err == nil && ok {
+			if ok, err := s.ClaimHold(ctx, a.ID, ext, "", time.Now()); err == nil && ok {
 				atomic.AddInt32(&wins, 1)
 			}
 		}()
@@ -876,11 +876,11 @@ func TestPGClaimHold(t *testing.T) {
 	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateAwaitingConfirm, Pending: draft}); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := s.ClaimHold(ctx, a.ID, ext, time.Now()); err != nil || !ok {
+	if ok, err := s.ClaimHold(ctx, a.ID, ext, "", time.Now()); err != nil || !ok {
 		t.Fatalf("re-claim after handoff: %v %v", ok, err)
 	}
 	// Not while another question is armed.
-	if ok, _ := s.ClaimHold(ctx, a.ID, ext2, time.Now()); ok {
+	if ok, _ := s.ClaimHold(ctx, a.ID, ext2, "", time.Now()); ok {
 		t.Fatal("claimed while another question is armed")
 	}
 	// Confirmed: stamped, hold gone, the other hold and the draft stay.
@@ -906,10 +906,10 @@ func TestPGClaimHold(t *testing.T) {
 		t.Fatalf("stray confirm: %+v", got)
 	}
 	// Clear: only for the armed request; the draft comes back.
-	if ok, err := s.ClearApproval(ctx, a.ID, ext2, StateAwaitingConfirm); err != nil || ok {
+	if ok, err := s.ClearApproval(ctx, a.ID, ext2, StateAwaitingConfirm, time.Now()); err != nil || ok {
 		t.Fatalf("cleared the wrong request: %v %v", ok, err)
 	}
-	if ok, err := s.ClearApproval(ctx, a.ID, ext, StateAwaitingConfirm); err != nil || !ok {
+	if ok, err := s.ClearApproval(ctx, a.ID, ext, StateAwaitingConfirm, time.Now()); err != nil || !ok {
 		t.Fatalf("clear: %v %v", ok, err)
 	}
 	if got, _ = s.GetConversation(ctx, a.ID); got.State != StateAwaitingConfirm || got.PendingExtensionID != "" || got.ApprovalArmedAt != nil || got.ApprovalClaimedAt != nil || got.Pending == nil || len(got.Deferred) != 1 {
@@ -920,7 +920,7 @@ func TestPGClaimHold(t *testing.T) {
 		if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: st, Pending: draft, PendingExtensionID: ""}); err != nil {
 			t.Fatal(err)
 		}
-		ok, err := s.ClaimHold(ctx, a.ID, ext2, time.Now())
+		ok, err := s.ClaimHold(ctx, a.ID, ext2, "", time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -928,7 +928,7 @@ func TestPGClaimHold(t *testing.T) {
 			t.Fatalf("state %s: SQL %v, canArmApproval %v", st, ok, canArmApproval(st))
 		}
 		if ok {
-			if _, err := s.ClearApproval(ctx, a.ID, ext2, st); err != nil {
+			if _, err := s.ClearApproval(ctx, a.ID, ext2, st, time.Now()); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -940,5 +940,77 @@ func TestPGClaimHold(t *testing.T) {
 	}
 	if got, _ = s.GetConversation(ctx, a.ID); got.LastInboundAt == nil || !got.LastInboundAt.Equal(when) {
 		t.Fatalf("%+v", got)
+	}
+}
+
+// M3.2d columns: question_shown_at only moves forward; the armed request's
+// task; last_outbound_at, and its value captured when the question is
+// confirmed sent; ClearApproval clears the approval ones and moves the
+// shown time.
+func TestPGM32dColumns(t *testing.T) {
+	db := testDB(t)
+	s := &PGStore{DB: db}
+	ctx := context.Background()
+	a, err := s.UpsertIdentity(ctx, IMessage, "+15550000709")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ext string
+	if err := db.QueryRow(`INSERT INTO extension_requests DEFAULT VALUES RETURNING id`).Scan(&ext); err != nil {
+		t.Fatal(err)
+	}
+	t1 := time.Now().Truncate(time.Microsecond)
+	t0 := t1.Add(-time.Minute)
+	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateAwaitingConfirm, QuestionShownAt: &t1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateAwaitingConfirm, QuestionShownAt: &t0}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetConversation(ctx, a.ID)
+	if err != nil || got.QuestionShownAt == nil || !got.QuestionShownAt.Equal(t1) {
+		t.Fatalf("shown time moved back: %+v %v", got, err)
+	}
+	if err := s.HoldApproval(ctx, a.ID, DeferredApproval{UserID: "u", TaskID: "t", ExtensionID: ext, AtUnix: 1}); err != nil {
+		t.Fatal(err)
+	}
+	task := "00000000-0000-0000-0000-0000000000aa"
+	if ok, err := s.ClaimHold(ctx, a.ID, ext, task, time.Now()); err != nil || !ok {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+	if err := s.TouchOutbound(ctx, IMessage, a.Address); err != nil { // the question is sent
+		t.Fatal(err)
+	}
+	if ok, err := s.ConfirmArmed(ctx, a.ID, ext, time.Now()); err != nil || !ok {
+		t.Fatalf("confirm: %v %v", ok, err)
+	}
+	got, _ = s.GetConversation(ctx, a.ID)
+	if got.ApprovalTaskID != task || got.LastOutboundAt == nil || got.ApprovalQuestionOutAt == nil || !got.LastOutboundAt.Equal(*got.ApprovalQuestionOutAt) {
+		t.Fatalf("after confirm: %+v", got)
+	}
+	if !questionIsLast(got) {
+		t.Fatal("nothing sent since the question")
+	}
+	if err := s.TouchOutbound(ctx, IMessage, a.Address); err != nil { // a status update follows
+		t.Fatal(err)
+	}
+	got, _ = s.GetConversation(ctx, a.ID)
+	if questionIsLast(got) {
+		t.Fatalf("a later message must count: %+v", got)
+	}
+	// A stale same-state save keeps the approval fields.
+	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateAwaitingApproval, PendingExtensionID: ext}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.GetConversation(ctx, a.ID); got.ApprovalTaskID != task || got.ApprovalQuestionOutAt == nil {
+		t.Fatalf("stale save wiped the approval fields: %+v", got)
+	}
+	t2 := time.Now().Add(time.Hour).Truncate(time.Microsecond)
+	if ok, err := s.ClearApproval(ctx, a.ID, ext, StateAwaitingConfirm, t2); err != nil || !ok {
+		t.Fatalf("clear: %v %v", ok, err)
+	}
+	got, _ = s.GetConversation(ctx, a.ID)
+	if got.ApprovalTaskID != "" || got.ApprovalQuestionOutAt != nil || got.QuestionShownAt == nil || !got.QuestionShownAt.Equal(t2) || got.LastOutboundAt == nil {
+		t.Fatalf("after clear: %+v", got)
 	}
 }

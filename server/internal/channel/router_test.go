@@ -122,8 +122,13 @@ func (m *memConversations) SaveConversation(_ context.Context, c Conversation) e
 		if old.State == StateAwaitingApproval && c.State != StateHandoff {
 			// A stale snapshot must not disarm or restamp a question (the SQL CASE).
 			c.State, c.PendingExtensionID, c.ApprovalArmedAt, c.ApprovalClaimedAt = old.State, old.PendingExtensionID, old.ApprovalArmedAt, old.ApprovalClaimedAt
+			c.ApprovalTaskID, c.ApprovalQuestionOutAt = old.ApprovalTaskID, old.ApprovalQuestionOutAt
 		} else {
-			c.ApprovalClaimedAt = nil
+			c.ApprovalClaimedAt, c.ApprovalQuestionOutAt = nil, nil
+		}
+		c.LastOutboundAt = old.LastOutboundAt // not in the upsert
+		if old.QuestionShownAt != nil && (c.QuestionShownAt == nil || old.QuestionShownAt.After(*c.QuestionShownAt)) {
+			c.QuestionShownAt = old.QuestionShownAt // GREATEST, like the SQL
 		}
 	} else {
 		c.Deferred = nil
@@ -133,6 +138,25 @@ func (m *memConversations) SaveConversation(_ context.Context, c Conversation) e
 	return nil
 }
 func (m *memConversations) touch(iid string, at time.Time) { m.setLastInbound(iid, &at) }
+
+// TouchOutbound mirrors the SQL: stamps the conversation of the identity
+// with this address (the rig's ids are "id-"+address).
+func (m *memConversations) TouchOutbound(_ context.Context, _ Channel, address string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	iid := "id-" + address
+	c, ok := m.convs[iid]
+	if !ok {
+		return nil // like the UPDATE: no row, nothing done
+	}
+	now := time.Now()
+	if c.LastOutboundAt != nil && !now.After(*c.LastOutboundAt) {
+		now = c.LastOutboundAt.Add(time.Nanosecond) // strictly later, like clock_timestamp()
+	}
+	c.LastOutboundAt = &now
+	m.convs[iid] = c
+	return nil
+}
 func (m *memConversations) setLastInbound(iid string, at *time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -179,7 +203,7 @@ func (m *memConversations) RemoveHold(_ context.Context, iid, ext string) error 
 	m.convs[iid] = c
 	return nil
 }
-func (m *memConversations) ClaimHold(_ context.Context, iid, ext string, at time.Time) (bool, error) {
+func (m *memConversations) ClaimHold(_ context.Context, iid, ext, task string, at time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	c, ok := m.convs[iid]
@@ -195,7 +219,7 @@ func (m *memConversations) ClaimHold(_ context.Context, iid, ext string, at time
 	if !found {
 		return false, nil
 	}
-	c.State, c.PendingExtensionID = StateAwaitingApproval, ext
+	c.State, c.PendingExtensionID, c.ApprovalTaskID, c.ApprovalQuestionOutAt = StateAwaitingApproval, ext, task, nil
 	sentinel := ArmedUnconfirmed
 	c.ApprovalArmedAt, c.ApprovalClaimedAt = &sentinel, &at
 	m.convs[iid] = c
@@ -229,10 +253,14 @@ func (m *memConversations) ConfirmArmed(_ context.Context, iid, ext string, at t
 		}
 	}
 	c.Deferred, c.ApprovalArmedAt = kept, &at
+	if c.LastOutboundAt != nil {
+		q := *c.LastOutboundAt
+		c.ApprovalQuestionOutAt = &q
+	}
 	m.convs[iid] = c
 	return true, nil
 }
-func (m *memConversations) ClearApproval(_ context.Context, iid, ext string, resume State) (bool, error) {
+func (m *memConversations) ClearApproval(_ context.Context, iid, ext string, resume State, shownAt time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	c, ok := m.convs[iid]
@@ -240,6 +268,10 @@ func (m *memConversations) ClearApproval(_ context.Context, iid, ext string, res
 		return false, nil
 	}
 	c.State, c.PendingExtensionID, c.ApprovalArmedAt, c.ApprovalClaimedAt = resume, "", nil, nil
+	c.ApprovalTaskID, c.ApprovalQuestionOutAt = "", nil
+	if c.QuestionShownAt == nil || shownAt.After(*c.QuestionShownAt) {
+		c.QuestionShownAt = &shownAt
+	}
 	m.convs[iid] = c
 	return true, nil
 }

@@ -425,3 +425,49 @@ Recorded as given, in the order asked; nothing below is built yet.
   disagree, the safer side wins.
 - **R-5 / R-6** (json_schema; one approval asked at a time) — recorded in
   D-18, which they belong to.
+
+## M3.2d — R-1…R-3 built (2026-10-22)
+
+- **R-1** `question_shown_at` (new column, only moves forward — the upsert
+  takes GREATEST) is stamped when a draft summary is shown
+  (`showSummary`), when an approval ends and the thread returns to our
+  earlier question (`ClearApproval(…, shownAt)`), and on handoff release.
+  `onConfirm` re-shows the summary instead of booking for a YES whose send
+  time precedes it, or has none.
+- **R-2/R-3** `approvalwords.go`: `approvalYes` (the ruled list, plain vs
+  reaction words), `approvalNo` (whole-message no-words, or a no-word +
+  punctuation + a reason), `yesWithMessage` (a yes-word prefix, a
+  separator, the rest; `conditionRE` decides conditional). Used by
+  `onAwaitingApproval` and by the I-P gate in `HandleInbound` when the
+  state is `awaiting_approval`.
+- Reaction words: `last_outbound_at` (stamped on every send by
+  `TouchOutbound`, database clock) is captured into
+  `approval_question_out_at` when the question is confirmed sent; a
+  reaction word answers only while the two are equal.
+- Yes + message: `approval_task_id` (set by `ClaimHold`) names the
+  supporter; approve first, then relay the rest ("(Passed … to Sam.)");
+  conditional → relay the whole message, nothing resolved, still-waiting
+  line.
+
+**Interpretations declared (Arbiter to confirm):**
+- **I-S** R-2/R-3 apply to answers to the supporter's money/time requests
+  only. The booking YES and our other questions keep yesRE/noRE: "Great"
+  does not book; "no, make it 4pm" at a summary is still a correction,
+  not a cancel.
+- **I-T** `question_shown_at` also moves when an approval ends in any way
+  (answered, resolved in the app, cleared): a YES sent before that moment
+  was about the approval and never books.
+- **I-U** `conditionRE` reads as conditional: an amount or digit, a `?`,
+  limit words (max, min, only, under, over, up to, at most, at least),
+  conditions (if, unless, instead, without, except), negations (no, not,
+  don't, never) and "wait / hold on", plus 不超過 / 只要 / 如果 / 最多 /
+  最少 / 不要 / 不用 / 不. Wrongly conditional costs one more message;
+  wrongly unconditional would approve.
+- **I-V** A `TouchOutbound` failure is logged, not failed (the message is
+  out); it can only make the reaction-word rule miss a message that
+  followed the question.
+- **I-W** Approve-then-relay: if the relay fails after the approval, the
+  approval stands and the person is told the message could not be passed
+  on.
+- The agent test kit's `gate.go` (D-18) is updated to these rules when it
+  moves into the repo.

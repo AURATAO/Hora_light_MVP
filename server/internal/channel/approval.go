@@ -96,8 +96,12 @@ func quotedNote(s string) string {
 // onAwaitingApproval answers the pending request with this message.
 func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
 	var approve bool
+	var passOn string // the person's words to pass to the supporter after a YES (R-3)
+	answerish := approvalAnswerish(text)
+	plain, reaction := approvalYes(text)
+	rest, restReaction, conditional, withMessage := yesWithMessage(text)
 	switch {
-	case (IsYes(text) || IsNo(text)) && conv.Unconfirmed():
+	case answerish && conv.Unconfirmed():
 		// Claimed but never confirmed delivered: nothing can answer it.
 		// Re-sent from the hold once the claim is old enough; until then
 		// the person is told a question is on its way — not to reply YES
@@ -116,7 +120,7 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 			return r.Reply(ctx, in, reply, "")
 		}
 		return r.Reply(ctx, in, CopyApprovalOnItsWay, "")
-	case (IsYes(text) || IsNo(text)) && conv.ApprovalArmedAt != nil && (in.ReceivedAt.IsZero() || in.ReceivedAt.Before(*conv.ApprovalArmedAt)):
+	case answerish && conv.ApprovalArmedAt != nil && (in.ReceivedAt.IsZero() || in.ReceivedAt.Before(*conv.ApprovalArmedAt)):
 		// Sent before the question was asked (a second tap on YES for the
 		// booking, say), or with no usable send time: it cannot be taken as
 		// answering it. The question is put again; nothing moves (S-11/5).
@@ -125,10 +129,31 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 		// the person's own reaction time; no margin is applied.
 		log.Printf("[channel] approval identity=%s ext=%s: answer refused, sent before the question", id.ID, conv.PendingExtensionID)
 		return r.Reply(ctx, in, approvalReask(conv), "")
-	case IsYes(text):
+	case (plain && reaction) || (withMessage && !conditional && restReaction):
+		// A reaction word ("Great", 👍) is a yes only if our last message
+		// is this question — otherwise it may be about whatever we sent
+		// after it (D-17 R-3). Asked again; nothing moves.
+		if !questionIsLast(conv) {
+			log.Printf("[channel] approval identity=%s ext=%s: reaction word after a later message, re-asked", id.ID, conv.PendingExtensionID)
+			return r.Reply(ctx, in, approvalReask(conv), "")
+		}
 		approve = true
-	case IsNo(text):
+		if withMessage {
+			passOn = rest
+		}
+	case plain:
+		approve = true
+	case approvalNo(text):
 		approve = false
+	case withMessage && conditional:
+		// "yes but max $5", "yes if it's organic": not an approval and
+		// not a decline — the words go to the supporter, the request
+		// stays open (R-3).
+		return r.passOnKeepingQuestion(ctx, in, id, conv, text)
+	case withMessage:
+		// "yes but tell him to hurry": approve, then pass the rest on.
+		approve = true
+		passOn = rest
 	default:
 		// A sentence while the request is pending may be for the
 		// supporter ("why $10 more?") — relayed, the question stays open.
@@ -139,6 +164,10 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 	}
 	if r.Booker == nil {
 		return fmt.Errorf("onAwaitingApproval: router not fully configured")
+	}
+	if passOn != "" && conv.ApprovalTaskID == "" {
+		// Nowhere to pass the words: do not approve on half a message.
+		return r.Reply(ctx, in, approvalReask(conv), "")
 	}
 	res := r.Booker.ResolveExtension(ctx, id.UserID, conv.PendingExtensionID, approve)
 	log.Printf("[channel] approval identity=%s ext=%s approve=%t outcome=%d status=%s",
@@ -151,7 +180,7 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 	conv.PendingExtensionID = ""
 	conv.ApprovalArmedAt = nil
 	conv.State = conv.ResumeState()
-	if _, err := r.Conversations.ClearApproval(ctx, id.ID, ext, conv.State); err != nil {
+	if _, err := r.Conversations.ClearApproval(ctx, id.ID, ext, conv.State, r.now()); err != nil {
 		return fmt.Errorf("onAwaitingApproval: %w", err)
 	}
 
@@ -174,6 +203,13 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 		}
 	default:
 		reply = CopyApprovalGone
+	}
+	if passOn != "" && res.Outcome == ExtResolved {
+		if sent, err := r.relaySent(ctx, in, id, conv.ApprovalTaskID, passOn); err != nil {
+			return err
+		} else if sent {
+			reply += " " + fmt.Sprintf(CopyPassedOn, strings.TrimSpace(passOn), r.supporterFirstName(ctx, id, conv.ApprovalTaskID))
+		}
 	}
 	if !r.nextHoldLive(ctx, id, conv) {
 		// Our own question comes back — unless a live held question is
@@ -262,7 +298,7 @@ func (r *Router) clearApproval(ctx context.Context, id Identity, extensionID str
 	// Compare-and-set on the request: a question armed in between (a
 	// claim racing this) is left alone. The caller resumes a held
 	// question once the person has been told.
-	cleared, err = r.Conversations.ClearApproval(ctx, identityID, conv.PendingExtensionID, conv.ResumeState())
+	cleared, err = r.Conversations.ClearApproval(ctx, identityID, conv.PendingExtensionID, conv.ResumeState(), r.now())
 	if err != nil {
 		return false, fmt.Errorf("clearApproval: %w", err)
 	}
@@ -317,7 +353,7 @@ func (r *Router) resumeDeferred(ctx context.Context, id Identity) {
 			}
 			continue
 		}
-		claimed, err := r.Conversations.ClaimHold(ctx, id.ID, d.ExtensionID, r.now())
+		claimed, err := r.Conversations.ClaimHold(ctx, id.ID, d.ExtensionID, d.TaskID, r.now())
 		if err != nil {
 			log.Printf("[channel] resume deferred ext=%s: %v", d.ExtensionID, err)
 			return
@@ -364,7 +400,7 @@ func (r *Router) repairUnconfirmed(ctx context.Context, id Identity, conv Conver
 	}
 	// No hold to re-send from, or the request is no longer live: end it.
 	log.Printf("[channel] approval ext=%s: unconfirmed claim cleared", conv.PendingExtensionID)
-	if _, err := r.Conversations.ClearApproval(ctx, id.ID, conv.PendingExtensionID, conv.ResumeState()); err != nil {
+	if _, err := r.Conversations.ClearApproval(ctx, id.ID, conv.PendingExtensionID, conv.ResumeState(), r.now()); err != nil {
 		log.Printf("[channel] resume deferred identity=%s: %v", id.ID, err)
 		return
 	}
@@ -432,7 +468,7 @@ func (r *Router) sendClaimed(ctx context.Context, id Identity, d DeferredApprova
 			log.Printf("[channel] resume deferred identity=%s: %v", id.ID, gerr)
 			return
 		}
-		if _, err := r.Conversations.ClearApproval(undo, id.ID, d.ExtensionID, conv.ResumeState()); err != nil {
+		if _, err := r.Conversations.ClearApproval(undo, id.ID, d.ExtensionID, conv.ResumeState(), r.now()); err != nil {
 			log.Printf("[channel] resume deferred identity=%s: %v", id.ID, err)
 		}
 		return
@@ -486,4 +522,39 @@ func approvalReask(conv Conversation) string {
 		return CopyApprovalOnItsWay
 	}
 	return CopyApprovalReask
+}
+
+// questionIsLast: nothing of ours has been sent since the armed question
+// (D-17 R-3, the reaction-word rule). Unknown → false (asked again).
+func questionIsLast(conv Conversation) bool {
+	return conv.LastOutboundAt != nil && conv.ApprovalQuestionOutAt != nil &&
+		conv.LastOutboundAt.Equal(*conv.ApprovalQuestionOutAt)
+}
+
+// passOnKeepingQuestion relays the person's words to the armed request's
+// supporter and tells them the question still waits — nothing approved,
+// nothing declined (R-3: a yes with a condition).
+func (r *Router) passOnKeepingQuestion(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
+	if conv.ApprovalTaskID == "" || r.Chat == nil {
+		return r.Reply(ctx, in, approvalReask(conv), "")
+	}
+	sent, err := r.relaySent(ctx, in, id, conv.ApprovalTaskID, text)
+	if err != nil || !sent {
+		return err // relaySent told them it failed
+	}
+	return r.Reply(ctx, in, fmt.Sprintf(CopyPassedOn, strings.TrimSpace(text), r.supporterFirstName(ctx, id, conv.ApprovalTaskID))+" "+stillWaiting(conv), "")
+}
+
+// supporterFirstName for a task, for "(Passed … to Alex.)".
+func (r *Router) supporterFirstName(ctx context.Context, id Identity, taskID string) string {
+	if r.Chat != nil {
+		if active, err := r.Chat.ActiveTasks(ctx, id.UserID); err == nil {
+			if t, ok := taskIn(active, taskID); ok {
+				if n := DisplayName(FirstName(t.SupporterName)); n != "" {
+					return n
+				}
+			}
+		}
+	}
+	return "your supporter"
 }
