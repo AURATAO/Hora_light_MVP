@@ -28,7 +28,10 @@
 // Offline self-test (no model, no key): go test ./cmd/agenttest
 //
 // Optional: LLM_BASE_URL (default https://inference.baseten.co/v1),
-// LLM_DISABLE_THINKING=1, LLM_TIMEOUT (default 60s), -parallel (default 4).
+// LLM_DISABLE_THINKING=1, LLM_TIMEOUT (default 60s), -parallel (default 1),
+// -delay between requests (default 1s), -agent-only (ask the model only
+// where production would: the rules leave the message to the agent).
+// A 429 / 5xx is retried with backoff (up to 6 tries).
 package main
 
 import (
@@ -36,6 +39,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math/rand"
 	"os"
 	"sort"
 	"strings"
@@ -276,7 +280,9 @@ func main() {
 		group     = flag.String("group", "", "run one group (prefix)")
 		verbose   = flag.Bool("v", false, "show raw output")
 		jsonOut   = flag.String("json", "", "write a JSON report here")
-		parallel  = flag.Int("parallel", 4, "concurrent requests")
+		parallel  = flag.Int("parallel", 1, "concurrent requests (raise only if your plan's rate limit allows)")
+		delay     = flag.Duration("delay", time.Second, "pause between requests, per worker")
+		agentOnly = flag.Bool("agent-only", false, "skip cases the rules decide (the model is not asked there in production)")
 	)
 	flag.Parse()
 	f, err := load(*casesPath)
@@ -312,6 +318,9 @@ func main() {
 
 	var todo []Case
 	for _, c := range f.Cases {
+		if *agentOnly && c.Server != "" && c.Server != "agent" {
+			continue
+		}
 		if (*only == 0 || c.N == *only) && strings.HasPrefix(c.Group, *group) {
 			todo = append(todo, c)
 		}
@@ -330,6 +339,7 @@ func main() {
 			defer wg.Done()
 			for j := range jobs {
 				r := runOne(model, f, j.c, j.run, timeout)
+				time.Sleep(*delay)
 				mu.Lock()
 				results = append(results, r)
 				mu.Unlock()
@@ -379,11 +389,20 @@ func runOne(model *llm.OpenAICompat, f File, c Case, run int, timeout time.Durat
 	if c.Ctx.Open != "" {
 		r.Server = verdictName(verdict(ac, c))
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	t0 := time.Now()
-	raw, _, err := model.ProposeRaw(ctx, c.Msg, ac)
-	r.LatencyMS = time.Since(t0).Milliseconds()
+	var raw string
+	backoff := 2 * time.Second
+	for attempt := 1; ; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		t0 := time.Now()
+		raw, _, err = model.ProposeRaw(ctx, c.Msg, ac)
+		r.LatencyMS = time.Since(t0).Milliseconds()
+		cancel()
+		if err == nil || attempt == 6 || !retryable(err) {
+			break
+		}
+		time.Sleep(backoff + time.Duration(rand.Int63n(int64(time.Second))))
+		backoff *= 2
+	}
 	if err != nil {
 		r.Grade, r.Why = "ERROR", err.Error()
 		r.Outcome = outcome(r.Server, llm.SafeProposal())
@@ -398,6 +417,13 @@ func runOne(model *llm.OpenAICompat, f File, c Case, run int, timeout time.Durat
 	}
 	r.Outcome = outcome(r.Server, dp)
 	return r
+}
+
+// retryable: rate limits and provider errors (the error carries the status
+// only — no body).
+func retryable(err error) bool {
+	m := err.Error()
+	return strings.Contains(m, "status 429") || strings.Contains(m, "status 5") || strings.Contains(m, "deadline exceeded")
 }
 
 func report(results []Result, verbose bool) int {
