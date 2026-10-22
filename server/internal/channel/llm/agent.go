@@ -230,12 +230,22 @@ func SafeProposal() Proposal { return Proposal{Action: ActionRelay, Task: -1} }
 // Propose asks the model. On any failure it returns SafeProposal with the
 // error.
 func (o *OpenAICompat) Propose(ctx context.Context, text string, c AgentContext) (Proposal, error) {
-	// 512 tokens: the object is ~20; headroom for a model that thinks first.
-	out, _, err := o.completeJSON(ctx, AgentPrompt, AgentUserMessage(text, c), "proposal", AgentSchema(len(c.Tasks)), 512)
+	out, _, err := o.ProposeRaw(ctx, text, c)
 	if err != nil {
-		return SafeProposal(), fmt.Errorf("agent: %w", err)
+		return SafeProposal(), err
 	}
 	return DecodeProposal(out, c)
+}
+
+// ProposeRaw is the model's raw JSON, for the test runner (cmd/agenttest),
+// which grades what the model said before DecodeProposal makes it safe.
+func (o *OpenAICompat) ProposeRaw(ctx context.Context, text string, c AgentContext) (string, Usage, error) {
+	// 512 tokens: the object is ~20; headroom for a model that thinks first.
+	out, u, err := o.completeJSON(ctx, AgentPrompt, AgentUserMessage(text, c), "proposal", AgentSchema(len(c.Tasks)), 512)
+	if err != nil {
+		return "", u, fmt.Errorf("agent: %w", err)
+	}
+	return out, u, nil
 }
 
 // ToIntent maps a proposal onto the router's intents. approve/decline
