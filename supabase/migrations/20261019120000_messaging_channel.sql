@@ -150,17 +150,6 @@ CREATE TABLE IF NOT EXISTS public.channel_conversations (
   -- When that question was claimed (ClaimHold only; nothing else writes
   -- it). An unconfirmed claim older than a few minutes is re-sent.
   approval_claimed_at    timestamp with time zone,
-  -- The task the armed request belongs to (the person's words around a
-  -- YES/NO reach that supporter), and our last outbound at the moment the
-  -- question was confirmed sent (a reaction word counts only if nothing of
-  -- ours followed it). D-17 R-3.
-  approval_task_id       uuid,
-  approval_question_out_at timestamp with time zone,
-  -- Our latest message in the thread.
-  last_outbound_at       timestamp with time zone,
-  -- When a question of ours was last put to the person; only moves
-  -- forward. A booking YES sent before it is not an answer (D-17 R-1).
-  question_shown_at      timestamp with time zone,
   -- Candidate tasks offered in a "which task?" question, in the order listed.
   pending_task_choices   uuid[],
   -- The message held while asking which task it is for (M3.2), relayed on
@@ -217,11 +206,7 @@ ALTER TABLE public.channel_conversations
   ADD COLUMN IF NOT EXISTS pending_relay_text   text,
   ADD COLUMN IF NOT EXISTS deferred_approval    jsonb,
   ADD COLUMN IF NOT EXISTS approval_armed_at    timestamp with time zone,
-  ADD COLUMN IF NOT EXISTS approval_claimed_at  timestamp with time zone,
-  ADD COLUMN IF NOT EXISTS approval_task_id     uuid,
-  ADD COLUMN IF NOT EXISTS approval_question_out_at timestamp with time zone,
-  ADD COLUMN IF NOT EXISTS last_outbound_at     timestamp with time zone,
-  ADD COLUMN IF NOT EXISTS question_shown_at    timestamp with time zone;
+  ADD COLUMN IF NOT EXISTS approval_claimed_at  timestamp with time zone;
 ALTER TABLE public.channel_messages
   ADD COLUMN IF NOT EXISTS relay boolean NOT NULL DEFAULT false;
 -- The state set grew the same way; re-assert the CHECK so an older table

@@ -29,7 +29,7 @@ func TestApprovalWords(t *testing.T) {
 		ok             bool
 	}{
 		{"yes but tell him to hurry", "but tell him to hurry", false, false, true},
-		{"Ok, thanks Alex!", "thanks Alex!", false, false, true},
+		{"Ok, thanks Alex!", "thanks alex!", false, false, true},
 		{"Yesss — and grab napkins", "and grab napkins", false, false, true},
 		{"yes but max $5", "but max $5", false, true, true},
 		{"yes if it's organic", "if it's organic", false, true, true},
@@ -38,7 +38,7 @@ func TestApprovalWords(t *testing.T) {
 		{"yes, only 10 minutes", "only 10 minutes", false, true, true},
 		{"好，不要太貴", "不要太貴", false, true, true},
 		{"great, he's here", "he's here", true, false, true},
-		{"okay so what's the item", "so what's the item", false, false, true},
+		{"okay so what's the item", "so what's the item", false, true, true}, // a question word: conditional
 		{"yes", "", false, false, false},
 		{"ok不要", "", false, false, false},
 		{"no problem, go ahead", "", false, false, false},
@@ -47,6 +47,73 @@ func TestApprovalWords(t *testing.T) {
 		rest, r, c, ok := yesWithMessage(tc.msg)
 		if ok != tc.ok || rest != tc.rest || r != tc.reaction || c != tc.cond {
 			t.Errorf("%q: rest=%q reaction=%v cond=%v ok=%v", tc.msg, rest, r, c, ok)
+		}
+	}
+}
+
+// Review round 1 (M3.2d): every way a tail could carry a condition, a
+// refusal or a complaint is conditional — never an approval.
+func TestApprovalTailsErrConditional(t *testing.T) {
+	cond := []string{
+		"yes, don’t go over", "yes, don't go over", "ok, can’t do more", "sure, won't need it",
+		"yes, nothing more", "ok none of that", "yeah nah", "ok nvm", "ok nevermind", "sure nope",
+		"yes cancel", "ok stop",
+		"yes but five dollars", "ok make it ten", "好，十塊", "ok １０", "yes ＄５",
+		"ok let me think", "sure let me check with my wife", "ok what for", "ok? wait",
+		"yeah that's too much", "ok that's a lot", "ya know what forget it",
+		"si, ma non più di 5", "sí, pero solo uno",
+		"ok 👎", "sure 🙄", "yes 😡", "ok ❌",
+	}
+	for _, msg := range cond {
+		// Never an approval: not a plain yes, and either not a yes-with-
+		// message at all or a conditional one.
+		_, _, c, ok := yesWithMessage(msg)
+		if y, _ := approvalYes(msg); y || (ok && !c) {
+			t.Errorf("%q: plain yes=%v, with message ok=%v conditional=%v", msg, y, ok, c)
+		}
+	}
+	// Every no-word, straight or curly, as a tail.
+	for w := range noWords {
+		for _, msg := range []string{"yes " + w, "ok, " + w} {
+			if _, _, c, ok := yesWithMessage(msg); ok && !c {
+				t.Errorf("%q: a no-word tail must be conditional", msg)
+			}
+			if y, _ := approvalYes(msg); y {
+				t.Errorf("%q: must not be a plain yes", msg)
+			}
+		}
+	}
+}
+
+func TestApprovalWordsEdges(t *testing.T) {
+	plain := []string{"yes no problem", "sure, no worries", "ok no rush", "yes 100%", "sure thing", "ok great", "book it", "👍🏽", "sí", "Ｙｅｓ"}
+	for _, msg := range plain {
+		if y, r := approvalYes(msg); !y {
+			t.Errorf("%q: should be a yes (reaction=%v)", msg, r)
+		}
+	}
+	if _, r := approvalYes("👍🏽"); !r {
+		t.Error("👍🏽 is a reaction word")
+	}
+	for _, msg := range []string{"kkkkk", "ok-ish", "sure-ish", "yesterday", "okayyy so", "goood"} {
+		if y, _ := approvalYes(msg); y {
+			t.Errorf("%q: must not be a yes", msg)
+		}
+		if _, _, c, ok := yesWithMessage(msg); ok && !c {
+			t.Errorf("%q: must not approve with a message", msg)
+		}
+	}
+	if !approvalNo("no,") || !approvalNo("no.") || !approvalNo("NO!") {
+		t.Error("a bare no with punctuation declines")
+	}
+	for _, msg := range []string{"no! go ahead", "no, it's fine", "no, yes please", "nope, sure", "no, ok do it", "no, why?"} {
+		if approvalNo(msg) || !mixedNo(msg) {
+			t.Errorf("%q: mixed, not a decline (no=%v mixed=%v)", msg, approvalNo(msg), mixedNo(msg))
+		}
+	}
+	for _, msg := range []string{"no, he needs to finish now", "nope, too much", "no thanks", "不要，太貴"} {
+		if !approvalNo(msg) || mixedNo(msg) {
+			t.Errorf("%q: a decline (no=%v mixed=%v)", msg, approvalNo(msg), mixedNo(msg))
 		}
 	}
 }

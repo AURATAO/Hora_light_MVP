@@ -95,6 +95,7 @@ type memConversations struct {
 	convs    map[string]Conversation
 	ids      *memIdentities
 	claimErr error // when set, ClaimForPosting fails like a database would
+	touchErr error // when set, TouchOutbound fails
 }
 
 func (m *memConversations) GetConversation(_ context.Context, iid string) (Conversation, error) {
@@ -124,7 +125,7 @@ func (m *memConversations) SaveConversation(_ context.Context, c Conversation) e
 			c.State, c.PendingExtensionID, c.ApprovalArmedAt, c.ApprovalClaimedAt = old.State, old.PendingExtensionID, old.ApprovalArmedAt, old.ApprovalClaimedAt
 			c.ApprovalTaskID, c.ApprovalQuestionOutAt = old.ApprovalTaskID, old.ApprovalQuestionOutAt
 		} else {
-			c.ApprovalClaimedAt, c.ApprovalQuestionOutAt = nil, nil
+			c.ApprovalClaimedAt, c.ApprovalQuestionOutAt, c.ApprovalTaskID = nil, nil, ""
 		}
 		c.LastOutboundAt = old.LastOutboundAt // not in the upsert
 		if old.QuestionShownAt != nil && (c.QuestionShownAt == nil || old.QuestionShownAt.After(*c.QuestionShownAt)) {
@@ -141,19 +142,35 @@ func (m *memConversations) touch(iid string, at time.Time) { m.setLastInbound(ii
 
 // TouchOutbound mirrors the SQL: stamps the conversation of the identity
 // with this address (the rig's ids are "id-"+address).
-func (m *memConversations) TouchOutbound(_ context.Context, _ Channel, address string) error {
+func (m *memConversations) TouchOutbound(_ context.Context, _ Channel, address string) (time.Time, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.touchErr != nil {
+		return time.Time{}, m.touchErr
+	}
 	iid := "id-" + address
 	c, ok := m.convs[iid]
 	if !ok {
-		return nil // like the UPDATE: no row, nothing done
+		return time.Time{}, nil // like the UPDATE: no row, nothing done
 	}
 	now := time.Now()
 	if c.LastOutboundAt != nil && !now.After(*c.LastOutboundAt) {
 		now = c.LastOutboundAt.Add(time.Nanosecond) // strictly later, like clock_timestamp()
 	}
 	c.LastOutboundAt = &now
+	m.convs[iid] = c
+	return now, nil
+}
+func (m *memConversations) MarkQuestionShown(_ context.Context, iid string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.convs[iid]
+	if !ok {
+		return nil
+	}
+	if c.QuestionShownAt == nil || at.After(*c.QuestionShownAt) {
+		c.QuestionShownAt = &at
+	}
 	m.convs[iid] = c
 	return nil
 }
@@ -239,7 +256,7 @@ func (m *memConversations) ReclaimUnconfirmed(_ context.Context, iid, ext string
 	m.convs[iid] = c
 	return true, nil
 }
-func (m *memConversations) ConfirmArmed(_ context.Context, iid, ext string, at time.Time) (bool, error) {
+func (m *memConversations) ConfirmArmed(_ context.Context, iid, ext string, at, questionOut time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	c, ok := m.convs[iid]
@@ -253,9 +270,9 @@ func (m *memConversations) ConfirmArmed(_ context.Context, iid, ext string, at t
 		}
 	}
 	c.Deferred, c.ApprovalArmedAt = kept, &at
-	if c.LastOutboundAt != nil {
-		q := *c.LastOutboundAt
-		c.ApprovalQuestionOutAt = &q
+	c.ApprovalQuestionOutAt = nil
+	if !questionOut.IsZero() {
+		c.ApprovalQuestionOutAt = &questionOut // the question's own stamp
 	}
 	m.convs[iid] = c
 	return true, nil

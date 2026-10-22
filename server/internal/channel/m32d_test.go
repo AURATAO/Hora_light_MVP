@@ -2,6 +2,7 @@ package channel
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -121,7 +122,7 @@ func TestYesWithAMessage(t *testing.T) {
 	g.arm(t, "ext-2")
 	got := g.say(t, "yes but tell him to hurry")
 	if len(g.booker.resolved) != 1 || !strings.HasSuffix(g.booker.resolved[0], ":ext-2:true") ||
-		len(chat.posted) != 1 || chat.posted[0] != "task-2:but tell him to hurry" || !strings.Contains(got, "Passed") {
+		len(chat.posted) != 1 || chat.posted[0] != "task-2:yes but tell him to hurry" || !strings.Contains(got, "Passed") {
 		t.Fatalf("resolved %v posted %v reply %q", g.booker.resolved, chat.posted, got)
 	}
 	for _, msg := range []string{"yes but max $5", "yes if it's organic", "ok but not the money", "sure, why?"} {
@@ -166,5 +167,129 @@ func TestBookingKeepsItsList(t *testing.T) {
 	g.say(t, "Great")
 	if g.booker.posts != 0 {
 		t.Fatalf("a reaction word must not book: posts %d", g.booker.posts)
+	}
+}
+
+// Review round 1, R-1: a YES sent after the summary was stamped but while
+// it was still on its way — processed after delivery — does not book.
+func TestYesWhileTheSummaryIsOnItsWay(t *testing.T) {
+	g, _, _, _ := contextRig(llm.IntentNewTask, bagelT)
+	var early Inbound
+	hooked := &hookedAdapter{fakeSendAdapter: g.ad}
+	g.r.Adapters[IMessage] = hooked
+	hooked.during = func() { // the summary is being sent: the person taps YES now
+		early = Inbound{Channel: IMessage, ProviderMessageID: "early", From: me, Text: "YES", ReceivedAt: time.Now()}
+	}
+	g.say(t, "new task: pick up my laundry tomorrow at 3")
+	time.Sleep(time.Millisecond)
+	if err := g.r.HandleInbound(context.Background(), early); err != nil {
+		t.Fatal(err)
+	}
+	if g.booker.posts != 0 || g.state() != StateAwaitingConfirm {
+		t.Fatalf("posts %d state %s", g.booker.posts, g.state())
+	}
+}
+
+// R-1 at the retry prompt: the card was declined; a second tap sent with
+// the first must not retry the charge unseen.
+func TestDoubleTapAfterADeclinedCardDoesNotRetry(t *testing.T) {
+	g, _, _, _ := contextRig(llm.IntentNewTask, bagelT)
+	g.say(t, "new task: pick up my laundry tomorrow at 3")
+	g.booker.result = PostResult{Outcome: PostDeclined, Message: "Your card was declined."}
+	tap := time.Now()
+	time.Sleep(5 * time.Millisecond)
+	for i, id := range []string{"t1", "t2"} {
+		if err := g.r.HandleInbound(context.Background(), Inbound{Channel: IMessage, ProviderMessageID: id, From: me, Text: "YES", ReceivedAt: tap.Add(time.Duration(i) * time.Millisecond)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if g.booker.posts != 1 {
+		t.Fatalf("the second tap retried the charge: posts %d", g.booker.posts)
+	}
+}
+
+// R-3: a reaction word with a message right after the question approves
+// and passes the message on; the relay failing or the request having
+// ended is said in the same reply.
+func TestYesWithMessageEdges(t *testing.T) {
+	g, chat, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.arm(t, "ext-2")
+	got := g.say(t, "great, thanks Sam!")
+	if len(g.booker.resolved) != 1 || len(chat.posted) != 1 || chat.posted[0] != "task-2:great, thanks Sam!" || !strings.Contains(got, "Passed") {
+		t.Fatalf("resolved %v posted %v reply %q", g.booker.resolved, chat.posted, got)
+	}
+	g, chat, _, _ = contextRig(llm.IntentToSupporter, bagelT)
+	g.arm(t, "ext-2")
+	chat.post = errors.New("talkjs 503")
+	sent := len(g.ad.sent)
+	got = g.say(t, "yes but tell him to hurry")
+	if len(g.booker.resolved) != 1 || len(g.ad.sent)-sent != 1 || !strings.Contains(got, "Couldn't pass") {
+		t.Fatalf("one reply with the failure: sent %d reply %q", len(g.ad.sent)-sent, got)
+	}
+	g, chat, _, _ = contextRig(llm.IntentToSupporter, bagelT)
+	g.arm(t, "ext-2")
+	g.booker.extResult = ExtensionResult{Outcome: ExtAlready, Status: "expired", TaskID: "task-2"}
+	got = g.say(t, "yes but tell him to hurry")
+	if len(chat.posted) != 0 || !strings.Contains(got, CopyNotPassedOn) {
+		t.Fatalf("posted %v reply %q", chat.posted, got)
+	}
+	// No task to pass the words to: nothing approved on half a message.
+	g, _, _, _ = contextRig(llm.IntentToSupporter, bagelT)
+	g.arm(t, "ext-2")
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	c.ApprovalTaskID = ""
+	g.convs.mu.Lock()
+	g.convs.convs["id-"+me] = c
+	g.convs.mu.Unlock()
+	g.say(t, "yes but tell him to hurry")
+	if len(g.booker.resolved) != 0 {
+		t.Fatalf("resolved %v", g.booker.resolved)
+	}
+}
+
+// R-2: a mixed no is passed on, the request stays open.
+func TestMixedNoIsPassedOn(t *testing.T) {
+	g, chat, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.arm(t, "ext-2")
+	g.say(t, "no! go ahead")
+	if len(g.booker.resolved) != 0 || len(chat.posted) != 1 || g.state() != StateAwaitingApproval {
+		t.Fatalf("resolved %v posted %v state %s", g.booker.resolved, chat.posted, g.state())
+	}
+}
+
+// The guards cover the wider words: sent before the question, or while it
+// is unconfirmed, "Sounds good" moves nothing.
+func TestGuardsCoverTheWiderWords(t *testing.T) {
+	g, _, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.arm(t, "ext-2")
+	in := Inbound{Channel: IMessage, ProviderMessageID: "sg", From: me, Text: "Sounds good", ReceivedAt: time.Now().Add(-time.Minute)}
+	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.booker.resolved) != 0 {
+		t.Fatalf("sent before: resolved %v", g.booker.resolved)
+	}
+	g, _, _, _ = contextRig(llm.IntentToSupporter, bagelT)
+	d := DeferredApproval{UserID: "user-1", TaskID: "task-2", ExtensionID: "ext-9", Type: evBudgetRequested, Approval: PendingApproval{ID: "ext-9", Kind: "budget", Cents: 1000}, TimeoutMinutes: 10, AtUnix: time.Now().Unix()}
+	if err := g.convs.HoldApproval(context.Background(), "id-"+me, d); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := g.convs.ClaimHold(context.Background(), "id-"+me, "ext-9", "task-2", time.Now()); err != nil || !ok {
+		t.Fatal(err)
+	}
+	if got := g.say(t, "yes but tell him to hurry"); len(g.booker.resolved) != 0 || got != CopyApprovalOnItsWay {
+		t.Fatalf("unconfirmed: resolved %v reply %q", g.booker.resolved, got)
+	}
+}
+
+// The outbound stamp is taken before the send and its failure fails the
+// send: nothing goes out unstamped.
+func TestSendFailsClosedWithoutAStamp(t *testing.T) {
+	g, _, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.say(t, "hi") // a conversation row exists
+	g.convs.touchErr = errors.New("db down")
+	sent := len(g.ad.sent)
+	if err := g.r.Send(context.Background(), Outbound{Channel: IMessage, To: me, Text: "x"}, ""); err == nil || len(g.ad.sent) != sent {
+		t.Fatalf("err %v sent %d", err, len(g.ad.sent)-sent)
 	}
 }

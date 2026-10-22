@@ -99,7 +99,7 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 	var passOn string // the person's words to pass to the supporter after a YES (R-3)
 	answerish := approvalAnswerish(text)
 	plain, reaction := approvalYes(text)
-	rest, restReaction, conditional, withMessage := yesWithMessage(text)
+	_, restReaction, conditional, withMessage := yesWithMessage(text)
 	switch {
 	case answerish && conv.Unconfirmed():
 		// Claimed but never confirmed delivered: nothing can answer it.
@@ -114,10 +114,17 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 			}
 			// Cleared: the request was no longer theirs to answer.
 			reply := CopyApprovalGone
-			if back := r.resumeLine(ctx, id, after); back != "" {
+			back := r.resumeLine(ctx, id, after)
+			if back != "" {
 				reply += "\n\n" + back
 			}
-			return r.Reply(ctx, in, reply, "")
+			if err := r.Reply(ctx, in, reply, ""); err != nil {
+				return err
+			}
+			if back != "" {
+				r.markShown(ctx, id.ID)
+			}
+			return nil
 		}
 		return r.Reply(ctx, in, CopyApprovalOnItsWay, "")
 	case answerish && conv.ApprovalArmedAt != nil && (in.ReceivedAt.IsZero() || in.ReceivedAt.Before(*conv.ApprovalArmedAt)):
@@ -127,7 +134,7 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 		// Provider send times vs our clock: the stamp is taken AFTER the
 		// send returned, so a tap made after reading is later than it by
 		// the person's own reaction time; no margin is applied.
-		log.Printf("[channel] approval identity=%s ext=%s: answer refused, sent before the question", id.ID, conv.PendingExtensionID)
+		log.Printf("[channel] approval identity=%s ext=%s: answer refused, sent %s before the question", id.ID, conv.PendingExtensionID, sentBefore(in, conv.ApprovalArmedAt))
 		return r.Reply(ctx, in, approvalReask(conv), "")
 	case (plain && reaction) || (withMessage && !conditional && restReaction):
 		// A reaction word ("Great", 👍) is a yes only if our last message
@@ -139,21 +146,27 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 		}
 		approve = true
 		if withMessage {
-			passOn = rest
+			passOn = text // the person's whole message, as written
 		}
 	case plain:
 		approve = true
 	case approvalNo(text):
 		approve = false
+	case mixedNo(text):
+		// "no! go ahead", "no, it's fine", "no, why?": a no-word that its
+		// own reason contradicts or questions — neither approved nor
+		// declined; passed to the supporter (R-2).
+		return r.passOnKeepingQuestion(ctx, in, id, conv, text)
 	case withMessage && conditional:
 		// "yes but max $5", "yes if it's organic": not an approval and
 		// not a decline — the words go to the supporter, the request
 		// stays open (R-3).
 		return r.passOnKeepingQuestion(ctx, in, id, conv, text)
 	case withMessage:
-		// "yes but tell him to hurry": approve, then pass the rest on.
+		// "yes but tell him to hurry": approve, then pass the message on —
+		// whole and as written (the decision reads the part after the yes).
 		approve = true
-		passOn = rest
+		passOn = text
 	default:
 		// A sentence while the request is pending may be for the
 		// supporter ("why $10 more?") — relayed, the question stays open.
@@ -204,23 +217,35 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 	default:
 		reply = CopyApprovalGone
 	}
-	if passOn != "" && res.Outcome == ExtResolved {
-		if sent, err := r.relaySent(ctx, in, id, conv.ApprovalTaskID, passOn); err != nil {
-			return err
-		} else if sent {
-			reply += " " + fmt.Sprintf(CopyPassedOn, strings.TrimSpace(passOn), r.supporterFirstName(ctx, id, conv.ApprovalTaskID))
+	if passOn != "" {
+		// The person's words around the YES, in the same reply (I-W): passed
+		// on only when the approval went through; otherwise they are told
+		// it was not.
+		who := r.supporterFirstName(ctx, id, conv.ApprovalTaskID)
+		switch {
+		case res.Outcome != ExtResolved:
+			reply += " " + CopyNotPassedOn
+		case r.relayQuiet(ctx, in, id, conv.ApprovalTaskID, passOn):
+			reply += " " + fmt.Sprintf(CopyPassedOn, strings.TrimSpace(passOn), who)
+		default:
+			reply += " " + fmt.Sprintf(CopyCouldntPassOn, strings.TrimSpace(passOn), who)
 		}
 	}
+	back := ""
 	if !r.nextHoldLive(ctx, id, conv) {
 		// Our own question comes back — unless a live held question is
 		// about to follow (one question per burst; the draft's prompt
 		// returns after that answer).
-		if back := r.resumeLine(ctx, id, conv); back != "" {
+		back = r.resumeLine(ctx, id, conv)
+		if back != "" {
 			reply += "\n\n" + back
 		}
 	}
 	if err := r.Reply(ctx, in, reply, res.TaskID); err != nil {
 		return err
+	}
+	if back != "" {
+		r.markShown(ctx, id.ID) // our question was put again (R-1)
 	}
 	r.resumeDeferred(ctx, id) // the next held question, if any
 	return nil
@@ -452,7 +477,8 @@ func (r *Router) heldEvent(d DeferredApproval) StatusEvent {
 // read is not left standing.
 func (r *Router) sendClaimed(ctx context.Context, id Identity, d DeferredApproval) {
 	text, _ := approvalText(r.heldEvent(d))
-	if err := r.Send(ctx, Outbound{Channel: id.Channel, To: id.Address, Text: text}, d.TaskID); err != nil {
+	questionOut, err := r.sendStamped(ctx, Outbound{Channel: id.Channel, To: id.Address, Text: text}, d.TaskID)
+	if err != nil {
 		var pe *ProviderStatusError
 		definite := errors.As(err, &pe) && pe.Status >= 400 && pe.Status <= 499 && pe.Status != 408 && pe.Status != 409 && pe.Status != 429
 		if !definite {
@@ -473,7 +499,7 @@ func (r *Router) sendClaimed(ctx context.Context, id Identity, d DeferredApprova
 		}
 		return
 	}
-	confirmed, err := r.Conversations.ConfirmArmed(context.WithoutCancel(ctx), id.ID, d.ExtensionID, r.now())
+	confirmed, err := r.Conversations.ConfirmArmed(context.WithoutCancel(ctx), id.ID, d.ExtensionID, r.now(), questionOut)
 	if err != nil {
 		// Still armed as unconfirmed: unanswerable, re-sent at the next
 		// resume point (a repeat over a lost question).
@@ -492,13 +518,16 @@ func (r *Router) sendClaimed(ctx context.Context, id Identity, d DeferredApprova
 		}
 		log.Printf("[channel] resume deferred ext=%s: ended while the question was in flight", d.ExtensionID)
 		text := CopyApprovalGone
+		back := ""
 		if conv, err := r.Conversations.GetConversation(ctx, id.ID); err == nil {
-			if back := r.resumeLine(ctx, id, conv); back != "" {
+			if back = r.resumeLine(ctx, id, conv); back != "" {
 				text += "\n\n" + back
 			}
 		}
 		if err := r.Send(ctx, Outbound{Channel: id.Channel, To: id.Address, Text: text}, d.TaskID); err != nil {
 			log.Printf("[channel] resume deferred ext=%s: %v", d.ExtensionID, err)
+		} else if back != "" {
+			r.markShown(ctx, id.ID)
 		}
 	}
 }
@@ -557,4 +586,18 @@ func (r *Router) supporterFirstName(ctx context.Context, id Identity, taskID str
 		}
 	}
 	return "your supporter"
+}
+
+// relayQuiet passes words to a task's supporter and reports whether they
+// went; no message of its own (the caller composes one reply).
+func (r *Router) relayQuiet(ctx context.Context, in Inbound, id Identity, taskID, text string) bool {
+	if r.Chat == nil || taskID == "" {
+		return false
+	}
+	if err := r.Chat.PostAsRequester(ctx, taskID, id.UserID, capText(text), in.ProviderMessageID); err != nil {
+		log.Printf("[channel] relay identity=%s task=%s: %v", id.ID, taskID, err)
+		return false
+	}
+	r.noteRelayed(ctx, in, id, taskID, text)
+	return true
 }

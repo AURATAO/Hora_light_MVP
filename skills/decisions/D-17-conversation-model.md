@@ -471,3 +471,57 @@ Recorded as given, in the order asked; nothing below is built yet.
   on.
 - The agent test kit's `gate.go` (D-18) is updated to these rules when it
   moves into the repo.
+- **I-X** (round 1) A yes + message relays the person's WHOLE message,
+  as written, to the request's supporter ("Sam: yes but tell him to
+  hurry"); the part after the yes is only used to decide.
+- **I-Y** (round 1) Under I-P, a yes + message goes whole to the supporter
+  of the LAST supporter line, which may not be the approval's task; the
+  person is told whom it went to, and nothing moves.
+- **I-Z** (round 1) R-1 compares the provider's send time with our clock.
+  A provider clock running seconds behind ours would re-ask every booking
+  YES for that person; each refusal is logged with the gap so it shows up.
+  Accepted under the no-margin ruling; revisit if the logs show it.
+
+### M3.2d review log
+
+- **Round 1 (3391e96) — FAIL.** MAJOR: (1) the R-1 stamp was taken before
+  the summary was delivered, so a YES sent while it was on its way booked;
+  (2) the failed-booking retry prompts ("…YES to retry") were not stamped;
+  (3) the reaction rule captured "whatever was last sent at confirm time"
+  as the question's stamp, the stamp was taken after the send, and a touch
+  failure was fail-open; (4) `conditionRE` missed curly apostrophes
+  ("don’t"), contractions, and most no-words as tails ("yeah nah", "ok
+  nvm", "yes cancel"); (5) marker-free tails still approved: number words,
+  fullwidth digits, deferrals ("let me think"), questions without "?",
+  complaints ("that's too much"), Spanish/Italian, negative emoji;
+  (6) "no! go ahead" / "no, it's fine" / "no, why?" declined; (7) the
+  migration file was edited in place. MINOR: approve-then-relay double
+  replies and silent drops; "yes no problem"/"ok great" read as
+  conditional/relayed; "book it" missing; "kkkkk" and "ok-ish" approved;
+  skin-tone 👍 and NFD "sí" unrecognised; I-P with a different task;
+  clock skew unlogged; the upsert's else-branch kept a stale task id.
+  Verifier: no RED (I-05 INCOMPLETE).
+
+  Fixed (all): `MarkQuestionShown` after delivery at every site that puts
+  our question (summary, retry prompts, resume lines after an answer, a
+  cleared claim, a request ended mid-send, handoff release), plus the
+  pre-send stamp; `TouchOutbound` runs BEFORE the provider call, returns
+  its stamp, and its failure fails the send (fail closed); `sendStamped`
+  hands the question's own stamp to `ConfirmArmed`; word rules rewritten —
+  NFKC, straight quotes, skin tones/ZWJ dropped, one-letter runs not
+  collapsed, hyphen not a separator, `conditionRE` a superset of the
+  no-words plus contractions, nothing/none/non, numbers and number words,
+  currency, deferrals, question words, complaints, Spanish/Italian,
+  Chinese numerals, unknown emoji; yes-only tails ("no problem", "great")
+  are a plain yes; `mixedNo` (a no whose reason affirms or asks) is passed
+  on with the request kept open; approve-then-relay composes one reply
+  (passed / couldn't pass / not passed because the request had ended);
+  "book it"/"book" restored; the four columns moved to a new forward-only
+  migration `20261022120000_channel_approval_columns.sql` and the old file
+  restored; else-branch NULLs the task id; refusals log the time gap.
+  Tests: every no-word (straight and curly) as a tail, the conditional
+  table, edges, mixed no, YES while the summary is on its way, double tap
+  after a declined card, reaction + message, relay failure, ended request,
+  no task id, guards over the wider words, fail-closed send, PG: the
+  question's own stamp kept across an intervening message, unknown
+  address, forward-only mark, handoff and re-claim resets.

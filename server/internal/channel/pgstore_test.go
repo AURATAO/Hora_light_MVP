@@ -59,6 +59,13 @@ func testDB(t *testing.T) *sql.DB {
 	if _, err := db.Exec(string(mig2)); err != nil {
 		t.Fatalf("migration e164: %v", err)
 	}
+	mig3, err := os.ReadFile(filepath.Join("..", "..", "..", "supabase", "migrations", "20261022120000_channel_approval_columns.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(string(mig3)); err != nil {
+		t.Fatalf("migration approval columns: %v", err)
+	}
 	t.Cleanup(func() {
 		if err := db.Close(); err != nil {
 			t.Error(err)
@@ -885,7 +892,7 @@ func TestPGClaimHold(t *testing.T) {
 	}
 	// Confirmed: stamped, hold gone, the other hold and the draft stay.
 	at := time.Now().Truncate(time.Microsecond)
-	if ok, err := s.ConfirmArmed(ctx, a.ID, ext, at); err != nil || !ok {
+	if ok, err := s.ConfirmArmed(ctx, a.ID, ext, at, time.Now()); err != nil || !ok {
 		t.Fatalf("confirm: %v %v", ok, err)
 	}
 	if got, _ = s.GetConversation(ctx, a.ID); got.Unconfirmed() || !got.ApprovalArmedAt.Equal(at) || len(got.Deferred) != 1 || got.Deferred[0].ExtensionID != ext2 || got.Pending == nil {
@@ -893,7 +900,7 @@ func TestPGClaimHold(t *testing.T) {
 	}
 	// Confirming a request that is not the armed one changes nothing;
 	// removing the armed one's hold is refused; re-holding it is a no-op.
-	if ok, err := s.ConfirmArmed(ctx, a.ID, ext2, time.Now()); err != nil || ok {
+	if ok, err := s.ConfirmArmed(ctx, a.ID, ext2, time.Now(), time.Now()); err != nil || ok {
 		t.Fatalf("stray confirm: %v %v", ok, err)
 	}
 	if err := s.HoldApproval(ctx, a.ID, DeferredApproval{UserID: "u", TaskID: "t", ExtensionID: ext, AtUnix: 3}); err != nil {
@@ -978,25 +985,34 @@ func TestPGM32dColumns(t *testing.T) {
 	if ok, err := s.ClaimHold(ctx, a.ID, ext, task, time.Now()); err != nil || !ok {
 		t.Fatalf("claim: %v %v", ok, err)
 	}
-	if err := s.TouchOutbound(ctx, IMessage, a.Address); err != nil { // the question is sent
+	q, err := s.TouchOutbound(ctx, IMessage, a.Address) // the question is sent
+	if err != nil || q.IsZero() {
+		t.Fatalf("touch: %v %v", q, err)
+	}
+	if _, err := s.TouchOutbound(ctx, IMessage, a.Address); err != nil { // another message, sent between the question and its confirm
 		t.Fatal(err)
 	}
-	if ok, err := s.ConfirmArmed(ctx, a.ID, ext, time.Now()); err != nil || !ok {
+	if ok, err := s.ConfirmArmed(ctx, a.ID, ext, time.Now(), q); err != nil || !ok {
 		t.Fatalf("confirm: %v %v", ok, err)
 	}
 	got, _ = s.GetConversation(ctx, a.ID)
-	if got.ApprovalTaskID != task || got.LastOutboundAt == nil || got.ApprovalQuestionOutAt == nil || !got.LastOutboundAt.Equal(*got.ApprovalQuestionOutAt) {
+	if got.ApprovalTaskID != task || got.ApprovalQuestionOutAt == nil || !got.ApprovalQuestionOutAt.Equal(q) {
 		t.Fatalf("after confirm: %+v", got)
 	}
-	if !questionIsLast(got) {
-		t.Fatal("nothing sent since the question")
+	if questionIsLast(got) {
+		t.Fatal("the message sent between the question and its confirm must count (the question's own stamp is kept)")
 	}
-	if err := s.TouchOutbound(ctx, IMessage, a.Address); err != nil { // a status update follows
+	// Unknown address: no row, zero stamp, no error.
+	if z, err := s.TouchOutbound(ctx, IMessage, "+15550009999"); err != nil || !z.IsZero() {
+		t.Fatalf("unknown address: %v %v", z, err)
+	}
+	// MarkQuestionShown only moves forward.
+	before := *got.QuestionShownAt
+	if err := s.MarkQuestionShown(ctx, a.ID, before.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = s.GetConversation(ctx, a.ID)
-	if questionIsLast(got) {
-		t.Fatalf("a later message must count: %+v", got)
+	if got, _ = s.GetConversation(ctx, a.ID); !got.QuestionShownAt.Equal(before) {
+		t.Fatalf("mark moved back: %+v", got)
 	}
 	// A stale same-state save keeps the approval fields.
 	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateAwaitingApproval, PendingExtensionID: ext}); err != nil {
@@ -1012,5 +1028,65 @@ func TestPGM32dColumns(t *testing.T) {
 	got, _ = s.GetConversation(ctx, a.ID)
 	if got.ApprovalTaskID != "" || got.ApprovalQuestionOutAt != nil || got.QuestionShownAt == nil || !got.QuestionShownAt.Equal(t2) || got.LastOutboundAt == nil {
 		t.Fatalf("after clear: %+v", got)
+	}
+}
+
+// A handoff leaves the approval with its fields; a new claim starts with no
+// captured question stamp.
+func TestPGHandoffAndReclaimResetApprovalFields(t *testing.T) {
+	db := testDB(t)
+	s := &PGStore{DB: db}
+	ctx := context.Background()
+	a, err := s.UpsertIdentity(ctx, IMessage, "+15550000710")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ext string
+	if err := db.QueryRow(`INSERT INTO extension_requests DEFAULT VALUES RETURNING id`).Scan(&ext); err != nil {
+		t.Fatal(err)
+	}
+	task := "00000000-0000-0000-0000-0000000000bb"
+	arm := func() {
+		t.Helper()
+		if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateIdle}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.HoldApproval(ctx, a.ID, DeferredApproval{UserID: "u", TaskID: "t", ExtensionID: ext, AtUnix: 1}); err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := s.ClaimHold(ctx, a.ID, ext, task, time.Now()); err != nil || !ok {
+			t.Fatalf("claim: %v %v", ok, err)
+		}
+		q, err := s.TouchOutbound(ctx, IMessage, a.Address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := s.ConfirmArmed(ctx, a.ID, ext, time.Now(), q); err != nil || !ok {
+			t.Fatalf("confirm: %v %v", ok, err)
+		}
+	}
+	arm()
+	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateHandoff, ApprovalTaskID: task}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.GetConversation(ctx, a.ID)
+	if got.State != StateHandoff || got.ApprovalTaskID != "" || got.ApprovalQuestionOutAt != nil || got.ApprovalArmedAt != nil {
+		t.Fatalf("handoff kept approval fields: %+v", got)
+	}
+	arm()
+	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateIdle}); err != nil { // stale: kept
+		t.Fatal(err)
+	}
+	if _, err := s.ClearApproval(ctx, a.ID, ext, StateIdle, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.HoldApproval(ctx, a.ID, DeferredApproval{UserID: "u", TaskID: "t", ExtensionID: ext, AtUnix: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.ClaimHold(ctx, a.ID, ext, task, time.Now()); err != nil || !ok {
+		t.Fatalf("re-claim: %v %v", ok, err)
+	}
+	if got, _ = s.GetConversation(ctx, a.ID); got.ApprovalQuestionOutAt != nil || !got.Unconfirmed() {
+		t.Fatalf("a new claim must not carry the old question stamp: %+v", got)
 	}
 }

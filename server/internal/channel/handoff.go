@@ -172,7 +172,8 @@ func (r *Router) Release(ctx context.Context, id Identity) error {
 		return fmt.Errorf("Release: %w", err)
 	}
 	text := CopyHandoffReleased
-	if back := r.resumeLine(ctx, id, conv); back != "" {
+	back := r.resumeLine(ctx, id, conv)
+	if back != "" {
 		text += "\n\n" + back
 	}
 	// The state change is the action; the message goes off the request
@@ -180,6 +181,9 @@ func (r *Router) Release(ctx context.Context, id Identity) error {
 	return r.dispatch(ctx, true, func(c context.Context) error {
 		if err := r.Send(c, Outbound{Channel: id.Channel, To: id.Address, Text: text}, ""); err != nil {
 			return err
+		}
+		if back != "" {
+			r.markShown(c, id.ID) // our question was put again (R-1)
 		}
 		r.resumeDeferred(c, id) // a supporter's question held during the handoff
 		return nil

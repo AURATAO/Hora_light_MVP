@@ -425,7 +425,11 @@ func (r *Router) showSummary(ctx context.Context, in Inbound, conv Conversation)
 	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 		return fmt.Errorf("showSummary: %w", err)
 	}
-	return r.Reply(ctx, in, summary, "")
+	if err := r.Reply(ctx, in, summary, ""); err != nil {
+		return err
+	}
+	r.markShown(ctx, conv.IdentityID) // after delivery (R-1)
+	return nil
 }
 
 func (r *Router) onName(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
@@ -466,7 +470,7 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 		// double YES that answered something else — or with no usable
 		// send time: not a booking. The summary is put again (D-17 R-1;
 		// no margin, Arbiter).
-		log.Printf("[channel] booking identity=%s: YES sent before the summary, re-asked", id.ID)
+		log.Printf("[channel] booking identity=%s: YES sent %s before the summary, re-asked", id.ID, sentBefore(in, conv.QuestionShownAt))
 		return r.showSummary(ctx, in, conv)
 	case IsYes(text):
 		now := r.now()
@@ -646,6 +650,7 @@ func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Co
 			if err := r.Send(c, out, ""); err != nil {
 				return err
 			}
+			r.markShown(c, id.ID) // the retry is a question of ours (R-1)
 			r.resumeDeferred(c, id)
 			return nil
 		})
@@ -674,6 +679,7 @@ func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Co
 			if err := r.Send(c, out, ""); err != nil {
 				return err
 			}
+			r.markShown(c, id.ID) // the retry is a question of ours (R-1)
 			r.resumeDeferred(c, id)
 			return nil
 		})
@@ -733,19 +739,28 @@ func (r *Router) Reply(ctx context.Context, in Inbound, text, taskID string) err
 // Send delivers one message and records it. A send failure is returned so the
 // inbound row stays unprocessed for the recovery sweep.
 func (r *Router) Send(ctx context.Context, out Outbound, taskID string) error {
+	_, err := r.sendStamped(ctx, out, taskID)
+	return err
+}
+
+// sendStamped is Send, returning the thread's outbound stamp for this
+// message. The stamp is taken BEFORE the provider call and a failure to
+// take it fails the send: a message that may have gone out always moves
+// the stamp, so the reaction-word rule (D-17 R-3) can only err toward
+// asking again — never toward reading "Great" as an answer to a question
+// that something else followed.
+func (r *Router) sendStamped(ctx context.Context, out Outbound, taskID string) (time.Time, error) {
 	a, ok := r.Adapters[out.Channel]
 	if !ok {
-		return fmt.Errorf("send: no adapter for channel %q", out.Channel)
+		return time.Time{}, fmt.Errorf("send: no adapter for channel %q", out.Channel)
+	}
+	stamp, err := r.Conversations.TouchOutbound(ctx, out.Channel, out.To)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("send to %s: %w", Redact(out.To), err)
 	}
 	pid, err := a.Send(ctx, out)
 	if err != nil {
-		return fmt.Errorf("send to %s: %w", Redact(out.To), err)
-	}
-	if err := r.Conversations.TouchOutbound(ctx, out.Channel, out.To); err != nil {
-		// Logged, not failed (the message is out). A missed stamp matters
-		// only to the reaction-word rule (D-17 R-3): a message following an
-		// approval question might then go unnoticed by it. Declared.
-		log.Printf("[channel] touch outbound channel=%s: %v", out.Channel, err)
+		return stamp, fmt.Errorf("send to %s: %w", Redact(out.To), err)
 	}
 	if err := r.Messages.RecordOutbound(ctx, out, pid, taskID); err != nil {
 		// Sent but not recorded: the person got the message; only reply-to
@@ -753,7 +768,16 @@ func (r *Router) Send(ctx context.Context, out Outbound, taskID string) error {
 		log.Printf("[channel] record outbound id=%s: %v", pid, err)
 	}
 	log.Printf("[channel] outbound channel=%s id=%s to=%s len=%d", out.Channel, pid, Redact(out.To), len(out.Text))
-	return nil
+	return stamp, nil
+}
+
+// markShown: a question of ours was just delivered to this thread (D-17
+// R-1). After the send, so a YES sent while it was still on its way is
+// "before" it. Best effort: logged.
+func (r *Router) markShown(ctx context.Context, identityID string) {
+	if err := r.Conversations.MarkQuestionShown(context.WithoutCancel(ctx), identityID, r.now()); err != nil {
+		log.Printf("[channel] mark shown identity=%s: %v", identityID, err)
+	}
 }
 
 func (r *Router) loc() *time.Location {
@@ -768,4 +792,14 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// sentBefore: how long before the stamp the message was sent ("no time"
+// when the provider gave none) — logged so a provider clock running behind
+// ours shows up (D-17 R-1, R-1's accepted cost).
+func sentBefore(in Inbound, stamp *time.Time) string {
+	if in.ReceivedAt.IsZero() || stamp == nil {
+		return "(no time)"
+	}
+	return stamp.Sub(in.ReceivedAt).Round(time.Millisecond).String()
 }
