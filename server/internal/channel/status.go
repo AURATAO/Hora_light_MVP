@@ -1,0 +1,323 @@
+package channel
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+)
+
+// Status updates (PLAN §7, M2): what happens to a booked task — accepted,
+// arrived, started, done, cancelled — is told in the thread the person booked
+// from, in addition to the email and push the app already sends (business
+// rules unchanged: the chat is one more channel, never a replacement).
+//
+// The source is the app's own notification call (notify.Create), so the chat
+// says exactly what the email says, at the same moment, from the same event.
+
+// StatusEvent is the part of an app notification the chat needs.
+type StatusEvent struct {
+	Type          string // notify type: ORDER_ACCEPTED, CLOCK_IN, …
+	TaskID        string
+	TaskTitle     string
+	Title         string
+	Body          string
+	SupporterName string
+	TotalLogged   string
+	FinalCost     string
+	// Approval requests (M3): the request the YES/NO will answer and the
+	// auto-decline window the app applies. The question is composed here
+	// from these structured fields — never from the app's notification
+	// body, which carries the supporter's free-text reason unquoted.
+	ExtensionID     string
+	ApprovalMinutes int
+	Approval        *PendingApproval
+	// Completion (M3.6): the supporter's completion photo rides along with
+	// the done message; purchases get a second message with the receipt
+	// photo and the amount. Short-lived signed links (the chat provider
+	// fetches them at send time; the photo may show a home — S-12/S-20).
+	PhotoURL        string
+	ReceiptPhotoURL string
+	ReceiptTotal    string // "$12.40"; "" when nothing was bought
+}
+
+// PendingApproval is the structured request behind an approval question.
+type PendingApproval struct {
+	ID      string
+	Kind    string // "time" | "budget"
+	Minutes int    // kind=time
+	Cents   int    // kind=budget
+	Reason  string // the supporter's words, shown quoted and labelled as theirs
+}
+
+// StatusText is the chat message for an event, and false for events the chat
+// does not carry. Left out on purpose, until the chat can act on them:
+//   - anything that asks the person to do something in the app (approve more
+//     time or budget, settle a balance) — M3 adds YES/NO for those by text;
+//     until then email and push carry them, and saying "do it in the app" to
+//     someone with no app would be a dead end;
+//   - the receipt (email has the itemized one; COMPLETED states the total);
+//   - supporter-side events.
+func StatusText(ev StatusEvent) (string, bool) {
+	task := quoted(ev.TaskTitle)
+	who := firstNonEmpty(DisplayName(FirstName(ev.SupporterName)), "Your supporter")
+	switch ev.Type {
+	case "ORDER_ACCEPTED":
+		return fmt.Sprintf("%s accepted %s. I'll text you when they arrive.", who, task), true
+	case "ON_MY_WAY":
+		// Chat-only. App users watch the live map from this moment; a chat
+		// customer has no map, so this line is the substitute.
+		return fmt.Sprintf(CopyOnMyWay, who, task), true
+	case "SUPPORTER_ARRIVED":
+		return fmt.Sprintf("%s has arrived for %s.", who, task), true
+	case "CLOCK_IN":
+		return fmt.Sprintf("%s started on %s. The clock is running.", who, task), true
+	case "CLOCK_OUT":
+		if ev.TotalLogged != "" {
+			return fmt.Sprintf("%s clocked out on %s. Time so far: %s.", who, task, ev.TotalLogged), true
+		}
+		return fmt.Sprintf("%s clocked out on %s.", who, task), true
+	case "COMPLETED":
+		var b strings.Builder
+		fmt.Fprintf(&b, "Done: %s.", task)
+		if ev.TotalLogged != "" {
+			fmt.Fprintf(&b, "\nTime: %s", ev.TotalLogged)
+		}
+		if ev.FinalCost != "" {
+			fmt.Fprintf(&b, "\nTotal: %s", ev.FinalCost)
+		}
+		if ev.ReceiptTotal != "" {
+			// The receipt amount the supporter entered. The receipt photo is
+			// a message of its own when it can be sent; "follows" promises
+			// nothing about order, and without a photo nothing is promised
+			// about where one is.
+			if ev.ReceiptPhotoURL != "" {
+				fmt.Fprintf(&b, "\nPurchases: %s (receipt photo follows)", ev.ReceiptTotal)
+			} else {
+				fmt.Fprintf(&b, "\nPurchases: %s", ev.ReceiptTotal)
+			}
+		}
+		b.WriteString("\n\nYour payment receipt is on its way by email. Need something else? Just text me.")
+		return b.String(), true
+	case evTimeRequested, evBudgetRequested:
+		return approvalText(ev)
+	case evResolved:
+		// The person's own answer was confirmed when they gave it (here or
+		// in the app); only the timeout is news. Deterministic on the app's
+		// own title.
+		if strings.HasPrefix(ev.Title, "A request timed out") && strings.TrimSpace(ev.Body) != "" {
+			return fmt.Sprintf(CopyApprovalTimedOut, strings.TrimSpace(ev.Body)), true
+		}
+		return "", false
+	case "CANCELLED", "TASK_REASSIGNED", "TASK_REMOVED", "TIME_CAP_WARNING":
+		// The app's own requester copy is already plain and self-contained.
+		if strings.TrimSpace(ev.Body) == "" {
+			return "", false
+		}
+		return strings.TrimSpace(ev.Body), true
+	}
+	return "", false
+}
+
+func quoted(title string) string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return "your task"
+	}
+	return "“" + title + "”"
+}
+
+// StatusTarget is where a user's status updates go.
+type StatusTarget struct {
+	Identity      Identity
+	LastInboundAt *time.Time
+}
+
+// StatusStore finds the thread for a user's task.
+type StatusStore interface {
+	// StatusTargetFor returns the number to tell about taskID: the one the
+	// task was booked from when there is one, otherwise the number the
+	// person wrote from most recently. ok=false when the user has no linked
+	// number (an app-only user — nearly everyone today).
+	StatusTargetFor(ctx context.Context, userID, taskID string) (StatusTarget, bool, error)
+}
+
+func (s *PGStore) StatusTargetFor(ctx context.Context, userID, taskID string) (StatusTarget, bool, error) {
+	var t StatusTarget
+	var last sql.NullTime
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT i.id, i.channel, i.address, c.last_inbound_at
+		FROM channel_identities i
+		LEFT JOIN channel_conversations c ON c.identity_id = i.id
+		WHERE i.user_id = $1::uuid
+		ORDER BY EXISTS (
+		           SELECT 1 FROM channel_messages m
+		           WHERE m.channel = i.channel AND m.address = i.address
+		             AND m.task_id = NULLIF($2, '')::uuid
+		         ) DESC,
+		         c.last_inbound_at DESC NULLS LAST
+		LIMIT 1
+	`, userID, taskID).Scan(&t.Identity.ID, &t.Identity.Channel, &t.Identity.Address, &last)
+	if errors.Is(err, sql.ErrNoRows) {
+		return t, false, nil
+	}
+	if err != nil {
+		return t, false, fmt.Errorf("status target: %w", err)
+	}
+	t.Identity.UserID = userID
+	if last.Valid {
+		lt := last.Time
+		t.LastInboundAt = &lt
+	}
+	return t, true, nil
+}
+
+// WhatsAppWindow is how long after the person's last message WhatsApp allows
+// a free-form message. Past it only approved templates may be sent (M4).
+const WhatsAppWindow = 24 * time.Hour
+
+// NotifyStatus tells userID about ev in their chat, if they have one. It is
+// best-effort: the email and push for the same event have already gone, so a
+// failure here is logged and returned, never retried into a duplicate.
+func (r *Router) NotifyStatus(ctx context.Context, userID string, ev StatusEvent) error {
+	if userID == "" || r.Status == nil {
+		return nil
+	}
+	text, ok := StatusText(ev)
+	// A resolution clears a pending question even when it sends no text.
+	if !ok && ev.Type != evResolved {
+		return nil
+	}
+	t, found, err := r.Status.StatusTargetFor(ctx, userID, ev.TaskID)
+	if err != nil {
+		return fmt.Errorf("NotifyStatus: %w", err)
+	}
+	if !found {
+		return nil // an app-only user: nothing to send
+	}
+	id := t.Identity
+	id.UserID = userID
+	if isApprovalRequest(ev.Type) && ev.ExtensionID != "" {
+		// Every approval question is held first and then resumed — the one
+		// arming path (claim → send → confirm), so two requests arriving
+		// together are asked one at a time and a question is never sent
+		// without being armed (D-17 P4, I-O; S-11/5). If the thread cannot
+		// take it now it waits in the hold; the app notification and email
+		// carried it meanwhile.
+		d := DeferredApproval{UserID: userID, TaskID: ev.TaskID, TaskTitle: ev.TaskTitle, SupporterName: ev.SupporterName,
+			ExtensionID: ev.ExtensionID, Type: ev.Type, TimeoutMinutes: ev.ApprovalMinutes, AtUnix: r.now().Unix()}
+		if ev.Approval != nil {
+			d.Approval = *ev.Approval
+		}
+		// The store also refuses to re-hold the armed request; this is the
+		// early exit for the common repeat.
+		if conv, err := r.Conversations.GetConversation(ctx, id.ID); err != nil {
+			return fmt.Errorf("NotifyStatus: %w", err)
+		} else if conv.State == StateAwaitingApproval && conv.PendingExtensionID == ev.ExtensionID {
+			return nil // already asked and armed
+		}
+		if err := r.Conversations.HoldApproval(ctx, id.ID, d); err != nil {
+			return fmt.Errorf("NotifyStatus: %w", err)
+		}
+		r.resumeDeferred(ctx, id)
+		return nil
+	}
+	if ev.Type == evResolved {
+		// A held question is not cleared here: the resolution names only
+		// the request, and another may still be live. Every hold is
+		// re-checked against its request when it is resumed — after the
+		// person has been told how this one ended.
+		cleared, err := r.clearApproval(ctx, id, ev.ExtensionID)
+		if err != nil {
+			return fmt.Errorf("NotifyStatus: %w", err)
+		}
+		if cleared {
+			defer r.resumeDeferred(ctx, id) // I-O: "as soon as the thread can take it"
+		}
+		if !ok {
+			return nil
+		}
+	}
+	if ev.Type == "COMPLETED" {
+		// Ask the channel first, so the words never promise a photo it
+		// cannot carry (D-16 I-R). A photo it cannot carry is in the email.
+		if mc, ok := r.Adapters[t.Identity.Channel].(MediaCarrier); ok {
+			if ev.PhotoURL != "" && !mc.CanCarryMedia(ev.PhotoURL, len(text)) {
+				log.Printf("[channel] status COMPLETED task=%s: completion photo not carried by %s", ev.TaskID, t.Identity.Channel)
+				ev.PhotoURL = ""
+			}
+			if ev.ReceiptPhotoURL != "" && !mc.CanCarryMedia(ev.ReceiptPhotoURL, len(receiptText(ev))) {
+				log.Printf("[channel] status COMPLETED task=%s: receipt photo not carried by %s", ev.TaskID, t.Identity.Channel)
+				ev.ReceiptPhotoURL = ""
+			}
+			text, _ = StatusText(ev) // recomposed against what will be sent
+		}
+	}
+	if t.Identity.Channel == WhatsApp {
+		if t.LastInboundAt == nil || r.now().Sub(*t.LastInboundAt) > WhatsAppWindow {
+			// Needs an approved template (M4). Email and push still carried it.
+			log.Printf("[channel] status %s task=%s not sent: outside WhatsApp 24h window", ev.Type, ev.TaskID)
+			return nil
+		}
+	}
+	out := Outbound{Channel: t.Identity.Channel, To: t.Identity.Address, Text: text}
+	if ev.Type == "COMPLETED" && ev.PhotoURL != "" {
+		out.MediaURL, out.MediaExpires = ev.PhotoURL, true
+	}
+	if err := r.sendWithMediaFallback(ctx, out, ev.TaskID, ""); err != nil {
+		return fmt.Errorf("NotifyStatus: %w", err)
+	}
+	if ev.Type == "COMPLETED" && ev.ReceiptPhotoURL != "" {
+		// The receipt, as its own message so the photo is unmistakable. If
+		// the photo cannot be delivered, the amount still is, with where
+		// the photo can be found.
+		rc := Outbound{Channel: t.Identity.Channel, To: t.Identity.Address, MediaURL: ev.ReceiptPhotoURL, MediaExpires: true, Text: receiptText(ev)}
+		textOnly := CopyReceiptPhotoNotSent
+		if ev.ReceiptTotal != "" {
+			textOnly = fmt.Sprintf(CopyReceiptNoPhoto, ev.ReceiptTotal)
+		}
+		if err := r.sendWithMediaFallback(ctx, rc, ev.TaskID, textOnly); err != nil {
+			return fmt.Errorf("NotifyStatus: receipt: %w", err)
+		}
+	}
+	return nil
+}
+
+// receiptText is the receipt message's words: the amount when known.
+func receiptText(ev StatusEvent) string {
+	if ev.ReceiptTotal != "" {
+		return fmt.Sprintf(CopyReceipt, ev.ReceiptTotal)
+	}
+	return CopyReceiptPhotoOnly
+}
+
+// sendWithMediaFallback sends a message that may carry a photo; if the
+// provider REFUSES THE REQUEST (a 4xx other than auth, timeout/conflict
+// or rate limit — an unreachable link, an unsupported type), the words are sent once more on
+// their own — the person's "done" message must not be lost to a photo.
+// textOnly, when set, replaces the text for that second attempt. A
+// transport failure is not retried: the message may have gone through,
+// and a repeat is worse than the email's copy. A plan-limit 400 is
+// indistinguishable from a media 400 and costs one more refused call. The
+// error never carries the link (ProviderErrorText).
+func (r *Router) sendWithMediaFallback(ctx context.Context, out Outbound, taskID, textOnly string) error {
+	err := r.Send(ctx, out, taskID)
+	if err == nil || out.MediaURL == "" {
+		return err
+	}
+	var pe *ProviderStatusError
+	switch {
+	case !errors.As(err, &pe), pe.Status < 400, pe.Status > 499,
+		pe.Status == 401, pe.Status == 403, pe.Status == 408, pe.Status == 409, pe.Status == 429: // auth, timeout/conflict (may have gone through), rate limit
+		return err
+	}
+	log.Printf("[channel] status task=%s: media refused, sending text only: %v", taskID, err)
+	out.MediaURL, out.MediaExpires = "", false
+	if textOnly != "" {
+		out.Text = textOnly
+	}
+	return r.Send(ctx, out, taskID)
+}

@@ -91,7 +91,7 @@ export default function AvatarUploader({ value, onChange, size = 96, className =
       fd.append('file', new File([blob], name, { type: mime }))
 
       const API_BASE =
-        import.meta?.env?.VITE_API_BASE?.replace(/\/+$/, '') ||
+        (import.meta?.env?.VITE_API_BASE || import.meta?.env?.VITE_API_BASE_URL)?.replace(/\/+$/, '') ||
         (location.hostname === 'localhost' ? 'http://localhost:8080' : 'https://core.horaapp.co')
 
       const res = await fetch(`${API_BASE}/profile/avatar`, {

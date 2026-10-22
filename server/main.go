@@ -400,7 +400,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("pgx ParseConfig error: %v", err)
 	}
-	cfg.MaxConns = 8
+	cfg.MaxConns = int32(dbMaxConns())
 	cfg.MinConns = 1
 	cfg.MaxConnLifetime = time.Hour
 	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
@@ -443,8 +443,8 @@ func main() {
 	if err := sqldb.Ping(); err != nil {
 		log.Fatalf("sqldb ping failed: %v", err)
 	}
-	sqldb.SetMaxOpenConns(8)
-	sqldb.SetMaxIdleConns(8)
+	sqldb.SetMaxOpenConns(dbMaxConns())
+	sqldb.SetMaxIdleConns(dbMaxConns())
 	sqldb.SetConnMaxLifetime(time.Hour)
 	log.Println("[sqldb] connected (simple protocol)")
 
@@ -471,7 +471,12 @@ func main() {
 	log.Println("[auth] DB injected")
 
 	// --- Gin & CORS ---
-	r := gin.Default()
+	// gin.Default() = Logger + Recovery. Built by hand so the request log can
+	// skip paths whose query string carries a secret (S-12): Meta's webhook
+	// handshake sends hub.verify_token in the query. Every other path is
+	// logged exactly as before.
+	r := gin.New()
+	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{SkipPaths: []string{"/webhooks/channel/whatsapp", "/webhooks/whatsapp", "/channel/setup"}}), gin.Recovery())
 	r.SetTrustedProxies(nil)
 	origins := os.Getenv("CORS_ALLOW_ORIGINS") // comma-separated exact origins
 	exactOrigins := strings.Split(origins, ",")
@@ -502,6 +507,9 @@ func main() {
 	// TalkJS message.sent → Expo push. Unauthenticated but HMAC-signed; see
 	// talkjs_webhook.go.
 	RegisterTalkJSWebhooks(r, sqldb)
+	// Messaging entry point (iMessage / WhatsApp). Mounts nothing unless
+	// CHANNEL_WEBHOOKS_ENABLED=1; see channel_webhooks.go and PLAN.md.
+	RegisterChannelWebhooks(r, sqldb)
 	// Stripe payment lifecycle → payments table + ops alerting. Unauthenticated
 	// but signature-verified against the raw body; see stripe_webhook.go.
 	// Registered and proven since Phase 1; since Phase 2a its events land on
@@ -4860,6 +4868,24 @@ func listProfileReviews(c *gin.Context) {
 		"count":     len(items),
 		"avg_stars": avgStars,
 	})
+}
+
+// dbMaxConns is the size of EACH of the two pools (pgx + database/sql), so a
+// process holds up to twice this. Default 8 (production, unchanged). A
+// Supabase branch's session-mode pooler allows 15 clients in total, and a
+// zero-downtime deploy runs two processes at once — staging sets
+// DB_MAX_CONNS=3 so both fit.
+func dbMaxConns() int {
+	raw := strings.TrimSpace(os.Getenv("DB_MAX_CONNS"))
+	if raw == "" {
+		return 8
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v <= 0 {
+		log.Printf("[db] DB_MAX_CONNS=%q is not a positive integer (%v); using 8", raw, err)
+		return 8
+	}
+	return v
 }
 
 // -------- Notifications --------

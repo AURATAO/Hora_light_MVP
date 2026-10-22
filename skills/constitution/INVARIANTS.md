@@ -27,7 +27,7 @@ select tablename, policyname from pg_policies where schemaname = 'public';
 **On violation:** block merge (this is an unprotected access path — S-01).
 
 ### I-02: No privileged keys in client code or tracked files. `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_DB_URL`, `SESSION_JWT_SECRET` exist only in server-side env.
-**Check:** `grep -rn "service_role\|SUPABASE_DB_URL\|SESSION_JWT_SECRET" app/src mobile/src 2>/dev/null` → no matches; secret scanner (gitleaks) → no findings. (D-04: same `mobile/src` scoping fix as I-01b — `mobile/node_modules/@supabase/*` ships files with `service_role` in comments/types.)
+**Check:** `grep -rn "service_role\|SUPABASE_DB_URL\|SESSION_JWT_SECRET" app/src mobile/src 2>/dev/null` → no matches; secret scanner (gitleaks) → no findings. A missing gitleaks is `INCOMPLETE`, never a pass (D-16). (D-04: same `mobile/src` scoping fix as I-01b — `mobile/node_modules/@supabase/*` ships files with `service_role` in comments/types.)
 **On violation:** block merge + rotate the exposed credential immediately.
 
 ### I-03: Backend compiles, vets, tests green.
@@ -39,7 +39,8 @@ select tablename, policyname from pg_policies where schemaname = 'public';
 **On violation:** block merge.
 
 ### I-05: Schema matches committed migrations — zero drift. **(Dormant until the S-21 baseline migration lands; activating this is a D-01 open item.)**
-**Check:** `supabase db diff --linked` → empty diff.
+**Check:** `supabase db diff --db-url "$VERIFY_DB_URL"` → empty diff, where `VERIFY_DB_URL` is a **local or branch** database. **Never `--linked`** — `supabase/.temp/project-ref` is committed and names production; `verify.sh` refuses a URL containing the production ref (D-16 R-5). Needs the supabase CLI (record the version used — results from a different version are not evidence) and a Docker daemon (shadow database).
+**When it cannot run:** a missing tool (CLI, Docker) is reported by `verify.sh`'s preflight as `缺少相依套件 / MISSING DEPENDENCY`, a missing `VERIFY_DB_URL` as `缺少設定 / MISSING SETTING`, and the run ends `INCOMPLETE` (exit 2) — not green, and not a drift finding. If base and branch are both red/incomplete for the same reason, it is an environment ticket; red only on the branch is a regression and blocks.
 **On violation:** block merge; reconcile before any new migration.
 
 ### I-06: The mobile app builds. **ACTIVE (D-03: `mobile/` scaffolded 2026-07-11).**

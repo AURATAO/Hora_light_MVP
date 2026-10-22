@@ -31,3 +31,11 @@ bc3fd78f8c822740d6b29bb3eb70167fd335e19f:server/.env:generic-api-key:4
 # quotation from the working tree (done) does not remove it from that commit.
 # Same non-secret, one commit further back.
 cf7f3f02a1463465ce2f1b6909c6d18f682efca4:.gitleaksignore:stripe-access-token:11
+
+# Placeholder Stripe key in a test helper (server/payments_phase3_test.go
+# withStripeConfigured, commit 0bf9d39 on main 2026-10-01). The value is the
+# literal "sk_test_notarealkey…" — it only makes paymentsEnabled() answer true
+# for branches that run before any Stripe call. Not a secret; flagged by the
+# stripe-access-token rule on its prefix. Added on feat/messaging-channel
+# 2026-10-22 (M3.2c round 2 verify); main inherits it at merge.
+0bf9d39a3f618ce11bc2f40425dad3ae63bf8e9a:server/payments_phase3_test.go:stripe-access-token:1109

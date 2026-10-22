@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -110,7 +112,7 @@ func TestTalkJSWebhookRejectsMissingSignatureHeaders(t *testing.T) {
 func TestTalkJSWebhookRejectsWhenSecretUnset(t *testing.T) {
 	t.Setenv("TALKJS_WEBHOOK_SECRET", "")
 	body := sampleEventJSON()
-	ts := "1755500000000"
+	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
 
 	w := postTalkJSWebhook(t, body, ts, signTalkJS(t, testWebhookSecret, ts, body))
 	if w.Code != http.StatusUnauthorized {
@@ -121,7 +123,7 @@ func TestTalkJSWebhookRejectsWhenSecretUnset(t *testing.T) {
 func TestTalkJSWebhookAcceptsValidSignature(t *testing.T) {
 	t.Setenv("TALKJS_WEBHOOK_SECRET", testWebhookSecret)
 	body := sampleEventJSON()
-	ts := "1755500000000"
+	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
 
 	w := postTalkJSWebhook(t, body, ts, signTalkJS(t, testWebhookSecret, ts, body))
 	if w.Code != http.StatusOK {
@@ -133,7 +135,7 @@ func TestTalkJSWebhookAcceptsValidSignature(t *testing.T) {
 // case, not just a malformed header.
 func TestTalkJSWebhookRejectsTamperedBody(t *testing.T) {
 	t.Setenv("TALKJS_WEBHOOK_SECRET", testWebhookSecret)
-	ts := "1755500000000"
+	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
 	sig := signTalkJS(t, testWebhookSecret, ts, sampleEventJSON())
 
 	tampered := strings.Replace(string(sampleEventJSON()), "On my way", "Send me money", 1)
@@ -144,7 +146,7 @@ func TestTalkJSWebhookRejectsTamperedBody(t *testing.T) {
 
 func TestVerifyTalkJSSignatureIsCaseInsensitiveOnHex(t *testing.T) {
 	body := sampleEventJSON()
-	ts := "1755500000000"
+	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
 	upper := signTalkJS(t, testWebhookSecret, ts, body)
 
 	if !verifyTalkJSSignature(testWebhookSecret, ts, body, upper) {
@@ -342,10 +344,40 @@ func TestTalkJSPushTitle(t *testing.T) {
 func TestTalkJSWebhookIgnoresSystemMessages(t *testing.T) {
 	t.Setenv("TALKJS_WEBHOOK_SECRET", testWebhookSecret)
 	body := []byte(strings.Replace(string(sampleEventJSON()), `"type": "UserMessage"`, `"type": "SystemMessage"`, 1))
-	ts := "1755500000000"
+	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
 
 	w := postTalkJSWebhook(t, body, ts, signTalkJS(t, testWebhookSecret, ts, body))
 	if w.Code != http.StatusOK {
 		t.Fatalf("system message should be ACKed: got %d, want 200", w.Code)
+	}
+}
+
+func TestTalkJSWebhookRejectsStaleTimestamp(t *testing.T) {
+	now := time.Now()
+	fresh := strconv.FormatInt(now.UnixMilli(), 10)
+	old := strconv.FormatInt(now.Add(-10*time.Minute).UnixMilli(), 10)
+	if !talkjsTimestampFresh(fresh, now) || talkjsTimestampFresh(old, now) || talkjsTimestampFresh("", now) || talkjsTimestampFresh("abc", now) {
+		t.Fatal("freshness check wrong")
+	}
+}
+
+// A stale (replayed) signed webhook is rejected only when the relay sink
+// exists; a push-only deploy accepts it and logs, so a wrong assumption
+// about the header's unit can never cut production pushes off.
+func TestTalkJSWebhookStaleTimestampGatedOnRelay(t *testing.T) {
+	t.Setenv("TALKJS_WEBHOOK_SECRET", testWebhookSecret)
+	body := []byte(`{"id":"evt","type":"message.sent","data":{"message":{"type":"SystemMessage"}}}`)
+	old := strconv.FormatInt(time.Now().Add(-10*time.Minute).UnixMilli(), 10)
+	sig := signTalkJS(t, testWebhookSecret, old, body)
+
+	prev := chatRelayHook
+	t.Cleanup(func() { chatRelayHook = prev })
+	chatRelayHook = nil
+	if w := postTalkJSWebhook(t, body, old, sig); w.Code != http.StatusOK {
+		t.Fatalf("relay off: stale timestamp must be accepted, got %d", w.Code)
+	}
+	chatRelayHook = func(context.Context, string, string, string, string, string, string) {}
+	if w := postTalkJSWebhook(t, body, old, sig); w.Code != http.StatusUnauthorized {
+		t.Fatalf("relay on: stale timestamp must be rejected, got %d", w.Code)
 	}
 }

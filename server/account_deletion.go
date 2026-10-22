@@ -44,6 +44,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hora-auth/internal/channel"
 	"log"
 	"net/http"
 	"os"
@@ -237,6 +238,7 @@ func deleteMyAccount(c *gin.Context) {
 		"stripe_customer_id":        stripeCustomerID.String,
 		"supabase_user_deleted":     supabaseDeleted,
 		"gps_pings_deleted":         counts.gpsPings,
+		"channel_numbers_deleted":   counts.channelNumbers,
 		"push_tokens_deleted":       counts.pushTokens,
 		"notifications_deleted":     counts.notifications,
 		"tasks_anonymised":          counts.tasks,
@@ -255,6 +257,9 @@ func deleteMyAccount(c *gin.Context) {
 
 type anonymiseCounts struct {
 	tasks, worklogs, gpsPings, pushTokens, notifications int64
+	// Phone numbers linked for chat booking and everything said over them
+	// (D-16 R-3: a phone number is personal data and goes with the account).
+	channelNumbers int64
 }
 
 // anonymiseAccount is the database half, in one transaction.
@@ -324,6 +329,10 @@ func anonymiseAccount(ctx context.Context, uid, email, placeholder string) (anon
 	if n.notifications, err = exec("notifications", `
 		delete from public.notifications where user_id = $1::uuid
 	`, uid); err != nil {
+		return n, err
+	}
+	// Chat booking (D-16 R-3): linked numbers and everything said over them.
+	if n.channelNumbers, err = channel.PurgeUserTx(ctx, tx, uid); err != nil {
 		return n, err
 	}
 	if err := tx.Commit(); err != nil {
