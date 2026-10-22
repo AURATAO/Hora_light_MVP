@@ -376,3 +376,52 @@ structured composition (M3.2 R6); authorization in both directions.
   provider send time precedes the moment the draft summary was shown
   (symmetry with the approval guard)? It closes the double-tap-after-an-
   approval case at the cost of a re-ask when a provider timestamp lags.
+
+## Arbiter rulings — 2026-10-22 (Aura), to build as M3.2d
+
+Recorded as given, in the order asked; nothing below is built yet.
+
+- **R-1 `onConfirm` sent-before guard: YES, no margin.** A YES (or any
+  booking confirmation) whose provider send time precedes the moment the
+  draft summary was last shown is not a booking; the summary is re-asked.
+  Symmetric with `approval_armed_at`. No tolerance: a double tap lands
+  within about a second, and a margin would let it through; the accepted
+  cost is a rare extra re-ask when a provider's timestamp runs behind our
+  clock. A missing send time is refused, as for approvals.
+- **R-2 A "no" with a reason, and "no thanks", decline.** "no, he needs to
+  finish now", "no thanks", "nope, too much" decline the armed request.
+  The punctuation after the no-word is required, so "no problem" / "no
+  worries" are never a decline. I-P still applies: within 10 minutes of an
+  unanswered supporter line only a bare strict no ("no", "n", 不要, 取消,
+  cancel, stop) declines; "no, the red one" goes to the supporter.
+- **R-3 The yes list widens; "yes + a message" is two actions.**
+  - Accepted as a whole message (case-insensitive; trailing punctuation
+    and emoji allowed; letters may repeat — "Yesss", "Kk", "Okie"):
+    Yes, Yeah, Yep, Yup, Yea, Ya, Yessir, Hell yes, OK, Okay, K, Kk, Oki,
+    Okie, Sure, Fine, Alright, All right, Why not, Of course, Absolutely,
+    Definitely, For sure, 100%, Let's do it, Go ahead, Go for it, I'm down,
+    I'm in, Sounds good, Sounds great, Works for me, Perfect, Great,
+    Awesome, Amazing, Wonderful, 👍, ✅, 🙌, 👌 — plus the existing
+    yep/book it/do it/好/好的/可以/確認/sí.
+  - **Reaction words** (Great, Perfect, Awesome, Amazing, Wonderful, Fine,
+    👍, 🙌, 👌) count as yes ONLY when our last outbound message in the
+    thread IS the approval question. Anything sent after it (a status
+    update, a relayed supporter line) → re-ask. Plain-consent words (Yes,
+    OK, Sure, Of course, Absolutely, …) are not limited this way.
+  - I-P unchanged: with an unanswered supporter line ≤10 minutes old, all
+    of these except the strict set go to the supporter.
+  - **Yes + message** ("yes but tell him to hurry", "ok, thanks Alex!"):
+    approve AND relay the rest to the supporter — when the message starts
+    with a yes word from the list and the rest has NO condition marker
+    (`$`, a digit, max, min, only, if, unless, under, over, less, more
+    than, up to, at most, 不超過, 只要, 如果, 最多). With a condition
+    ("yes but max $5", "yes if it's organic"): nothing approved, nothing
+    declined — the person's words go to the supporter, the request stays
+    open, and the person is told it is still waiting (YES / NO).
+- **R-4 Money and time stay rule-decided (S-11/5) — no conflict with R-3.**
+  The Arbiter sets the rules; the backend executes them; a model never
+  decides. Widening the list changes the rule, in code. A model may only
+  make an outcome safer (relay, ask, escalate); when a model and the rule
+  disagree, the safer side wins.
+- **R-5 / R-6** (json_schema; one approval asked at a time) — recorded in
+  D-18, which they belong to.
