@@ -414,7 +414,11 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 func (r *Router) showSummary(ctx context.Context, in Inbound, conv Conversation) error {
 	if conv.Pending == nil {
 		// Nothing to summarise (a stale snapshot left awaiting_confirm
-		// without a draft): say so instead of failing.
+		// without a draft): back to idle, and say so.
+		conv.State = StateIdle
+		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+			return fmt.Errorf("showSummary: %w", err)
+		}
 		return r.Reply(ctx, in, CopyAck, "")
 	}
 	if r.AutoExtendMinutes <= 0 && !conv.Pending.NoAutoExtend {
@@ -425,7 +429,7 @@ func (r *Router) showSummary(ctx context.Context, in Inbound, conv Conversation)
 	summary := r.leadIn(conv.Pending) + r.Summary(conv.Pending)
 	conv.Pending.SummaryShown = summary
 	conv.State = StateAwaitingConfirm
-	shown := r.now()
+	shown := ShownUnconfirmed // in flight until delivered (R-1)
 	conv.QuestionShownAt = &shown
 	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 		return fmt.Errorf("showSummary: %w", err)
@@ -470,7 +474,8 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 			conv.Pending.NoAutoExtend = true
 		}
 		return r.showSummary(ctx, in, conv)
-	case IsYes(text) && conv.QuestionShownAt != nil && (in.ReceivedAt.IsZero() || in.ReceivedAt.Before(*conv.QuestionShownAt)):
+	case IsYes(text) && (conv.QuestionShownAt == nil || in.ReceivedAt.IsZero() || in.ReceivedAt.Before(*conv.QuestionShownAt)):
+		// (No stamp: a draft shown before R-1 existed — put again once.)
 		// Sent before this summary was (re)shown — the second tap of a
 		// double YES that answered something else — or with no usable
 		// send time: not a booking. The summary is put again (D-17 R-1;
@@ -647,7 +652,7 @@ func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Co
 	case PostOwesBalance, PostDeclined:
 		// Keep the draft: once the card or balance is sorted, YES retries.
 		conv.State = StateAwaitingConfirm
-		shown := r.now() // the retry prompt is a question of ours (R-1): stamped before it goes out, again after
+		shown := ShownUnconfirmed // the retry prompt is a question of ours (R-1): in flight until delivered
 		conv.QuestionShownAt = &shown
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 			log.Printf("[channel] save after post identity=%s: %v", id.ID, err)
@@ -678,7 +683,7 @@ func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Co
 		})
 	default:
 		conv.State = StateAwaitingConfirm
-		shown := r.now() // as above (R-1)
+		shown := ShownUnconfirmed // as above (R-1)
 		conv.QuestionShownAt = &shown
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 			log.Printf("[channel] save after post identity=%s: %v", id.ID, err)

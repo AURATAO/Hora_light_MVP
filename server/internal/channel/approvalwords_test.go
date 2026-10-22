@@ -37,7 +37,7 @@ func TestApprovalWords(t *testing.T) {
 		{"ok but not the money", "but not the money", false, true, true},
 		{"yes, only 10 minutes", "only 10 minutes", false, true, true},
 		{"好，不要太貴", "不要太貴", false, true, true},
-		{"great, he's here", "he's here", true, false, true},
+		{"great, he's here", "he's here", true, true, true},                  // not a harmless tail (I-AE)
 		{"okay so what's the item", "so what's the item", false, true, true}, // a question word: conditional
 		{"yes", "", false, false, false},
 		{"ok不要", "", false, false, false},

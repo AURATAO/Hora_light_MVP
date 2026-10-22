@@ -166,7 +166,7 @@ func (r *Router) Release(ctx context.Context, id Identity) error {
 		return nil
 	}
 	conv.State = conv.ResumeState()
-	shown := r.now() // our earlier question is put again below (D-17 R-1)
+	shown := ShownUnconfirmed // our earlier question is put again below; in flight until delivered (D-17 R-1)
 	conv.QuestionShownAt = &shown
 	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 		return fmt.Errorf("Release: %w", err)

@@ -284,9 +284,11 @@ func (s *PGStore) TouchOutbound(ctx context.Context, ch Channel, address string)
 
 func (s *PGStore) MarkQuestionShown(ctx context.Context, identityID string, at time.Time) error {
 	_, err := s.DB.ExecContext(ctx, `
-		UPDATE channel_conversations SET question_shown_at = GREATEST(question_shown_at, $2)
+		UPDATE channel_conversations SET question_shown_at = CASE
+		    WHEN question_shown_at >= $3 THEN $2 -- the in-flight mark: replaced by the delivery time
+		    ELSE GREATEST(question_shown_at, $2) END
 		WHERE identity_id = $1
-	`, identityID, at)
+	`, identityID, at, ShownUnconfirmed)
 	if err != nil {
 		return fmt.Errorf("mark question shown: %w", err)
 	}
@@ -307,6 +309,11 @@ func (c Conversation) Unconfirmed() bool {
 	}
 	return c.ApprovalArmedAt == nil || !c.ApprovalArmedAt.Before(ArmedUnconfirmed)
 }
+
+// ShownUnconfirmed marks a question of ours stamped but not yet delivered
+// (question_shown_at during the send): no booking YES can be after it, and
+// MarkQuestionShown replaces it with the delivery time (D-17 R-1).
+var ShownUnconfirmed = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // UnconfirmedResend: how old a claim must be before an unconfirmed question
 // is re-sent from its hold. Routing runs under a 60 s timeout, so a live

@@ -457,12 +457,13 @@ Recorded as given, in the order asked; nothing below is built yet.
 - **I-T** `question_shown_at` also moves when an approval ends in any way
   (answered, resolved in the app, cleared): a YES sent before that moment
   was about the approval and never books.
-- **I-U** `conditionRE` reads as conditional: an amount or digit, a `?`,
-  limit words (max, min, only, under, over, up to, at most, at least),
-  conditions (if, unless, instead, without, except), negations (no, not,
-  don't, never) and "wait / hold on", plus 不超過 / 只要 / 如果 / 最多 /
-  最少 / 不要 / 不用 / 不. Wrongly conditional costs one more message;
-  wrongly unconditional would approve.
+- **I-U** (superseded in round 3 by I-AE) `conditionRE` lists what makes
+  a tail conditional — amounts and digits, `?`, the ruled R-3 markers,
+  conditional phrases, hedges, negations and contractions, deferrals,
+  question and auxiliary words, complaints, number words and units,
+  Spanish/Italian and Chinese markers (the code is the list). Since round
+  3 it is one check among several: a tail approves only when it is ALSO
+  on the harmless list (I-AE).
 - **I-V** (rewritten, round 2) The outbound stamp is taken BEFORE every
   send, and a failure to take it FAILS the send (fail closed for the
   reaction-word rule). Consequence, accepted: on a database error a
@@ -501,6 +502,27 @@ Recorded as given, in the order asked; nothing below is built yet.
   (🙏 😊 🙂 😀 😄 😁 😃 😂 🤣 😎 💪 🎉 🥳 💯 ❤) and the answer emoji (👍 ✅
   🙌 👌) may follow a yes; any other emoji in a tail makes it conditional
   (relayed, request kept open). Repeated emoji count once ("👍👍").
+- **I-AD** (round 3) Spelling variants accepted beyond the ruled list's
+  exact forms: "lets do it", "im down", "im in" (no apostrophe) and "sì"
+  (Italian grave accent beside "sí"). Arbiter may remove them.
+- **I-AE** (round 3) A "yes + message" approves only when the message
+  after the yes is positively harmless: it begins (after but / and / also
+  / plus / just / oh) with thanks, thank, thx, ty, cheers, appreciate,
+  tell, let, please, hurry, grab, get, pick, bring, send, text, great,
+  perfect, awesome, nice, cool, lol, haha; is plain ASCII apart from the
+  friendly emoji; has no condition marker (I-U); and has at most 8 words.
+  Everything else — any other English, any Chinese, Spanish or Italian —
+  is passed to the supporter with the request kept open. The cost is more
+  relays of things that meant yes ("yes, you can go ahead", "好，謝謝");
+  the gain is that the open-ended class (round 1–3 findings) is closed by
+  construction.
+- **I-AF** (round 3) R-1's "summary shown" is an in-flight mark while the
+  question is being sent (`ShownUnconfirmed`; no booking YES counts
+  then) and the delivery time after; a draft from before R-1 (no stamp)
+  is put again once instead of booked; a stale `awaiting_confirm` with no
+  draft returns to idle. On WhatsApp, a reaction word or a yes + message
+  swiped on any message is asked again (the reply may be about that
+  message).
 - **I-AC** (round 2) The condition list cannot be complete; two
   structural backstops: a tail longer than 8 words is conditional, and
   the ambiguous heads y / ya / yea / si / k / kk / book / book it /
@@ -582,3 +604,28 @@ Recorded as given, in the order asked; nothing below is built yet.
   yeses that must keep working, negated reasons, unknown bubble × wider
   words, a YES processed during the retry prompt (shown to fail without
   the fix), failed pass-on.
+- **Round 3 (b225b7b) — FAIL.** MAJOR: marker-free tails still approved
+  — Chinese contrast and complaint (但是, 太貴, 有點高; and a Chinese tail
+  counts as one "word", so the cap never fired), English deferrals ("I'll
+  get back to you", "let you know", "consider", "decide"), Spanish/Italian
+  conditions and complaints ("si es barato", "se costa poco", "es mucho",
+  "è troppo"), unaccented "manana" / "piu". The reviewer asked for the
+  default to be inverted. MINOR: a negation overrode "go ahead" ("no,
+  don't worry, go ahead" declined); the no-reason was matched on
+  collapsed text ("approve" → "aprove"); stretched markers ("lesss");
+  the retry pre-stamp still left a window for a YES sent after it; the
+  nil-draft guard left `awaiting_confirm`; WhatsApp swipes of a reaction
+  on another bubble; undeclared spelling variants; I-U stale; no legacy
+  note for unstamped drafts; zero-width characters. Verifier: no RED
+  (I-05 INCOMPLETE).
+
+  Fixed (all): the harmless-tail allowlist (I-AE) — default conditional;
+  `reasonOf` reads the reason uncollapsed; a strong yes beside a negation
+  is mixed; markers also matched with letter runs capped at two;
+  `ShownUnconfirmed` in-flight mark at every pre-send stamp, replaced by
+  the delivery time; an unstamped draft is put again; a draft-less
+  confirm goes idle; WhatsApp swipes asked again; zero-width and soft
+  hyphen stripped; I-U, I-AD, I-AE, I-AF declared. Tests: every input the
+  reviewer listed, harmless instructions that still approve, mixed with
+  negation, a YES after the stamp during the retry prompt (shown to fail
+  without the fix), legacy and empty drafts, a WhatsApp swipe.

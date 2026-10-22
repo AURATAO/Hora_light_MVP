@@ -168,8 +168,8 @@ func (m *memConversations) MarkQuestionShown(_ context.Context, iid string, at t
 	if !ok {
 		return nil
 	}
-	if c.QuestionShownAt == nil || at.After(*c.QuestionShownAt) {
-		c.QuestionShownAt = &at
+	if c.QuestionShownAt == nil || !c.QuestionShownAt.Before(ShownUnconfirmed) || at.After(*c.QuestionShownAt) {
+		c.QuestionShownAt = &at // the in-flight mark is replaced; otherwise forward only
 	}
 	m.convs[iid] = c
 	return nil

@@ -136,6 +136,11 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 		// the person's own reaction time; no margin is applied.
 		log.Printf("[channel] approval identity=%s ext=%s: answer refused, sent %s before the question", id.ID, conv.PendingExtensionID, sentBefore(in, conv.ApprovalArmedAt))
 		return r.Reply(ctx, in, approvalReask(conv), "")
+	case in.Channel == WhatsApp && in.ReplyToProviderID != "" && ((plain && reaction) || withMessage):
+		// WhatsApp's reply context is real: a reaction word or a yes with
+		// words swiped on a message may be about THAT message, not our
+		// question — asked again (round 3).
+		return r.Reply(ctx, in, approvalReask(conv), "")
 	case (plain && reaction) || (withMessage && !conditional && restReaction):
 		// A reaction word ("Great", 👍) is a yes only if our last message
 		// is this question — otherwise it may be about whatever we sent
@@ -193,7 +198,7 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 	conv.PendingExtensionID = ""
 	conv.ApprovalArmedAt = nil
 	conv.State = conv.ResumeState()
-	if _, err := r.Conversations.ClearApproval(ctx, id.ID, ext, conv.State, r.now()); err != nil {
+	if _, err := r.Conversations.ClearApproval(ctx, id.ID, ext, conv.State, ShownUnconfirmed); err != nil {
 		return fmt.Errorf("onAwaitingApproval: %w", err)
 	}
 
@@ -323,7 +328,7 @@ func (r *Router) clearApproval(ctx context.Context, id Identity, extensionID str
 	// Compare-and-set on the request: a question armed in between (a
 	// claim racing this) is left alone. The caller resumes a held
 	// question once the person has been told.
-	cleared, err = r.Conversations.ClearApproval(ctx, identityID, conv.PendingExtensionID, conv.ResumeState(), r.now())
+	cleared, err = r.Conversations.ClearApproval(ctx, identityID, conv.PendingExtensionID, conv.ResumeState(), ShownUnconfirmed)
 	if err != nil {
 		return false, fmt.Errorf("clearApproval: %w", err)
 	}
@@ -425,7 +430,7 @@ func (r *Router) repairUnconfirmed(ctx context.Context, id Identity, conv Conver
 	}
 	// No hold to re-send from, or the request is no longer live: end it.
 	log.Printf("[channel] approval ext=%s: unconfirmed claim cleared", conv.PendingExtensionID)
-	if _, err := r.Conversations.ClearApproval(ctx, id.ID, conv.PendingExtensionID, conv.ResumeState(), r.now()); err != nil {
+	if _, err := r.Conversations.ClearApproval(ctx, id.ID, conv.PendingExtensionID, conv.ResumeState(), ShownUnconfirmed); err != nil {
 		log.Printf("[channel] resume deferred identity=%s: %v", id.ID, err)
 		return
 	}
@@ -494,7 +499,7 @@ func (r *Router) sendClaimed(ctx context.Context, id Identity, d DeferredApprova
 			log.Printf("[channel] resume deferred identity=%s: %v", id.ID, gerr)
 			return
 		}
-		if _, err := r.Conversations.ClearApproval(undo, id.ID, d.ExtensionID, conv.ResumeState(), r.now()); err != nil {
+		if _, err := r.Conversations.ClearApproval(undo, id.ID, d.ExtensionID, conv.ResumeState(), ShownUnconfirmed); err != nil {
 			log.Printf("[channel] resume deferred identity=%s: %v", id.ID, err)
 		}
 		return
