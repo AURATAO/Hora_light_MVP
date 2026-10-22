@@ -58,6 +58,9 @@ func (o opsEmailNotifier) NotifyOps(ctx context.Context, n channel.HandoffNotice
 // number never appears (PhoneHint is the last four digits).
 func opsNoticeHTML(n channel.HandoffNotice, who string) string {
 	heading := fmt.Sprintf("Chat handed off (%s)", reasonLabelOps(n.Reason))
+	if n.Detail != "" {
+		heading = fmt.Sprintf("Chat handed off (%s: %s)", reasonLabelOps(n.Reason), n.Detail)
+	}
 	if n.Update {
 		heading = "New message in a handed-off chat"
 	}
@@ -88,6 +91,10 @@ func opsNoticeHTML(n channel.HandoffNotice, who string) string {
 func openRequestHTML(n channel.HandoffNotice) string {
 	if n.OpenRequestID == "" {
 		return ""
+	}
+	if n.OpenRequestUnconfirmed {
+		return fmt.Sprintf("<p><b>Open request:</b> the supporter's request <code>%s</code> on task <code>%s</code> was being sent when the chat was handed off. It may have reached the requester; any YES/NO they send now comes to you. It WILL be asked again by text after release unless it is settled first.</p>\n",
+			html.EscapeString(n.OpenRequestID), html.EscapeString(n.OpenRequestTaskID))
 	}
 	return fmt.Sprintf("<p><b>Open request:</b> the supporter's request <code>%s</code> on task <code>%s</code> was waiting for a YES/NO. It is still pending in the app and will NOT be asked again by text — settle it with the requester.</p>\n",
 		html.EscapeString(n.OpenRequestID), html.EscapeString(n.OpenRequestTaskID))

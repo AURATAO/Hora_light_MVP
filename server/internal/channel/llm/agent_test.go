@@ -34,12 +34,12 @@ func TestDecodeProposalMakesSafe(t *testing.T) {
 		}
 	}
 	booking := AgentContext{Tasks: c.Tasks, OpenQuestion: "booking"}
-	if p, _ := DecodeProposal(`{"action":"approve","task":"","escalation":""}`, booking); p.Action != ActionApprove || ToIntent(p) != IntentAnswer {
+	if p, err := DecodeProposal(`{"action":"approve","task":"","escalation":""}`, booking); err != nil || p.Action != ActionApprove || ToIntent(p) != IntentAnswer {
 		t.Errorf("a yes in words at the summary must stay an answer (re-ask): %+v", p)
 	}
 	idle := AgentContext{Tasks: c.Tasks}
 	for _, a := range []string{"approve", "decline"} {
-		if p, _ := DecodeProposal(`{"action":"`+a+`","task":"","escalation":""}`, idle); p.Action != ActionRelay {
+		if p, err := DecodeProposal(`{"action":"`+a+`","task":"","escalation":""}`, idle); err != nil || p.Action != ActionRelay {
 			t.Errorf("%s with nothing open: %+v", a, p)
 		}
 	}

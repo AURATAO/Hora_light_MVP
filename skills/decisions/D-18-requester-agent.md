@@ -1,7 +1,7 @@
 # D-18: Requester agent — the model proposes, the backend decides
 
 **Date:** 2026-10-22
-**Status:** Accepted (Arbiter: Aura) — built 2026-10-22 behind `CHANNEL_AGENT` (off); in review
+**Status:** Accepted (Arbiter: Aura) — built 2026-10-22 behind `CHANNEL_AGENT` (off); review PASS round 2 (59d45b7)
 **Trigger:** Aura's requester-agent draft (system prompt v0.1, 20 test
 cases, a Go test runner), reviewed 2026-10-22 against D-16/D-17 and
 S-11/5. The draft let the model call `approve_request` directly.
@@ -54,7 +54,7 @@ reporting gate-held vs gate-passed UNSAFE, `gate.go` = backend rules,
 self-tests) — delivered 2026-10-22, to move into `tools/agenttest/`. A
 deliberately bad fake model: 4 UNSAFE proposals, all held by the gate.
 Baseline against the production model: owed (Aura runs it locally with
-the key; report.json, no key).
+the key; `cmd/agenttest/report.json`, git-ignored, no key).
 
 ## Built — 2026-10-22
 
@@ -144,7 +144,8 @@ proposes "approve" scores 29 UNSAFE and exit 2, and no outcome changes:
 every approval in its report is the rules' own (`rules:approve`), every
 agent approve is a re-ask. Baseline against the real model: owed (Aura,
 locally, with her key — `go run ./cmd/agenttest -runs 5 -json
-report.json` from `server/`; send report.json, never the key).
+cmd/agenttest/report.json` from `server/` (git-ignored there); send that
+file, never the key).
 
 ### Review log
 
@@ -173,3 +174,37 @@ report.json` from `server/`; send report.json, never the key).
   production decoder at the summary (agent asked, re-ask copy, nothing
   booked), log contents, I-AK edges on `DecideApproval`, ask-with-label,
   zero-task schema, decode errors without model text.
+- **Round 2 (59d45b7) — PASS.** Round-1 MAJOR closed (the YES-during-the-
+  call test fails on the old code); every round-1 MINOR closed or
+  narrowed; S-11/5 re-enumerated: `ResolveExtension` only from a rule
+  verdict, `claimAndPost` only from `IsYes` / setup, corrections and new
+  errands only re-draft to a fresh summary, no hand-off drops money state
+  beyond the declared armed-question case. MINOR: (1) an escalation while
+  a booking posts reached nobody, and the notice had no reason; (2) an
+  unconfirmed claim was reported as "not asked again" (it is, after
+  release); (3) the stale-snapshot class outside the escalation path —
+  a correction or task-choice ask saves the pre-call conversation (as
+  the old classifier path did); (4) D-18 told Aura to write report.json
+  outside the git-ignored folder; (5) runner and router assembled the
+  context separately, the approving-model self-test was tautological, no
+  cases for yes/no at booking or budget; (6) untested posting / handoff
+  / unconfirmed branches; (7) the log test restored stderr, not the
+  previous writer; (8) discarded errors in tests.
+
+  Fixed after the PASS: ops notified (with the reason) when an
+  escalation meets a posting booking; `HandoffNotice.Detail` (the reason)
+  and `OpenRequestUnconfirmed`, with matching ops-email wording;
+  `channel.AgentContextFor` is the one assembler — `propose` and the
+  runner call it; the self-test decodes an approving model with the
+  production decoder over every case; cases 81–84 (yes / no / correction
+  at booking and budget); prompt label v0.3.1; tests for posting,
+  handed-off and unconfirmed escalations; log writer restored; test
+  errors checked; report path fixed in this record.
+
+  **Follow-up, not fixed (pre-existing class, declared):** (3) — a
+  model-labelled correction or a task-choice ask can save the
+  conversation read before the model call. No money moves without a new
+  explicit YES on a fresh summary; the fix (compare-and-set or re-read
+  before those saves, as `agentHandOff` does) belongs with the general
+  stale-snapshot work on `SaveConversation`, for both the classifier and
+  the agent.

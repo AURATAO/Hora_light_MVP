@@ -56,6 +56,11 @@ type HandoffNotice struct {
 	// asked again by text — ops must know it is there (D-18 review r1).
 	OpenRequestID     string
 	OpenRequestTaskID string
+	// OpenRequestUnconfirmed: the question was claimed but its delivery not
+	// confirmed — the hold survives and it IS asked again after release.
+	OpenRequestUnconfirmed bool
+	// Detail is the agent's escalation reason (safety, dispute, …), "" otherwise.
+	Detail string
 }
 
 // OpsNotifier delivers a notice to the people who will take over.
@@ -97,10 +102,16 @@ func PhoneHint(e164 string) string {
 // handOff moves the conversation to ops and tells both sides. The pending
 // draft (if any) is kept for when ops release the thread.
 func (r *Router) handOff(ctx context.Context, in Inbound, id Identity, conv Conversation, reason HandoffReason) error {
+	return r.handOffDetail(ctx, in, id, conv, reason, "")
+}
+
+// handOffDetail is handOff with the agent's escalation reason for ops.
+func (r *Router) handOffDetail(ctx context.Context, in Inbound, id Identity, conv Conversation, reason HandoffReason, detail string) error {
 	var open handoffOpen
 	if conv.State == StateAwaitingApproval && conv.PendingExtensionID != "" {
-		open = handoffOpen{conv.PendingExtensionID, conv.ApprovalTaskID}
+		open = handoffOpen{extensionID: conv.PendingExtensionID, taskID: conv.ApprovalTaskID, unconfirmed: conv.Unconfirmed()}
 	}
+	open.detail = detail
 	conv.State = StateHandoff
 	conv.PendingExtensionID = ""
 	// A held relay message is dropped: ops now read the thread, and the
@@ -127,14 +138,18 @@ func (r *Router) onHandoff(ctx context.Context, in Inbound, id Identity) error {
 }
 
 // handoffOpen names an approval question armed at hand-off time.
-type handoffOpen struct{ extensionID, taskID string }
+type handoffOpen struct {
+	extensionID, taskID string
+	unconfirmed         bool
+	detail              string // the agent's escalation reason
+}
 
 func (r *Router) notifyOps(ctx context.Context, id Identity, reason HandoffReason, update bool, open handoffOpen) error {
 	if r.Ops == nil {
 		return fmt.Errorf("notify ops: no OpsNotifier configured")
 	}
 	n := HandoffNotice{IdentityID: id.ID, Channel: id.Channel, PhoneHint: PhoneHint(id.Address), UserID: id.UserID, Reason: reason, Update: update,
-		OpenRequestID: open.extensionID, OpenRequestTaskID: open.taskID}
+		OpenRequestID: open.extensionID, OpenRequestTaskID: open.taskID, OpenRequestUnconfirmed: open.unconfirmed, Detail: open.detail}
 	limit := handoffThreadLen
 	if update {
 		limit = 1

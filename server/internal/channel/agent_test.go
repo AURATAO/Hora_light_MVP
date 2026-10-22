@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -113,7 +112,10 @@ func TestAgentEscalationAfterABookingKeepsTheBooking(t *testing.T) {
 		}
 	}
 	g.say(t, "he broke my vase last time and I want a refund")
-	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	c, err := g.convs.GetConversation(context.Background(), "id-"+me)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if g.booker.posts != 1 || c.State != StateHandoff || c.Pending != nil {
 		t.Fatalf("posts %d state %s pending %v", g.booker.posts, c.State, c.Pending != nil)
 	}
@@ -155,9 +157,10 @@ func TestAgentEscalationMidChoice(t *testing.T) {
 // A-7: the agent's log lines carry the action and the reason, never the
 // words, the supporter's line or a title.
 func TestAgentLogsNoWords(t *testing.T) {
-	var buf strings.Builder
+	var buf strings.Builder // the rig runs synchronously; no t.Parallel in this package
+	prev := log.Writer()
 	log.SetOutput(&buf)
-	defer log.SetOutput(os.Stderr)
+	defer log.SetOutput(prev)
 	g, _, tasks, fa := agentRig(llm.Proposal{Action: llm.ActionRelay, Task: 0}, bagelT)
 	g.r.Ops = &memOps{}
 	tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: secret-supporter-line?", "task-2", time.Now().Add(-15*time.Minute)
@@ -258,7 +261,11 @@ func TestAgentDraftsANewErrand(t *testing.T) {
 	if len(chat.posted) != 0 || g.booker.posts != 0 {
 		t.Fatalf("posted %v posts %d", chat.posted, g.booker.posts)
 	}
-	if c, _ := g.convs.GetConversation(context.Background(), "id-"+me); c.Pending == nil {
+	c, err := g.convs.GetConversation(context.Background(), "id-"+me)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Pending == nil {
 		t.Fatalf("no draft: state %s last %q", c.State, g.ad.last())
 	}
 }
@@ -276,5 +283,73 @@ func TestAgentContextHasNoIdentifiers(t *testing.T) {
 	}
 	if fa.calls[0].SupporterLine == nil || fa.calls[0].SupporterLine.Task != 0 {
 		t.Fatalf("line %+v", fa.calls[0].SupporterLine)
+	}
+}
+
+// Review r2: an escalation while the booking is posting does not take the
+// thread over, but ops ARE told (with the reason); while already handed
+// off it is the holding line.
+func TestAgentEscalationWhilePostingOrHandedOff(t *testing.T) {
+	g, chat, _, fa := agentRig(llm.Proposal{Action: llm.ActionEscalate, Task: -1, Escalation: llm.EscalateSafety}, bagelT)
+	ops := &memOps{}
+	g.r.Ops = ops
+	fa.during = func() {
+		c, err := g.convs.GetConversation(context.Background(), "id-"+me)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		c.State = StatePosting
+		g.convs.mu.Lock()
+		g.convs.convs["id-"+me] = c
+		g.convs.mu.Unlock()
+	}
+	got := g.say(t, "he grabbed my arm")
+	if got != CopyBookingInFlight || g.state() != StatePosting || len(ops.notices) != 1 || ops.notices[0].Detail != "safety" || len(chat.posted) != 0 {
+		t.Fatalf("reply %q state %s notices %+v posted %v", got, g.state(), ops.notices, chat.posted)
+	}
+	g, _, _, fa = agentRig(llm.Proposal{Action: llm.ActionEscalate, Task: -1, Escalation: llm.EscalateDispute}, bagelT)
+	ops = &memOps{}
+	g.r.Ops = ops
+	fa.during = func() {
+		c, err := g.convs.GetConversation(context.Background(), "id-"+me)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		c.State = StateHandoff
+		g.convs.mu.Lock()
+		g.convs.convs["id-"+me] = c
+		g.convs.mu.Unlock()
+	}
+	got = g.say(t, "I want a refund")
+	if got != CopyHandoffHolding || g.state() != StateHandoff || len(ops.notices) != 1 || !ops.notices[0].Update {
+		t.Fatalf("reply %q state %s notices %+v", got, g.state(), ops.notices)
+	}
+}
+
+// Review r2: a hand-off over an unconfirmed claim says so — the hold
+// survives and the question is asked again after release.
+func TestAgentEscalationOverAnUnconfirmedClaim(t *testing.T) {
+	g, _, _, _ := agentRig(llm.Proposal{Action: llm.ActionEscalate, Task: -1, Escalation: llm.EscalateSafety}, bagelT)
+	ops := &memOps{}
+	g.r.Ops = ops
+	g.arm(t, "ext-2")
+	c, err := g.convs.GetConversation(context.Background(), "id-"+me)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.ApprovalArmedAt = &ArmedUnconfirmed
+	g.convs.mu.Lock()
+	g.convs.convs["id-"+me] = c
+	g.convs.mu.Unlock()
+	if !c.Unconfirmed() {
+		t.Fatal("fixture: claim must read as unconfirmed")
+	}
+	if err := g.r.HandleInbound(context.Background(), Inbound{Channel: IMessage, ProviderMessageID: "esc", From: me, Text: "this is getting scary honestly", ReceivedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if len(ops.notices) != 1 || ops.notices[0].OpenRequestID != "ext-2" || !ops.notices[0].OpenRequestUnconfirmed {
+		t.Fatalf("notices %+v", ops.notices)
 	}
 }

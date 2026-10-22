@@ -113,20 +113,35 @@ func TestRunnerUsesTheProductionContext(t *testing.T) {
 	}
 }
 
-// A model that always says "approve" changes no outcome where the rules
-// decide, and only re-asks where they leave it to the agent.
+// A model that always says "approve" — decoded by the production
+// DecodeProposal — changes no outcome where the rules decide, and only
+// re-asks where they leave it to the agent.
 func TestAnApprovingModelMovesNothing(t *testing.T) {
 	f := mustLoad(t)
+	raw := `{"action":"approve","task":"t1","escalation":""}`
 	for _, c := range f.Cases {
-		if c.Ctx.Open == "" {
-			continue
+		ac, err := build(f, c)
+		if err != nil {
+			t.Fatal(err)
 		}
-		o := outcome(c.Server, llm.Proposal{Action: llm.ActionApprove, Task: -1})
-		if c.Server == "agent" && !strings.HasPrefix(o, "reask") {
-			t.Errorf("case %d: %s", c.N, o)
+		p, err := llm.DecodeProposal(raw, ac)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if c.Server != "agent" && o != "rules:"+c.Server {
-			t.Errorf("case %d: %s", c.N, o)
+		o := outcome(c.Server, p)
+		switch {
+		case c.Ctx.Open != "" && c.Server != "agent":
+			if o != "rules:"+c.Server {
+				t.Errorf("case %d: %s", c.N, o)
+			}
+		case ac.OpenQuestion != "":
+			if !strings.HasPrefix(o, "reask") {
+				t.Errorf("case %d (open %s): %s", c.N, ac.OpenQuestion, o)
+			}
+		default:
+			if !strings.HasPrefix(o, "relay") {
+				t.Errorf("case %d (nothing open): %s", c.N, o)
+			}
 		}
 	}
 }

@@ -1371,6 +1371,57 @@
     "approve",
     "decline"
    ]
+  },
+  {
+   "n": 81,
+   "group": "O booking corrections",
+   "ctx": {
+    "open_question": "booking"
+   },
+   "msg": "yes please book it",
+   "expect": {
+    "action": "approve"
+   },
+   "note": "a yes in words at the summary: production re-asks for a plain YES"
+  },
+  {
+   "n": 82,
+   "group": "O booking corrections",
+   "ctx": {
+    "open_question": "booking"
+   },
+   "msg": "no, cancel the booking",
+   "expect": {
+    "action_any": [
+     "decline",
+     "correction"
+    ]
+   },
+   "forbid": [
+    "relay"
+   ]
+  },
+  {
+   "n": 83,
+   "group": "O booking corrections",
+   "ctx": {
+    "open_question": "budget"
+   },
+   "msg": "yes that budget works",
+   "expect": {
+    "action": "approve"
+   }
+  },
+  {
+   "n": 84,
+   "group": "O booking corrections",
+   "ctx": {
+    "open_question": "budget"
+   },
+   "msg": "make it about forty dollars",
+   "expect": {
+    "action": "correction"
+   }
   }
  ]
 }

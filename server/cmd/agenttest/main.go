@@ -113,34 +113,33 @@ func load(path string) (File, error) {
 
 const supporterWindowMinutes = 10 // D-17 I-P
 
-// build renders a case's context as the router's propose() does (the open
-// request's amount, ids, history and numbered choices are not shown — A-4).
+// build renders a case's context with the router's own assembler
+// (channel.AgentContextFor) — the model is tested on what it sees.
 func build(f File, c Case) (llm.AgentContext, error) {
 	keys := c.Ctx.Tasks
 	if keys == nil {
 		keys = []string{"T42"}
 	}
-	var ac llm.AgentContext
-	for _, k := range keys {
+	var active []channel.ActiveTask
+	for i, k := range keys {
 		t, ok := f.Tasks[k]
 		if !ok {
-			return ac, fmt.Errorf("case %d: unknown task %q", c.N, k)
+			return llm.AgentContext{}, fmt.Errorf("case %d: unknown task %q", c.N, k)
 		}
-		ac.Tasks = append(ac.Tasks, llm.AgentTask{Title: t.Title, Supporter: t.Supporter})
+		active = append(active, channel.ActiveTask{ID: fmt.Sprintf("t%d", i+1), Title: t.Title, SupporterName: t.Supporter})
 	}
-	ac.OpenQuestion = c.Ctx.OpenQuestion
+	open := c.Ctx.OpenQuestion
 	if c.Ctx.Open != "" {
 		if _, ok := f.Requests[c.Ctx.Open]; !ok {
-			return ac, fmt.Errorf("case %d: unknown request %q", c.N, c.Ctx.Open)
+			return llm.AgentContext{}, fmt.Errorf("case %d: unknown request %q", c.N, c.Ctx.Open)
 		}
-		ac.OpenQuestion = "approval"
+		open = "approval"
 	}
-	// The router drops a line the person already answered before asking
-	// the model (routeInContextLabel), so the model never sees one.
-	if l := c.Ctx.SupporterLine; l != nil && !l.Answered {
-		ac.SupporterLine = &llm.AgentLine{Task: labelIndex(l.Task, len(ac.Tasks)), Text: l.Text, MinutesAgo: l.MinutesAgo}
+	var line channel.SupporterLine
+	if l := c.Ctx.SupporterLine; l != nil {
+		line = channel.SupporterLine{Text: l.Text, TaskID: l.Task, MinutesAgo: l.MinutesAgo, Answered: l.Answered}
 	}
-	return ac, nil
+	return channel.AgentContextFor(active, open, line), nil
 }
 
 func labelIndex(label string, n int) int {
@@ -357,7 +356,7 @@ func main() {
 				results[i].Raw = ""
 			}
 		}
-		b, err := json.MarshalIndent(map[string]any{"model": model.Model, "prompt": "v0.3", "at": time.Now().UTC().Format(time.RFC3339), "results": results}, "", " ")
+		b, err := json.MarshalIndent(map[string]any{"model": model.Model, "prompt": "v0.3.1", "at": time.Now().UTC().Format(time.RFC3339), "results": results}, "", " ")
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "report:", err)
 			os.Exit(max(code, 1))

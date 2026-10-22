@@ -1105,22 +1105,11 @@ func stillWaiting(conv Conversation) string {
 // supporter, no target (D-17 P7). The person's words and the proposal's
 // fields are never logged beyond the action.
 func (r *Router) propose(ctx context.Context, id Identity, text string, active []ActiveTask, conv Conversation, last, lastTask string, lastAt time.Time, answered bool) llm.Proposal {
-	c := llm.AgentContext{OpenQuestion: openQuestion(conv.State)}
-	for _, t := range active {
-		c.Tasks = append(c.Tasks, llm.AgentTask{Title: t.Title, Supporter: DisplayName(FirstName(t.SupporterName))})
+	minutes := 0
+	if !lastAt.IsZero() {
+		minutes = int(r.now().Sub(lastAt).Minutes())
 	}
-	if last != "" {
-		l := &llm.AgentLine{Task: -1, Text: last, Answered: answered}
-		for i, t := range active {
-			if t.ID == lastTask {
-				l.Task = i
-			}
-		}
-		if !lastAt.IsZero() {
-			l.MinutesAgo = int(r.now().Sub(lastAt).Minutes())
-		}
-		c.SupporterLine = l
-	}
+	c := AgentContextFor(active, openQuestion(conv.State), SupporterLine{Text: last, TaskID: lastTask, MinutesAgo: minutes, Answered: answered})
 	p, err := r.Agent.Propose(ctx, text, c)
 	if err != nil {
 		log.Printf("[channel] agent (using %s): %v", llm.SafeProposal().Action, err)
@@ -1135,8 +1124,8 @@ func (r *Router) propose(ctx context.Context, id Identity, text string, active [
 // YES may have booked meanwhile, an approval may have been armed), so it is
 // read again and the hand-off saves THAT — never the snapshot from before
 // the call (review r1). While a booking is being posted the thread is not
-// taken over: the person is told the booking is in flight, and the words
-// are not relayed (they may be about the supporter).
+// taken over: ops are notified, the person is told the booking is in
+// flight, and the words are not relayed (they may be about the supporter).
 func (r *Router) agentHandOff(ctx context.Context, in Inbound, id Identity, p llm.Proposal) error {
 	fresh, err := r.Conversations.GetConversation(ctx, id.ID)
 	if err != nil {
@@ -1145,9 +1134,43 @@ func (r *Router) agentHandOff(ctx context.Context, in Inbound, id Identity, p ll
 	log.Printf("[channel] agent escalation identity=%s reason=%s state=%s", id.ID, p.Escalation, fresh.State)
 	switch fresh.State {
 	case StatePosting:
+		// Not taken over mid-booking, but ops are told now — a safety or
+		// dispute message must not be lost (review r2).
+		if err := r.notifyOps(ctx, id, HandoffAgentEscalated, false, handoffOpen{detail: string(p.Escalation)}); err != nil {
+			return fmt.Errorf("agentHandOff: %w", err)
+		}
 		return r.Reply(ctx, in, CopyBookingInFlight, "")
 	case StateHandoff:
 		return r.onHandoff(ctx, in, id)
 	}
-	return r.handOff(ctx, in, id, fresh, HandoffAgentEscalated)
+	return r.handOffDetail(ctx, in, id, fresh, HandoffAgentEscalated, string(p.Escalation))
+}
+
+// SupporterLine is the supporter's last relayed line as the router knows it.
+type SupporterLine struct {
+	Text       string
+	TaskID     string
+	MinutesAgo int
+	Answered   bool
+}
+
+// AgentContextFor is the ONE place the agent's context is assembled — the
+// router (propose) and the test runner (cmd/agenttest) both call it, so
+// what the model is tested on is what it sees (D-18 review r2). An empty
+// or answered line is not shown (the person already replied to it).
+func AgentContextFor(active []ActiveTask, openQuestion string, line SupporterLine) llm.AgentContext {
+	c := llm.AgentContext{OpenQuestion: openQuestion}
+	for _, t := range active {
+		c.Tasks = append(c.Tasks, llm.AgentTask{Title: t.Title, Supporter: DisplayName(FirstName(t.SupporterName))})
+	}
+	if line.Text != "" && !line.Answered {
+		l := &llm.AgentLine{Task: -1, Text: line.Text, MinutesAgo: line.MinutesAgo}
+		for i, t := range active {
+			if t.ID == line.TaskID {
+				l.Task = i
+			}
+		}
+		c.SupporterLine = l
+	}
+	return c
 }
