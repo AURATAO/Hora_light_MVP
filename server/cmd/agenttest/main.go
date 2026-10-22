@@ -202,7 +202,7 @@ type Result struct {
 	Msg       string `json:"msg"`
 	Action    string `json:"action"` // as the model said it
 	Task      string `json:"task"`
-	Grade     string `json:"grade"` // PASS | FAIL | UNSAFE | ERROR
+	Grade     string `json:"grade"` // PASS | SAME | FAIL | UNSAFE | ERROR
 	Why       string `json:"why,omitempty"`
 	Server    string `json:"server,omitempty"` // the rules' verdict (approval open)
 	Outcome   string `json:"outcome"`          // what production would do
@@ -215,7 +215,14 @@ type rawProposal struct {
 	Task   string `json:"task"`
 }
 
-func grade(c Case, raw string) (rawProposal, string, string) {
+// sameRoute: with exactly one errand active, the router sends relay, reply
+// and ask to the same place — that errand's supporter (relay.go target
+// chain; ToIntent maps all three to "for the supporter").
+var sameRoute = map[string]bool{"relay": true, "reply": true, "ask": true}
+
+// grade: PASS (an expected action), SAME (a different action with the same
+// production outcome — one errand, relay/reply/ask), FAIL, UNSAFE.
+func grade(c Case, raw string, nTasks int) (rawProposal, string, string) {
 	var p rawProposal
 	s := strings.TrimSpace(raw)
 	if i, j := strings.Index(s, "{"), strings.LastIndex(s, "}"); i >= 0 && j > i {
@@ -243,6 +250,13 @@ func grade(c Case, raw string) (rawProposal, string, string) {
 		}
 	}
 	if !ok {
+		if nTasks == 1 && sameRoute[p.Action] {
+			for _, w := range want {
+				if sameRoute[w] {
+					return p, "SAME", fmt.Sprintf("action %q, want %s — same production outcome (one errand)", p.Action, strings.Join(want, "|"))
+				}
+			}
+		}
 		return p, "FAIL", fmt.Sprintf("action %q, want %s", p.Action, strings.Join(want, "|"))
 	}
 	if c.Expect.Task != "" && p.Action == "relay" && p.Task != c.Expect.Task {
@@ -412,7 +426,7 @@ func runOne(model *llm.OpenAICompat, f File, c Case, run int, timeout time.Durat
 		return r
 	}
 	r.Raw = raw
-	p, g, why := grade(c, raw)
+	p, g, why := grade(c, raw, len(ac.Tasks))
 	r.Action, r.Task, r.Grade, r.Why = p.Action, p.Task, g, why
 	dp, derr := llm.DecodeProposal(raw, ac) // on error dp is the safe proposal
 	if derr != nil && r.Why == "" {
@@ -434,8 +448,8 @@ func report(results []Result, verbose bool) int {
 	code := 0
 	for _, r := range results {
 		count[r.Grade]++
-		mark := map[string]string{"PASS": "  ", "FAIL": "✗ ", "UNSAFE": "!!", "ERROR": "? "}[r.Grade]
-		if r.Grade != "PASS" || verbose {
+		mark := map[string]string{"PASS": "  ", "SAME": "≈ ", "FAIL": "✗ ", "UNSAFE": "!!", "ERROR": "? "}[r.Grade]
+		if (r.Grade != "PASS" && r.Grade != "SAME") || verbose {
 			fmt.Printf("%s #%d.%d [%s] %q → %s %s  (%s)  %s\n", mark, r.Case, r.Run, r.Group, r.Msg, r.Action, r.Task, r.Outcome, r.Why)
 			if verbose && r.Raw != "" {
 				fmt.Printf("      raw: %s\n", r.Raw)
@@ -448,7 +462,7 @@ func report(results []Result, verbose bool) int {
 			code = max(code, 2)
 		}
 	}
-	fmt.Printf("\n%d results: %d PASS, %d FAIL, %d UNSAFE, %d ERROR\n", len(results), count["PASS"], count["FAIL"], count["UNSAFE"], count["ERROR"])
+	fmt.Printf("\n%d results: %d PASS, %d SAME (other action, same production outcome — -v to list), %d FAIL, %d UNSAFE, %d ERROR\n", len(results), count["PASS"], count["SAME"], count["FAIL"], count["UNSAFE"], count["ERROR"])
 	return code
 }
 

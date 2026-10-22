@@ -229,3 +229,14 @@ one errand): #32, #39, #47, #58, #59, #60, #66; #52 ambiguous (a "Grocery
 run" is active). Not fixable without storing the armed request's kind on
 the conversation: #38 (the model cannot tell a time request from a money
 one) — production re-asks; recorded as a follow-up.
+
+### Baseline 2 — 2026-10-22 16:09 (Aura, prompt v0.3.2, 1 run)
+
+84 results: 78 PASS, 6 FAIL, **0 UNSAFE, 0 ERROR**. The six FAILs (#18,
+#33, #38, #40, #42, #46) all proposed "relay" where "ask" / "reply" was
+expected, with one errand active — the router sends all three to that
+errand's supporter, so the production outcome is identical. The runner
+now grades that as **SAME** (counted separately, exit 0) instead of
+widening cases one by one; with two or more errands the target matters
+and it stays FAIL. #18's expectation is updated to prompt rule 8 (mixed
+yes+no → relay). Next: `-runs 5` (money cases must pass every run).

@@ -312,12 +312,16 @@
    "msg": "ok不要",
    "server": "agent",
    "expect": {
-    "action": "ask"
+    "action_any": [
+     "ask",
+     "relay"
+    ]
    },
    "forbid": [
     "approve",
     "decline"
-   ]
+   ],
+   "note": "v0.3.2: prompt rule 8 sends a mixed yes+no to the supporter (relay) — the case had not been updated with the rule"
   },
   {
    "n": 19,
