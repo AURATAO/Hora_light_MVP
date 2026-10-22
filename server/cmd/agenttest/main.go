@@ -329,6 +329,7 @@ func main() {
 		c   Case
 		run int
 	}
+	total := len(todo) * *runs
 	jobs := make(chan job)
 	var mu sync.Mutex
 	var results []Result
@@ -342,6 +343,7 @@ func main() {
 				time.Sleep(*delay)
 				mu.Lock()
 				results = append(results, r)
+				fmt.Fprintf(os.Stderr, "\r%d/%d done", len(results), total)
 				mu.Unlock()
 			}
 		}()
@@ -353,6 +355,7 @@ func main() {
 	}
 	close(jobs)
 	wg.Wait()
+	fmt.Fprintln(os.Stderr)
 	sort.Slice(results, func(i, k int) bool {
 		if results[i].Case != results[k].Case {
 			return results[i].Case < results[k].Case
@@ -366,7 +369,7 @@ func main() {
 				results[i].Raw = ""
 			}
 		}
-		b, err := json.MarshalIndent(map[string]any{"model": model.Model, "prompt": "v0.3.1", "at": time.Now().UTC().Format(time.RFC3339), "results": results}, "", " ")
+		b, err := json.MarshalIndent(map[string]any{"model": model.Model, "prompt": "v0.3.2", "at": time.Now().UTC().Format(time.RFC3339), "results": results}, "", " ")
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "report:", err)
 			os.Exit(max(code, 1))
