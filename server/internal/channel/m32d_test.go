@@ -686,3 +686,37 @@ func TestNoProblemApprovesRightAfterTheQuestion(t *testing.T) {
 		t.Fatalf("after a status line: resolved %v last %q", g.booker.resolved, g.ad.last())
 	}
 }
+
+// Arbiter 2026-10-22 16:51: "yes that's fine" approves; Chinese particles
+// 啊 呀 喔 哦 囉 啦 do not change the answer; 吧 / 嘛 are asked again.
+func TestThatsFineAndChineseParticles(t *testing.T) {
+	for _, tc := range []struct {
+		text string
+		want ApprovalVerdict
+	}{
+		{"yes that's fine", VerdictApprove},
+		{"Yes, that’s fine!", VerdictApprove},
+		{"ok its fine", VerdictApprove},
+		{"可以啊", VerdictApprove},
+		{"可以呀！", VerdictApprove},
+		{"好啊", VerdictApprove},
+		{"好喔", VerdictApprove},
+		{"可以啦啦", VerdictApprove},
+		{"不要啦", VerdictDecline},
+		{"不用喔", VerdictDecline},
+		{"好吧", VerdictNotAnAnswer},
+		{"可以嗎", VerdictNotAnAnswer},
+		{"yes that's fine but max $5", VerdictPassOnKeep},
+		{"no worries, get it", VerdictPassOnKeep},
+	} {
+		if got := DecideApproval(ApprovalFacts{Text: tc.text, QuestionIsLast: true}); got != tc.want {
+			t.Errorf("%q: %d, want %d", tc.text, got, tc.want)
+		}
+	}
+	// The booking YES keeps its own list (I-S).
+	for _, msg := range []string{"可以啊", "yes that's fine"} {
+		if IsYes(msg) {
+			t.Errorf("%q must not book", msg)
+		}
+	}
+}

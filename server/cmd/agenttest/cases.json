@@ -84,11 +84,11 @@
     "open": "R_BUDGET"
    },
    "msg": "yes that's fine",
-   "server": "passon",
+   "server": "approve",
    "expect": {
     "action": "approve"
    },
-   "note": "not in the backend's yes list: the server re-asks | UX cost: \"that's fine\" is not a closed harmless shape (I-AE) — passed on, request kept open; Arbiter may add it as a yes-like tail"
+   "note": "Arbiter 2026-10-22 16:51: \"yes that's fine\" approves directly (yes-like tail)"
   },
   {
    "n": 5,
@@ -1120,11 +1120,11 @@
     "open": "R_BUDGET"
    },
    "msg": "可以啊",
-   "server": "agent",
+   "server": "approve",
    "expect": {
     "action": "approve"
    },
-   "note": "not in the backend's yes list | UX cost: the particle 啊 is not stripped, so 可以啊 is not the list word 可以 — the agent is asked; Arbiter may add particles (啊/呀/喔/囉)"
+   "note": "Arbiter 2026-10-22 16:51: 啊/呀/喔/哦/囉/啦 are stripped — 可以啊 is 可以"
   },
   {
    "n": 65,

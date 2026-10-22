@@ -718,3 +718,26 @@ Recorded as given, in the order asked; nothing below is built yet.
 - I-AD spelling variants confirmed.
 - Booking list (I-S): **keep the current list** (Arbiter 2026-10-22 14:02) —
   the booking YES stays on `yesRE`; the wider approval words never book.
+
+### Arbiter answers — 2026-10-22 16:51 (Aura)
+
+- **"yes that's fine" approves directly.** Built as yes-like tails:
+  "that's fine", "thats fine", "it's fine", "its fine" — a yes followed
+  only by these is a plain yes. Declared (**I-AL**): only these four
+  spellings; "that works", "sounds fine" etc. are not added without a
+  ruling. A condition after them ("yes that's fine but max $5") is still
+  passed on.
+- **Chinese sentence-final particles do not change the answer:** 可以啊 =
+  可以. Built as `trimParticles` in `normalise` (approval words only; the
+  booking YES keeps `yesRE`, I-S). Declared (**I-AM**): 啊 呀 喔 哦 囉 啦
+  are stripped (repeated, never down to nothing, only after a Chinese
+  character), so 不要啦 is 不要 too; 吧 and 嘛 are NOT stripped — 好吧 /
+  可以吧 can be reluctant or a question, so they are asked again; a
+  question particle (嗎) is never stripped.
+- **I-AE confirmed:** a "yes + message" whose message is one of the closed
+  shapes (thanks…, please, hurry, tell him/her/them/NAME to hurry /
+  thanks, let him/her/them/NAME know) approves AND passes the message to
+  the supporter; the leading yes is the answer. Any other message after a
+  yes is passed on with the request kept open. A leading no with a reason
+  declines (R-2); whether that reason is also passed to the supporter is
+  asked of the Arbiter (today it is not).

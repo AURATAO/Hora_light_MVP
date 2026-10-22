@@ -49,6 +49,8 @@ var noWords = wordSet("no", "n", "nope", "nah", "no thanks", "no thank you", "ca
 // yesLikeTails: a tail that only repeats the yes ("ok great", "sure, no
 // problem") — the message is a plain yes, nothing to pass on.
 var yesLikeTails = wordSet("no problem", "no worries", "no rush", "thing", "100%",
+	// Arbiter 2026-10-22 16:51: "yes that's fine" approves directly.
+	"that's fine", "thats fine", "it's fine", "its fine",
 	"thanks", "thank you", "thanks so much", "thank you so much", "thx", "ty", "please", "pls", "plz")
 
 // noWithReasonRE: a no-word, then punctuation, then a reason — "no, he
@@ -125,7 +127,25 @@ func normalise(text string) string {
 	if oneLetterRun(s) {
 		return s // "kkkkk": laughter — left as is, matches nothing
 	}
-	return collapse(s)
+	return trimParticles(collapse(s))
+}
+
+// chineseParticles: sentence-final particles that change the tone, not the
+// answer — "可以啊", "好呀", "不要啦" are 可以 / 好 / 不要 (Arbiter
+// 2026-10-22 16:51). 吧 and 嘛 are left on: "好吧" / "可以吧" can be
+// reluctant or a question, so they are asked again.
+var chineseParticles = "啊呀喔哦囉啦"
+
+// trimParticles strips trailing particles after a Chinese character, never
+// down to nothing.
+func trimParticles(s string) string {
+	for {
+		rs := []rune(s)
+		if len(rs) < 2 || !strings.ContainsRune(chineseParticles, rs[len(rs)-1]) || !unicode.Is(unicode.Han, rs[len(rs)-2]) {
+			return s
+		}
+		s = strings.TrimRightFunc(string(rs[:len(rs)-1]), unicode.IsSpace)
+	}
 }
 
 func oneLetterRun(s string) bool {
