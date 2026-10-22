@@ -17,7 +17,7 @@
 //	go run ./cmd/agenttest -runs 5             # money cases must pass every run
 //	go run ./cmd/agenttest -case 19 -v         # one case, with the raw output
 //	go run ./cmd/agenttest -group "C "         # one group (prefix)
-//	go run ./cmd/agenttest -json report.json   # machine-readable report
+//	go run ./cmd/agenttest -json cmd/agenttest/report.json   # machine-readable report (git-ignored there)
 //
 // Exit codes: 0 all pass; 1 failures (safe); 2 the model proposed approve or
 // decline where forbidden (the prompt is wrong — production re-asks); 3 a
@@ -113,7 +113,8 @@ func load(path string) (File, error) {
 
 const supporterWindowMinutes = 10 // D-17 I-P
 
-// build renders a case's context exactly as the router would.
+// build renders a case's context as the router's propose() does (the open
+// request's amount, ids, history and numbered choices are not shown — A-4).
 func build(f File, c Case) (llm.AgentContext, error) {
 	keys := c.Ctx.Tasks
 	if keys == nil {
@@ -134,9 +135,10 @@ func build(f File, c Case) (llm.AgentContext, error) {
 		}
 		ac.OpenQuestion = "approval"
 	}
-	if l := c.Ctx.SupporterLine; l != nil {
-		al := &llm.AgentLine{Task: labelIndex(l.Task, len(ac.Tasks)), Text: l.Text, MinutesAgo: l.MinutesAgo, Answered: l.Answered}
-		ac.SupporterLine = al
+	// The router drops a line the person already answered before asking
+	// the model (routeInContextLabel), so the model never sees one.
+	if l := c.Ctx.SupporterLine; l != nil && !l.Answered {
+		ac.SupporterLine = &llm.AgentLine{Task: labelIndex(l.Task, len(ac.Tasks)), Text: l.Text, MinutesAgo: l.MinutesAgo}
 	}
 	return ac, nil
 }
@@ -160,8 +162,10 @@ func verdict(ac llm.AgentContext, c Case) channel.ApprovalVerdict {
 		name := ac.Tasks[0].Supporter
 		f.Supporter = func() string { return name }
 	}
-	if l := ac.SupporterLine; l != nil && l.Task >= 0 && l.MinutesAgo <= supporterWindowMinutes {
-		f.SupporterLive = true // I-P counts a line on an active task, answered or not
+	// I-P counts a line on an active task within the window, answered or
+	// not (D-17 I-P as ruled) — read from the case, not from the model's view.
+	if l := c.Ctx.SupporterLine; l != nil && labelIndex(l.Task, len(ac.Tasks)) >= 0 && l.MinutesAgo <= supporterWindowMinutes {
+		f.SupporterLive = true
 	}
 	return channel.DecideApproval(f)
 }
@@ -353,9 +357,14 @@ func main() {
 				results[i].Raw = ""
 			}
 		}
-		b, _ := json.MarshalIndent(map[string]any{"model": model.Model, "prompt": "v0.3", "at": time.Now().UTC().Format(time.RFC3339), "results": results}, "", " ")
+		b, err := json.MarshalIndent(map[string]any{"model": model.Model, "prompt": "v0.3", "at": time.Now().UTC().Format(time.RFC3339), "results": results}, "", " ")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "report:", err)
+			os.Exit(max(code, 1))
+		}
 		if err := os.WriteFile(*jsonOut, b, 0o644); err != nil {
 			fmt.Fprintln(os.Stderr, err)
+			os.Exit(max(code, 1))
 		}
 	}
 	os.Exit(code)
@@ -384,7 +393,10 @@ func runOne(model *llm.OpenAICompat, f File, c Case, run int, timeout time.Durat
 	r.Raw = raw
 	p, g, why := grade(c, raw)
 	r.Action, r.Task, r.Grade, r.Why = p.Action, p.Task, g, why
-	dp, _ := llm.DecodeProposal(raw, ac)
+	dp, derr := llm.DecodeProposal(raw, ac) // on error dp is the safe proposal
+	if derr != nil && r.Why == "" {
+		r.Why = derr.Error()
+	}
 	r.Outcome = outcome(r.Server, dp)
 	return r
 }

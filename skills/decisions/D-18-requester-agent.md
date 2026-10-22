@@ -82,8 +82,10 @@ the rules have already declined to treat as an answer.
   schema and context ARE production's. The planned regex-sync test is
   unnecessary — there is no copy to drift.
 - **A-2 What a proposal does.** approve / decline → the plain YES/NO
-  question again (the existing "answer" path); a model never resolves a
-  request or books. correction → the existing re-draft (only with a
+  question again (the existing "answer" path) whenever a question of ours
+  is open — approval, booking, budget or name (round 1: at the summary
+  "yes please book it" is re-asked, not relayed); with nothing open, a
+  relay. A model never resolves a request or books. correction → the existing re-draft (only with a
   booking / budget / name question open). draft_task → the existing draft
   → summary → YES flow. relay → for the supporter; the errand the agent
   names is used after a supporter named in the words and before "who
@@ -107,11 +109,19 @@ the rules have already declined to treat as an answer.
   with no booking question, escalate without a listed reason → relay.
   Nothing a decode does can make an outcome riskier.
 - **A-6 Escalation.** The model may hand off for safety, a dispute, legal
-  or medical, a repeated misunderstanding, or a person asked for. Ops get
-  `agent_escalated`; the log has the reason enum, never the words. Cost:
-  a wrong escalation puts the thread with ops until released.
+  or medical, a repeated misunderstanding, or a person asked for — also
+  mid-choice (a held relay), where the words are then NOT joined to the
+  hold and sent to a supporter. Ops get `agent_escalated`; the log has the
+  reason enum, never the words. The hand-off saves the conversation read
+  AFTER the model call (a YES may have booked, a question been armed
+  meanwhile — round 1 MAJOR); while a booking is posting the thread is
+  not taken over (the person gets "booking now"). If an approval question
+  was armed, ops are told its request and task: it stays pending in the
+  app and is not asked again by text. Cost: a wrong escalation puts the
+  thread with ops until released.
 - **A-7 Logs.** `[channel] agent identity=… action=…` and the escalation
-  reason only; never the message, the supporter's line or a title.
+  reason only; never the message, the supporter's line, a title, or the
+  model's output (decode errors are fixed strings). Tested.
 - **A-8 Case file v0.3.** The 71 v0.2 cases are converted to actions
   (same expectations; #41 no longer allows approve — R-6); 9 cases added
   (corrections, M3.2d rules, two-errand targeting, injection in the
@@ -135,3 +145,31 @@ every approval in its report is the rules' own (`rules:approve`), every
 agent approve is a re-ask. Baseline against the real model: owed (Aura,
 locally, with her key — `go run ./cmd/agenttest -runs 5 -json
 report.json` from `server/`; send report.json, never the key).
+
+### Review log
+
+- **Round 1 (f5ae012) — FAIL.** MAJOR: (1) the agent's hand-off saved the
+  conversation read before a seconds-long model call — a YES that booked
+  meanwhile was undone (the draft restored, re-bookable after release).
+  MINOR: (2) a hand-off from awaiting_approval dropped the armed request
+  without telling ops; (3) handoff.go header said the model never hands
+  off; (4) decode errors carried model text into logs; (5) an escalation
+  mid-choice became a relay joined to the hold; (6) a label on "ask"
+  overrode the ask; (7) a yes/no in words at the summary or budget
+  question was relayed, not re-asked; (8) the runner showed the model an
+  answered supporter line production drops; (9) discarded marshal errors
+  (S-31); (10) tests weaker than claimed. Verifier: no RED (I-05
+  INCOMPLETE; secret scan run separately: no leaks).
+
+  Fixed (all): `agentHandOff` re-reads and hands off the fresh
+  conversation (posting → "booking now", handoff → holding line);
+  `HandoffNotice.OpenRequestID/TaskID` + the ops email line; header
+  updated; fixed-string decode errors; `classifyActive` returns the
+  proposal and the task-choice caller hands off; only relay keeps a
+  label; approve/decline stay "answer" with any question open; the runner
+  drops answered lines like production; marshal errors handled. Tests:
+  a YES booking during the escalation call (shown to fail before the
+  fix), ops told of the open request, mid-choice escalation, the
+  production decoder at the summary (agent asked, re-ask copy, nothing
+  booked), log contents, I-AK edges on `DecideApproval`, ask-with-label,
+  zero-task schema, decode errors without model text.

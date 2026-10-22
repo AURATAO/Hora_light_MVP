@@ -13,7 +13,9 @@ import (
 // asks for a human, two messages in a row could not be understood, or a
 // payment needs a step only a person can walk them through — the thread goes
 // to the ops team and the bot steps back until ops release it. Deterministic
-// triggers only; the model never decides to hand off.
+// triggers, plus — only with the requester agent on (D-18, CHANNEL_AGENT) — an
+// agent escalation for safety, a dispute, legal or medical matters, or a
+// repeated misunderstanding (HandoffAgentEscalated).
 //
 // While handed off: every inbound message is forwarded to ops and answered
 // with a short holding line; ops reply and release through the admin routes
@@ -49,6 +51,11 @@ type HandoffNotice struct {
 	// Update is set when the person wrote again during a handoff (the
 	// Thread then holds that one message).
 	Update bool
+	// OpenRequestID / OpenRequestTaskID: an approval question that was armed
+	// when the thread was handed off. It stays pending in the app and is not
+	// asked again by text — ops must know it is there (D-18 review r1).
+	OpenRequestID     string
+	OpenRequestTaskID string
 }
 
 // OpsNotifier delivers a notice to the people who will take over.
@@ -90,6 +97,10 @@ func PhoneHint(e164 string) string {
 // handOff moves the conversation to ops and tells both sides. The pending
 // draft (if any) is kept for when ops release the thread.
 func (r *Router) handOff(ctx context.Context, in Inbound, id Identity, conv Conversation, reason HandoffReason) error {
+	var open handoffOpen
+	if conv.State == StateAwaitingApproval && conv.PendingExtensionID != "" {
+		open = handoffOpen{conv.PendingExtensionID, conv.ApprovalTaskID}
+	}
 	conv.State = StateHandoff
 	conv.PendingExtensionID = ""
 	// A held relay message is dropped: ops now read the thread, and the
@@ -99,7 +110,7 @@ func (r *Router) handOff(ctx context.Context, in Inbound, id Identity, conv Conv
 		return fmt.Errorf("handOff: %w", err)
 	}
 	log.Printf("[channel] handoff identity=%s reason=%s", id.ID, reason)
-	if err := r.notifyOps(ctx, id, reason, false); err != nil {
+	if err := r.notifyOps(ctx, id, reason, false, open); err != nil {
 		// Ops not told is the one failure that must not be silent to the
 		// person: say so and let the route fail so the message is retried.
 		return fmt.Errorf("handOff: %w", err)
@@ -109,17 +120,21 @@ func (r *Router) handOff(ctx context.Context, in Inbound, id Identity, conv Conv
 
 // onHandoff is every message while ops hold the thread.
 func (r *Router) onHandoff(ctx context.Context, in Inbound, id Identity) error {
-	if err := r.notifyOps(ctx, id, "", true); err != nil {
+	if err := r.notifyOps(ctx, id, "", true, handoffOpen{}); err != nil {
 		return fmt.Errorf("onHandoff: %w", err)
 	}
 	return r.Reply(ctx, in, CopyHandoffHolding, "")
 }
 
-func (r *Router) notifyOps(ctx context.Context, id Identity, reason HandoffReason, update bool) error {
+// handoffOpen names an approval question armed at hand-off time.
+type handoffOpen struct{ extensionID, taskID string }
+
+func (r *Router) notifyOps(ctx context.Context, id Identity, reason HandoffReason, update bool, open handoffOpen) error {
 	if r.Ops == nil {
 		return fmt.Errorf("notify ops: no OpsNotifier configured")
 	}
-	n := HandoffNotice{IdentityID: id.ID, Channel: id.Channel, PhoneHint: PhoneHint(id.Address), UserID: id.UserID, Reason: reason, Update: update}
+	n := HandoffNotice{IdentityID: id.ID, Channel: id.Channel, PhoneHint: PhoneHint(id.Address), UserID: id.UserID, Reason: reason, Update: update,
+		OpenRequestID: open.extensionID, OpenRequestTaskID: open.taskID}
 	limit := handoffThreadLen
 	if update {
 		limit = 1

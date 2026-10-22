@@ -689,7 +689,7 @@ func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Co
 		// Ops notice and the person's reply both off the request path when
 		// the caller is an HTTP request (S-32).
 		return r.dispatch(ctx, async, func(c context.Context) error {
-			if err := r.notifyOps(c, id, HandoffPayment3DS, false); err != nil {
+			if err := r.notifyOps(c, id, HandoffPayment3DS, false, handoffOpen{}); err != nil {
 				log.Printf("[channel] 3ds handoff identity=%s: %v", id.ID, err)
 			}
 			return r.Send(c, out, res.TaskID)

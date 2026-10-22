@@ -388,7 +388,10 @@ func (r *Router) onAwaitingTaskChoice(ctx context.Context, in Inbound, id Identi
 		r.noteRelayed(ctx, in, id, t.ID, joined)
 		return nil
 	}
-	intent := r.classifyActive(ctx, text, active0, conv)
+	intent, p := r.classifyActive(ctx, id, text, active0, conv)
+	if p.Action == llm.ActionEscalate {
+		return r.agentHandOff(ctx, in, id, p)
+	}
 	if intent == llm.IntentNewTask {
 		conv.State, conv.PendingTaskChoices, conv.PendingRelayText = StateIdle, nil, ""
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
@@ -781,8 +784,7 @@ func (r *Router) routeInContextLabel(ctx context.Context, in Inbound, id Identit
 		// nothing below moves money or time.
 		p := r.propose(ctx, id, text, active, conv, last, lastTask, lastAt, answered)
 		if p.Action == llm.ActionEscalate {
-			log.Printf("[channel] agent escalation identity=%s reason=%s", id.ID, p.Escalation)
-			return true, "", r.handOff(ctx, in, id, conv, HandoffAgentEscalated)
+			return true, "", r.agentHandOff(ctx, in, id, p)
 		}
 		intent = llm.ToIntent(p)
 		if p.Task >= 0 && p.Task < len(active) {
@@ -1002,20 +1004,22 @@ func (r *Router) lastSupporterLineErr(ctx context.Context, in Inbound, id Identi
 // classifyActive labels a message with the context classifier (or, without
 // one, the plain classifier for "new errand or not"); any failure is
 // "to the supporter" (P7).
-func (r *Router) classifyActive(ctx context.Context, text string, active []ActiveTask, conv Conversation) llm.Intent {
+func (r *Router) classifyActive(ctx context.Context, id Identity, text string, active []ActiveTask, conv Conversation) (llm.Intent, llm.Proposal) {
 	if r.Agent != nil {
-		// Only "new errand or not" is read here (a held relay's choice
-		// list): an escalation or a target is not acted on mid-choice.
-		p := r.propose(ctx, Identity{}, text, active, conv, "", "", time.Time{}, false)
-		return llm.ToIntent(p)
+		// "New errand or not" is read here (a held relay's choice list); a
+		// target is not acted on mid-choice. An escalation is returned to
+		// the caller, which hands off — a safety message must not be joined
+		// to the hold and delivered to the supporter (D-18 review r1).
+		p := r.propose(ctx, id, text, active, conv, "", "", time.Time{}, false)
+		return llm.ToIntent(p), p
 	}
 	if r.InContext == nil {
 		if r.Classifier != nil {
 			if got, err := r.Classifier.Classify(ctx, text); err == nil && got == llm.IntentNewTask {
-				return llm.IntentNewTask
+				return llm.IntentNewTask, llm.SafeProposal()
 			}
 		}
-		return llm.IntentToSupporter
+		return llm.IntentToSupporter, llm.SafeProposal()
 	}
 	c := llm.Context{OpenQuestion: openQuestion(conv.State)}
 	for _, t := range active {
@@ -1025,7 +1029,7 @@ func (r *Router) classifyActive(ctx context.Context, text string, active []Activ
 	if err != nil {
 		log.Printf("[channel] classify in context (using %q): %v", got, err)
 	}
-	return got
+	return got, llm.SafeProposal()
 }
 
 // casualToSupporter (D-17 I-P, version B): a casual affirmative while a
@@ -1124,4 +1128,26 @@ func (r *Router) propose(ctx context.Context, id Identity, text string, active [
 	}
 	log.Printf("[channel] agent identity=%s action=%s", id.ID, p.Action)
 	return p
+}
+
+// agentHandOff hands the thread to ops on an agent escalation (D-18). The
+// agent call took seconds: the conversation read before it may be stale (a
+// YES may have booked meanwhile, an approval may have been armed), so it is
+// read again and the hand-off saves THAT — never the snapshot from before
+// the call (review r1). While a booking is being posted the thread is not
+// taken over: the person is told the booking is in flight, and the words
+// are not relayed (they may be about the supporter).
+func (r *Router) agentHandOff(ctx context.Context, in Inbound, id Identity, p llm.Proposal) error {
+	fresh, err := r.Conversations.GetConversation(ctx, id.ID)
+	if err != nil {
+		return fmt.Errorf("agentHandOff: %w", err)
+	}
+	log.Printf("[channel] agent escalation identity=%s reason=%s state=%s", id.ID, p.Escalation, fresh.State)
+	switch fresh.State {
+	case StatePosting:
+		return r.Reply(ctx, in, CopyBookingInFlight, "")
+	case StateHandoff:
+		return r.onHandoff(ctx, in, id)
+	}
+	return r.handOff(ctx, in, id, fresh, HandoffAgentEscalated)
 }

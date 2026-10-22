@@ -77,10 +77,20 @@ func opsNoticeHTML(n channel.HandoffNotice, who string) string {
   <li>Account: %s</li>
   <li>Identity id: <code>%s</code></li>
 </ul>
-<p>Reply with <code>POST /admin/channel/%s/send {"text": "…"}</code>; hand back with <code>POST /admin/channel/%s/release</code>.</p>
+%s<p>Reply with <code>POST /admin/channel/%s/send {"text": "…"}</code>; hand back with <code>POST /admin/channel/%s/release</code>.</p>
 <hr>%s`,
 		html.EscapeString(heading), n.Channel, html.EscapeString(n.PhoneHint), who,
-		html.EscapeString(n.IdentityID), html.EscapeString(n.IdentityID), html.EscapeString(n.IdentityID), lines.String())
+		html.EscapeString(n.IdentityID), openRequestHTML(n), html.EscapeString(n.IdentityID), html.EscapeString(n.IdentityID), lines.String())
+}
+
+// openRequestHTML: an approval question armed at hand-off. It stays pending
+// in the app (auto-declines on its timer) and is not asked again by text.
+func openRequestHTML(n channel.HandoffNotice) string {
+	if n.OpenRequestID == "" {
+		return ""
+	}
+	return fmt.Sprintf("<p><b>Open request:</b> the supporter's request <code>%s</code> on task <code>%s</code> was waiting for a YES/NO. It is still pending in the app and will NOT be asked again by text — settle it with the requester.</p>\n",
+		html.EscapeString(n.OpenRequestID), html.EscapeString(n.OpenRequestTaskID))
 }
 
 func reasonLabelOps(r channel.HandoffReason) string {
@@ -91,6 +101,8 @@ func reasonLabelOps(r channel.HandoffReason) string {
 		return "not understood twice"
 	case channel.HandoffPayment3DS:
 		return "payment needs authentication"
+	case channel.HandoffAgentEscalated:
+		return "the assistant judged a person should handle it (safety, dispute, legal/medical or repeated confusion)"
 	}
 	return string(r)
 }
