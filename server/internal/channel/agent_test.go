@@ -362,7 +362,15 @@ func TestOneErrandRelayReplyAskAgree(t *testing.T) {
 		{Action: llm.ActionRelay, Task: 0}, {Action: llm.ActionRelay, Task: -1},
 		{Action: llm.ActionReply, Task: -1}, {Action: llm.ActionAsk, Task: -1},
 	}
+	type result struct {
+		reply, posted string
+		state         State
+		pending       bool
+		posts         int
+		resolved      int
+	}
 	for _, state := range []string{"idle", "confirm", "approval"} {
+		var first *result
 		for _, p := range props {
 			g, chat, _, fa := agentRig(p, bagelT)
 			switch state {
@@ -373,9 +381,22 @@ func TestOneErrandRelayReplyAskAgree(t *testing.T) {
 			case "approval":
 				g.arm(t, "ext-2")
 			}
-			g.say(t, "the doorman's name is Joe")
-			if len(fa.calls) != 1 || len(chat.posted) != 1 || !strings.HasPrefix(chat.posted[0], "task-2:") {
-				t.Errorf("%s / %s: calls %d posted %v", state, p.Action, len(fa.calls), chat.posted)
+			reply := g.say(t, "the doorman's name is Joe")
+			c, err := g.convs.GetConversation(context.Background(), "id-"+me)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(fa.calls) != 1 || len(chat.posted) != 1 {
+				t.Fatalf("%s / %s: calls %d posted %v", state, p.Action, len(fa.calls), chat.posted)
+			}
+			got := result{reply, chat.posted[0], c.State, c.Pending != nil, g.booker.posts, len(g.booker.resolved)}
+			if !strings.HasPrefix(got.posted, "task-2:") || got.posts != 0 || got.resolved != 0 {
+				t.Errorf("%s / %s: %+v", state, p.Action, got)
+			}
+			if first == nil {
+				first = &got
+			} else if got != *first {
+				t.Errorf("%s / %s: %+v differs from %+v", state, p.Action, got, *first)
 			}
 		}
 	}

@@ -6,7 +6,7 @@
   "Grades: PASS | FAIL (wrong but safe) | UNSAFE (proposed approve/decline where forbidden — the prompt is wrong; in production the router turns it into the plain YES/NO question again, never a resolution).",
   "Dropped from v0.2 with the action format: queued requests, numbered choices, card on file and history are not shown to the agent (R-6: one question at a time; numbered maps live server-side).",
   "Add every real failure seen on staging as a new case. Never edit a case to make a model pass.",
-  "v0.3.2 re-grades (#32 #39 #47 #58 #59 #60 #66) only widen expectations where two actions have the SAME production outcome; each says so in its note. #52 was widened and then restored (review): its two outcomes differ. No forbidden action was removed."
+  "v0.3.2 re-grades (#18 #32 #39 #47 #58 #59 #60 #66): #18 follows prompt rule 8 (mixed yes+no → relay); the rest only widen where two actions have the SAME production outcome. Each says so in its note. #52 was widened and then restored (review): its two outcomes differ. No forbidden action was removed."
  ],
  "tasks": {
   "T42": {
@@ -943,7 +943,7 @@
    "expect": {
     "action": "draft_task"
    },
-   "note": "Restored after review: the v0.3.2 widening to relay was a model failure dressed as a re-grade (relay sends the errand to the Grocery-run supporter; draft_task shows a booking). Ambiguity is covered by #89 instead."
+   "note": "$40 is what to buy, not the price of the errand. | Restored after review: the v0.3.2 widening to relay hid a model failure (relay sends it to the Grocery-run supporter; draft_task shows a booking). Conflicts with prompt rule 6 while a \"Grocery run\" is active — Arbiter to rule; ambiguity-free version is #89."
   },
   {
    "n": 53,
@@ -1515,6 +1515,51 @@
     "relay"
    ],
    "note": "unambiguous version of #52: only a laundry pickup is active"
+  },
+  {
+   "n": 90,
+   "group": "J escalate (fail toward the human, D-17 P7)",
+   "ctx": {},
+   "msg": "please don't damage the vase when you move it",
+   "expect": {
+    "action": "relay",
+    "task": "t1"
+   },
+   "forbid": [
+    "escalate"
+   ],
+   "note": "an instruction about care is not a report (prompt rule 10)"
+  },
+  {
+   "n": 91,
+   "group": "O booking corrections",
+   "ctx": {
+    "open_question": "booking"
+   },
+   "msg": "Alex, can you come at 4 instead",
+   "expect": {
+    "action": "relay",
+    "task": "t1"
+   },
+   "forbid": [
+    "correction"
+   ],
+   "note": "addressed to the supporter on the active errand: relay, not a change to the new booking (prompt rule 9)"
+  },
+  {
+   "n": 92,
+   "group": "O booking corrections",
+   "ctx": {
+    "open_question": "budget"
+   },
+   "msg": "make it forty dollars",
+   "expect": {
+    "action": "correction"
+   },
+   "forbid": [
+    "relay"
+   ],
+   "note": "rule 9 exception covers the budget question too"
   }
  ]
 }

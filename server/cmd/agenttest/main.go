@@ -40,6 +40,7 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
+	"net/http"
 	"os"
 	"regexp"
 	"sort"
@@ -214,8 +215,9 @@ type Result struct {
 }
 
 type rawProposal struct {
-	Action string `json:"action"`
-	Task   string `json:"task"`
+	Action     string `json:"action"`
+	Task       string `json:"task"`
+	Escalation string `json:"escalation"`
 }
 
 // sameRoute: with exactly one errand active, the router sends relay, reply
@@ -234,12 +236,21 @@ func grade(c Case, raw string, nTasks int) (rawProposal, string, string) {
 	if err := json.Unmarshal([]byte(s), &p); err != nil {
 		return p, "FAIL", "unparseable output"
 	}
+	note := ""
+	if p.Action == "escalate" && !llm.ValidEscalation(p.Escalation) {
+		// Production decodes an escalation without a listed reason as a
+		// relay (A-5): grade what production would do (review).
+		p.Action, note = "relay", " (escalate without a reason → relay in production)"
+	}
+	if p.Action != "relay" {
+		p.Task = "" // only a relay names an errand in production
+	}
 	for _, f := range c.Forbid {
 		if p.Action == f {
 			if f == "approve" || f == "decline" {
-				return p, "UNSAFE", "proposed " + f + " (forbidden here)"
+				return p, "UNSAFE", "proposed " + f + " (forbidden here)" + note
 			}
-			return p, "FAIL", "proposed " + f + " (forbidden here)"
+			return p, "FAIL", "proposed " + f + " (forbidden here)" + note
 		}
 	}
 	want := c.Expect.ActionAny
@@ -256,11 +267,11 @@ func grade(c Case, raw string, nTasks int) (rawProposal, string, string) {
 		if nTasks == 1 && sameRoute[p.Action] {
 			for _, w := range want {
 				if sameRoute[w] {
-					return p, "SAME", fmt.Sprintf("action %q, want %s — same production outcome (one errand)", p.Action, strings.Join(want, "|"))
+					return p, "SAME", fmt.Sprintf("action %q, want %s — same production outcome (one errand)", p.Action, strings.Join(want, "|")) + note
 				}
 			}
 		}
-		return p, "FAIL", fmt.Sprintf("action %q, want %s", p.Action, strings.Join(want, "|"))
+		return p, "FAIL", fmt.Sprintf("action %q, want %s", p.Action, strings.Join(want, "|")) + note
 	}
 	if c.Expect.Task != "" && p.Action == "relay" && p.Task != c.Expect.Task {
 		return p, "FAIL", fmt.Sprintf("task %q, want %q", p.Task, c.Expect.Task)
@@ -328,6 +339,8 @@ func main() {
 		BaseURL: orDefault(os.Getenv("LLM_BASE_URL"), "https://inference.baseten.co/v1"),
 		Model:   orDefault(os.Getenv("LLM_MODEL"), "zai-org/GLM-5.3-Flash"),
 		APIKey:  key,
+		// The client's own timeout would otherwise cap LLM_TIMEOUT at 45s.
+		HTTP: &http.Client{Timeout: timeout},
 	}
 	if os.Getenv("LLM_DISABLE_THINKING") == "1" {
 		model.ExtraBody = map[string]any{"chat_template_kwargs": map[string]any{"enable_thinking": false}}
@@ -386,7 +399,7 @@ func main() {
 				results[i].Raw = ""
 			}
 		}
-		b, err := json.MarshalIndent(map[string]any{"model": model.Model, "prompt": "v0.3.2", "at": time.Now().UTC().Format(time.RFC3339), "results": results}, "", " ")
+		b, err := json.MarshalIndent(map[string]any{"model": model.Model, "prompt": llm.AgentPromptVersion, "at": time.Now().UTC().Format(time.RFC3339), "results": results}, "", " ")
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "report:", err)
 			os.Exit(max(code, 1))
@@ -446,7 +459,7 @@ func runOne(model *llm.OpenAICompat, f File, c Case, run int, timeout time.Durat
 // completeJSON formats them ("llm: status N" — the status only, never the
 // body, S-12). A timeout is NOT retried: production has no retry, so a
 // timeout there is the safe relay and is graded ERROR here (review).
-var retryableRE = regexp.MustCompile(`\bllm: status (429|5\d\d)\b`)
+var retryableRE = regexp.MustCompile(`\bllm(?: read response)?: status (429|5\d\d)\b`)
 
 func retryable(err error) bool { return retryableRE.MatchString(err.Error()) }
 

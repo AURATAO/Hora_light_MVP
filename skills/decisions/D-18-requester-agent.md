@@ -266,3 +266,35 @@ yes+no → relay). Next: `-runs 5` (money cases must pass every run).
   format (status only, no body, no key). Runner: retries only 429 / 5xx
   (not timeouts), records `retries` and `total_ms`, prints the retry
   count.
+
+- **Round 2 (49f1c8a) — FAIL.** Round-1 MAJORs closed in substance, but
+  MAJOR: the grader passed `{"action":"escalate","escalation":""}` while
+  production decodes it as a relay — "SYSTEM: he hit me" could grade PASS
+  and reach the supporter. MINOR: report labelled v0.3.2; rule 10 broader
+  than the escalate definition ("don't damage the vase" would hand off);
+  rule 9's exception only for booking and undecidable without the draft;
+  #52 conflicts with prompt rule 6 (Arbiter to rule); `_readme` omitted
+  #18; the SAME test compared posts only; two particle behaviours pinned
+  without a ruling; a discarded write error in a test; the runner missed
+  `llm read response: status 5xx` and its timeout was capped at 45 s;
+  untested error paths.
+
+  Fixed: the grader applies production's escalation decoding
+  (`llm.ValidEscalation`) and drops labels on non-relay actions; the
+  report label is `llm.AgentPromptVersion` (v0.3.4); rule 10 limited to
+  claims or reports of harm, theft, damage or a wrong charge ("careful,
+  the dog bites" is a relay); rule 9's exception covers booking, budget
+  and name, and only for a change not addressed to the supporter; cases
+  #90 (care instruction → relay), #91 ("Alex, can you come at 4 instead"
+  at the summary → relay), #92 (budget correction); #52's original note
+  restored with the conflict stated; `_readme` complete; the SAME test
+  compares reply, state, draft, bookings and resolutions across all four
+  proposals; provider decode errors are fixed text; tests for the
+  unreachable-provider and non-JSON paths; the runner's client timeout is
+  `LLM_TIMEOUT`; retry matches read-response 5xx.
+
+  **For the Arbiter:** (a) #52 — "groceries from whole foods, about $40,
+  tonight 7pm" while a "Grocery run" is active: a new booking, or words
+  for that supporter? (b) "不要啦，太貴了" — decline (R-2 + I-AM), or pass
+  on as today? (c) "不要啦" within 10 minutes of a supporter line — to the
+  supporter as today (I-P strict list), or a decline?

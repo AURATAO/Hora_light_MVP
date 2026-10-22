@@ -127,7 +127,8 @@ func (o *OpenAICompat) completeJSON(ctx context.Context, system, user, schemaNam
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(respBody, &r); err != nil {
-		return "", u, fmt.Errorf("decode: %w", err)
+		// Fixed text: a JSON error quotes part of the body (S-12).
+		return "", u, fmt.Errorf("decode: provider response is not JSON")
 	}
 	u.InputTokens, u.OutputTokens = r.Usage.PromptTokens, r.Usage.CompletionTokens
 	if len(r.Choices) == 0 {

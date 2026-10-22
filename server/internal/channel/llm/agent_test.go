@@ -109,13 +109,33 @@ func TestProviderErrorsCarryStatusOnly(t *testing.T) {
 	for _, code := range []int{429, 500, 503} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(code)
-			_, _ = w.Write([]byte(`{"error":"echo: secret-person-words"}`)) // test server: the write's error is irrelevant
+			if _, err := w.Write([]byte(`{"error":"echo: secret-person-words"}`)); err != nil {
+				t.Errorf("test server write: %v", err) // handler goroutine: Errorf, not Fatal
+			}
 		}))
 		o := &OpenAICompat{BaseURL: srv.URL, APIKey: "secret-key", Model: "m"}
 		_, err := o.Propose(context.Background(), "secret-person-words", AgentContext{})
 		srv.Close()
 		if err == nil || strings.Contains(err.Error(), "secret") || !strings.Contains(err.Error(), fmt.Sprintf("llm: status %d", code)) {
 			t.Errorf("%d: %v", code, err)
+		}
+	}
+}
+
+// The other error paths: an unreachable provider and a 2xx body that is not
+// JSON — neither carries the key nor any of the body.
+func TestProviderErrorPathsCarryNoSecrets(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, err := w.Write([]byte(`secret-body-not-json`)); err != nil {
+			t.Errorf("test server write: %v", err)
+		}
+	}))
+	defer srv.Close()
+	for _, base := range []string{srv.URL, "http://127.0.0.1:1"} {
+		o := &OpenAICompat{BaseURL: base, APIKey: "secret-key", Model: "m"}
+		_, err := o.Propose(context.Background(), "secret-person-words", AgentContext{})
+		if err == nil || strings.Contains(err.Error(), "secret") {
+			t.Errorf("%s: %v", base, err)
 		}
 	}
 }

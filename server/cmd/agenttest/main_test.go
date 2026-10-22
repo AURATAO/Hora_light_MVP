@@ -103,6 +103,10 @@ func TestGrade(t *testing.T) {
 		{draft, `{"action":"relay","task":"t1","escalation":""}`, "FAIL", 1},
 		{relayWant, `{"action":"ask","task":"","escalation":""}`, "SAME", 1},
 		{relayWant, `{"action":"ask","task":"","escalation":""}`, "FAIL", 2},
+		// An escalation without a listed reason is a relay in production.
+		{Case{Expect: Expect{Action: "escalate"}}, `{"action":"escalate","task":"","escalation":""}`, "FAIL", 1},
+		{Case{Expect: Expect{Action: "escalate"}}, `{"action":"escalate","task":"","escalation":"safety"}`, "PASS", 1},
+		{Case{Expect: Expect{Action: "escalate"}, Forbid: []string{"relay"}}, `{"action":"escalate","task":"","escalation":"nope"}`, "FAIL", 1},
 	} {
 		if _, g, why := grade(tc.c, tc.raw, tc.n); g != tc.grade {
 			t.Errorf("%s n=%d: %s (%s)", tc.raw, tc.n, g, why)
