@@ -46,7 +46,10 @@ type Booker interface {
 	// policy (cancellationPreview).
 	CancelQuote(ctx context.Context, userID, taskID string) (CancelQuote, error)
 	// Cancel cancels it through the app's own cancel path.
-	Cancel(ctx context.Context, userID, taskID string) CancelResult
+	// Cancel runs the app's own cancel with the reason code the person
+	// chose (CancelReasonChoices) — relayed to the supporter exactly as an
+	// app cancel with that reason is.
+	Cancel(ctx context.Context, userID, taskID, reasonCode string) CancelResult
 }
 
 // CancelQuote is what cancelling a task now would charge.
@@ -705,6 +708,11 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 		}
 		return wrapErr("onConfirm", err)
 	default:
+		if IsCancelRequest(text) {
+			// "I think I need to cancel this" with a draft waiting: the
+			// draft is dropped — never relayed (Arbiter 2026-10-24 23:03).
+			return r.dropDraft(ctx, in, conv)
+		}
 		// A new errand typed while the draft waits joins the draft — it is
 		// not relayed to a supporter (staging 2026-10-24: "buy me a bagel"
 		// went to the bagel supporter; Arbiter: draft-first).

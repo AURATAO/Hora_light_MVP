@@ -502,15 +502,16 @@ type fakeBooker struct {
 	results []PostResult
 	opts    []PostOptions
 	// cancel by chat
-	open      []TaskRef
-	quote     CancelQuote
-	quotes2   []CancelQuote // successive CancelQuote answers when set
-	onQuote   func()        // runs at each CancelQuote (a parallel message, in tests)
-	onPrice   func()        // runs at each draft Quote
-	quoteErr  error         // CancelQuote fails with it when set
-	onOpen    func()        // runs at each OpenTasks
-	cancelled []string
-	cancelRes CancelResult
+	open          []TaskRef
+	quote         CancelQuote
+	quotes2       []CancelQuote // successive CancelQuote answers when set
+	onQuote       func()        // runs at each CancelQuote (a parallel message, in tests)
+	onPrice       func()        // runs at each draft Quote
+	quoteErr      error         // CancelQuote fails with it when set
+	onOpen        func()        // runs at each OpenTasks
+	cancelled     []string
+	cancelReasons []string
+	cancelRes     CancelResult
 }
 
 func (b *fakeBooker) OpenTasks(context.Context, string) ([]TaskRef, error) {
@@ -537,10 +538,11 @@ func (b *fakeBooker) CancelQuote(_ context.Context, _, taskID string) (CancelQuo
 	}
 	return b.quote, nil
 }
-func (b *fakeBooker) Cancel(_ context.Context, _, taskID string) CancelResult {
+func (b *fakeBooker) Cancel(_ context.Context, _, taskID, reason string) CancelResult {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.cancelled = append(b.cancelled, taskID)
+	b.cancelReasons = append(b.cancelReasons, reason)
 	return b.cancelRes
 }
 

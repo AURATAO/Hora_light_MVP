@@ -321,10 +321,14 @@ func (b *chatBooker) CancelQuote(ctx context.Context, userID, taskID string) (ch
 		Committed: p.Committed, WithinGrace: p.WithinGrace, Moving: sessionOpen || closing}, nil
 }
 
-// Cancel runs the app's own cancel handler as the requester. The reason code
-// is "other", which relays nothing to the supporter (cancel_reasons.go).
-func (b *chatBooker) Cancel(ctx context.Context, userID, taskID string) channel.CancelResult {
-	body, err := json.Marshal(map[string]string{"reason": "Cancelled by text message", "reason_code": "other"})
+// Cancel runs the app's own cancel handler as the requester, with the reason
+// the person chose by text — relayed to the supporter as the app relays it
+// (cancel_reasons.go: "Other" relays nothing). An unknown code is "other".
+func (b *chatBooker) Cancel(ctx context.Context, userID, taskID, reasonCode string) channel.CancelResult {
+	if cancelReasonLabel(reasonCode) == "" {
+		reasonCode = "other"
+	}
+	body, err := json.Marshal(map[string]string{"reason": "Cancelled by text message: " + cancelReasonLabel(reasonCode), "reason_code": reasonCode})
 	if err != nil {
 		log.Printf("[channel-booker] cancel task=%s: %v", taskID, err)
 		return channel.CancelResult{}

@@ -17,6 +17,10 @@ func TestCancelByChat(t *testing.T) {
 	g.booker.quote = CancelQuote{Title: "Book another task", ChargeCents: 0}
 	g.booker.cancelRes = CancelResult{OK: true}
 	got := g.say(t, "Can you cancel the task?")
+	if !strings.Contains(got, "what's the reason?") || !strings.Contains(got, "7. Other") || g.state() != StateAwaitingCancel {
+		t.Fatalf("reason first: %q state %s", got, g.state())
+	}
+	got = g.say(t, "2")
 	if !strings.Contains(got, "free to cancel") || g.state() != StateAwaitingCancel {
 		t.Fatalf("%q state %s", got, g.state())
 	}
@@ -27,6 +31,9 @@ func TestCancelByChat(t *testing.T) {
 	if len(g.booker.cancelled) != 1 || g.booker.cancelled[0] != "task-9" || !strings.Contains(got, "No charge") || g.state() != StateIdle {
 		t.Fatalf("cancelled %v reply %q state %s", g.booker.cancelled, got, g.state())
 	}
+	if g.booker.cancelReasons[0] != "no_longer_needed" {
+		t.Fatalf("the chosen reason goes to the app's cancel: %v", g.booker.cancelReasons)
+	}
 }
 
 // The charge is stated; a NO keeps the task; a charge that rose before the
@@ -36,7 +43,8 @@ func TestCancelChargeConsent(t *testing.T) {
 	g.ids.link(me, "user-1")
 	g.booker.open = []TaskRef{{ID: "task-9", Title: "Laundry pickup"}}
 	g.booker.quote = CancelQuote{Title: "Laundry pickup", ChargeCents: 1200, BaseFeeCents: 1200, Committed: true}
-	got := g.say(t, "cancel my laundry pickup")
+	g.say(t, "cancel my laundry pickup")
+	got := g.say(t, "plans changed")
 	if !strings.Contains(got, "$12") {
 		t.Fatalf("fee not stated: %q", got)
 	}
@@ -49,6 +57,7 @@ func TestCancelChargeConsent(t *testing.T) {
 		{Title: "Laundry pickup", ChargeCents: 1550, BaseFeeCents: 1200, Committed: true}, // re-asked
 	}
 	g.say(t, "cancel it")
+	g.say(t, "1")
 	got = g.say(t, "YES")
 	if len(g.booker.cancelled) != 0 || !strings.Contains(got, "$15.50") {
 		t.Fatalf("a higher charge was not asked again: cancelled %v reply %q", g.booker.cancelled, got)
@@ -73,8 +82,12 @@ func TestCancelChoosingAndNegation(t *testing.T) {
 		t.Fatalf("list: %q", got)
 	}
 	got = g.say(t, "2")
-	if !strings.Contains(got, "Laundry pickup") || g.state() != StateAwaitingCancel {
-		t.Fatalf("pick: %q", got)
+	if !strings.Contains(got, "why") && !strings.Contains(got, "reason") || !strings.Contains(got, "Laundry pickup") || g.state() != StateAwaitingCancel {
+		t.Fatalf("pick → reason: %q", got)
+	}
+	got = g.say(t, "6")
+	if !strings.Contains(got, "Cancel “Laundry pickup”") || g.state() != StateAwaitingCancel {
+		t.Fatalf("reason → quote: %q", got)
 	}
 	if IsCancelRequest("don't cancel it") || !IsCancelRequest("取消任務") {
 		t.Fatal("negation / Chinese")

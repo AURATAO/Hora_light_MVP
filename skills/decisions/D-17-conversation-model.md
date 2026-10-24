@@ -1023,3 +1023,24 @@ is silent); a hand-off made right after the timeout can produce two lines
 if ops are unreachable; "from 3 to 5pm" is not a duration (the summary
 shows 30 and the person corrects). Open for the Arbiter: flat 10 minutes
 for 3DS and agent-safety hand-offs.
+
+### Arbiter answer — 2026-10-24 23:03 (Aura): cancel — reason first, like the app
+
+Staging: "I think I need to cancel the task thanks" was relayed to the
+supporter (the r1 rule wanted only lead words before "cancel"). Ruling:
+**anything that mentions cancel is double-checked with us** — ask the
+reason as a simple choice, then cancel, the same flow as the app.
+
+Built (I-AW): `IsCancelRequest` is broad — any cancel/cancelled/
+cancelling/call off/取消, unless explicitly negated (don't / no need to /
+不要 / 別). The flow is now: (several open tasks → pick one by number) →
+**the reason, numbered 1–7, the app's own list** (`CancelReasonChoices`,
+parity-tested against `cancel_reasons.go`; a number or the reason in the
+person's own words — "changed my mind", 不需要了 — picks it) → the charge
+question → strict YES. NO at the reason step keeps the task; an answer
+that picks nothing is asked once more, then the message is read fresh.
+The chosen code goes into the app's cancel, so the supporter is told what
+an app cancel with that reason tells them ("plans changed"; "Other" relays
+nothing). With a draft waiting, a sentence about cancelling drops the
+draft (never relayed). The old "ok/sure is not a YES", TTL, moving-charge,
+claim and re-quote rules are unchanged behind the reason step.

@@ -215,6 +215,12 @@ type PendingCancel struct {
 	TaskID      string    `json:"task_id,omitempty"`
 	Title       string    `json:"title,omitempty"`
 	QuotedCents int       `json:"quoted_cents"`
+	// ReasonCode: the reason the person chose (CancelReasonChoices), asked
+	// before the charge is quoted — the same closed set as the app's cancel
+	// dialog (Arbiter 2026-10-24 23:03). Empty while being asked.
+	ReasonCode string `json:"reason_code,omitempty"`
+	// ReasonTries: answers to the reason question that picked nothing.
+	ReasonTries int `json:"reason_tries,omitempty"`
 	// AskedAtUnix: when we asked. After CancelTTL the question has lapsed
 	// and a message is read fresh — a "yes" meant for the supporter half
 	// an hour later must not cancel (and charge for) the task.

@@ -12,6 +12,13 @@ import (
 
 // Review 10/24 round 1 — the fixes, one test each.
 
+// askCancel reaches the charge question: "cancel it" then a reason.
+func askCancel(t *testing.T, g *rig) string {
+	t.Helper()
+	g.say(t, "cancel it")
+	return g.say(t, "1")
+}
+
 func cancelRig(t *testing.T) *rig {
 	t.Helper()
 	g := newRig(llm.IntentOther)
@@ -26,7 +33,7 @@ func cancelRig(t *testing.T) *rig {
 // anything else) never cancels and charges.
 func TestCancelQuestionLapses(t *testing.T) {
 	g := cancelRig(t)
-	g.say(t, "cancel it")
+	askCancel(t, g)
 	if g.state() != StateAwaitingCancel {
 		t.Fatalf("state %s", g.state())
 	}
@@ -42,7 +49,7 @@ func TestCancelQuestionLapses(t *testing.T) {
 // question re-asks instead of reading as NO.
 func TestCancelStillWaitingAndRepeat(t *testing.T) {
 	g := cancelRig(t)
-	g.say(t, "cancel it")
+	askCancel(t, g)
 	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
 	if w := stillWaiting(c); !strings.Contains(w, "cancel “Laundry pickup”") {
 		t.Fatalf("still waiting: %q", w)
@@ -57,7 +64,7 @@ func TestCancelStillWaitingAndRepeat(t *testing.T) {
 // asked, the cancel is set aside (and said so), and the YES approves.
 func TestApprovalInterruptsCancel(t *testing.T) {
 	g := cancelRig(t)
-	g.say(t, "cancel it")
+	askCancel(t, g)
 	g.arm(t, "ext-b1")
 	if last := g.ad.last(); !strings.Contains(last, "set aside cancelling “Laundry pickup”") {
 		t.Fatalf("the question must say the cancel was set aside: %q", last)
@@ -76,7 +83,7 @@ func TestApprovalInterruptsCancel(t *testing.T) {
 // not cancel again.
 func TestCancelClaimedOnce(t *testing.T) {
 	g := cancelRig(t)
-	g.say(t, "cancel it")
+	askCancel(t, g)
 	calls := 0
 	g.booker.onQuote = func() {
 		calls++
@@ -100,12 +107,12 @@ func TestCancelClaimedOnce(t *testing.T) {
 func TestCancelMovingChargeGoesToTheApp(t *testing.T) {
 	g := cancelRig(t)
 	g.booker.quote.Moving = true
-	got := g.say(t, "cancel it")
+	got := askCancel(t, g)
 	if !strings.Contains(got, "cancel it in the app") || g.state() != StateIdle {
 		t.Fatalf("question: %q state %s", got, g.state())
 	}
 	g = cancelRig(t)
-	g.say(t, "cancel it")
+	askCancel(t, g)
 	g.booker.quote.Moving = true
 	got = g.say(t, "YES")
 	if len(g.booker.cancelled) != 0 || !strings.Contains(got, "cancel it in the app") || g.state() != StateIdle {
@@ -117,26 +124,64 @@ func TestCancelMovingChargeGoesToTheApp(t *testing.T) {
 func TestCancelUnknownBill(t *testing.T) {
 	g := cancelRig(t)
 	g.booker.cancelRes = CancelResult{OK: true, BillUnknown: true}
-	g.say(t, "cancel it")
+	askCancel(t, g)
 	got := g.say(t, "YES")
 	if strings.Contains(got, "No charge") || !strings.Contains(got, "will show in the app") {
 		t.Fatalf("%q", got)
 	}
 }
 
-// MINOR: only a request to us is a cancel request.
-func TestIsCancelRequestIsNarrow(t *testing.T) {
+// Arbiter 2026-10-24 23:03: anything that mentions cancelling is checked
+// with us (the reason question is the check) — never relayed. Staging: "I
+// think I need to cancel the task thanks" went to the supporter. Only an
+// explicit negation is not a mention.
+func TestIsCancelRequestIsBroad(t *testing.T) {
 	for _, s := range []string{"cancel", "cancel it", "Can you cancel the task?", "please cancel my laundry pickup",
-		"I want to cancel", "ok cancel", "取消", "幫我取消", "我要取消任務", "call off the bagel run"} {
+		"I think I need to cancel the task thanks", "I want to cancel", "ok cancel", "取消", "幫我取消", "我要取消任務",
+		"call off the bagel run", "cancelling", "I had to cancel my meeting, can you come at 5"} {
 		if !IsCancelRequest(s) {
 			t.Errorf("%q should be a cancel request", s)
 		}
 	}
-	for _, s := range []string{"don't cancel it", "no need to cancel", "I had to cancel my meeting, can you come at 5",
-		"the store cancelled my order", "不要取消", "會議取消了，幫我買咖啡", "not cancel"} {
+	for _, s := range []string{"don't cancel it", "no need to cancel", "不要取消", "not cancel", "do not cancel the task"} {
 		if IsCancelRequest(s) {
 			t.Errorf("%q is not a cancel request", s)
 		}
+	}
+	for _, tc := range []struct{ in, code string }{
+		{"1", "plans_changed"}, {"7.", "other"}, {"I changed my mind", "plans_changed"}, {"don't need it anymore", "no longer_needed"},
+		{"my friend can do it, found another way", "found_another_way"}, {"wrong address", "wrong_details"}, {"by mistake", "posted_by_mistake"},
+		{"it's taking too long", "timing_no_longer_works"}, {"不需要了", "no_longer_needed"}, {"hmm", ""}, {"9", ""},
+	} {
+		if got := pickCancelReason(tc.in); got != strings.ReplaceAll(tc.code, " ", "_") {
+			t.Errorf("%q → %q, want %q", tc.in, got, tc.code)
+		}
+	}
+}
+
+// The reason question: NO keeps the task; a message that picks nothing is
+// asked once more, then read fresh; the whole sentence never reaches the
+// supporter.
+func TestCancelReasonQuestion(t *testing.T) {
+	g, chat, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.booker.open = []TaskRef{{ID: "task-2", Title: "Bagel run"}}
+	g.booker.quote = CancelQuote{Title: "Bagel run", ChargeCents: 1200, BaseFeeCents: 1200, Committed: true}
+	got := g.say(t, "I think I need to cancel the task thanks")
+	if len(chat.posted) != 0 || !strings.Contains(got, "what's the reason?") {
+		t.Fatalf("posted %v reply %q", chat.posted, got)
+	}
+	got = g.say(t, "NO")
+	if !strings.Contains(got, "stays booked") || g.state() != StateIdle {
+		t.Fatalf("NO: %q %s", got, g.state())
+	}
+	g.say(t, "cancel")
+	got = g.say(t, "hmm")
+	if !strings.Contains(got, "Just the number") || g.state() != StateAwaitingCancel {
+		t.Fatalf("first miss re-asks: %q", got)
+	}
+	g.say(t, "what time is it")
+	if g.state() == StateAwaitingCancel {
+		t.Fatal("second miss leaves the cancel")
 	}
 }
 
@@ -210,7 +255,8 @@ func TestCancelQuestionNotSentOverAnArmedApproval(t *testing.T) {
 		g.booker.onQuote = nil
 		g.arm(t, "ext-b1")
 	}
-	got := g.say(t, "cancel it")
+	g.say(t, "cancel it")
+	got := g.say(t, "1") // the quote: the approval arms meanwhile
 	if g.state() != StateAwaitingApproval || !strings.Contains(got, "answer that first") {
 		t.Fatalf("state %s reply %q", g.state(), got)
 	}
@@ -252,7 +298,7 @@ func TestCancelYesAfterASupporterQuestionIsReasked(t *testing.T) {
 	g.booker.open = []TaskRef{{ID: "task-9", Title: "Laundry pickup"}}
 	g.booker.quote = CancelQuote{Title: "Laundry pickup", ChargeCents: 1200, BaseFeeCents: 1200, Committed: true}
 	g.booker.cancelRes = CancelResult{OK: true, BillCents: 1200}
-	g.say(t, "cancel it")
+	askCancel(t, g)
 	tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: are you home?", "task-2", time.Now().Add(time.Second)
 	got := g.say(t, "YES")
 	if len(g.booker.cancelled) != 0 || !strings.Contains(got, "Cancel “Laundry pickup”") {
@@ -265,7 +311,7 @@ func TestCancelYesAfterASupporterQuestionIsReasked(t *testing.T) {
 func TestCancelSwipedYesOnWhatsAppIsReasked(t *testing.T) {
 	g := cancelRig(t)
 	g.r.Adapters[WhatsApp] = g.ad
-	g.say(t, "cancel it")
+	askCancel(t, g)
 	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
 	id := Identity{ID: "id-" + me, Channel: WhatsApp, Address: me, UserID: "user-1"}
 	in := Inbound{Channel: WhatsApp, From: me, Text: "YES", ReceivedAt: time.Now().Add(time.Second), ReplyToProviderID: "wamid.other"}
@@ -280,7 +326,7 @@ func TestCancelSwipedYesOnWhatsAppIsReasked(t *testing.T) {
 // A task already past cancelling is said as such (not "try again").
 func TestCancelNotOpenIsGone(t *testing.T) {
 	g := cancelRig(t)
-	g.say(t, "cancel it")
+	askCancel(t, g)
 	g.booker.quoteErr = ErrTaskNotOpen
 	got := g.say(t, "YES")
 	if !strings.Contains(got, "can't be cancelled any more") || len(g.booker.cancelled) != 0 {
@@ -486,5 +532,16 @@ func TestReleaseMarksQuestionInFlight(t *testing.T) {
 		if !namesDuration(s) {
 			t.Errorf("%q names a duration", s)
 		}
+	}
+}
+
+// With a draft waiting, a sentence about cancelling drops the draft and is
+// never relayed to the supporter on the other task.
+func TestCancelSentenceDuringADraftDropsIt(t *testing.T) {
+	g, chat, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.say(t, "new task: pick up my laundry tomorrow at 3")
+	got := g.say(t, "actually I think I need to cancel this one, sorry")
+	if len(chat.posted) != 0 || got != CopyDropped || g.state() != StateIdle {
+		t.Fatalf("posted %v reply %q state %s", chat.posted, got, g.state())
 	}
 }

@@ -98,6 +98,8 @@ const (
 	CopyCancelNone                = "You have no open tasks to cancel right now."
 	CopyCancelWhich               = "Which task do you want to cancel?%s\nReply with the number."
 	CopyCancelNothing             = "OK, nothing cancelled."
+	CopyCancelWhy                 = "Before I cancel “%s” — what's the reason?%s\nReply with the number (or NO to keep the task)."
+	CopyCancelWhyReask            = "Just the number, please — why cancel “%s”?%s\nOr NO to keep it."
 	CopyCancelConfirmFree         = "Cancel “%s”? It's free to cancel now. Reply YES to cancel, or NO to keep it."
 	CopyCancelConfirmFee          = "Cancel “%s”? Your supporter has already accepted it, so cancelling now costs %s (the %s base fee plus any time already worked). Reply YES to cancel, or NO to keep it."
 	CopyCancelReask               = "To cancel “%s”, reply YES on its own — or NO to keep it."

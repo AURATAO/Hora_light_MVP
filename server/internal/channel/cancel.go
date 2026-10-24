@@ -20,44 +20,69 @@ import (
 	"time"
 )
 
-// cancelWordRE finds the verb; the words before it decide whether it is a
-// request (IsCancelRequest).
-var cancelWordRE = regexp.MustCompile(`(?i)\b(cancel|call off)\b`)
+// cancelMentionRE: the person mentions cancelling at all — "I think I need
+// to cancel the task thanks", "cancel", 取消. Arbiter 2026-10-24 23:03
+// (staging: that sentence was relayed to the supporter): anything that
+// mentions cancel is double-checked with us — the reason, then the charge —
+// never passed on. Only an explicit negation ("don't cancel", 不要取消) is
+// not a mention.
+var cancelMentionRE = regexp.MustCompile(`(?i)\bcancel(?:l?ed|l?ing|s)?\b|\bcall(?:ed|ing)? (?:it |that |the \w+ )?off\b|取消`)
+var cancelNegatedRE = regexp.MustCompile(`(?i)\b(?:don'?t|do not|not|never|no need to|without)\s+cancel|(?:不要|不用|別|别|沒有|没有|不是要?)取消`)
 
-// cancelLeadWords: all a request may say before "cancel" — "please",
-// "can you", "I want to", "let's just". Anything else ("I had to cancel my
-// meeting", "don't cancel", "no need to cancel") is not a request to us.
-var cancelLeadWords = map[string]bool{
-	"please": true, "pls": true, "plz": true, "hey": true, "hi": true, "ok": true, "okay": true,
-	"actually": true, "sorry": true, "so": true, "just": true, "can": true, "could": true,
-	"would": true, "will": true, "you": true, "u": true, "i": true, "i'd": true, "id": true,
-	"want": true, "wanna": true, "need": true, "to": true, "like": true, "let's": true,
-	"lets": true, "go": true, "ahead": true, "and": true, "then": true,
+// IsCancelRequest reports a message about cancelling, by rule (never the
+// model). Broad on purpose: the question that follows is the check.
+func IsCancelRequest(text string) bool {
+	t := strings.ReplaceAll(text, "’", "'")
+	return cancelMentionRE.MatchString(t) && !cancelNegatedRE.MatchString(t)
 }
 
-// cancelZhLeadRE: the same for 取消 — only "please / help me / I want /
-// can you" before it (會議取消了 is not a request; 不要取消 is a no).
-var cancelZhLeadRE = regexp.MustCompile(`^(?:好|好啊|那|那就|麻煩|麻烦|請|请|幫我|帮我|你|我要|我想|我想要|可以|可不可以|能不能|直接|先)*$`)
+// CancelReasonChoice is one of the app's cancel reasons, as the chat lists
+// them. The codes and labels are the app's own closed set
+// (server/cancel_reasons.go — a parity test keeps them equal), so the
+// supporter is told exactly what an app cancel with that reason tells them,
+// and "Other" relays nothing.
+type CancelReasonChoice struct {
+	Code  string
+	Label string
+	// words: how a person says it in their own words (lower-case
+	// substrings); a number always works.
+	words []string
+}
 
-// IsCancelRequest reports an ask to cancel, by rule (never the model).
-func IsCancelRequest(text string) bool {
-	t := strings.TrimSpace(strings.ReplaceAll(text, "’", "'"))
-	if i := strings.Index(t, "取消"); i >= 0 {
-		lead := strings.Trim(t[:i], " ,，。.!！~～")
-		return cancelZhLeadRE.MatchString(lead)
+var CancelReasonChoices = []CancelReasonChoice{
+	{"plans_changed", "Plans changed", []string{"plans changed", "plan changed", "changed my mind", "change of plan", "計畫", "计划", "改變主意"}},
+	{"no_longer_needed", "No longer needed", []string{"no longer need", "don't need", "dont need", "not needed", "no need", "不需要", "不用了"}},
+	{"found_another_way", "Found another way", []string{"another way", "someone else", "myself", "found a", "找到別", "自己"}},
+	{"wrong_details", "Posted with wrong details", []string{"wrong detail", "wrong address", "wrong time", "wrong info", "mistake in", "錯誤", "寫錯", "弄錯"}},
+	{"posted_by_mistake", "Posted by mistake", []string{"by mistake", "by accident", "accident", "didn't mean", "didnt mean", "不小心", "誤"}},
+	{"timing_no_longer_works", "Timing no longer works", []string{"timing", "too late", "too long", "taking too", "time doesn't", "時間", "时间", "太久", "來不及"}},
+	{"other", "Other", []string{"other", "something else", "其他", "別的"}},
+}
+
+// cancelReasonList renders the numbered reasons.
+func cancelReasonList() string {
+	var b strings.Builder
+	for i, c := range CancelReasonChoices {
+		fmt.Fprintf(&b, "\n%d. %s", i+1, c.Label)
 	}
-	loc := cancelWordRE.FindStringIndex(t)
-	if loc == nil {
-		return false
+	return b.String()
+}
+
+// pickCancelReason reads an answer to the reason question: a number, or
+// the reason in the person's own words. "" when nothing matched.
+func pickCancelReason(text string) string {
+	t := strings.ToLower(strings.TrimSpace(text))
+	if n, err := strconv.Atoi(strings.Trim(t, ".#)")); err == nil && n >= 1 && n <= len(CancelReasonChoices) {
+		return CancelReasonChoices[n-1].Code
 	}
-	for _, w := range strings.FieldsFunc(strings.ToLower(t[:loc[0]]), func(r rune) bool {
-		return r == ' ' || r == ',' || r == '!' || r == '.' || r == '\t'
-	}) {
-		if !cancelLeadWords[w] {
-			return false
+	for _, c := range CancelReasonChoices {
+		for _, w := range c.words {
+			if strings.Contains(t, w) {
+				return c.Code
+			}
 		}
 	}
-	return true
+	return ""
 }
 
 // startCancel finds the task to cancel: none, one (quote it), or several
@@ -78,7 +103,7 @@ func (r *Router) startCancel(ctx context.Context, in Inbound, id Identity, conv 
 	case 0:
 		return r.Reply(ctx, in, CopyCancelNone, "")
 	case 1:
-		return r.quoteCancel(ctx, in, id, conv, open[0])
+		return r.askCancelReason(ctx, in, id, open[0], 0)
 	}
 	asked, err := r.Conversations.AskCancel(ctx, id.ID, PendingCancel{Choices: open, AskedAtUnix: r.now().Unix()}, ShownUnconfirmed)
 	if err != nil {
@@ -149,8 +174,35 @@ func (r *Router) cancelPreempted(ctx context.Context, in Inbound, id Identity) e
 	return r.Reply(ctx, in, stillWaiting(fresh), "")
 }
 
-// quoteCancel asks to confirm cancelling one task at the charge quoted now.
-func (r *Router) quoteCancel(ctx context.Context, in Inbound, id Identity, conv Conversation, t TaskRef) error {
+// askCancelReason: the reason first (the app's own list), then the charge.
+// Nothing is quoted or cancelled until a reason is picked; NO keeps the task.
+func (r *Router) askCancelReason(ctx context.Context, in Inbound, id Identity, t TaskRef, tries int) error {
+	asked, err := r.Conversations.AskCancel(ctx, id.ID,
+		PendingCancel{TaskID: t.ID, Title: t.Title, ReasonTries: tries, AskedAtUnix: r.now().Unix()}, ShownUnconfirmed)
+	if err != nil {
+		return fmt.Errorf("askCancelReason: %w", err)
+	}
+	if !asked {
+		return r.cancelPreempted(ctx, in, id)
+	}
+	copy := CopyCancelWhy
+	if tries > 0 {
+		copy = CopyCancelWhyReask
+	}
+	if err := r.Reply(ctx, in, fmt.Sprintf(copy, t.Title, cancelReasonList()), ""); err != nil {
+		return err
+	}
+	r.markShown(ctx, id.ID)
+	return nil
+}
+
+// MaxCancelReasonTries: answers to the reason question that pick nothing
+// before the cancel is dropped and the message read fresh.
+const MaxCancelReasonTries = 2
+
+// quoteCancel asks to confirm cancelling one task at the charge quoted now,
+// for the reason already chosen.
+func (r *Router) quoteCancel(ctx context.Context, in Inbound, id Identity, conv Conversation, t TaskRef, reasonCode string) error {
 	toIdle := func(copy string) error {
 		conv.State, conv.PendingCancel = StateIdle, nil
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
@@ -176,7 +228,7 @@ func (r *Router) quoteCancel(ctx context.Context, in Inbound, id Identity, conv 
 	// then markShown). Opened by compare-and-set, never a full save of the
 	// snapshot read before the quote (review 10/24 r2).
 	asked, err := r.Conversations.AskCancel(ctx, id.ID,
-		PendingCancel{TaskID: t.ID, Title: title, QuotedCents: q.ChargeCents, AskedAtUnix: r.now().Unix()}, ShownUnconfirmed)
+		PendingCancel{TaskID: t.ID, Title: title, QuotedCents: q.ChargeCents, ReasonCode: reasonCode, AskedAtUnix: r.now().Unix()}, ShownUnconfirmed)
 	if err != nil {
 		return fmt.Errorf("quoteCancel: %w", err)
 	}
@@ -227,7 +279,7 @@ func (r *Router) onAwaitingCancel(ctx context.Context, in Inbound, id Identity, 
 	if pc.TaskID == "" { // choosing
 		n, err := strconv.Atoi(strings.TrimSpace(strings.Trim(text, ".#)")))
 		if err == nil && n >= 1 && n <= len(pc.Choices) {
-			return r.quoteCancel(ctx, in, id, conv, pc.Choices[n-1])
+			return r.askCancelReason(ctx, in, id, pc.Choices[n-1], 0)
 		}
 		if IsNo(text) && !IsCancelRequest(text) {
 			if err := leave(); err != nil {
@@ -243,11 +295,31 @@ func (r *Router) onAwaitingCancel(ctx context.Context, in Inbound, id Identity, 
 		}
 		return r.onIdle(ctx, in, id, conv, text)
 	}
+	if pc.ReasonCode == "" { // the reason question
+		t := TaskRef{ID: pc.TaskID, Title: pc.Title}
+		if code := pickCancelReason(text); code != "" {
+			return r.quoteCancel(ctx, in, id, conv, t, code)
+		}
+		if IsNo(text) && !IsCancelRequest(text) {
+			if err := leave(); err != nil {
+				return err
+			}
+			return r.Reply(ctx, in, fmt.Sprintf(CopyCancelKept, pc.Title), "")
+		}
+		if pc.ReasonTries+1 < MaxCancelReasonTries || IsCancelRequest(text) {
+			return r.askCancelReason(ctx, in, id, t, pc.ReasonTries+1)
+		}
+		// Twice nothing picked: not about the cancel after all.
+		if err := leave(); err != nil {
+			return err
+		}
+		return r.onIdle(ctx, in, id, conv, text)
+	}
 	strictYes := IsStrictYesNo(text) && IsYes(text)
 	switch {
 	case strictYes && (conv.QuestionShownAt == nil || in.ReceivedAt.IsZero() || in.ReceivedAt.Before(*conv.QuestionShownAt)):
 		// Sent before the question reached them (a double tap): asked again.
-		return r.quoteCancel(ctx, in, id, conv, TaskRef{ID: pc.TaskID, Title: pc.Title})
+		return r.quoteCancel(ctx, in, id, conv, TaskRef{ID: pc.TaskID, Title: pc.Title}, pc.ReasonCode)
 	case strictYes && in.Channel == WhatsApp && in.ReplyToProviderID != "":
 		// A swiped "YES" may be on another message (the cancel question's
 		// own id is not kept): the fee needs it typed on its own.
@@ -256,7 +328,7 @@ func (r *Router) onAwaitingCancel(ctx context.Context, in Inbound, id Identity, 
 		// The supporter asked something after our question: this YES may
 		// be theirs. A cancel fee cannot be undone — asked again.
 		log.Printf("[channel] cancel identity=%s: supporter asked after the question, re-asked", id.ID)
-		return r.quoteCancel(ctx, in, id, conv, TaskRef{ID: pc.TaskID, Title: pc.Title})
+		return r.quoteCancel(ctx, in, id, conv, TaskRef{ID: pc.TaskID, Title: pc.Title}, pc.ReasonCode)
 	case strictYes:
 		return r.confirmCancel(ctx, in, id, conv, pc)
 	case IsCancelRequest(text):
@@ -297,7 +369,7 @@ func (r *Router) confirmCancel(ctx context.Context, in Inbound, id Identity, con
 	if q.ChargeCents > pc.QuotedCents {
 		// The price went up since the question: the YES was not to this.
 		log.Printf("[channel] cancel identity=%s task=%s: charge rose %d→%d, re-asked", id.ID, pc.TaskID, pc.QuotedCents, q.ChargeCents)
-		return r.quoteCancel(ctx, in, id, conv, TaskRef{ID: pc.TaskID, Title: pc.Title})
+		return r.quoteCancel(ctx, in, id, conv, TaskRef{ID: pc.TaskID, Title: pc.Title}, pc.ReasonCode)
 	}
 	won, err := r.Conversations.ClaimCancel(ctx, id.ID, pc.TaskID)
 	if err != nil {
@@ -312,7 +384,7 @@ func (r *Router) confirmCancel(ctx context.Context, in Inbound, id Identity, con
 		log.Printf("[channel] cancel identity=%s task=%s: already claimed (a second YES)", id.ID, pc.TaskID)
 		return nil // the first YES answers
 	}
-	res := r.Booker.Cancel(ctx, id.UserID, pc.TaskID)
+	res := r.Booker.Cancel(ctx, id.UserID, pc.TaskID, pc.ReasonCode)
 	log.Printf("[channel] cancel identity=%s task=%s ok=%t gone=%t bill=%d unknown=%t", id.ID, pc.TaskID, res.OK, res.Gone, res.BillCents, res.BillUnknown)
 	switch {
 	case res.OK && res.BillUnknown:

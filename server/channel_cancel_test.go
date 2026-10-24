@@ -43,18 +43,22 @@ func TestChatCancelQuotesAndCancelsLikeTheApp(t *testing.T) {
 	if _, err := db.Exec(ctx, `delete from public.worklogs where task_id = $1::uuid`, w.taskID); err != nil {
 		t.Fatal(err)
 	}
-	if res := b.Cancel(ctx, w.supporterID, w.taskID); res.OK {
+	if res := b.Cancel(ctx, w.supporterID, w.taskID, "plans_changed"); res.OK {
 		t.Fatal("the supporter cancelled the requester's task")
 	}
-	res := b.Cancel(ctx, w.requesterID, w.taskID)
+	res := b.Cancel(ctx, w.requesterID, w.taskID, "plans_changed")
 	if !res.OK || res.BillCents != q.ChargeCents {
 		t.Fatalf("cancel %+v, quoted %d", res, q.ChargeCents)
+	}
+	var reasonCode string
+	if err := db.QueryRow(ctx, `select coalesce(cancel_reason_code,'') from public.tasks where id=$1::uuid`, w.taskID).Scan(&reasonCode); err != nil || reasonCode != "plans_changed" {
+		t.Fatalf("reason code %q err %v", reasonCode, err)
 	}
 	var status string
 	if err := db.QueryRow(ctx, `select status from public.tasks where id=$1::uuid`, w.taskID).Scan(&status); err != nil || status != "cancelled" {
 		t.Fatalf("status %q err %v", status, err)
 	}
-	if res := b.Cancel(ctx, w.requesterID, w.taskID); res.OK || !res.Gone {
+	if res := b.Cancel(ctx, w.requesterID, w.taskID, "other"); res.OK || !res.Gone {
 		t.Fatalf("second cancel: %+v", res)
 	}
 	if open, err := b.OpenTasks(ctx, w.requesterID); err != nil || len(open) != 0 {
@@ -83,6 +87,18 @@ func TestCancelResultMapping(t *testing.T) {
 	} {
 		if got := cancelResultFrom(tc.status, []byte(tc.body)); got != tc.want {
 			t.Errorf("%d %s: %+v, want %+v", tc.status, tc.body, got, tc.want)
+		}
+	}
+}
+
+// The chat's reason list IS the app's: same codes, same labels, same order.
+func TestChatCancelReasonsMatchTheApp(t *testing.T) {
+	if len(channel.CancelReasonChoices) != len(cancelReasons) {
+		t.Fatalf("chat %d reasons, app %d", len(channel.CancelReasonChoices), len(cancelReasons))
+	}
+	for i, c := range channel.CancelReasonChoices {
+		if c.Code != cancelReasons[i].Value || c.Label != cancelReasons[i].Label {
+			t.Errorf("#%d chat %s/%s app %s/%s", i+1, c.Code, c.Label, cancelReasons[i].Value, cancelReasons[i].Label)
 		}
 	}
 }
