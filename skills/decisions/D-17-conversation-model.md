@@ -1062,3 +1062,15 @@ store cancelled my order, can you still come?") opens the reason question
 and, on NO, that sentence is not passed on — the ruling asks for the
 check; an errand that mentions cancel with no open task gets "no open
 tasks" rather than a draft.
+
+#### Cancel reason step — review r2 (FAIL, 2 MAJOR) → fixes
+
+Every label typed as listed (and "other" alone, "wrong details", "it's no
+longer needed", "it was a mistake", smart apostrophes) picks its reason; a
+negator counts only right before "cancel" or as "don't want/need to
+cancel" — "I can't make it so cancel" is a cancel; the reason step's NO
+is "negated and nothing else about cancelling" (`isNegatedCancel`), so
+"cancel the laundry one, don't cancel the bagel one" is not a keep; 不需要
+取消 is a negation; the choice-list miss and the YES-step fall-through say
+"nothing cancelled" / "I haven't cancelled X" before the message is read
+fresh.

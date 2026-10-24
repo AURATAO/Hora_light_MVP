@@ -27,7 +27,11 @@ import (
 // never passed on. Only an explicit negation ("don't cancel", 不要取消) is
 // not a mention.
 var cancelMentionRE = regexp.MustCompile(`(?i)\bcancel(?:l?ed|l?ing|s)?\b|\bcall(?:ed|ing)? (?:it |that |the \w+ )?off\b|取消`)
-var cancelNegatedRE = regexp.MustCompile(`(?i)\b(?:don'?t|do not|not|never|no need to|without|can'?t|cannot|won'?t)(?:\s+\w+){0,3}?\s+cancel|(?:不要|不用|別|别|沒有|没有|不是要?|不想)取消`)
+
+// cancelNegatedRE: a negated mention — the negator right before "cancel",
+// or "don't want/need to cancel". Never a wider gap: "I can't make it so
+// cancel" is a cancel (review r2).
+var cancelNegatedRE = regexp.MustCompile(`(?i)\b(?:don'?t|do not|not|never|no need to|without|can'?t|cannot|won'?t|didn'?t)\s+cancel|\b(?:don'?t|do not|didn'?t|never)\s+(?:want|need|mean|plan|intend)(?:ed)?\s+to\s+cancel|(?:不要|不用|不需要|別|别|沒有|没有|沒要|不是要?|不想)取消`)
 
 // IsCancelRequest reports a message about cancelling, by rule (never the
 // model). Broad on purpose: the question that follows is the check. A
@@ -39,6 +43,14 @@ func IsCancelRequest(text string) bool {
 	mentions := len(cancelMentionRE.FindAllStringIndex(t, -1))
 	negated := len(cancelNegatedRE.FindAllStringIndex(t, -1))
 	return mentions > negated
+}
+
+// isNegatedCancel: the message says NOT to cancel and nothing else about
+// cancelling ("no, I don't need to cancel it") — the reason step's NO.
+func isNegatedCancel(text string) bool {
+	t := strings.ReplaceAll(text, "’", "'")
+	negated := len(cancelNegatedRE.FindAllStringIndex(t, -1))
+	return negated > 0 && len(cancelMentionRE.FindAllStringIndex(t, -1)) <= negated
 }
 
 // CancelReasonChoice is one of the app's cancel reasons, as the chat lists
@@ -56,10 +68,10 @@ type CancelReasonChoice struct {
 
 var CancelReasonChoices = []CancelReasonChoice{
 	{"plans_changed", "Plans changed", []string{"plans changed", "plan changed", "changed my mind", "change of plan", "計畫", "计划", "改變主意", "改变主意"}},
-	{"no_longer_needed", "No longer needed", []string{"no longer need", "don't need", "dont need", "not needed", "不需要"}},
+	{"no_longer_needed", "No longer needed", []string{"no longer need", "no longer needed", "don't need", "dont need", "not needed", "不需要"}},
 	{"found_another_way", "Found another way", []string{"another way", "someone else", "do it myself", "found someone", "找到別人", "自己來", "自己去"}},
-	{"wrong_details", "Posted with wrong details", []string{"wrong detail", "wrong address", "wrong time", "wrong info", "wrong place", "mistake in", "錯誤", "寫錯", "弄錯"}},
-	{"posted_by_mistake", "Posted by mistake", []string{"by mistake", "by accident", "accident", "didn't mean", "didnt mean", "不小心", "誤"}},
+	{"wrong_details", "Posted with wrong details", []string{"wrong detail", "wrong details", "wrong address", "wrong time", "wrong info", "wrong place", "details were wrong", "mistake in", "錯誤", "寫錯", "弄錯"}},
+	{"posted_by_mistake", "Posted by mistake", []string{"by mistake", "by accident", "a mistake", "accident", "didn't mean", "dont mean", "didnt mean", "不小心", "誤發", "誤"}},
 	{"timing_no_longer_works", "Timing no longer works", []string{"timing", "too late", "too long", "taking too", "時間不", "时间不", "太久", "來不及"}},
 	{"other", "Other", []string{"something else", "其他", "別的"}},
 }
@@ -76,9 +88,15 @@ func cancelReasonList() string {
 // pickCancelReason reads an answer to the reason question: a number, or
 // the reason in the person's own words. "" when nothing matched.
 func pickCancelReason(text string) string {
-	t := strings.ToLower(strings.TrimSpace(text))
+	t := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(text, "’", "'")))
 	if n, err := strconv.Atoi(strings.Trim(t, ".#)")); err == nil && n >= 1 && n <= len(CancelReasonChoices) {
 		return CancelReasonChoices[n-1].Code
+	}
+	// The label itself, as listed (or "other" alone).
+	for _, c := range CancelReasonChoices {
+		if strings.Trim(t, " .!") == strings.ToLower(c.Label) {
+			return c.Code
+		}
 	}
 	for _, c := range CancelReasonChoices {
 		for _, w := range c.words {
@@ -336,12 +354,16 @@ func (r *Router) onAwaitingCancel(ctx context.Context, in Inbound, id Identity, 
 		if err := leave(); err != nil {
 			return err
 		}
+		if err := r.Reply(ctx, in, CopyCancelNothing, ""); err != nil {
+			return err
+		}
 		return r.onIdle(ctx, in, id, conv, text)
 	}
 	if pc.ReasonCode == "" { // the reason question
 		t := TaskRef{ID: pc.TaskID, Title: pc.Title}
+		text = strings.ReplaceAll(text, "’", "'")
 		switch {
-		case IsNo(text) && !IsCancelRequest(text), cancelNegatedRE.MatchString(text):
+		case IsNo(text) && !IsCancelRequest(text), isNegatedCancel(text):
 			// NO first: "no, I don't need to cancel" keeps the task — never
 			// read as the "no longer needed" reason (review r1 M3).
 			if err := leave(); err != nil {
@@ -403,6 +425,9 @@ func (r *Router) onAwaitingCancel(ctx context.Context, in Inbound, id Identity, 
 		return r.Reply(ctx, in, fmt.Sprintf(CopyCancelReask, pc.Title), "")
 	}
 	if err := leave(); err != nil {
+		return err
+	}
+	if err := r.Reply(ctx, in, fmt.Sprintf(CopyCancelNotDone, pc.Title), ""); err != nil {
 		return err
 	}
 	return r.onIdle(ctx, in, id, conv, text)

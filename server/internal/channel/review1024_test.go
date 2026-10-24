@@ -562,6 +562,23 @@ func TestCancelReasonStepEdges(t *testing.T) {
 	if IsCancelRequest("I don't want to cancel it") || IsCancelRequest("I can't cancel now") || !IsCancelRequest("cancel the laundry one, don't cancel the bagel one") {
 		t.Fatal("negation")
 	}
+	// Review r2: a negator a few words before "cancel" is not a negation.
+	for _, s := range []string{"I don't need it so cancel it", "I can't make it so cancel", "never mind, cancel it", "I'm not home so cancel the task"} {
+		if !IsCancelRequest(s) || isNegatedCancel(s) {
+			t.Errorf("%q is a cancel", s)
+		}
+	}
+	// Every label typed as listed picks its own reason; smart apostrophes too.
+	for _, c := range CancelReasonChoices {
+		if got := pickCancelReason(c.Label); got != c.Code {
+			t.Errorf("label %q → %q", c.Label, got)
+		}
+	}
+	for _, tc := range []struct{ in, code string }{{"wrong details", "wrong_details"}, {"it's no longer needed", "no_longer_needed"}, {"I don’t need it anymore", "no_longer_needed"}, {"it was a mistake", "posted_by_mistake"}, {"Other.", "other"}} {
+		if got := pickCancelReason(tc.in); got != tc.code {
+			t.Errorf("%q → %q, want %q", tc.in, got, tc.code)
+		}
+	}
 	g := cancelRig(t)
 	g.say(t, "cancel it")
 	got := g.say(t, "no, I don't need to cancel it")
