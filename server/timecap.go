@@ -341,6 +341,9 @@ func clockOutAtCap(ctx context.Context, taskID string, capMinutes int) (closed i
 		return 0, true, fmt.Errorf("update: %w", err)
 	}
 	closed = int(tag.RowsAffected())
+	if closed > 0 {
+		log.Printf("[timecap] clock out at cap task=%s cap=%d remaining=%d sessions_closed=%d", taskID, capMinutes, remaining, closed)
+	}
 	if err := db.QueryRow(ctx,
 		`select exists (select 1 from public.worklogs where task_id = $1::uuid and end_at is null)`, taskID).Scan(&stillOpen); err != nil {
 		return closed, true, fmt.Errorf("recheck: %w", err)
@@ -392,7 +395,10 @@ func fireTimeCapOpsAlert(ctx context.Context, taskID string, st timeCapState, st
 	if err != nil {
 		return
 	}
-	over := maxInt(st.LoggedMinutes-st.Cap.CapMinutes, 0)
+	over := 0
+	if stillOpen { // figures after the cut, not the state read before it
+		over = maxInt(liveLoggedMinutes(ctx, taskID)-st.Cap.CapMinutes, 0)
+	}
 	log.Printf("[timecap][OPS] task=%s stalled at cap=%d logged=%d session_open=%t",
 		taskID, st.Cap.CapMinutes, st.LoggedMinutes, stillOpen)
 	writeAudit(ctx, taskID, systemActorUID, "TIME_CAP_UNRESPONSIVE", "", map[string]any{
@@ -484,7 +490,6 @@ func sweepLiveTimeCaps(ctx context.Context) {
 		 where t.status = 'open'
 		   and t.assigned_to_id is not null
 		   and coalesce(t.estimated_minutes, 0) > 0
-		   and t.time_cap_ops_alerted_at is null
 	`)
 	if err != nil {
 		log.Printf("[timecap][live-sweep] %v", err)

@@ -104,3 +104,11 @@ in past the cap" when the cut could not close a session, "stalled at its
 time cap, no answer" when the clock is stopped and nobody answers; a
 manual clock-out that lost the race to the cut sends no second
 notification; both sweeps log iteration errors.
+
+**Review r3: PASS** (residuals fixed: the live sweep no longer skips tasks
+once ops were alerted — the cut is idempotent; the ops figures are read
+after the cut; a cut logs a line). Client follow-up (mobile, after the
+freeze; web app now): treat 403 `time_cap_reached` on clock-in as "ask for
+more time", and 400 "no active session" on clock-out as "already clocked
+out". Accepted: the "stalled at its time cap" ops email fires for a silent
+requester with nothing at stake (as before; one per approval cycle).
