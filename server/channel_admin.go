@@ -42,13 +42,28 @@ type opsEmailNotifier struct {
 	// through the iMessage line on a new hand-off. Optional.
 	sms     channel.Adapter
 	numbers []string
+	// touch stamps our outbound on the number's own thread before a text
+	// goes out (D-17 R-3): an ops number may also be a requester's — a
+	// teammate testing, or Aura's own phone — and our hand-off text must
+	// make a question on that thread no longer the last thing we said, as
+	// every other send does. No stamp, no text (fail closed).
+	touch outboundToucher
 }
+
+// outboundToucher is PGStore.TouchOutbound.
+type outboundToucher interface {
+	TouchOutbound(ctx context.Context, ch channel.Channel, address string) (time.Time, error)
+}
+
+// opsSendTimeout bounds each hand-off send: the person is waiting on the
+// outcome (notify.SendEmail has no timeout of its own).
+var opsSendTimeout = 10 * time.Second
 
 // newOpsNotifier reads the hand-off recipients from the environment.
 // CHANNEL_OPS_EMAILS lets a deployment (staging) notify a different list
 // from the admin allowlist, which also grants admin access.
-func newOpsNotifier(sqlDB *sql.DB, sms channel.Adapter) opsEmailNotifier {
-	n := opsEmailNotifier{sqlDB: sqlDB, sms: sms}
+func newOpsNotifier(sqlDB *sql.DB, sms channel.Adapter, touch outboundToucher) opsEmailNotifier {
+	n := opsEmailNotifier{sqlDB: sqlDB, sms: sms, touch: touch}
 	if v := strings.TrimSpace(os.Getenv("CHANNEL_OPS_EMAILS")); v != "" {
 		for _, e := range strings.Split(v, ",") {
 			if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
@@ -91,19 +106,58 @@ func (o opsEmailNotifier) NotifyOps(ctx context.Context, n channel.HandoffNotice
 	}
 	body := opsNoticeHTML(n, who)
 	// Sent here, not in the background: the router must know whether anyone
-	// was reached before it tells the person a teammate is coming.
+	// was reached before it tells the person a teammate is coming. In
+	// parallel, each bounded by opsSendTimeout.
 	reached := 0
-	for _, to := range o.emails {
-		if err := sendOpsEmail(notify.EmailPayload{To: to, Subject: subject, Html: body}); err != nil {
-			log.Printf("[channel-admin] handoff email failed to=%s: %v", to, err)
-			continue
+	send, timeout := sendOpsEmail, opsSendTimeout // read once: sends may outlive this call
+	if len(o.emails) > 0 {
+		ok := make(chan bool, len(o.emails))
+		for i, to := range o.emails {
+			go func(i int, to string) {
+				err := send(notify.EmailPayload{To: to, Subject: subject, Html: body})
+				if err != nil {
+					log.Printf("[channel-admin] handoff email #%d failed: %v", i+1, err)
+				}
+				ok <- err == nil
+			}(i, to)
 		}
-		reached++
+		deadline := time.NewTimer(timeout)
+		defer deadline.Stop()
+	collect:
+		for range o.emails {
+			select {
+			case good := <-ok:
+				if good {
+					reached++
+				}
+			case <-deadline.C:
+				log.Printf("[channel-admin] handoff email: timed out after %s", timeout)
+				break collect
+			}
+		}
 	}
 	if !n.Update && o.sms != nil {
 		text := fmt.Sprintf("[HO:RA] Chat handoff (%s) — %s %s. Details in the ops email / admin.", reasonLabelOps(n.Reason), n.Channel, n.PhoneHint)
+		own := o.identityAddress(ctx, n.IdentityID)
 		for _, to := range o.numbers {
-			if _, err := o.sms.Send(ctx, channel.Outbound{Channel: o.sms.Channel(), To: to, Text: text}); err != nil {
+			if to == own {
+				// The person handed off is this ops number: texting them
+				// about themselves reaches no one else.
+				log.Printf("[channel-admin] handoff text to %s skipped: it is the handed-off number", channel.PhoneHint(to))
+				continue
+			}
+			if o.touch == nil {
+				log.Printf("[channel-admin] handoff text to %s not sent: no outbound stamp", channel.PhoneHint(to))
+				continue
+			}
+			if _, err := o.touch.TouchOutbound(ctx, o.sms.Channel(), to); err != nil {
+				log.Printf("[channel-admin] handoff text to %s not sent: stamp: %v", channel.PhoneHint(to), err)
+				continue
+			}
+			sctx, cancel := context.WithTimeout(ctx, timeout)
+			_, err := o.sms.Send(sctx, channel.Outbound{Channel: o.sms.Channel(), To: to, Text: text})
+			cancel()
+			if err != nil {
 				log.Printf("[channel-admin] handoff text failed to=%s: %v", channel.PhoneHint(to), err)
 				continue
 			}
@@ -114,6 +168,20 @@ func (o opsEmailNotifier) NotifyOps(ctx context.Context, n channel.HandoffNotice
 		return fmt.Errorf("handoff notice reached no one (%d emails, %d numbers configured)", len(o.emails), len(o.numbers))
 	}
 	return nil
+}
+
+// identityAddress: the handed-off thread's own number ("" when unknown).
+func (o opsEmailNotifier) identityAddress(ctx context.Context, identityID string) string {
+	if o.sqlDB == nil || identityID == "" {
+		return ""
+	}
+	var addr string
+	if err := o.sqlDB.QueryRowContext(ctx,
+		`select address from channel_identities where id = $1::uuid`, identityID).Scan(&addr); err != nil {
+		log.Printf("[channel-admin] handoff notice: identity lookup id=%s: %v", identityID, err)
+		return ""
+	}
+	return addr
 }
 
 // sendOpsEmail is notify.SendEmail; a variable so tests can stand in.

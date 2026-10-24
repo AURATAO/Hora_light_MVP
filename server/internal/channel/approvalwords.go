@@ -457,9 +457,12 @@ func strictForm(text string) string {
 // word that is not a strict YES/NO goes to a supporter who wrote in the
 // last minutes. The router's gate (HandleInbound) and DecideApproval both
 // use it — one rule, one place (review r4).
+//
+// Answer-ish is judged after the filler is stripped ("well ok" is as casual
+// as "ok"), strictness on the words as sent: "oh yes" is not a strict YES,
+// so with a supporter writing it goes to them (review 10/24 #3).
 func approvalCasual(text string) bool {
-	text = stripFiller(text) // "well ok" is as casual as "ok"
-	return approvalAnswerish(text) && !approvalStrictAnswer(text)
+	return approvalAnswerish(stripFiller(text)) && !approvalStrictAnswer(text)
 }
 
 // fillerRE: a leading interjection — "well", "oh", "ah" — before an answer.

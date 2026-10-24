@@ -71,6 +71,10 @@ type PendingDraft struct {
 	// the person was asked what and where instead of shown a summary
 	// (Arbiter 2026-10-24). No YES books it; the next words re-draft it.
 	DetailsAsked bool `json:"details_asked,omitempty"`
+	// DetailsTries: how many times in a row the answer still left the
+	// draft without what it needs. At MaxDetailsTries the thread goes to a
+	// person instead of asking again forever (review 10/24 #6).
+	DetailsTries int `json:"details_tries,omitempty"`
 	// WhileActive is the supporter's first name when the draft was started
 	// while that supporter was on the job (D-17 P6): the summary says so
 	// and "for <name>" relays the words instead.
@@ -206,7 +210,14 @@ type PendingCancel struct {
 	TaskID      string    `json:"task_id,omitempty"`
 	Title       string    `json:"title,omitempty"`
 	QuotedCents int       `json:"quoted_cents"`
+	// AskedAtUnix: when we asked. After CancelTTL the question has lapsed
+	// and a message is read fresh — a "yes" meant for the supporter half
+	// an hour later must not cancel (and charge for) the task.
+	AskedAtUnix int64 `json:"asked_at_unix,omitempty"`
 }
+
+// CancelTTL: how long a cancel question stays answerable.
+const CancelTTL = 10 * time.Minute
 
 // TaskRef names a task the person can act on.
 type TaskRef struct {
@@ -246,6 +257,15 @@ type ConversationStore interface {
 	// caller must not post. This is the double-booking guard — two quick
 	// "YES"es, or the page's finish step racing a YES, book once.
 	ClaimForPosting(ctx context.Context, identityID string, from State) (*PendingDraft, bool, error)
+	// ClaimCancel atomically ends the cancel question for taskID (state
+	// back to idle, pending_cancel cleared) — only if that question is
+	// still the open one. ok=false: another message (a second YES) or an
+	// approval question took the thread first; the caller must not cancel.
+	ClaimCancel(ctx context.Context, identityID, taskID string) (bool, error)
+	// HoldDraft stores a draft made while an approval question waits —
+	// only the draft, and only if extensionID is still the armed request
+	// (false otherwise: the caller carries on without the hold).
+	HoldDraft(ctx context.Context, identityID, extensionID string, d PendingDraft) (bool, error)
 	// AcceptTerms records the consent a YES carries and touches NOTHING
 	// else. It must not be a full save: a YES that loaded the conversation
 	// before a parallel YES finished booking would otherwise write the old
@@ -352,7 +372,12 @@ const UnconfirmedResend = 3 * time.Minute
 // (a draft summary, budget, name, task choice) and idle. Not
 // awaiting_approval: one question at a time. canArmApproval and the SQL
 // literal both come from this one list.
-var armableStates = []State{StateIdle, StateAwaitingConfirm, StateAwaitingTaskChoice, StateAwaitingBudget, StateAwaitingName}
+//
+// awaiting_cancel is armable too: a supporter's question must not wait out
+// its auto-decline window behind a cancel question the person may have
+// walked away from. Arming drops the cancel (ClaimHold clears
+// pending_cancel) and the question says so (CopyCancelSetAside).
+var armableStates = []State{StateIdle, StateAwaitingConfirm, StateAwaitingTaskChoice, StateAwaitingBudget, StateAwaitingName, StateAwaitingCancel}
 
 func armableStatesLiteral() string {
 	parts := make([]string, len(armableStates))
@@ -367,7 +392,8 @@ func (s *PGStore) ClaimHold(ctx context.Context, identityID, extensionID, taskID
 	err := s.DB.QueryRowContext(ctx, `
 		UPDATE channel_conversations SET
 		  state = $3, pending_extension_id = $2::uuid, approval_armed_at = $4, approval_claimed_at = $6,
-		  approval_task_id = NULLIF($7, '')::uuid, approval_question_out_at = NULL, approval_question_pid = NULL, updated_at = now()
+		  approval_task_id = NULLIF($7, '')::uuid, approval_question_out_at = NULL, approval_question_pid = NULL,
+		  pending_cancel = NULL, updated_at = now()
 		WHERE identity_id = $1 AND state = ANY($5::text[])
 		  AND coalesce(deferred_approval, '[]'::jsonb) @> jsonb_build_array(jsonb_build_object('extension_id', $2::text))
 		RETURNING 1
@@ -594,6 +620,42 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 		c.Pending = &p
 	}
 	return c, nil
+}
+
+func (s *PGStore) ClaimCancel(ctx context.Context, identityID, taskID string) (bool, error) {
+	var one int
+	err := s.DB.QueryRowContext(ctx, `
+		UPDATE channel_conversations SET state = $3, pending_cancel = NULL, updated_at = now()
+		WHERE identity_id = $1 AND state = $4 AND pending_cancel->>'task_id' = $2
+		RETURNING 1
+	`, identityID, taskID, string(StateIdle), string(StateAwaitingCancel)).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("claim cancel: %w", err)
+	}
+	return true, nil
+}
+
+func (s *PGStore) HoldDraft(ctx context.Context, identityID, extensionID string, d PendingDraft) (bool, error) {
+	b, err := json.Marshal(d)
+	if err != nil {
+		return false, fmt.Errorf("hold draft: marshal: %w", err)
+	}
+	var one int
+	err = s.DB.QueryRowContext(ctx, `
+		UPDATE channel_conversations SET pending_draft = $3::jsonb, updated_at = now()
+		WHERE identity_id = $1 AND state = $4 AND pending_extension_id = NULLIF($2, '')::uuid
+		RETURNING 1
+	`, identityID, extensionID, string(b), string(StateAwaitingApproval)).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("hold draft: %w", err)
+	}
+	return true, nil
 }
 
 func (s *PGStore) SaveConversation(ctx context.Context, c Conversation) error {

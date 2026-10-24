@@ -77,10 +77,11 @@ func (r *Router) needsPurchase(ctx context.Context, text string, d llm.TaskDraft
 	}
 	yes, err := r.Purchases.NeedsPurchase(ctx, text)
 	if err != nil {
-		// The model is a tiebreak only; unavailable → no question. The
-		// supporter can still ask for a budget from the app.
-		log.Printf("[channel] purchase check fell back to no: %v", err)
-		return false
+		// Unknown → ask (review 10/24): the budget question takes
+		// "nothing", while a missed purchase leaves the supporter paying
+		// out of pocket with no budget agreed.
+		log.Printf("[channel] purchase check fell back to asking: %v", err)
+		return true
 	}
 	return yes
 }

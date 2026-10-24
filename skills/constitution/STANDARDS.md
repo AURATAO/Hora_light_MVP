@@ -49,7 +49,7 @@ All reads/writes to Hora tables (`users`, `profiles`, `tasks`, `worklogs`, `noti
 3. **Binding needed proof of the number** — a single-use, 30-minute, SHA-256-hashed setup token delivered to that number (`setupTokenAuth` + `ConsumeSetupTokenAndLink` in one transaction).
 4. **One number, one account** — `(channel, address)` is unique; re-binding a number linked to another account is refused (`ErrIdentityTaken`). Unlinking is account deletion (`PurgeUserTx`).
 5. **Money moves only on a rule-matched YES** — never on a model's reading; booking runs the production handler for that uid, so every payment gate applies.
-The synthetic request context in `chatBooker.Post` is permitted only under these five. **Post-freeze refactor #1:** `createTask` takes the principal as an argument and both the HTTP handler and the chat call it (removes the synthetic context).
+The synthetic request context in `chatBooker.Post` — and in `chatBooker.Cancel` (D-17, cancel by chat, 2026-10-24: a strict YES to a quoted charge, claimed once, re-quoted before it runs) — is permitted only under these five. **Post-freeze refactor #1:** `createTask` and `cancelTask` take the principal as an argument and both the HTTP handler and the chat call them (removes the synthetic context).
 
 ### S-12: Sensitive personal data — credentials, phone numbers, precise GPS coordinates, background-check/identity data (future Checkr), payment details — never appears in logs, error messages, or analytics events.
 **Rationale:** `task_gps_pings` is live user location; `profiles.phone` is PII. One leaked log line outlasts the company.

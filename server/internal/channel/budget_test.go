@@ -146,8 +146,14 @@ func TestModelTiebreakOnlyWhenRuleIsSilent(t *testing.T) {
 	g.r.Purchases = &fakePurchases{err: errors.New("down")}
 	g.parser.draft = laundry
 	g.say(t, "pick up my laundry")
+	// Review 10/24: unknown is asked, not assumed "no purchase" — the
+	// budget question takes "nothing", and the draft goes on from there.
+	if g.state() != StateAwaitingBudget {
+		t.Fatalf("model down: the budget is asked: %s", g.state())
+	}
+	g.say(t, "nothing")
 	if g.state() != StateAwaitingConfirm {
-		t.Fatalf("model down must not block the draft: %s", g.state())
+		t.Fatalf("after \"nothing\" the draft goes on: %s", g.state())
 	}
 }
 

@@ -140,7 +140,7 @@ type ApprovalFacts struct {
 func DecideApproval(f ApprovalFacts) ApprovalVerdict {
 	text := stripFiller(f.Text)
 	answerish := approvalAnswerish(text)
-	if f.SupporterLive && approvalCasual(text) {
+	if f.SupporterLive && approvalCasual(f.Text) { // strictness on the words as sent
 		return VerdictToSupporter
 	}
 	plain, reaction := approvalYes(text)
@@ -499,7 +499,17 @@ func (r *Router) resumeDeferred(ctx context.Context, id Identity) {
 		if !claimed {
 			return // another resume point got there first, or the state moved
 		}
-		r.sendClaimed(ctx, id, d)
+		lead := ""
+		if conv.State == StateAwaitingCancel && conv.PendingCancel != nil {
+			// The claim dropped the cancel question: say so, or the
+			// person's next YES may be meant for the cancel.
+			title := conv.PendingCancel.Title
+			if conv.PendingCancel.TaskID == "" {
+				title = "a task"
+			}
+			lead = fmt.Sprintf(CopyCancelSetAside, title)
+		}
+		r.sendClaimedLead(ctx, id, d, lead)
 		return // one question at a time; the rest after the answer
 	}
 }
@@ -589,7 +599,16 @@ func (r *Router) heldEvent(d DeferredApproval) StatusEvent {
 // finds the claim gone), the person is told so the question they just
 // read is not left standing.
 func (r *Router) sendClaimed(ctx context.Context, id Identity, d DeferredApproval) {
+	r.sendClaimedLead(ctx, id, d, "")
+}
+
+// sendClaimedLead is sendClaimed with a line before the question (the cancel
+// it set aside).
+func (r *Router) sendClaimedLead(ctx context.Context, id Identity, d DeferredApproval, lead string) {
 	text, _ := approvalText(r.heldEvent(d))
+	if lead != "" {
+		text = lead + "\n\n" + text
+	}
 	questionOut, questionPID, err := r.sendStamped(ctx, Outbound{Channel: id.Channel, To: id.Address, Text: text}, d.TaskID)
 	if err != nil {
 		var pe *ProviderStatusError

@@ -126,7 +126,11 @@ func (r *Router) handOffDetail(ctx context.Context, in Inbound, id Identity, con
 	// words are in it.
 	conv.PendingTaskChoices, conv.PendingRelayText = nil, ""
 	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
-		return fmt.Errorf("handOff: %w", err)
+		// Ops were told; a returned error would retry the webhook and tell
+		// them twice. Logged, and the person gets the true answer (a
+		// teammate is coming); the thread is not held, which ops see.
+		log.Printf("[channel] handoff identity=%s reason=%s: ops told, thread NOT held: %v", id.ID, reason, err)
+		return r.Reply(ctx, in, CopyHandoffStart, "")
 	}
 	log.Printf("[channel] handoff identity=%s reason=%s", id.ID, reason)
 	return r.Reply(ctx, in, CopyHandoffStart, "")

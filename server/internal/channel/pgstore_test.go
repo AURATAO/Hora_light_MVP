@@ -1176,3 +1176,69 @@ func TestPGPendingCancel(t *testing.T) {
 		t.Fatalf("not cleared: %+v", got.PendingCancel)
 	}
 }
+
+// Review 10/24: the cancel claim is compare-and-set (one of two YESes), an
+// approval armed over a cancel question drops it, and a held draft is
+// written only while that approval is the armed one.
+func TestPGCancelClaimAndHoldDraft(t *testing.T) {
+	db := testDB(t)
+	s := &PGStore{DB: db}
+	ctx := context.Background()
+	a, err := s.UpsertIdentity(ctx, IMessage, "+15550000721")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := "00000000-0000-0000-0000-0000000000cd"
+	pc := &PendingCancel{TaskID: task, Title: "Laundry pickup", QuotedCents: 1200, AskedAtUnix: time.Now().Unix()}
+	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateAwaitingCancel, PendingCancel: pc}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.ClaimCancel(ctx, a.ID, "00000000-0000-0000-0000-0000000000ee"); err != nil || ok {
+		t.Fatalf("another task's claim: %v %v", ok, err)
+	}
+	if ok, err := s.ClaimCancel(ctx, a.ID, task); err != nil || !ok {
+		t.Fatalf("first claim: %v %v", ok, err)
+	}
+	if ok, err := s.ClaimCancel(ctx, a.ID, task); err != nil || ok {
+		t.Fatalf("second claim: %v %v", ok, err)
+	}
+	got, err := s.GetConversation(ctx, a.ID)
+	if err != nil || got.State != StateIdle || got.PendingCancel != nil {
+		t.Fatalf("after claim: %+v %v", got, err)
+	}
+
+	// An approval armed over a cancel question drops it.
+	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateAwaitingCancel, PendingCancel: pc}); err != nil {
+		t.Fatal(err)
+	}
+	var ext string
+	if err := db.QueryRow(`INSERT INTO extension_requests DEFAULT VALUES RETURNING id`).Scan(&ext); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.HoldApproval(ctx, a.ID, DeferredApproval{UserID: "u", TaskID: "t", ExtensionID: ext, AtUnix: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.ClaimHold(ctx, a.ID, ext, "", time.Now()); err != nil || !ok {
+		t.Fatalf("claim hold over a cancel question: %v %v", ok, err)
+	}
+	got, _ = s.GetConversation(ctx, a.ID)
+	if got.State != StateAwaitingApproval || got.PendingCancel != nil {
+		t.Fatalf("arming must drop the cancel: %s %+v", got.State, got.PendingCancel)
+	}
+	if ok, err := s.ClaimCancel(ctx, a.ID, task); err != nil || ok {
+		t.Fatalf("a cancel YES after the approval armed: %v %v", ok, err)
+	}
+
+	// HoldDraft: only while that request is armed; nothing else written.
+	d := PendingDraft{Source: "buy me a bagel", BudgetAskIndex: -1}
+	if ok, err := s.HoldDraft(ctx, a.ID, "00000000-0000-0000-0000-0000000000aa", d); err != nil || ok {
+		t.Fatalf("another request: %v %v", ok, err)
+	}
+	if ok, err := s.HoldDraft(ctx, a.ID, ext, d); err != nil || !ok {
+		t.Fatalf("hold draft: %v %v", ok, err)
+	}
+	got, _ = s.GetConversation(ctx, a.ID)
+	if got.State != StateAwaitingApproval || got.PendingExtensionID != ext || got.Pending == nil || got.Pending.Source != "buy me a bagel" {
+		t.Fatalf("held draft: %+v", got)
+	}
+}

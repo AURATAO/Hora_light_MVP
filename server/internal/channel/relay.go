@@ -169,9 +169,10 @@ func (r *Router) routeReply(ctx context.Context, in Inbound, id Identity, conv C
 	if err != nil {
 		return true, err
 	}
-	bare := IsYes(text) || IsNo(text)
+	plain := stripFiller(text) // "oh ok" is as bare as "ok"
+	bare := IsYes(plain) || IsNo(plain)
 	if conv.State == StateAwaitingApproval {
-		bare = approvalAnswerish(text) // the wider approval words (D-17 R-2/R-3)
+		bare = approvalAnswerish(stripFiller(text)) // the wider approval words (D-17 R-2/R-3); "oh ok" too
 	}
 	switch kind {
 	case bubbleRelay:
@@ -1095,6 +1096,13 @@ func stillWaiting(conv Conversation) string {
 		return CopyStillWaitingName
 	case StateAwaitingSetup:
 		return CopyStillWaitingSetup
+	case StateAwaitingCancel:
+		if pc := conv.PendingCancel; pc != nil {
+			if pc.TaskID != "" {
+				return fmt.Sprintf(CopyStillWaitingCancel, pc.Title)
+			}
+			return CopyStillWaitingCancelChoice
+		}
 	}
 	return CopyStillWaitingGeneric
 }
@@ -1137,7 +1145,10 @@ func (r *Router) agentHandOff(ctx context.Context, in Inbound, id Identity, p ll
 		// Not taken over mid-booking, but ops are told now — a safety or
 		// dispute message must not be lost (review r2).
 		if err := r.notifyOps(ctx, id, HandoffAgentEscalated, false, handoffOpen{detail: string(p.Escalation)}); err != nil {
-			return fmt.Errorf("agentHandOff: %w", err)
+			// Said, not swallowed (review 10/24 #7): the message did not
+			// reach a person.
+			log.Printf("[channel] agent escalation identity=%s while posting: %v", id.ID, err)
+			return r.Reply(ctx, in, CopyBookingInFlight+" "+CopyHandoffFailed, "")
 		}
 		return r.Reply(ctx, in, CopyBookingInFlight, "")
 	case StateHandoff:
@@ -1175,18 +1186,27 @@ func AgentContextFor(active []ActiveTask, openQuestion string, line SupporterLin
 	return c
 }
 
+// newErrandRE: the person says outright this is a NEW errand — "book
+// another", "a new task", "another errand". Read by rule while a question
+// of ours waits (Arbiter 2026-10-24: approval first, then the draft, then
+// messages).
+var newErrandRE = regexp.MustCompile(`(?i)\b(book (another|a new|one more)|another (task|errand|job|order)|new (task|errand|job|order)|one more (task|errand))\b|再(開|开|訂|订|叫)一|新的?(任務|任务|單|单)|另一個(任務|單)`)
+
 // errandRE: words that describe an errand to do — a purchase (purchaseRE)
-// or one of these. Read by rule to keep a new errand out of a supporter's
-// chat while a question of ours waits (Arbiter 2026-10-24).
-var errandRE = regexp.MustCompile(`(?i)\b(pick up|drop off|deliver|need someone|can someone|i want (you|someone) to|walk my|wait in line|book (another|a|something)|another (task|errand|thing)|new (task|errand))\b|幫我`)
+// or one of these. Weaker than newErrandRE: "pick up the kids at 5" may be
+// for the supporter on the job, so it decides only when no supporter has
+// written within supporterContextWindow (review 10/24 #5); otherwise the
+// classifier / agent, which sees the supporter's line, decides.
+var errandRE = regexp.MustCompile(`(?i)\b(pick up|drop off|deliver|need someone|can someone|i want (you|someone) to|walk my|wait in line)\b|幫我|帮我`)
 
 // errandForDraft: while a draft or an approval question waits, this
 // message describes an errand for US — not words for a supporter: it
-// reads as an errand, names no supporter, and answers no question a
-// supporter asked in the last minutes (D-17, Arbiter 2026-10-24:
-// approval first, then the draft, then messages).
+// names no supporter and answers no question a supporter asked; a weak
+// errand reading also needs no supporter line within
+// supporterContextWindow.
 func (r *Router) errandForDraft(ctx context.Context, in Inbound, id Identity, text string) bool {
-	if !errandRE.MatchString(text) && !LooksLikePurchase(text) {
+	strong := newErrandRE.MatchString(text)
+	if !strong && !errandRE.MatchString(text) && !LooksLikePurchase(text) {
 		return false
 	}
 	if forSupporterRE.MatchString(text) {
@@ -1201,8 +1221,13 @@ func (r *Router) errandForDraft(ctx context.Context, in Inbound, id Identity, te
 			return false
 		}
 		last, lastTask, lastAt, answered := r.lastSupporterLine(ctx, in, id)
-		if _, ok := taskIn(active, lastTask); ok && supporterQuestionOpen(last, lastAt, answered, r.now()) {
-			return false
+		if _, ok := taskIn(active, lastTask); ok {
+			if supporterQuestionOpen(last, lastAt, answered, r.now()) {
+				return false
+			}
+			if !strong && !lastAt.IsZero() && r.now().Sub(lastAt) <= supporterContextWindow {
+				return false // a supporter is in the conversation: the model decides
+			}
 		}
 	}
 	return true

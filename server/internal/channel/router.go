@@ -56,6 +56,11 @@ type CancelQuote struct {
 	BaseFeeCents int
 	Committed    bool // a supporter has accepted
 	WithinGrace  bool // accepted moments ago: still free
+	// Moving: the charge may change between this quote and the cancel
+	// itself — a work session is running (every minute adds to it), or the
+	// free window closes within a minute. A chat cancel is a YES to one
+	// amount, so a moving charge is sent to the app, which shows it live.
+	Moving bool
 }
 
 // CancelResult is what a cancel did.
@@ -63,6 +68,9 @@ type CancelResult struct {
 	OK        bool
 	BillCents int
 	Gone      bool // already closed or not this person's
+	// BillUnknown: cancelled, but the charge could not be read back — the
+	// reply must not say "no charge".
+	BillUnknown bool
 }
 
 // ExtensionOutcome is what answering an extension request produced.
@@ -205,7 +213,7 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	if err := r.Identities.AttachMessage(ctx, in.Channel, in.ProviderMessageID, id.ID); err != nil {
 		log.Printf("[channel] attach message id=%s: %v", in.ProviderMessageID, err)
 	}
-	if strings.TrimSpace(in.Text) == "" && r.sentWithText(ctx, id.ID, in) {
+	if strings.TrimSpace(in.Text) == "" && len(in.MediaURLs) == 0 && r.sentWithText(ctx, id.ID, in) {
 		// iMessage delivers a link's preview card as one or two extra
 		// messages with no text, a moment after the link itself (staging
 		// 2026-10-24: a Google Maps link drew two "I can only read text"
@@ -247,7 +255,8 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	// D-17 I-P (version B): with a supporter writing in the last minutes,
 	// only an explicit YES/NO answers a question of ours; "ok", "sure",
 	// "👍" go to the supporter, and the person is told what still waits.
-	casual := (IsYes(text) || IsNo(text)) && !IsStrictYesNo(text)
+	plain := stripFiller(text) // "oh yes" is answer-ish but not strict
+	casual := (IsYes(plain) || IsNo(plain)) && !IsStrictYesNo(text)
 	if conv.State == StateAwaitingApproval {
 		casual = approvalCasual(text) // R-2/R-3's wider words; 不要啦 is strict (I-AN)
 	}
@@ -426,13 +435,22 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 			it.NeedsBudget = true
 			// An amount in the person's own words settles it without a
 			// question ("budget 60", "$20 for the bagels").
-			if cents, ok := AmountCents(text); ok {
-				it.BudgetCents, it.BudgetAsked = cents, true
-			}
-			if !it.BudgetAsked && len(prev) == len(errands) && prev[i].BudgetAsked {
-				if _, named := AmountCents(latestLine(source)); !named {
-					it.BudgetCents, it.BudgetAsked = prev[i].BudgetCents, true
+			// On a correction the newest line wins: the source is every line
+			// said, and its first amount is the old one (review 10/24).
+			latestCents, latestNamed := AmountCents(latestLine(source))
+			switch {
+			case len(prev) > 0 && len(errands) == 1 && latestNamed:
+				it.BudgetCents, it.BudgetAsked = latestCents, true
+			default:
+				if cents, ok := AmountCents(text); ok {
+					it.BudgetCents, it.BudgetAsked = cents, true
 				}
+			}
+			// A budget already given carries over only to the SAME errand
+			// (same kind, same place) — not to whatever errand now sits at
+			// that position.
+			if !it.BudgetAsked && !latestNamed && len(prev) == len(errands) && prev[i].BudgetAsked && sameErrand(prev[i].Draft, draft) {
+				it.BudgetCents, it.BudgetAsked = prev[i].BudgetCents, true
 			}
 		}
 		cents, minutes, err := r.Booker.Quote(ctx, draft, it.BudgetCents)
@@ -456,17 +474,45 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 	}
 	p.SetItems(items)
 	p.DetailsAsked = needsDetails(items)
+	if prev := conv.Pending; p.DetailsAsked && prev != nil && prev.DetailsAsked {
+		p.DetailsTries = prev.DetailsTries + 1
+	}
 	conv.Pending = p
 	if conv.State == StateAwaitingApproval {
 		// Approval first, then the draft (Arbiter 2026-10-24): the draft is
 		// kept and its next question comes back once the approval is
 		// answered (ResumeState / resumeLine).
-		return r.holdDraft(ctx, in, id, conv)
+		held, err := r.holdDraft(ctx, in, id, conv)
+		if held || err != nil {
+			return err
+		}
+		// The approval ended while the draft was parsed: the draft goes
+		// on as usual, on the thread as it is now.
+		fresh, err := r.Conversations.GetConversation(ctx, id.ID)
+		if err != nil {
+			return fmt.Errorf("startDraft: %w", err)
+		}
+		p.NameAsked, p.BudgetAskIndex = false, -1
+		fresh.Pending = p
+		conv = fresh
+		switch conv.State {
+		case StateAwaitingApproval:
+			// Another question armed in between: it waits on that one.
+			return r.Reply(ctx, in, approvalStillPending(conv), "")
+		case StateHandoff:
+			return r.onHandoff(ctx, in, id)
+		case StatePosting:
+			return r.Reply(ctx, in, CopyBookingInFlight, "")
+		}
 	}
 
 	if p.DetailsAsked {
 		// Nothing concrete or no place: ask before any summary — a summary
 		// of "book another task" was booked on staging (2026-10-24).
+		if p.DetailsTries >= MaxDetailsTries {
+			log.Printf("[channel] draft identity=%s: details still missing after %d answers, handed off", id.ID, p.DetailsTries)
+			return r.handOff(ctx, in, id, conv, HandoffNotUnderstood)
+		}
 		conv.State = StateAwaitingConfirm
 		lead := r.leadIn(p)
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
@@ -495,6 +541,11 @@ func (r *Router) showSummary(ctx context.Context, in Inbound, conv Conversation)
 			return fmt.Errorf("showSummary: %w", err)
 		}
 		return r.Reply(ctx, in, CopyAck, "")
+	}
+	if conv.Pending.DetailsAsked {
+		// Never a summary (a YES-able question) for a draft that still
+		// lacks what or where (review 10/24 #6): the details question.
+		return r.Reply(ctx, in, detailsQuestion(conv.Pending), "")
 	}
 	if r.AutoExtendMinutes <= 0 && !conv.Pending.NoAutoExtend {
 		// The summary would state a consent with no figure. Configuration
@@ -556,7 +607,11 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 		case IsYes(text):
 			// Nothing to say yes to yet.
 			return r.Reply(ctx, in, detailsQuestion(conv.Pending), "")
-		case forSupporterRE.MatchString(text):
+		case forSupporterRE.MatchString(text) || (r.supporterSpokeSince(ctx, in, id, conv.LastOutboundAt) && !r.errandForDraft(ctx, in, id, text)):
+			// For the supporter by name, or the supporter wrote after our
+			// question and this is not plainly the errand: the usual
+			// routing decides first (D-17). Otherwise our question is the
+			// last thing said, and this is its answer.
 			if handled, err := r.routeInContext(ctx, in, id, conv, text); handled {
 				return err
 			}
@@ -786,7 +841,11 @@ func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Co
 		// the caller is an HTTP request (S-32).
 		return r.dispatch(ctx, async, func(c context.Context) error {
 			if err := r.notifyOps(c, id, HandoffPayment3DS, false, handoffOpen{}); err != nil {
+				// No one was told: the reply must not promise a teammate
+				// (review 10/24 #7). The thread stays held — the next
+				// message notifies ops again (onHandoff).
 				log.Printf("[channel] 3ds handoff identity=%s: %v", id.ID, err)
+				out.Text = partial + Copy3DSHandoffNoTeam
 			}
 			return r.Send(c, out, res.TaskID)
 		})
@@ -929,6 +988,13 @@ func sentBefore(in Inbound, stamp *time.Time) string {
 
 // latestLine is the last line of a draft's source — the correction just
 // typed (startDraft joins earlier words and the new ones with "\n").
+// sameErrand: a re-drafted errand is the one drafted before — same kind of
+// task at the same place.
+func sameErrand(a, b llm.TaskDraft) bool {
+	norm := func(v string) string { return strings.ToLower(strings.TrimSpace(v)) }
+	return a.Category == b.Category && norm(a.Location1) == norm(b.Location1)
+}
+
 func latestLine(source string) string {
 	if i := strings.LastIndex(source, "\n"); i >= 0 {
 		return source[i+1:]
@@ -944,7 +1010,11 @@ const previewWindow = 15 * time.Second
 // before this (empty) message.
 func (r *Router) sentWithText(ctx context.Context, identityID string, in Inbound) bool {
 	prev, err := r.Conversations.GetConversation(ctx, identityID)
-	if err != nil || prev.LastInboundAt == nil {
+	if err != nil {
+		log.Printf("[channel] link preview check identity=%s: %v", identityID, err)
+		return false
+	}
+	if prev.LastInboundAt == nil {
 		return false
 	}
 	at := in.ReceivedAt
@@ -958,7 +1028,7 @@ func (r *Router) sentWithText(ctx context.Context, identityID string, in Inbound
 // holdDraft keeps a draft made while an approval question waits: its next
 // step (name, budget or summary) is set for ResumeState, the approval stays
 // the open question, and the person is told the errand is next.
-func (r *Router) holdDraft(ctx context.Context, in Inbound, id Identity, conv Conversation) error {
+func (r *Router) holdDraft(ctx context.Context, in Inbound, id Identity, conv Conversation) (bool, error) {
 	p := conv.Pending
 	switch {
 	case p.DetailsAsked:
@@ -970,15 +1040,41 @@ func (r *Router) holdDraft(ctx context.Context, in Inbound, id Identity, conv Co
 			p.BudgetAskIndex = i
 		}
 	}
-	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
-		return fmt.Errorf("holdDraft: %w", err)
+	lead := r.leadIn(p) // P6: said once, now, while the supporter is on the job
+	// Narrowly (review 10/24): only the draft, only while THIS approval is
+	// still the armed one — never a full save of the snapshot read before
+	// the parse.
+	held, err := r.Conversations.HoldDraft(ctx, id.ID, conv.PendingExtensionID, *p)
+	if err != nil {
+		return true, fmt.Errorf("holdDraft: %w", err)
 	}
-	return r.Reply(ctx, in, fmt.Sprintf(CopyErrandAfterApproval, p.Headline())+"\n\n"+approvalStillPending(conv), "")
+	if !held {
+		p.WhileActiveShown = false
+		return false, nil
+	}
+	return true, r.Reply(ctx, in, lead+fmt.Sprintf(CopyErrandAfterApproval, p.Headline())+"\n\n"+approvalStillPending(conv), "")
 }
 
 // vagueRequestRE: a request to book with nothing in it — "book another
 // thing?", "can I book something", "I'd like to make a new request".
 var vagueRequestRE = regexp.MustCompile(`(?i)^\W*(?:hi\W+)?(?:can i|could i|may i|i want to|i'd like to|id like to|let me|i need to)?\s*(?:book|post|order|make|request|get|add)\s*(?:me\s+)?(?:another|a new|one more|a|something|an?other)?\s*(?:thing|task|errand|one|request|booking|order)?\s*(?:please|pls)?\W*$`)
+
+// supporterSpokeSince: a supporter on an active task wrote after `since`
+// (nil: any line counts).
+func (r *Router) supporterSpokeSince(ctx context.Context, in Inbound, id Identity, since *time.Time) bool {
+	if r.Chat == nil || !id.Linked() {
+		return false
+	}
+	_, lastTask, lastAt, _ := r.lastSupporterLine(ctx, in, id)
+	if lastTask == "" || lastAt.IsZero() {
+		return false
+	}
+	return since == nil || lastAt.After(*since)
+}
+
+// MaxDetailsTries: answers to the details question that still leave the
+// draft without a place before the thread goes to a person.
+const MaxDetailsTries = 2
 
 // needsDetails: a draft that names no place for some errand, or came from a
 // request with nothing in it.

@@ -254,6 +254,7 @@ func (m *memConversations) ClaimHold(_ context.Context, iid, ext, task string, a
 		return false, nil
 	}
 	c.State, c.PendingExtensionID, c.ApprovalTaskID, c.ApprovalQuestionOutAt, c.ApprovalQuestionPID = StateAwaitingApproval, ext, task, nil, ""
+	c.PendingCancel = nil // like the SQL
 	sentinel := ArmedUnconfirmed
 	c.ApprovalArmedAt, c.ApprovalClaimedAt = &sentinel, &at
 	m.convs[iid] = c
@@ -341,6 +342,30 @@ func (m *memConversations) AcceptTerms(_ context.Context, iid string, at time.Ti
 	m.convs[iid] = c
 	return nil
 }
+func (m *memConversations) ClaimCancel(_ context.Context, iid, task string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.convs[iid]
+	if !ok || c.State != StateAwaitingCancel || c.PendingCancel == nil || c.PendingCancel.TaskID != task {
+		return false, nil
+	}
+	c.State, c.PendingCancel = StateIdle, nil
+	m.convs[iid] = c
+	return true, nil
+}
+
+func (m *memConversations) HoldDraft(_ context.Context, iid, ext string, d PendingDraft) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.convs[iid]
+	if !ok || c.State != StateAwaitingApproval || c.PendingExtensionID != ext || ext == "" {
+		return false, nil
+	}
+	c.Pending = &d
+	m.convs[iid] = c
+	return true, nil
+}
+
 func (m *memConversations) ClaimForPosting(_ context.Context, iid string, from State) (*PendingDraft, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -413,6 +438,7 @@ type fakeBooker struct {
 	open      []TaskRef
 	quote     CancelQuote
 	quotes2   []CancelQuote // successive CancelQuote answers when set
+	onQuote   func()        // runs at each CancelQuote (a parallel message, in tests)
 	cancelled []string
 	cancelRes CancelResult
 }
@@ -423,6 +449,9 @@ func (b *fakeBooker) OpenTasks(context.Context, string) ([]TaskRef, error) {
 	return b.open, nil
 }
 func (b *fakeBooker) CancelQuote(_ context.Context, _, taskID string) (CancelQuote, error) {
+	if b.onQuote != nil {
+		b.onQuote()
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if len(b.quotes2) > 0 {

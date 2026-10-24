@@ -300,12 +300,25 @@ func (b *chatBooker) CancelQuote(ctx context.Context, userID, taskID string) (ch
 	if status != "open" {
 		return channel.CancelQuote{}, fmt.Errorf("cancel quote: task is %s", status)
 	}
+	// cancellationPreview reads a failed minutes query as zero minutes; a
+	// quote the person says YES to must not rest on that (review 10/24 #9).
+	if _, err := totalClosedMinutes(ctx, taskID); err != nil {
+		return channel.CancelQuote{}, fmt.Errorf("cancel quote: minutes: %w", err)
+	}
+	var sessionOpen bool
+	if err := b.sqlDB.QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM public.worklogs WHERE task_id = $1::uuid AND end_at IS NULL)`, taskID).Scan(&sessionOpen); err != nil {
+		return channel.CancelQuote{}, fmt.Errorf("cancel quote: session: %w", err)
+	}
 	p := cancellationPreview(ctx, taskID, assigned, 0)
 	if p == nil {
 		return channel.CancelQuote{}, fmt.Errorf("cancel quote: no preview")
 	}
+	// Moving: the charge can change before the cancel lands — a session is
+	// running, or the free window closes within cancelQuoteMargin.
+	closing := p.WithinGrace && p.GraceEndsAt != nil && time.Until(*p.GraceEndsAt) < cancelQuoteMargin
 	return channel.CancelQuote{Title: title, ChargeCents: p.ChargeCents, BaseFeeCents: p.BaseFeeCents,
-		Committed: p.Committed, WithinGrace: p.WithinGrace}, nil
+		Committed: p.Committed, WithinGrace: p.WithinGrace, Moving: sessionOpen || closing}, nil
 }
 
 // Cancel runs the app's own cancel handler as the requester. The reason code
@@ -326,22 +339,29 @@ func (b *chatBooker) Cancel(ctx context.Context, userID, taskID string) channel.
 	return cancelResultFrom(w.Code, w.Body.Bytes())
 }
 
-// cancelResultFrom reads cancelTask's response.
+// cancelQuoteMargin: a free window closing sooner than this is a moving
+// charge — the YES could arrive after it closed.
+const cancelQuoteMargin = 2 * time.Minute
+
+// cancelResultFrom reads cancelTask's response. Gone only for the two
+// answers that mean the task is past cancelling (already closed, removed) or
+// not found; any other refusal is a failure, and a 200 whose bill cannot be
+// read is a cancel with an unknown charge — never "no charge".
 func cancelResultFrom(status int, raw []byte) channel.CancelResult {
 	var r struct {
-		BillCents *int `json:"bill_cents"`
+		BillCents *int   `json:"bill_cents"`
+		Error     string `json:"error"`
 	}
+	decodeErr := json.Unmarshal(raw, &r)
 	switch {
 	case status == http.StatusOK:
-		if err := json.Unmarshal(raw, &r); err != nil {
-			log.Printf("[channel-booker] cancel status=200: %v", fmt.Errorf("decode response: %w", err))
+		if decodeErr != nil || r.BillCents == nil {
+			log.Printf("[channel-booker] cancel status=200: bill not readable")
+			return channel.CancelResult{OK: true, BillUnknown: true}
 		}
-		res := channel.CancelResult{OK: true}
-		if r.BillCents != nil {
-			res.BillCents = *r.BillCents
-		}
-		return res
-	case status == http.StatusBadRequest || status == http.StatusForbidden || status == http.StatusNotFound:
+		return channel.CancelResult{OK: true, BillCents: *r.BillCents}
+	case status == http.StatusNotFound,
+		status == http.StatusBadRequest && (r.Error == "task already closed" || r.Error == "task_removed"):
 		return channel.CancelResult{Gone: true}
 	}
 	log.Printf("[channel-booker] cancel failed status=%d", status)

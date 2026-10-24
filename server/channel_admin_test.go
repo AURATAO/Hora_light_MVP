@@ -5,8 +5,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -78,39 +81,105 @@ func TestOpsNoticeCarriesNoNumberAndEscapes(t *testing.T) {
 func TestOpsNotifierReportsReach(t *testing.T) {
 	prev := sendOpsEmail
 	defer func() { sendOpsEmail = prev }()
+	var mu sync.Mutex
 	var sent []string
 	fail := true
 	sendOpsEmail = func(p notify.EmailPayload) error {
 		if fail {
 			return errors.New("POSTMARK_API_TOKEN not set")
 		}
+		mu.Lock()
 		sent = append(sent, p.To)
+		mu.Unlock()
 		return nil
 	}
-	t.Setenv("CHANNEL_OPS_EMAILS", "info@my-hora.com, Liang.You@arcodiax.com")
+	t.Setenv("CHANNEL_OPS_EMAILS", "ops-a@example.com, Ops-B@example.com")
 	t.Setenv("CHANNEL_OPS_NUMBERS", "")
-	n := newOpsNotifier(nil, nil)
-	notice := channel.HandoffNotice{IdentityID: "i", Channel: channel.IMessage, PhoneHint: "•••• 6243", Reason: channel.HandoffHumanRequested}
+	n := newOpsNotifier(nil, nil, nil)
+	notice := channel.HandoffNotice{IdentityID: "i", Channel: channel.IMessage, PhoneHint: "•••• 0100", Reason: channel.HandoffHumanRequested}
 	if err := n.NotifyOps(context.Background(), notice); err == nil {
 		t.Fatal("no one reached must be an error")
 	}
 	fail = false
-	if err := n.NotifyOps(context.Background(), notice); err != nil || len(sent) != 2 || sent[1] != "liang.you@arcodiax.com" {
+	if err := n.NotifyOps(context.Background(), notice); err != nil || len(sent) != 2 {
 		t.Fatalf("err %v sent %v", err, sent)
 	}
-	// Email down, an SMS number reachable: reached.
+	sort.Strings(sent)
+	if sent[1] != "ops-b@example.com" {
+		t.Fatalf("addresses are lower-cased: %v", sent)
+	}
+	// Email down, an SMS number reachable: reached — and stamped first.
 	fail = true
 	t.Setenv("CHANNEL_OPS_NUMBERS", "+1 (555) 010-0199")
 	sms := &stubAdapter{}
-	n = newOpsNotifier(nil, sms)
-	if err := n.NotifyOps(context.Background(), notice); err != nil || len(sms.sent) != 1 || sms.sent[0].To != "+15550100199" || !strings.Contains(sms.sent[0].Text, "6243") {
+	touch := &stubToucher{}
+	n = newOpsNotifier(nil, sms, touch)
+	if err := n.NotifyOps(context.Background(), notice); err != nil || len(sms.sent) != 1 || sms.sent[0].To != "+15550100199" || !strings.Contains(sms.sent[0].Text, "0100") {
 		t.Fatalf("err %v sms %+v", err, sms.sent)
+	}
+	if len(touch.stamped) != 1 || touch.stamped[0] != "+15550100199" {
+		t.Fatalf("the text must be stamped before it is sent: %v", touch.stamped)
 	}
 	// Held-thread updates are not texted.
 	notice.Update = true
 	if err := n.NotifyOps(context.Background(), notice); err == nil || len(sms.sent) != 1 {
 		t.Fatalf("update: err %v texts %d", err, len(sms.sent))
 	}
+	// Review 10/24 #4: no stamp, no text (fail closed) — and no stamper at all
+	// is the same.
+	notice.Update = false
+	touch.err = errors.New("db down")
+	if err := n.NotifyOps(context.Background(), notice); err == nil || len(sms.sent) != 1 {
+		t.Fatalf("stamp failed: err %v texts %d", err, len(sms.sent))
+	}
+	if err := newOpsNotifier(nil, sms, nil).NotifyOps(context.Background(), notice); err == nil || len(sms.sent) != 1 {
+		t.Fatalf("no stamper: err %v texts %d", err, len(sms.sent))
+	}
+}
+
+// Review 10/24 #8: the staging failure itself — the real notify.SendEmail
+// with no Postmark token — is "reached no one", not success.
+func TestOpsNotifierRealSendWithoutToken(t *testing.T) {
+	t.Setenv("POSTMARK_API_TOKEN", "")
+	t.Setenv("CHANNEL_OPS_EMAILS", "ops-a@example.com")
+	t.Setenv("CHANNEL_OPS_NUMBERS", "")
+	n := newOpsNotifier(nil, nil, nil)
+	err := n.NotifyOps(context.Background(), channel.HandoffNotice{IdentityID: "i", Channel: channel.IMessage, Reason: channel.HandoffHumanRequested})
+	if err == nil {
+		t.Fatal("no token must report that no one was reached")
+	}
+}
+
+// A hung email send does not hold the person's reply past opsSendTimeout.
+func TestOpsNotifierEmailTimeout(t *testing.T) {
+	prev := sendOpsEmail
+	defer func() { sendOpsEmail = prev }()
+	block := make(chan struct{})
+	defer close(block)
+	sendOpsEmail = func(notify.EmailPayload) error { <-block; return nil }
+	prevT := opsSendTimeout
+	opsSendTimeout = 200 * time.Millisecond
+	defer func() { opsSendTimeout = prevT }()
+	t.Setenv("CHANNEL_OPS_EMAILS", "ops-a@example.com")
+	t.Setenv("CHANNEL_OPS_NUMBERS", "")
+	start := time.Now()
+	err := newOpsNotifier(nil, nil, nil).NotifyOps(context.Background(), channel.HandoffNotice{IdentityID: "i", Channel: channel.IMessage})
+	if err == nil || time.Since(start) > opsSendTimeout+2*time.Second {
+		t.Fatalf("err %v after %s", err, time.Since(start))
+	}
+}
+
+type stubToucher struct {
+	stamped []string
+	err     error
+}
+
+func (s *stubToucher) TouchOutbound(_ context.Context, _ channel.Channel, addr string) (time.Time, error) {
+	if s.err != nil {
+		return time.Time{}, s.err
+	}
+	s.stamped = append(s.stamped, addr)
+	return time.Now(), nil
 }
 
 type stubAdapter struct{ sent []channel.Outbound }

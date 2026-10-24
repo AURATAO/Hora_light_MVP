@@ -829,8 +829,8 @@ budget. Rulings:
   **I-AU:** ops are notified BEFORE the thread is handed off, in line; if
   nobody is reached the person is told so ("I couldn't reach the HO:RA
   team… email info@my-hora.com") and the thread is not handed off.
-  `CHANNEL_OPS_EMAILS` (staging: info@my-hora.com, daniele@arcodiax.com,
-  liang.you@arcodiax.com — set) is separate from the admin allowlist;
+  `CHANNEL_OPS_EMAILS` (staging: the ops list Aura gave —
+  set in the Render dashboard, not written here) is separate from the admin allowlist;
   `CHANNEL_OPS_NUMBERS` (Aura adds her own) texts ops through the iMessage
   line on a new hand-off (Sendblue may require the number to have texted
   the line first).
@@ -850,3 +850,63 @@ budget. Rulings:
   soon as possible by default, duration from the estimate.
 - **Laundry fees:** webapp lets a laundry task ask for money at $0; mobile
   after the freeze (PLAN §13). Chat side not ruled.
+
+#### Review 10/24 round 1 (FAIL, 9 MAJOR) — the fixes
+
+- **Cancel question lapses and yields.** `PendingCancel.AskedAtUnix`;
+  after `CancelTTL` (10 min) the next message is read fresh, so a later
+  "yes" to anything else never cancels. `stillWaiting` names it. A
+  supporter's approval question is no longer held behind it:
+  `awaiting_cancel` is armable, `ClaimHold` clears `pending_cancel`, and
+  the question opens with "(I've set aside cancelling “X”…)". "cancel"
+  inside the question re-asks instead of reading as NO.
+- **Cancel claimed once.** `ClaimCancel` (compare-and-set on state +
+  `pending_cancel->>'task_id'`) runs after the re-quote and before the
+  app's cancel; a second YES, or an approval armed meanwhile, loses the
+  claim and does not cancel.
+- **Moving charges go to the app.** `CancelQuote.Moving` when a work
+  session is open or the free window closes within 2 minutes — no chat
+  quote, at the question or at the YES. A failed minutes query fails the
+  quote (cancellationPreview would read it as zero). Result mapping: Gone
+  only for 404 / "task already closed" / "task_removed"; a 200 whose bill
+  can't be read says "any charge will show in the app", never "No charge".
+  `cancelTask` itself (frozen) still updates without `AND status='open'`;
+  an app cancel racing a chat cancel is left to its existing handling.
+- **I-P strictness on the words as sent.** `approvalCasual` judges
+  answer-ish after the filler and strictness on the raw text — "oh yes"
+  with a supporter writing goes to them; `routeReply`'s bare and the
+  router's I-P gate are filler-aware the same way.
+- **Ops texts are stamped.** `TouchOutbound` before each ops SMS (fail
+  closed: no stamp, no text), so an ops number that is also a requester
+  (Aura's own) keeps the reaction-word rule true; the handed-off number
+  itself is skipped. Emails go in parallel, each bounded (10 s); logs name
+  the recipient by index, not address. Tested against the real
+  `notify.SendEmail` with no token.
+- **Errand rule narrowed.** `newErrandRE` ("book another", "new task",
+  再開一) decides by rule; the weaker `errandRE` / purchase reading decides
+  only when no supporter wrote within `supporterContextWindow` — otherwise
+  the classifier/agent, which sees the supporter's line.
+- **Details gate.** Answers route to the supporter when they wrote after
+  our question (or by name); `showSummary` never shows a YES-able summary
+  for a draft still asking what/where; after `MaxDetailsTries` (2) answers
+  that still name no place, a person (hand-off).
+- **Honest when ops are unreachable.** 3DS: "I couldn't reach the HO:RA
+  team… email info@my-hora.com" (thread stays held, the next message
+  notifies again). Agent escalation mid-booking: the in-flight line plus
+  the failure line, no error retry. A hand-off whose save fails after ops
+  were told replies and does not retry (no duplicate notice).
+- **MINORs.** Budget carries only to the same errand (category + place)
+  and the newest line's amount wins on a correction; `HoldDraft` is a
+  narrow store write guarded by the armed request (a stale snapshot is
+  never saved over it) and the held reply carries the P6 lead-in;
+  link-preview silence only with no media, lookup errors logged;
+  `IsCancelRequest` accepts only lead words before "cancel" (please / can
+  you / I want to…) and 取消 only after 請/幫我/我要…; the purchase check
+  fails to asking (the budget question takes "nothing"); webapp says "Ask
+  for a budget" at $0; staff addresses removed from this record and tests.
+- **S-11:** the D-16 amendment now names `chatBooker.Cancel` under the
+  same five conditions (declared — Arbiter to confirm); refactor #1 covers
+  `cancelTask`.
+- **Deploy order:** `20261024120000_channel_cancel_by_chat.sql` must be
+  applied before the build that reads `pending_cancel` (staging: applied
+  first; production: with the merge, migration before deploy).

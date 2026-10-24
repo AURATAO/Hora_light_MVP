@@ -1796,7 +1796,7 @@ export default function TaskDetail() {
                               onClick={() => setAskReopened(true)}
                               className="w-full rounded-lg border border-white/20 px-3 py-2.5 text-sm hover:border-white/40 disabled:opacity-40"
                             >
-                              Ask for more budget
+                              {approvedBudgetCents > 0 ? 'Ask for more budget' : 'Ask for a budget'}
                             </button>
                           ) : (
                             <div className="grid grid-cols-2 gap-2">
@@ -1947,7 +1947,7 @@ export default function TaskDetail() {
                           onClick={sendBudgetAsk}
                           className="w-full rounded-lg bg-white text-black font-medium px-4 py-3 text-sm hover:bg-white/90 disabled:opacity-40"
                         >
-                          {extBusy ? 'Sending…' : 'Ask for more budget'}
+                          {extBusy ? 'Sending…' : approvedBudgetCents > 0 ? 'Ask for more budget' : 'Ask for a budget'}
                         </button>
                       </div>
                     )}
