@@ -794,3 +794,59 @@ budget. Rulings:
 - Built now (9267698): a correction keeps the agreed budget unless it
   names a new amount; the purchase check no longer truncates (32 → 256
   tokens) and silently skips the budget question.
+
+### Arbiter answers — 2026-10-24 20:32 (Aura, second staging pass) and the build
+
+- **Priority: approval first, then the draft, then messages.** Built:
+  during an approval a new errand is drafted and held (its next question
+  — details, name, budget or summary — returns after the answer via
+  `ResumeState`/`resumeLine`); with a draft waiting, a new errand joins
+  the draft. **I-AO** (declared): "a new errand" is read by rule
+  (`errandRE` + `purchaseRE`); it stays for the supporter when it names a
+  supporter ("for Sam", a first name) or a supporter asked a question in
+  the last 10 minutes. Cost: a supporter instruction phrased like an
+  errand ("can you get me the bigger one") during an approval or a draft
+  becomes part of the draft — the person sees the draft and can say NO or
+  "for Sam …".
+- **Link previews (bug):** iMessage sends a link's preview as one or two
+  extra empty messages; each got "I can only read text". **I-AR:** an
+  empty message within 15 s of the person's previous message is silent; a
+  lone empty message still gets the text-only reply. Relays stay silent
+  (no "sent ✓" — Arbiter: too noisy).
+- **"Well ok, but hurry up!" approves.** **I-AS:** a leading well / oh / ah
+  is dropped only when what follows is itself a yes (never before a no:
+  "oh no, he's late" is not a decline); under I-P "well ok" is casual.
+- **Polite fixed lines (text confirmed by the Arbiter).** **I-AT:** the
+  relay is posted in the requester's name, so the supporter line is
+  first-person: "Approved ✅ — could you please speed up a little?
+  Thanks!" (the confirmed "they'd appreciate it…" would read oddly coming
+  from the requester's own account); thanks → "Approved ✅ — thank you!";
+  let him know → "Approved ✅". The requester reads "I've asked Sam to
+  speed up a little." / "I passed your thanks to Sam." / "I've let Sam
+  know." Other messages still go as written.
+- **Ops hand-off (bug, the serious one):** every staging email failed (no
+  Postmark token) and the person was told a teammate was coming.
+  **I-AU:** ops are notified BEFORE the thread is handed off, in line; if
+  nobody is reached the person is told so ("I couldn't reach the HO:RA
+  team… email info@my-hora.com") and the thread is not handed off.
+  `CHANNEL_OPS_EMAILS` (staging: info@my-hora.com, daniele@arcodiax.com,
+  liang.you@arcodiax.com — set) is separate from the admin allowlist;
+  `CHANNEL_OPS_NUMBERS` (Aura adds her own) texts ops through the iMessage
+  line on a new hand-off (Sendblue may require the number to have texted
+  the line first).
+- **Cancel by chat (ruling c).** **I-AQ:** idle only (during a draft
+  "cancel" still drops the draft); by rule ("cancel", "call off", 取消; not
+  "don't cancel"); the open tasks listed if several; the charge quoted by
+  the app's own `cancellationPreview`; a strict YES sent after the
+  question cancels through the app's `cancelTask` with reason code
+  "other" (nothing relayed to the supporter); a charge that rose before
+  the YES is asked again; approvals do not interrupt the confirm (they
+  wait). New state `awaiting_cancel`, column `pending_cancel`
+  (20261024120000, forward-only).
+- **Details before a summary.** **I-AP:** a draft with no place for some
+  errand, or from an empty request ("book another thing?"), is not
+  summarised: what/where is asked; a YES books nothing; the answer
+  re-drafts (an empty request's words are dropped). Time unchanged: as
+  soon as possible by default, duration from the estimate.
+- **Laundry fees:** webapp lets a laundry task ask for money at $0; mobile
+  after the freeze (PLAN §13). Chat side not ruled.
