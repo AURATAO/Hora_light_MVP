@@ -121,7 +121,7 @@ func TestYesWithAMessage(t *testing.T) {
 	g.arm(t, "ext-2")
 	got := g.say(t, "yes but tell him to hurry")
 	if len(g.booker.resolved) != 1 || !strings.HasSuffix(g.booker.resolved[0], ":ext-2:true") ||
-		len(chat.posted) != 1 || chat.posted[0] != "task-2:yes but tell him to hurry" || !strings.Contains(got, "Passed") {
+		len(chat.posted) != 1 || chat.posted[0] != "task-2:"+CopyToSupporterHurry || !strings.Contains(got, "speed up") { // polite template (Arbiter 2026-10-24)
 		t.Fatalf("resolved %v posted %v reply %q", g.booker.resolved, chat.posted, got)
 	}
 	for _, msg := range []string{"yes but max $5", "yes if it's organic", "ok but not the money", "sure, why?"} {
@@ -216,7 +216,7 @@ func TestYesWithMessageEdges(t *testing.T) {
 	g, chat, _, _ := contextRig(llm.IntentToSupporter, bagelT)
 	g.arm(t, "ext-2")
 	got := g.say(t, "great, thanks Sam!")
-	if len(g.booker.resolved) != 1 || len(chat.posted) != 1 || chat.posted[0] != "task-2:great, thanks Sam!" || !strings.Contains(got, "Passed") {
+	if len(g.booker.resolved) != 1 || len(chat.posted) != 1 || chat.posted[0] != "task-2:"+CopyToSupporterThanks || !strings.Contains(got, "thanks to Sam") { // polite template (Arbiter 2026-10-24)
 		t.Fatalf("resolved %v posted %v reply %q", g.booker.resolved, chat.posted, got)
 	}
 	g, chat, _, _ = contextRig(llm.IntentToSupporter, bagelT)
@@ -860,6 +860,49 @@ func TestStrictFormEdges(t *testing.T) {
 	} {
 		if got := approvalStrictAnswer(msg); got != want {
 			t.Errorf("%q: strict=%v, want %v", msg, got, want)
+		}
+	}
+}
+
+// Arbiter 2026-10-24: "Well ok, but hurry up!" approves; a leading
+// interjection is dropped only before a yes ("oh no, he's late" is not a
+// decline); with the supporter mid-conversation "well ok" is casual.
+func TestLeadingInterjection(t *testing.T) {
+	for _, tc := range []struct {
+		f    ApprovalFacts
+		want ApprovalVerdict
+	}{
+		{ApprovalFacts{Text: "Well ok, but hurry up!", QuestionIsLast: true}, VerdictApprovePassOn},
+		{ApprovalFacts{Text: "oh yes", QuestionIsLast: true}, VerdictApprove},
+		{ApprovalFacts{Text: "ah sure", QuestionIsLast: true}, VerdictApprove},
+		{ApprovalFacts{Text: "oh no, he's late", QuestionIsLast: true}, VerdictNotAnAnswer},
+		{ApprovalFacts{Text: "well, max $5", QuestionIsLast: true}, VerdictNotAnAnswer},
+		{ApprovalFacts{Text: "well ok but max $5", QuestionIsLast: true}, VerdictPassOnKeep},
+	} {
+		if got := DecideApproval(tc.f); got != tc.want {
+			t.Errorf("%q: %d, want %d", tc.f.Text, got, tc.want)
+		}
+	}
+	if !approvalCasual("well ok") {
+		t.Error(`"well ok" must be casual under I-P`)
+	}
+}
+
+// Arbiter 2026-10-24: the supporter gets a polite fixed line, the person is
+// told what was said.
+func TestApprovalPassOnTemplates(t *testing.T) {
+	for _, tc := range []struct{ msg, toSupporter, toPerson string }{
+		{"Yes but hurry up", CopyToSupporterHurry, "I've asked Sam to speed up a little."},
+		{"Well ok, but hurry up!", CopyToSupporterHurry, "I've asked Sam to speed up a little."},
+		{"yes, tell him to hurry", CopyToSupporterHurry, "I've asked Sam to speed up a little."},
+		{"great, thanks Sam!", CopyToSupporterThanks, "I passed your thanks to Sam."},
+		{"ok, let him know", CopyToSupporterLetKnow, "I've let Sam know."},
+	} {
+		g, chat, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+		g.arm(t, "ext-2")
+		got := g.say(t, tc.msg)
+		if len(g.booker.resolved) != 1 || len(chat.posted) != 1 || chat.posted[0] != "task-2:"+tc.toSupporter || !strings.Contains(got, tc.toPerson) {
+			t.Errorf("%q: resolved %v posted %v reply %q", tc.msg, g.booker.resolved, chat.posted, got)
 		}
 	}
 }

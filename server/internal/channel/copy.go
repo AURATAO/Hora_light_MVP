@@ -55,7 +55,16 @@ const (
 	CopyReceiptPhotoOnly     = "The receipt:"
 	CopyReceiptPhotoNotSent  = "The receipt photo couldn't be sent here."
 	// I-P version B: a casual affirmative went to the supporter.
-	CopyPassedOn                  = "(Passed “%s” to %s.)"
+	CopyPassedOn = "(Passed “%s” to %s.)"
+	// After an approval with one of the closed message shapes (I-AE): the
+	// supporter gets a polite fixed line in the requester's name, the
+	// requester is told what was said (Arbiter 2026-10-24).
+	CopyToSupporterHurry          = "Approved ✅ — could you please speed up a little? Thanks!"
+	CopyToSupporterThanks         = "Approved ✅ — thank you!"
+	CopyToSupporterLetKnow        = "Approved ✅"
+	CopyAskedToHurry              = "I've asked %s to speed up a little."
+	CopyPassedThanks              = "I passed your thanks to %s."
+	CopyLetKnow                   = "I've let %s know."
 	CopyStillWaitingBooking       = "Still waiting on your YES or NO — book “%s” for %s."
 	CopyStillWaitingApproval      = "Still waiting on your YES or NO to your supporter’s request."
 	CopyStillWaitingBudget        = "Still waiting on the shopping budget — an amount, or “nothing”."

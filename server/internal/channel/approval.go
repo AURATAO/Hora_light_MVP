@@ -138,7 +138,7 @@ type ApprovalFacts struct {
 // DecideApproval is the rule decision for a message answering an armed
 // approval question (D-17 R-1…R-3, I-P version B).
 func DecideApproval(f ApprovalFacts) ApprovalVerdict {
-	text := f.Text
+	text := stripFiller(f.Text)
 	answerish := approvalAnswerish(text)
 	if f.SupporterLive && approvalCasual(text) {
 		return VerdictToSupporter
@@ -310,11 +310,23 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 		// on only when the approval went through; otherwise they are told
 		// it was not.
 		who := r.supporterFirstName(ctx, id, conv.ApprovalTaskID)
+		// A closed shape goes as a polite fixed line in the person's name
+		// (they talk to a bot; the supporter is a person — Arbiter
+		// 2026-10-24); anything else as written.
+		words, told := passOn, fmt.Sprintf(CopyPassedOn, strings.TrimSpace(passOn), who)
+		switch passOnKind(passOn) {
+		case PassOnHurry:
+			words, told = CopyToSupporterHurry, fmt.Sprintf(CopyAskedToHurry, who)
+		case PassOnThanks:
+			words, told = CopyToSupporterThanks, fmt.Sprintf(CopyPassedThanks, who)
+		case PassOnLetKnow:
+			words, told = CopyToSupporterLetKnow, fmt.Sprintf(CopyLetKnow, who)
+		}
 		switch {
 		case res.Outcome != ExtResolved:
 			reply += " " + CopyNotPassedOn
-		case r.relayQuiet(ctx, in, id, conv.ApprovalTaskID, passOn):
-			reply += " " + fmt.Sprintf(CopyPassedOn, strings.TrimSpace(passOn), who)
+		case r.relayQuiet(ctx, in, id, conv.ApprovalTaskID, words):
+			reply += " " + told
 		default:
 			reply += " " + fmt.Sprintf(CopyCouldntPassOn, strings.TrimSpace(passOn), who)
 		}

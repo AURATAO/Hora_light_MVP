@@ -1766,6 +1766,23 @@
     "decline"
    ],
    "note": "present tense with an approval open: a question about the pending request (prompt rule 10 tie-break)"
+  },
+  {
+   "n": 105,
+   "group": "P M3.2d rules (the agent is not asked)",
+   "money": true,
+   "ctx": {
+    "open": "R_TIME"
+   },
+   "msg": "Well ok, but hurry up!",
+   "server": "approve+passon",
+   "expect": {
+    "action": "approve"
+   },
+   "forbid": [
+    "decline"
+   ],
+   "note": "Arbiter 2026-10-24: a leading well/oh/ah does not change the answer (staging)"
   }
  ]
 }

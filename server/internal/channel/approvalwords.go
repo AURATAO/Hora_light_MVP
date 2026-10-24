@@ -458,5 +458,55 @@ func strictForm(text string) string {
 // last minutes. The router's gate (HandleInbound) and DecideApproval both
 // use it — one rule, one place (review r4).
 func approvalCasual(text string) bool {
+	text = stripFiller(text) // "well ok" is as casual as "ok"
 	return approvalAnswerish(text) && !approvalStrictAnswer(text)
+}
+
+// fillerRE: a leading interjection — "well", "oh", "ah" — before an answer.
+var fillerRE = regexp.MustCompile(`(?i)^\s*(?:well|oh|ah)\b[\s,.!…]*(.+)$`)
+
+// stripFiller drops a leading interjection when what follows is itself a
+// yes ("Well ok, but hurry up!" is "ok, but hurry up!", Arbiter 2026-10-24).
+// Never before a no: "oh no, he's late" is not a decline.
+func stripFiller(text string) string {
+	m := fillerRE.FindStringSubmatch(text)
+	if m == nil {
+		return text
+	}
+	rest := m[1]
+	if y, _ := approvalYes(rest); y {
+		return rest
+	}
+	if _, _, _, ok := yesWithMessage(rest); ok {
+		return rest
+	}
+	return text
+}
+
+// PassOnKind is which closed shape (I-AE) a "yes + message" carries.
+type PassOnKind int
+
+const (
+	PassOnOther   PassOnKind = iota // not a closed shape: the words go as written
+	PassOnHurry                     // hurry (up) / tell him to hurry
+	PassOnThanks                    // thanks… / tell him thanks
+	PassOnLetKnow                   // let him know
+)
+
+// passOnKind reads the message after the yes.
+func passOnKind(text string) PassOnKind {
+	rest, _, _, ok := yesWithMessage(stripFiller(text))
+	if !ok {
+		return PassOnOther
+	}
+	r := strings.ToLower(rest)
+	switch {
+	case strings.Contains(r, "hurry"):
+		return PassOnHurry
+	case strings.Contains(r, "thank") || strings.Contains(r, "thx") || strings.Contains(r, "cheers") || regexp.MustCompile(`\bty\b`).MatchString(r):
+		return PassOnThanks
+	case strings.Contains(r, "know"):
+		return PassOnLetKnow
+	}
+	return PassOnOther
 }
