@@ -1098,10 +1098,13 @@ func stillWaiting(conv Conversation) string {
 		return CopyStillWaitingSetup
 	case StateAwaitingCancel:
 		if pc := conv.PendingCancel; pc != nil {
-			if pc.TaskID != "" {
-				return fmt.Sprintf(CopyStillWaitingCancel, pc.Title)
+			switch {
+			case pc.TaskID == "":
+				return CopyStillWaitingCancelChoice
+			case pc.ReasonCode == "":
+				return fmt.Sprintf(CopyStillWaitingCancelReason, pc.Title)
 			}
-			return CopyStillWaitingCancelChoice
+			return fmt.Sprintf(CopyStillWaitingCancel, pc.Title)
 		}
 	}
 	return CopyStillWaitingGeneric

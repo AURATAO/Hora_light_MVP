@@ -147,7 +147,7 @@ func (r *Router) onAwaitingBudget(ctx context.Context, in Inbound, id Identity, 
 				return r.Reply(ctx, in, CopyAskBudgetAgain, "")
 			}
 			if IsCancelRequest(text) {
-				return r.dropDraft(ctx, in, conv) // never relayed (Arbiter 2026-10-24 23:03)
+				return r.dropDraftWith(ctx, in, conv, CopyDroppedCancelHint) // never relayed (Arbiter 2026-10-24 23:03)
 			}
 			// Not an amount: with a supporter on the job it may be for
 			// them (D-17); a correction re-drafts; otherwise ask again.

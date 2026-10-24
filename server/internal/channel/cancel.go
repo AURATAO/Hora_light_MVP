@@ -27,13 +27,18 @@ import (
 // never passed on. Only an explicit negation ("don't cancel", 不要取消) is
 // not a mention.
 var cancelMentionRE = regexp.MustCompile(`(?i)\bcancel(?:l?ed|l?ing|s)?\b|\bcall(?:ed|ing)? (?:it |that |the \w+ )?off\b|取消`)
-var cancelNegatedRE = regexp.MustCompile(`(?i)\b(?:don'?t|do not|not|never|no need to|without)\s+cancel|(?:不要|不用|別|别|沒有|没有|不是要?)取消`)
+var cancelNegatedRE = regexp.MustCompile(`(?i)\b(?:don'?t|do not|not|never|no need to|without|can'?t|cannot|won'?t)(?:\s+\w+){0,3}?\s+cancel|(?:不要|不用|別|别|沒有|没有|不是要?|不想)取消`)
 
 // IsCancelRequest reports a message about cancelling, by rule (never the
-// model). Broad on purpose: the question that follows is the check.
+// model). Broad on purpose: the question that follows is the check. A
+// negated mention ("don't cancel", "I don't want to cancel") is not one —
+// unless the message also mentions cancelling un-negated ("cancel the
+// laundry one, don't cancel the bagel one").
 func IsCancelRequest(text string) bool {
 	t := strings.ReplaceAll(text, "’", "'")
-	return cancelMentionRE.MatchString(t) && !cancelNegatedRE.MatchString(t)
+	mentions := len(cancelMentionRE.FindAllStringIndex(t, -1))
+	negated := len(cancelNegatedRE.FindAllStringIndex(t, -1))
+	return mentions > negated
 }
 
 // CancelReasonChoice is one of the app's cancel reasons, as the chat lists
@@ -50,13 +55,13 @@ type CancelReasonChoice struct {
 }
 
 var CancelReasonChoices = []CancelReasonChoice{
-	{"plans_changed", "Plans changed", []string{"plans changed", "plan changed", "changed my mind", "change of plan", "計畫", "计划", "改變主意"}},
-	{"no_longer_needed", "No longer needed", []string{"no longer need", "don't need", "dont need", "not needed", "no need", "不需要", "不用了"}},
-	{"found_another_way", "Found another way", []string{"another way", "someone else", "myself", "found a", "找到別", "自己"}},
-	{"wrong_details", "Posted with wrong details", []string{"wrong detail", "wrong address", "wrong time", "wrong info", "mistake in", "錯誤", "寫錯", "弄錯"}},
+	{"plans_changed", "Plans changed", []string{"plans changed", "plan changed", "changed my mind", "change of plan", "計畫", "计划", "改變主意", "改变主意"}},
+	{"no_longer_needed", "No longer needed", []string{"no longer need", "don't need", "dont need", "not needed", "不需要"}},
+	{"found_another_way", "Found another way", []string{"another way", "someone else", "do it myself", "found someone", "找到別人", "自己來", "自己去"}},
+	{"wrong_details", "Posted with wrong details", []string{"wrong detail", "wrong address", "wrong time", "wrong info", "wrong place", "mistake in", "錯誤", "寫錯", "弄錯"}},
 	{"posted_by_mistake", "Posted by mistake", []string{"by mistake", "by accident", "accident", "didn't mean", "didnt mean", "不小心", "誤"}},
-	{"timing_no_longer_works", "Timing no longer works", []string{"timing", "too late", "too long", "taking too", "time doesn't", "時間", "时间", "太久", "來不及"}},
-	{"other", "Other", []string{"other", "something else", "其他", "別的"}},
+	{"timing_no_longer_works", "Timing no longer works", []string{"timing", "too late", "too long", "taking too", "時間不", "时间不", "太久", "來不及"}},
+	{"other", "Other", []string{"something else", "其他", "別的"}},
 }
 
 // cancelReasonList renders the numbered reasons.
@@ -77,12 +82,41 @@ func pickCancelReason(text string) string {
 	}
 	for _, c := range CancelReasonChoices {
 		for _, w := range c.words {
-			if strings.Contains(t, w) {
+			if wordIn(t, w) {
 				return c.Code
 			}
 		}
 	}
 	return ""
+}
+
+// wordIn: the phrase as whole words (Han phrases as substrings — no word
+// boundaries in Chinese). "found a mistake" must not read as "found a…".
+func wordIn(text, phrase string) bool {
+	if phrase == "" {
+		return false
+	}
+	if r := []rune(phrase)[0]; r > 0x2E80 {
+		return strings.Contains(text, phrase)
+	}
+	i := 0
+	for {
+		j := strings.Index(text[i:], phrase)
+		if j < 0 {
+			return false
+		}
+		start, end := i+j, i+j+len(phrase)
+		before := start == 0 || !isWordByte(text[start-1])
+		after := end == len(text) || !isWordByte(text[end])
+		if before && after {
+			return true
+		}
+		i = start + 1
+	}
+}
+
+func isWordByte(b byte) bool {
+	return b == '\'' || b == '_' || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }
 
 // startCancel finds the task to cancel: none, one (quote it), or several
@@ -235,18 +269,24 @@ func (r *Router) quoteCancel(ctx context.Context, in Inbound, id Identity, conv 
 	if !asked {
 		return r.cancelPreempted(ctx, in, id)
 	}
-	if err := r.Reply(ctx, in, cancelQuestion(title, q), ""); err != nil {
+	if err := r.Reply(ctx, in, cancelQuestion(title, q, reasonCode), ""); err != nil {
 		return err
 	}
 	r.markShown(ctx, id.ID)
 	return nil
 }
 
-func cancelQuestion(title string, q CancelQuote) string {
-	if q.ChargeCents <= 0 {
-		return fmt.Sprintf(CopyCancelConfirmFree, title)
+func cancelQuestion(title string, q CancelQuote, reasonCode string) string {
+	reason := ""
+	for _, c := range CancelReasonChoices {
+		if c.Code == reasonCode {
+			reason = fmt.Sprintf(CopyCancelReasonEcho, c.Label)
+		}
 	}
-	return fmt.Sprintf(CopyCancelConfirmFee, title, Dollars(q.ChargeCents), Dollars(q.BaseFeeCents))
+	if q.ChargeCents <= 0 {
+		return fmt.Sprintf(CopyCancelConfirmFree, title, reason)
+	}
+	return fmt.Sprintf(CopyCancelConfirmFee, title, reason, Dollars(q.ChargeCents), Dollars(q.BaseFeeCents))
 }
 
 // cancelLapsed: the question is older than CancelTTL (or carries no time —
@@ -268,11 +308,14 @@ func (r *Router) onAwaitingCancel(ctx context.Context, in Inbound, id Identity, 
 		return nil
 	}
 	if pc == nil || r.cancelLapsed(pc) {
-		if pc != nil {
-			log.Printf("[channel] cancel identity=%s: question lapsed, message read fresh", id.ID)
-		}
 		if err := leave(); err != nil {
 			return err
+		}
+		if pc != nil && pc.TaskID != "" {
+			log.Printf("[channel] cancel identity=%s: question lapsed, message read fresh", id.ID)
+			if err := r.Reply(ctx, in, fmt.Sprintf(CopyCancelNotDone, pc.Title), ""); err != nil {
+				return err
+			}
 		}
 		return r.onIdle(ctx, in, id, conv, text)
 	}
@@ -297,20 +340,36 @@ func (r *Router) onAwaitingCancel(ctx context.Context, in Inbound, id Identity, 
 	}
 	if pc.ReasonCode == "" { // the reason question
 		t := TaskRef{ID: pc.TaskID, Title: pc.Title}
-		if code := pickCancelReason(text); code != "" {
-			return r.quoteCancel(ctx, in, id, conv, t, code)
-		}
-		if IsNo(text) && !IsCancelRequest(text) {
+		switch {
+		case IsNo(text) && !IsCancelRequest(text), cancelNegatedRE.MatchString(text):
+			// NO first: "no, I don't need to cancel" keeps the task — never
+			// read as the "no longer needed" reason (review r1 M3).
 			if err := leave(); err != nil {
 				return err
 			}
 			return r.Reply(ctx, in, fmt.Sprintf(CopyCancelKept, pc.Title), "")
+		case conv.QuestionShownAt == nil || in.ReceivedAt.IsZero() || in.ReceivedAt.Before(*conv.QuestionShownAt):
+			// Sent before the reason question reached them (a redelivered
+			// "2" from the task list, a double tap): the reason is relayed
+			// to the supporter, so it is never taken from a message that
+			// could not have answered this question (R-1, review r1 M4).
+			return r.askCancelReason(ctx, in, id, t, pc.ReasonTries)
 		}
-		if pc.ReasonTries+1 < MaxCancelReasonTries || IsCancelRequest(text) {
+		if code := pickCancelReason(text); code != "" {
+			return r.quoteCancel(ctx, in, id, conv, t, code)
+		}
+		if IsCancelRequest(text) {
+			return r.askCancelReason(ctx, in, id, t, min(pc.ReasonTries+1, MaxCancelReasonTries-1))
+		}
+		if pc.ReasonTries+1 < MaxCancelReasonTries {
 			return r.askCancelReason(ctx, in, id, t, pc.ReasonTries+1)
 		}
-		// Twice nothing picked: not about the cancel after all.
+		// Twice nothing picked: not about the cancel after all — said so,
+		// never a silent drop (review r1 M1).
 		if err := leave(); err != nil {
+			return err
+		}
+		if err := r.Reply(ctx, in, fmt.Sprintf(CopyCancelNotDone, pc.Title), ""); err != nil {
 			return err
 		}
 		return r.onIdle(ctx, in, id, conv, text)

@@ -710,8 +710,9 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 	default:
 		if IsCancelRequest(text) {
 			// "I think I need to cancel this" with a draft waiting: the
-			// draft is dropped — never relayed (Arbiter 2026-10-24 23:03).
-			return r.dropDraft(ctx, in, conv)
+			// draft is dropped — never relayed (Arbiter 2026-10-24 23:03) —
+			// and the way to a posted task's cancel is named.
+			return r.dropDraftWith(ctx, in, conv, CopyDroppedCancelHint)
 		}
 		// A new errand typed while the draft waits joins the draft — it is
 		// not relayed to a supporter (staging 2026-10-24: "buy me a bagel"
@@ -754,12 +755,16 @@ func (r *Router) onAwaitingSetup(ctx context.Context, in Inbound, id Identity, c
 }
 
 func (r *Router) dropDraft(ctx context.Context, in Inbound, conv Conversation) error {
+	return r.dropDraftWith(ctx, in, conv, CopyDropped)
+}
+
+func (r *Router) dropDraftWith(ctx context.Context, in Inbound, conv Conversation, copy string) error {
 	conv.Pending = nil
 	conv.State = StateIdle
 	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 		return fmt.Errorf("dropDraft: %w", err)
 	}
-	return r.Reply(ctx, in, CopyDropped, "")
+	return r.Reply(ctx, in, copy, "")
 }
 
 func (r *Router) sendSetupLink(ctx context.Context, in Inbound, id Identity, conv Conversation, copyFmt string) error {

@@ -1044,3 +1044,21 @@ an app cancel with that reason tells them ("plans changed"; "Other" relays
 nothing). With a draft waiting, a sentence about cancelling drops the
 draft (never relayed). The old "ok/sure is not a YES", TTL, moving-charge,
 claim and re-quote rules are unchanged behind the reason step.
+
+#### Cancel reason step — review r1 (FAIL, 4 MAJOR) → fixes
+
+NO forms (and any negated cancel) are read before reason words, so "no, I
+don't need to cancel" keeps the task; reason words match whole words
+("found a mistake" is wrong details, not "found another way"; "other" is
+only "something else"); a number/word sent before the reason question
+reached the phone re-asks instead of picking (R-1 — the reason goes to
+the supporter); the quote echoes the chosen reason "(reason: Plans
+changed)"; the two-miss exit and the lapse say "I haven't cancelled X";
+`stillWaiting` has a reason-step line; a cancel sentence with a draft
+waiting drops the draft and says how to cancel a posted task; negation
+counts per mention ("cancel the laundry one, don't cancel the bagel one"
+is a cancel). Accepted: a message that merely mentions cancelling ("the
+store cancelled my order, can you still come?") opens the reason question
+and, on NO, that sentence is not passed on — the ruling asks for the
+check; an errand that mentions cancel with no open task gets "no open
+tasks" rather than a draft.

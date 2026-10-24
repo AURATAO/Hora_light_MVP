@@ -149,11 +149,11 @@ func TestIsCancelRequestIsBroad(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct{ in, code string }{
-		{"1", "plans_changed"}, {"7.", "other"}, {"I changed my mind", "plans_changed"}, {"don't need it anymore", "no longer_needed"},
+		{"1", "plans_changed"}, {"7.", "other"}, {"I changed my mind", "plans_changed"}, {"don't need it anymore", "no_longer_needed"},
 		{"my friend can do it, found another way", "found_another_way"}, {"wrong address", "wrong_details"}, {"by mistake", "posted_by_mistake"},
 		{"it's taking too long", "timing_no_longer_works"}, {"不需要了", "no_longer_needed"}, {"hmm", ""}, {"9", ""},
 	} {
-		if got := pickCancelReason(tc.in); got != strings.ReplaceAll(tc.code, " ", "_") {
+		if got := pickCancelReason(tc.in); got != tc.code {
 			t.Errorf("%q → %q, want %q", tc.in, got, tc.code)
 		}
 	}
@@ -541,7 +541,63 @@ func TestCancelSentenceDuringADraftDropsIt(t *testing.T) {
 	g, chat, _, _ := contextRig(llm.IntentToSupporter, bagelT)
 	g.say(t, "new task: pick up my laundry tomorrow at 3")
 	got := g.say(t, "actually I think I need to cancel this one, sorry")
-	if len(chat.posted) != 0 || got != CopyDropped || g.state() != StateIdle {
+	if len(chat.posted) != 0 || got != CopyDroppedCancelHint || g.state() != StateIdle {
 		t.Fatalf("posted %v reply %q state %s", chat.posted, got, g.state())
 	}
+}
+
+// Review r1 (reason step): NO forms win over reason words; "found a
+// mistake" is not "found another way"; a message sent before the reason
+// question re-asks instead of picking; the two-miss exit says the task was
+// not cancelled; the quote echoes the reason; negation counting.
+func TestCancelReasonStepEdges(t *testing.T) {
+	for _, tc := range []struct{ in, code string }{
+		{"I found a mistake in the address", "wrong_details"}, {"my brother will do it", ""}, {"another person", ""},
+		{"no need", ""}, {"something else", "other"},
+	} {
+		if got := pickCancelReason(tc.in); got != tc.code {
+			t.Errorf("%q → %q, want %q", tc.in, got, tc.code)
+		}
+	}
+	if IsCancelRequest("I don't want to cancel it") || IsCancelRequest("I can't cancel now") || !IsCancelRequest("cancel the laundry one, don't cancel the bagel one") {
+		t.Fatal("negation")
+	}
+	g := cancelRig(t)
+	g.say(t, "cancel it")
+	got := g.say(t, "no, I don't need to cancel it")
+	if !strings.Contains(got, "stays booked") || g.state() != StateIdle {
+		t.Fatalf("a NO with a reason word: %q %s", got, g.state())
+	}
+	g = cancelRig(t)
+	g.say(t, "cancel it")
+	got = g.say(t, "1")
+	if !strings.Contains(got, "(reason: Plans changed)") {
+		t.Fatalf("the quote must echo the reason: %q", got)
+	}
+	// Sent before the reason question: not a pick.
+	g = cancelRig(t)
+	g.say(t, "cancel it")
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	id := Identity{ID: "id-" + me, Channel: IMessage, Address: me, UserID: "user-1"}
+	early := Inbound{Channel: IMessage, From: me, Text: "2", ReceivedAt: time.Now().Add(-time.Hour)}
+	if err := g.r.onAwaitingCancel(context.Background(), early, id, c, "2"); err != nil {
+		t.Fatal(err)
+	}
+	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.PendingCancel == nil || c.PendingCancel.ReasonCode != "" {
+		t.Fatalf("an early number picked a reason: %+v", c.PendingCancel)
+	}
+	// Two misses: told it was not cancelled.
+	g = cancelRig(t)
+	g.say(t, "cancel it")
+	g.say(t, "hmm")
+	got = g.say(t, "what's the weather")
+	if !strings.Contains(g.ad.sent[len(g.ad.sent)-2].Text, "haven't cancelled") && !strings.Contains(got, "haven't cancelled") {
+		t.Fatalf("not told: %q", got)
+	}
+	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
+	if w := stillWaiting(Conversation{State: StateAwaitingCancel, PendingCancel: &PendingCancel{TaskID: "x", Title: "Laundry pickup"}}); !strings.Contains(w, "reason") {
+		t.Fatalf("still-waiting at the reason step: %q", w)
+	}
+	_ = c
 }
