@@ -3234,6 +3234,14 @@ func clockIn(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "already clocked in"})
 		return
 	}
+	// The clock stops at the ceiling (D-06, Arbiter 2026-10-24 23:34): with
+	// the agreed time used up, a new session needs more time approved first
+	// — refused here rather than created and cut a minute later.
+	if capMinutes, _ := taskTimeCapMinutes(ctx, taskID); capMinutes > 0 && liveLoggedMinutes(ctx, taskID) >= capMinutes {
+		c.JSON(http.StatusForbidden, gin.H{"error": "time_cap_reached",
+			"message": fmt.Sprintf("The %d minutes agreed for this task are used up. Ask for more time and clock in again once it's approved.", capMinutes)})
+		return
+	}
 
 	var id string
 	var createdAt, startAt time.Time
@@ -3293,14 +3301,24 @@ func clockOut(c *gin.Context) {
       WHERE id = $1::uuid and end_at is null
       returning start_at, end_at, created_at, updated_at
     `, wlID).Scan(&startAt, &endAt, &createdAt, &updatedAt)
+	closedByCap := false
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Closed meanwhile — the time cap stopped the clock (timecap.go)
-		// between the read above and this write. Its end_at stands.
+		// between the read above and this write. Its end_at stands, and
+		// the cap's own notification already said so.
+		closedByCap = true
 		err = db.QueryRow(ctx, `select start_at, end_at, created_at, updated_at from public.worklogs where id = $1::uuid`,
 			wlID).Scan(&startAt, &endAt, &createdAt, &updatedAt)
 	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+	if closedByCap {
+		c.JSON(http.StatusOK, WorkLog{
+			ID: wlID, TaskID: taskID, User: meEmail,
+			Start: startAt, End: &endAt, CreatedAt: createdAt, UpdatedAt: updatedAt,
+		})
 		return
 	}
 

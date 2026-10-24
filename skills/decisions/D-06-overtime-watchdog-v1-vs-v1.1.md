@@ -92,3 +92,15 @@ cap (a session the cut could not close) — with the clock stopped nobody
 works unpaid; a manual clock-out racing the cut keeps the cap-minute
 end_at; the live sweep logs iteration errors. Accepted: a forced split
 can bill up to one extra rounded minute (bounded by the cap).
+
+**Review r2 (FAIL) → fixes.** The cut runs first, before any notification,
+and only writes when a session is open; a cut that fails claims no latch
+(retried by the next evaluation, words stay true); a session started with
+the cap used up is closed at zero minutes (never bills, never eats the
+next approval) and the clock-in endpoint refuses it outright (403
+`time_cap_reached`, "ask for more time and clock in again once it's
+approved"); Layer 3 keeps both shapes with honest words — "still clocked
+in past the cap" when the cut could not close a session, "stalled at its
+time cap, no answer" when the clock is stopped and nobody answers; a
+manual clock-out that lost the race to the cut sends no second
+notification; both sweeps log iteration errors.

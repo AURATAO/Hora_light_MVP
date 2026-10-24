@@ -155,18 +155,29 @@ func evaluateTimeCap(ctx context.Context, taskID string) {
 		return
 	}
 
+	// The clock stops at the ceiling (D-06, Arbiter 2026-10-24 23:34) —
+	// FIRST, and on every evaluation, not behind the once-per-task latch:
+	// a session clocked in again without an approval, or one running when
+	// a failure spent the latch, is cut just the same. Nothing is written
+	// when no session is open.
+	var closed int
+	var stillOpen bool
+	if st.Reached {
+		var err error
+		closed, stillOpen, err = clockOutAtCap(ctx, taskID, st.Cap.CapMinutes)
+		if err != nil {
+			// Not claimed: the next evaluation (a minute away while a
+			// session runs) cuts and tells, with words that are true.
+			log.Printf("[timecap][ERROR] clock out at cap task=%s: %v", taskID, err)
+			return
+		}
+	}
 	if st.Warning || st.Reached {
 		fireTimeCapWarning(ctx, taskID, st)
 	}
 	if st.Reached {
-		// The clock stops at the ceiling (D-06, Arbiter 2026-10-24 23:34) —
-		// on EVERY evaluation, not behind the once-per-task latch: a
-		// session clocked in again without an approval, or one running
-		// when a failure spent the latch, is cut just the same. A no-op
-		// once no session is open.
-		closed := clockOutAtCap(ctx, taskID, st.Cap.CapMinutes)
 		fireTimeCapReached(ctx, taskID, st, closed)
-		fireTimeCapOpsAlert(ctx, taskID, st)
+		fireTimeCapOpsAlert(ctx, taskID, st, stillOpen)
 	}
 }
 
@@ -302,26 +313,39 @@ func fireTimeCapReached(ctx context.Context, taskID string, st timeCapState, clo
 
 // clockOutAtCap ends the running session at the cap minute: end_at is the
 // session's start plus whatever of the cap the earlier closed sessions left,
-// never before one minute in and never in the future. Returns the sessions
-// closed (0 or 1 in practice). Best-effort, like everything here — a failure
-// is logged and the latch still fires; billing caps the amount regardless.
-func clockOutAtCap(ctx context.Context, taskID string, capMinutes int) int {
+// never in the future. A session started with nothing left (clocked in
+// again without an approval) is closed at its start: zero minutes, so it
+// neither bills nor eats into the next approval. Returns the sessions
+// closed and whether one is still open afterwards (the UPDATE failed, or a
+// clock-in landed in between — the sweep returns in a minute).
+func clockOutAtCap(ctx context.Context, taskID string, capMinutes int) (closed int, stillOpen bool, err error) {
+	var open int
+	if err := db.QueryRow(ctx,
+		`select count(*) from public.worklogs where task_id = $1::uuid and end_at is null`, taskID).Scan(&open); err != nil {
+		return 0, false, fmt.Errorf("open sessions: %w", err)
+	}
+	if open == 0 {
+		return 0, false, nil
+	}
 	closedBefore, err := totalClosedMinutes(ctx, taskID)
 	if err != nil {
-		log.Printf("[timecap] clock out at cap task=%s: minutes: %v", taskID, err)
-		return 0
+		return 0, true, fmt.Errorf("minutes: %w", err)
 	}
-	remaining := maxInt(capMinutes-closedBefore, 1)
+	remaining := maxInt(capMinutes-closedBefore, 0)
 	tag, err := db.Exec(ctx, `
 		update public.worklogs
 		   set end_at = least(now(), start_at + make_interval(mins => $2)), updated_at = now()
 		 where task_id = $1::uuid and end_at is null
 	`, taskID, remaining)
 	if err != nil {
-		log.Printf("[timecap][ERROR] clock out at cap task=%s: %v", taskID, err)
-		return 0
+		return 0, true, fmt.Errorf("update: %w", err)
 	}
-	return int(tag.RowsAffected())
+	closed = int(tag.RowsAffected())
+	if err := db.QueryRow(ctx,
+		`select exists (select 1 from public.worklogs where task_id = $1::uuid and end_at is null)`, taskID).Scan(&stillOpen); err != nil {
+		return closed, true, fmt.Errorf("recheck: %w", err)
+	}
+	return closed, stillOpen, nil
 }
 
 // fireTimeCapOpsAlert — Layer 3. The requester has gone quiet for the whole
@@ -330,7 +354,12 @@ func clockOutAtCap(ctx context.Context, taskID string, capMinutes int) int {
 // Ops get an email, not a cancellation. What a human does with it — ring the
 // requester, ring the supporter, adjust the settlement afterwards — is a
 // judgement call, and the point of the alert is that a person makes it.
-func fireTimeCapOpsAlert(ctx context.Context, taskID string, st timeCapState) {
+//
+// Two shapes since the clock stops at the cap (D-06 addendum 2): a session
+// the cut could not close (someone IS working unpaid), or a task stalled at
+// the cap — clock stopped, job not finished, no request pending, nobody
+// answering. The words say which.
+func fireTimeCapOpsAlert(ctx context.Context, taskID string, st timeCapState, stillOpen bool) {
 	var reachedAt *time.Time
 	if err := db.QueryRow(ctx,
 		`select time_cap_reached_at from public.tasks where id=$1::uuid`, taskID).Scan(&reachedAt); err != nil {
@@ -342,12 +371,7 @@ func fireTimeCapOpsAlert(ctx context.Context, taskID string, st timeCapState) {
 	if time.Since(*reachedAt) < time.Duration(Billing.GracePeriodMinutes)*time.Minute {
 		return
 	}
-	// With the clock stopped at the cap (D-06 addendum 2) nobody is working
-	// unpaid: ops hear only when time IS past the cap — a session the cut
-	// could not close.
-	if st.LoggedMinutes <= st.Cap.CapMinutes {
-		return
-	}
+
 	// A pending time request means the requester has not been asked and
 	// ignored — they have been asked and the clock is still running on their
 	// five minutes. Not an ops matter yet.
@@ -368,23 +392,30 @@ func fireTimeCapOpsAlert(ctx context.Context, taskID string, st timeCapState) {
 	if err != nil {
 		return
 	}
-	over := st.LoggedMinutes - st.Cap.CapMinutes
-	log.Printf("[timecap][OPS] task=%s unresponsive requester — %d min past cap=%d",
-		taskID, over, st.Cap.CapMinutes)
+	over := maxInt(st.LoggedMinutes-st.Cap.CapMinutes, 0)
+	log.Printf("[timecap][OPS] task=%s stalled at cap=%d logged=%d session_open=%t",
+		taskID, st.Cap.CapMinutes, st.LoggedMinutes, stillOpen)
 	writeAudit(ctx, taskID, systemActorUID, "TIME_CAP_UNRESPONSIVE", "", map[string]any{
 		"logged_minutes":  st.LoggedMinutes,
 		"cap_minutes":     st.Cap.CapMinutes,
 		"over_by_minutes": over,
+		"session_open":    stillOpen,
 		"requester_email": t.RequesterEmail,
 		"supporter_email": t.AssigneeEmail,
 	})
 
-	emailOpsAdmins(
-		fmt.Sprintf("[HO:RA] Unresponsive requester — %s past the time cap", formatMinutes(over)),
-		fmt.Sprintf(`<p><strong>A supporter is working past the agreed time with no approval.</strong></p>
+	subject := "[HO:RA] Task stalled at its time cap — no answer from the requester"
+	lead := `<p><strong>The clock was stopped at the agreed time; the job is not marked done and nobody has answered.</strong></p>
+<p>The cap was reached %s ago. The session was clocked out there and nothing past it is billed; no time request is
+pending. The task has NOT been cancelled and remains completable at any time — it will settle at the capped amount.</p>`
+	if stillOpen {
+		subject = fmt.Sprintf("[HO:RA] Supporter still clocked in — %s past the time cap", formatMinutes(over))
+		lead = `<p><strong>A session is still running past the agreed time and could not be clocked out.</strong></p>
 <p>The cap was reached %s ago and the requester has not responded since. Time past the cap is not
 being billed, so the supporter is working unpaid. The task has NOT been cancelled and remains
-completable at any time — it will settle at the capped amount.</p>
+completable at any time — it will settle at the capped amount.</p>`
+	}
+	emailOpsAdmins(subject, fmt.Sprintf(lead+`
 <ul>
   <li>Task: %s (%s)</li>
   <li>Requester: %s</li>
@@ -422,9 +453,13 @@ func sweepTimeCaps(ctx context.Context) {
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
+			log.Printf("[timecap][sweep] scan: %v", err)
 			break
 		}
 		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[timecap][sweep] rows: %v", err)
 	}
 	rows.Close()
 
