@@ -72,3 +72,12 @@ per running session. Still open (product): "no automatic stop" means a
 supporter can keep the clock running unpaid past the cap, and the receipt
 shows the clocked time (1h 20min) next to the capped bill — whether the
 cap should also end the session is the Arbiter's call, not made here.
+
+**Arbiter 2026-10-24 23:34 — option 2: the cap clocks the session out.**
+Reaching the ceiling ends the running session at the cap minute (`end_at =
+start_at + what the cap had left`, never in the future); the task stays
+open; the supporter is told to ask for more time and clock in again once
+it is approved; the requester is told the clock was stopped. "No automatic
+cancellation" still holds — only the session ends. A phone that keeps
+pinging after that gets the existing 403 "not clocked in". Built with the
+live sweep, so the clock stops within a minute of the cap on either app.

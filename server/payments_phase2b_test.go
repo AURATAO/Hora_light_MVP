@@ -1493,3 +1493,38 @@ func TestLiveTimeCapSweepSkipsClosedSessions(t *testing.T) {
 		t.Fatalf("%d TIME_CAP_REACHED for a closed session from the live sweep", n)
 	}
 }
+
+// Arbiter 2026-10-24 23:34: reaching the cap clocks the running session out
+// AT the cap minute — the task stays open, the supporter can ask for more
+// time and clock in again. Staging: a 60-minute cap, an 80-minute session.
+func TestTimeCapClocksOutAtTheCap(t *testing.T) {
+	setupStripeWebhookDB(t)
+	w := seedOpsWorld(t, "open")
+	seedWorklog(t, w.taskID, 70, true) // running, 25 minutes past the 45-minute ceiling
+
+	evaluateTimeCap(context.Background(), w.taskID)
+
+	var open int
+	var minutes float64
+	if err := db.QueryRow(context.Background(), `
+		select count(*) filter (where end_at is null),
+		       coalesce(max(extract(epoch from (end_at - start_at))/60.0), 0)
+		  from public.worklogs where task_id = $1::uuid`, w.taskID).Scan(&open, &minutes); err != nil {
+		t.Fatal(err)
+	}
+	if open != 0 {
+		t.Fatal("the session is still running past the cap")
+	}
+	if minutes < 44.9 || minutes > 45.1 {
+		t.Fatalf("session closed at %.1f minutes, want the 45-minute cap", minutes)
+	}
+	if got := taskStatus(t, w.taskID); got != "open" {
+		t.Fatalf("task status = %q — the cap must not cancel", got)
+	}
+	// Clocking in again (after an approval) is still possible: the task is
+	// open and the supporter has no running session — nothing to assert
+	// beyond the two facts above.
+	if n := countNotifications(t, w.supporterID, "TIME_CAP_REACHED"); n != 1 {
+		t.Fatalf("%d TIME_CAP_REACHED, want 1", n)
+	}
+}

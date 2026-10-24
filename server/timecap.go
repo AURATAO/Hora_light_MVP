@@ -34,6 +34,13 @@ package main
 // at the capped amount. A system that ends a task from a timer ends it while
 // somebody is standing in a stranger's kitchen.
 //
+// THE CLOCK, HOWEVER, STOPS AT THE CEILING (Arbiter 2026-10-24 23:34, after
+// a staging session ran 80 minutes against a 60-minute cap). Reaching the
+// cap clocks the running session out at the cap minute — the task stays
+// open, the supporter can ask for more time and clock in again once it is
+// approved. Nothing is cancelled; the record simply does not say the person
+// worked time nobody agreed to.
+//
 // WHERE THIS RUNS, AND WHY THERE IS NO SCHEDULER
 //
 // evaluateTimeCap is called from paths that are already happening while a
@@ -254,11 +261,13 @@ func fireTimeCapReached(ctx context.Context, taskID string, st timeCapState) {
 	if err != nil {
 		return
 	}
-	log.Printf("[timecap] reached task=%s logged=%d cap=%d", taskID, st.LoggedMinutes, st.Cap.CapMinutes)
+	closed := clockOutAtCap(ctx, taskID, st.Cap.CapMinutes)
+	log.Printf("[timecap] reached task=%s logged=%d cap=%d sessions_closed=%d", taskID, st.LoggedMinutes, st.Cap.CapMinutes, closed)
 	writeAudit(ctx, taskID, systemActorUID, "TIME_CAP_REACHED", "", map[string]any{
-		"logged_minutes": st.LoggedMinutes,
-		"cap_minutes":    st.Cap.CapMinutes,
-		"consent":        st.Cap.AutoExtendConsent,
+		"logged_minutes":  st.LoggedMinutes,
+		"cap_minutes":     st.Cap.CapMinutes,
+		"consent":         st.Cap.AutoExtendConsent,
+		"sessions_closed": closed,
 	})
 
 	notifyUser(ctx, derefOrEmpty(t.AssigneeID), t.AssigneeEmail, notify.CreateNotificationInput{
@@ -266,7 +275,7 @@ func fireTimeCapReached(ctx context.Context, taskID string, st timeCapState) {
 		Type:   "TIME_CAP_REACHED",
 		Title:  "Time cap reached",
 		Body: fmt.Sprintf(
-			"You've reached the %d minutes agreed for %q, so time past this isn't billed. Ask for more time in the app if you need it — and wrap up safely whenever you judge it right.",
+			"You've reached the %d minutes agreed for %q, so your session has been clocked out there — time past it isn't billed. If the job isn't done, ask for more time in the app and clock in again once it's approved.",
 			st.Cap.CapMinutes, t.Title),
 		TaskTitle: t.Title,
 	})
@@ -276,11 +285,35 @@ func fireTimeCapReached(ctx context.Context, taskID string, st timeCapState) {
 		Type:   "TIME_CAP_REACHED",
 		Title:  "Your supporter has reached the time limit",
 		Body: fmt.Sprintf(
-			"%s has worked the %d minutes agreed for %q and isn't being paid for anything beyond it. Approve 15 or 30 more minutes in the app if the job isn't finished.",
+			"%s has worked the %d minutes agreed for %q, so the clock has been stopped there. Approve 15 or 30 more minutes in the app if the job isn't finished.",
 			t.AssigneeName, st.Cap.CapMinutes, t.Title),
 		TaskTitle:     t.Title,
 		SupporterName: t.AssigneeName,
 	})
+}
+
+// clockOutAtCap ends the running session at the cap minute: end_at is the
+// session's start plus whatever of the cap the earlier closed sessions left,
+// never before one minute in and never in the future. Returns the sessions
+// closed (0 or 1 in practice). Best-effort, like everything here — a failure
+// is logged and the latch still fires; billing caps the amount regardless.
+func clockOutAtCap(ctx context.Context, taskID string, capMinutes int) int {
+	closedBefore, err := totalClosedMinutes(ctx, taskID)
+	if err != nil {
+		log.Printf("[timecap] clock out at cap task=%s: minutes: %v", taskID, err)
+		return 0
+	}
+	remaining := maxInt(capMinutes-closedBefore, 1)
+	tag, err := db.Exec(ctx, `
+		update public.worklogs
+		   set end_at = least(now(), start_at + make_interval(mins => $2)), updated_at = now()
+		 where task_id = $1::uuid and end_at is null
+	`, taskID, remaining)
+	if err != nil {
+		log.Printf("[timecap][ERROR] clock out at cap task=%s: %v", taskID, err)
+		return 0
+	}
+	return int(tag.RowsAffected())
 }
 
 // fireTimeCapOpsAlert — Layer 3. The requester has gone quiet for the whole
