@@ -36,6 +36,9 @@ const (
 	// StatePosting means a booking is in flight (stored as 'drafting'). Only
 	// one caller can move a conversation into it — see ClaimForPosting.
 	StatePosting State = "drafting"
+	// StateAwaitingCancel: cancelling a posted task by text — choosing which,
+	// or confirming the quoted charge (Arbiter 2026-10-24).
+	StateAwaitingCancel State = "awaiting_cancel"
 )
 
 // PendingDraft is a task waiting for the person's YES, with the text it was
@@ -140,6 +143,8 @@ type Conversation struct {
 	// LastInboundAt is the person's latest message (read-only here; stamped
 	// by TouchConversation). WhatsApp's 24h window is measured from it.
 	LastInboundAt *time.Time
+	// PendingCancel: a cancel by text in progress (awaiting_cancel).
+	PendingCancel *PendingCancel
 	// ApprovalClaimedAt is when the armed question was claimed (written by
 	// ClaimHold only — nothing else touches it, so an inbound message
 	// cannot refresh it). A claim whose delivery was never confirmed is
@@ -191,6 +196,22 @@ func (c Conversation) ResumeState() State {
 		return StateAwaitingTaskChoice
 	}
 	return StateIdle
+}
+
+// PendingCancel is a cancel by text in progress: the candidates when the
+// person has several open tasks, or the one task and the charge quoted for
+// it (the YES is consent to that amount — a higher charge is asked again).
+type PendingCancel struct {
+	Choices     []TaskRef `json:"choices,omitempty"`
+	TaskID      string    `json:"task_id,omitempty"`
+	Title       string    `json:"title,omitempty"`
+	QuotedCents int       `json:"quoted_cents"`
+}
+
+// TaskRef names a task the person can act on.
+type TaskRef struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
 }
 
 // DeferredApproval is an approval question that arrived while the thread
@@ -501,16 +522,16 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 	var name, ext, relay sql.NullString
 	var terms, armed, lastIn, claimed, lastOut, qOut, shown sql.NullTime
 	var choicesJSON string
-	var deferred, apTask, qPID sql.NullString
+	var deferred, apTask, qPID, cancel sql.NullString
 	err := s.DB.QueryRowContext(ctx, `
 		SELECT state, pending_draft, pending_name, terms_accepted_at, pending_extension_id::text,
 		       COALESCE(array_to_json(pending_task_choices)::text, '[]'), pending_relay_text,
 		       deferred_approval::text, approval_armed_at, last_inbound_at, approval_claimed_at,
 		       approval_task_id::text, last_outbound_at, approval_question_out_at, question_shown_at,
-		       approval_question_pid
+		       approval_question_pid, pending_cancel::text
 		FROM channel_conversations WHERE identity_id = $1
 	`, identityID).Scan(&state, &pending, &name, &terms, &ext, &choicesJSON, &relay, &deferred, &armed, &lastIn, &claimed,
-		&apTask, &lastOut, &qOut, &shown, &qPID)
+		&apTask, &lastOut, &qOut, &shown, &qPID, &cancel)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, nil
 	}
@@ -521,6 +542,13 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 	c.PendingName = name.String
 	c.PendingExtensionID = ext.String
 	c.PendingRelayText = relay.String
+	if cancel.Valid && cancel.String != "" && cancel.String != "null" {
+		var pc PendingCancel
+		if err := json.Unmarshal([]byte(cancel.String), &pc); err != nil {
+			return c, fmt.Errorf("get conversation: decode pending cancel: %w", err)
+		}
+		c.PendingCancel = &pc
+	}
 	if deferred.Valid && deferred.String != "" && deferred.String != "null" {
 		if err := json.Unmarshal([]byte(deferred.String), &c.Deferred); err != nil {
 			return c, fmt.Errorf("get conversation: decode deferred approvals: %w", err)
@@ -577,6 +605,14 @@ func (s *PGStore) SaveConversation(ctx context.Context, c Conversation) error {
 		}
 		pending = string(b)
 	}
+	var cancel any
+	if c.PendingCancel != nil {
+		b, err := json.Marshal(c.PendingCancel)
+		if err != nil {
+			return fmt.Errorf("save conversation: marshal cancel: %w", err)
+		}
+		cancel = string(b)
+	}
 	var terms, armed, shown any
 	if c.TermsAcceptedAt != nil {
 		terms = *c.TermsAcceptedAt
@@ -590,9 +626,9 @@ func (s *PGStore) SaveConversation(ctx context.Context, c Conversation) error {
 	_, err := s.DB.ExecContext(ctx, `
 		INSERT INTO channel_conversations
 		  (identity_id, state, pending_draft, pending_name, terms_accepted_at, pending_extension_id,
-		   pending_task_choices, pending_relay_text, approval_armed_at, approval_task_id, question_shown_at, updated_at)
+		   pending_task_choices, pending_relay_text, approval_armed_at, approval_task_id, question_shown_at, pending_cancel, updated_at)
 		VALUES ($1, $2, $3::jsonb, NULLIF($4, ''), $5, NULLIF($6, '')::uuid,
-		        NULLIF($7, '{}')::uuid[], NULLIF($8, ''), $9, NULLIF($10, '')::uuid, $11, now())
+		        NULLIF($7, '{}')::uuid[], NULLIF($8, ''), $9, NULLIF($10, '')::uuid, $11, $12::jsonb, now())
 		ON CONFLICT (identity_id) DO UPDATE SET
 		  -- An armed question (a claim that landed after this caller read
 		  -- its snapshot) is kept unless the caller is ending it on purpose
@@ -620,9 +656,10 @@ func (s *PGStore) SaveConversation(ctx context.Context, c Conversation) error {
 		  terms_accepted_at = COALESCE(channel_conversations.terms_accepted_at, EXCLUDED.terms_accepted_at),
 		  pending_task_choices = EXCLUDED.pending_task_choices,
 		  pending_relay_text = EXCLUDED.pending_relay_text,
+		  pending_cancel = EXCLUDED.pending_cancel,
 		  updated_at = now()
 	`, c.IdentityID, string(c.State), pending, c.PendingName, terms, c.PendingExtensionID,
-		pgUUIDArray(c.PendingTaskChoices), c.PendingRelayText, armed, c.ApprovalTaskID, shown)
+		pgUUIDArray(c.PendingTaskChoices), c.PendingRelayText, armed, c.ApprovalTaskID, shown, cancel)
 	if err != nil {
 		return fmt.Errorf("save conversation: %w", err)
 	}

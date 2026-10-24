@@ -409,6 +409,34 @@ type fakeBooker struct {
 	posted  []string
 	results []PostResult
 	opts    []PostOptions
+	// cancel by chat
+	open      []TaskRef
+	quote     CancelQuote
+	quotes2   []CancelQuote // successive CancelQuote answers when set
+	cancelled []string
+	cancelRes CancelResult
+}
+
+func (b *fakeBooker) OpenTasks(context.Context, string) ([]TaskRef, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.open, nil
+}
+func (b *fakeBooker) CancelQuote(_ context.Context, _, taskID string) (CancelQuote, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.quotes2) > 0 {
+		q := b.quotes2[0]
+		b.quotes2 = b.quotes2[1:]
+		return q, nil
+	}
+	return b.quote, nil
+}
+func (b *fakeBooker) Cancel(_ context.Context, _, taskID string) CancelResult {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.cancelled = append(b.cancelled, taskID)
+	return b.cancelRes
 }
 
 func (b *fakeBooker) Quote(_ context.Context, _ llm.TaskDraft, budgetCents int) (int, int, error) {

@@ -257,3 +257,93 @@ func (b *chatBooker) ExtensionPending(ctx context.Context, userID, extensionID s
 	}
 	return pending, nil
 }
+
+// OpenTasks lists the requester's posted tasks that can still be cancelled
+// (status open, newest first) — the same status cancelTask accepts.
+func (b *chatBooker) OpenTasks(ctx context.Context, userID string) ([]channel.TaskRef, error) {
+	rows, err := b.sqlDB.QueryContext(ctx, `
+		SELECT id::text, COALESCE(title, '')
+		  FROM public.tasks
+		 WHERE requester_id = $1::uuid AND status = 'open'
+		 ORDER BY created_at DESC
+		 LIMIT 9`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("open tasks: %w", err)
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			log.Printf("[channel-booker] open tasks: close rows: %v", cerr)
+		}
+	}()
+	var out []channel.TaskRef
+	for rows.Next() {
+		var t channel.TaskRef
+		if err := rows.Scan(&t.ID, &t.Title); err != nil {
+			return nil, fmt.Errorf("open tasks: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// CancelQuote prices cancelling now with the app's own preview
+// (cancellationPreview — parity-tested against the cancel handler).
+func (b *chatBooker) CancelQuote(ctx context.Context, userID, taskID string) (channel.CancelQuote, error) {
+	var title, status string
+	var assigned *string
+	err := b.sqlDB.QueryRowContext(ctx, `
+		SELECT COALESCE(title, ''), status, assigned_to_id::text
+		  FROM public.tasks WHERE id = $1::uuid AND requester_id = $2::uuid`, taskID, userID).Scan(&title, &status, &assigned)
+	if err != nil {
+		return channel.CancelQuote{}, fmt.Errorf("cancel quote: %w", err)
+	}
+	if status != "open" {
+		return channel.CancelQuote{}, fmt.Errorf("cancel quote: task is %s", status)
+	}
+	p := cancellationPreview(ctx, taskID, assigned, 0)
+	if p == nil {
+		return channel.CancelQuote{}, fmt.Errorf("cancel quote: no preview")
+	}
+	return channel.CancelQuote{Title: title, ChargeCents: p.ChargeCents, BaseFeeCents: p.BaseFeeCents,
+		Committed: p.Committed, WithinGrace: p.WithinGrace}, nil
+}
+
+// Cancel runs the app's own cancel handler as the requester. The reason code
+// is "other", which relays nothing to the supporter (cancel_reasons.go).
+func (b *chatBooker) Cancel(ctx context.Context, userID, taskID string) channel.CancelResult {
+	body, err := json.Marshal(map[string]string{"reason": "Cancelled by text message", "reason_code": "other"})
+	if err != nil {
+		log.Printf("[channel-booker] cancel task=%s: %v", taskID, err)
+		return channel.CancelResult{}
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/tasks/"+taskID+"/cancel", bytes.NewReader(body)).WithContext(ctx)
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Params = gin.Params{{Key: "id", Value: taskID}}
+	c.Set("uid", userID)
+	cancelTask(c)
+	return cancelResultFrom(w.Code, w.Body.Bytes())
+}
+
+// cancelResultFrom reads cancelTask's response.
+func cancelResultFrom(status int, raw []byte) channel.CancelResult {
+	var r struct {
+		BillCents *int `json:"bill_cents"`
+	}
+	switch {
+	case status == http.StatusOK:
+		if err := json.Unmarshal(raw, &r); err != nil {
+			log.Printf("[channel-booker] cancel status=200: %v", fmt.Errorf("decode response: %w", err))
+		}
+		res := channel.CancelResult{OK: true}
+		if r.BillCents != nil {
+			res.BillCents = *r.BillCents
+		}
+		return res
+	case status == http.StatusBadRequest || status == http.StatusForbidden || status == http.StatusNotFound:
+		return channel.CancelResult{Gone: true}
+	}
+	log.Printf("[channel-booker] cancel failed status=%d", status)
+	return channel.CancelResult{}
+}

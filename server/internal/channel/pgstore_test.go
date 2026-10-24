@@ -59,7 +59,7 @@ func testDB(t *testing.T) *sql.DB {
 	if _, err := db.Exec(string(mig2)); err != nil {
 		t.Fatalf("migration e164: %v", err)
 	}
-	for _, f := range []string{"20261022120000_channel_approval_columns.sql", "20261022130000_channel_approval_question_pid.sql"} {
+	for _, f := range []string{"20261022120000_channel_approval_columns.sql", "20261022130000_channel_approval_question_pid.sql", "20261024120000_channel_cancel_by_chat.sql"} {
 		mig, err := os.ReadFile(filepath.Join("..", "..", "..", "supabase", "migrations", f))
 		if err != nil {
 			t.Fatal(err)
@@ -1147,5 +1147,32 @@ func TestPGShownUnconfirmedAndQuestionPID(t *testing.T) {
 	}
 	if got, _ = s.GetConversation(ctx, a.ID); got.ApprovalQuestionPID != "" {
 		t.Fatalf("pid not cleared: %+v", got)
+	}
+}
+
+// Cancel by chat: the new state and pending_cancel round-trip; leaving the
+// cancel clears it.
+func TestPGPendingCancel(t *testing.T) {
+	db := testDB(t)
+	s := &PGStore{DB: db}
+	ctx := context.Background()
+	a, err := s.UpsertIdentity(ctx, IMessage, "+15550000720")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc := &PendingCancel{TaskID: "00000000-0000-0000-0000-0000000000cc", Title: "Laundry pickup", QuotedCents: 1200,
+		Choices: []TaskRef{{ID: "x", Title: "A"}}}
+	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateAwaitingCancel, PendingCancel: pc}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetConversation(ctx, a.ID)
+	if err != nil || got.State != StateAwaitingCancel || got.PendingCancel == nil || got.PendingCancel.QuotedCents != 1200 || len(got.PendingCancel.Choices) != 1 {
+		t.Fatalf("%+v err %v", got, err)
+	}
+	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateIdle}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.GetConversation(ctx, a.ID); got.PendingCancel != nil {
+		t.Fatalf("not cleared: %+v", got.PendingCancel)
 	}
 }

@@ -39,6 +39,30 @@ type Booker interface {
 	// ExtensionPending: the request still awaits the requester's answer
 	// (a deferred question is sent only then — D-17 I-O).
 	ExtensionPending(ctx context.Context, userID, extensionID string) (bool, error)
+	// OpenTasks are the requester's posted tasks that can still be cancelled
+	// (newest first).
+	OpenTasks(ctx context.Context, userID string) ([]TaskRef, error)
+	// CancelQuote prices cancelling one now, by the app's own cancellation
+	// policy (cancellationPreview).
+	CancelQuote(ctx context.Context, userID, taskID string) (CancelQuote, error)
+	// Cancel cancels it through the app's own cancel path.
+	Cancel(ctx context.Context, userID, taskID string) CancelResult
+}
+
+// CancelQuote is what cancelling a task now would charge.
+type CancelQuote struct {
+	Title        string
+	ChargeCents  int
+	BaseFeeCents int
+	Committed    bool // a supporter has accepted
+	WithinGrace  bool // accepted moments ago: still free
+}
+
+// CancelResult is what a cancel did.
+type CancelResult struct {
+	OK        bool
+	BillCents int
+	Gone      bool // already closed or not this person's
 }
 
 // ExtensionOutcome is what answering an extension request produced.
@@ -259,6 +283,8 @@ func (r *Router) handleState(ctx context.Context, in Inbound, id Identity, conv 
 		return r.onAwaitingApproval(ctx, in, id, conv, text)
 	case StateAwaitingBudget:
 		return r.onAwaitingBudget(ctx, in, id, conv, text)
+	case StateAwaitingCancel:
+		return r.onAwaitingCancel(ctx, in, id, conv, text)
 	case StateAwaitingTaskChoice:
 		return r.onAwaitingTaskChoice(ctx, in, id, conv, text)
 	default:
@@ -269,7 +295,7 @@ func (r *Router) handleState(ctx context.Context, in Inbound, id Identity, conv 
 // awaitingAnswer: states where the next bare YES/NO is an answer to us.
 func awaitingAnswer(s State) bool {
 	switch s {
-	case StateAwaitingConfirm, StateAwaitingApproval, StateAwaitingBudget, StateAwaitingName, StateAwaitingSetup:
+	case StateAwaitingConfirm, StateAwaitingApproval, StateAwaitingBudget, StateAwaitingName, StateAwaitingSetup, StateAwaitingCancel:
 		return true
 	}
 	return false
@@ -293,6 +319,11 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 	// not an errand, and parsing it as one would book nonsense.
 	// A bare YES/NO with nothing of ours pending: an answer to a supporter
 	// who just asked (relayed), otherwise an acknowledgement.
+	// "Can you cancel the task?" — by rule, before anything else reads it
+	// (staging 2026-10-24 answered it "Got it"; Arbiter: cancel by chat).
+	if IsCancelRequest(text) && id.Linked() {
+		return r.startCancel(ctx, in, id, conv)
+	}
 	if IsYes(text) || IsNo(text) {
 		if id.Linked() {
 			if handled, err := r.answerToSupporter(ctx, in, id, conv, text); handled {
