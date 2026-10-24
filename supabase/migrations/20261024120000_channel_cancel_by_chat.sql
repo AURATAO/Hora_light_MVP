@@ -1,6 +1,11 @@
 -- Cancel a posted task by text (D-17, Arbiter 2026-10-24): the confirm step
 -- needs its own state and the quoted task. Forward-only, additive; RLS on
 -- channel_conversations is unchanged (deny-all, Go only — S-10).
+-- Deploy order: apply BEFORE the build that reads pending_cancel
+-- (GetConversation selects it; without the column every message fails).
+-- The constraint name is the one 20261019120000 re-asserts. Reversal: drop
+-- the column and re-assert the CHECK without 'awaiting_cancel' — after
+-- moving any awaiting_cancel rows to 'idle'.
 ALTER TABLE public.channel_conversations
   ADD COLUMN IF NOT EXISTS pending_cancel jsonb;
 

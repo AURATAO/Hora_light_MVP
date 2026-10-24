@@ -262,6 +262,13 @@ type ConversationStore interface {
 	// still the open one. ok=false: another message (a second YES) or an
 	// approval question took the thread first; the caller must not cancel.
 	ClaimCancel(ctx context.Context, identityID, taskID string) (bool, error)
+	// AskCancel opens (or re-opens) the cancel question in one statement —
+	// state awaiting_cancel, pending_cancel, question_shown_at moved forward
+	// to shownAt — only if the thread is idle or already on the cancel
+	// question. False: something else took the thread (a supporter's
+	// question armed meanwhile); the caller must not send the cancel
+	// question (review 10/24 r2: never two YES-able questions).
+	AskCancel(ctx context.Context, identityID string, pc PendingCancel, shownAt time.Time) (bool, error)
 	// HoldDraft stores a draft made while an approval question waits —
 	// only the draft, and only if extensionID is still the armed request
 	// (false otherwise: the caller carries on without the hold).
@@ -634,6 +641,27 @@ func (s *PGStore) ClaimCancel(ctx context.Context, identityID, taskID string) (b
 	}
 	if err != nil {
 		return false, fmt.Errorf("claim cancel: %w", err)
+	}
+	return true, nil
+}
+
+func (s *PGStore) AskCancel(ctx context.Context, identityID string, pc PendingCancel, shownAt time.Time) (bool, error) {
+	b, err := json.Marshal(pc)
+	if err != nil {
+		return false, fmt.Errorf("ask cancel: marshal: %w", err)
+	}
+	var one int
+	err = s.DB.QueryRowContext(ctx, `
+		UPDATE channel_conversations SET state = $4, pending_cancel = $2::jsonb,
+		  question_shown_at = GREATEST(question_shown_at, $3), updated_at = now()
+		WHERE identity_id = $1 AND state IN ($4, $5)
+		RETURNING 1
+	`, identityID, string(b), shownAt, string(StateAwaitingCancel), string(StateIdle)).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("ask cancel: %w", err)
 	}
 	return true, nil
 }

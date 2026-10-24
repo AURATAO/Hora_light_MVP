@@ -106,6 +106,9 @@ func (r *Router) askBudget(ctx context.Context, in Inbound, conv Conversation, i
 	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 		return fmt.Errorf("askBudget: %w", err)
 	}
+	if done, err := r.preempted(ctx, in, conv.IdentityID, conv.Pending); done {
+		return err
+	}
 	if len(items) > 1 {
 		return r.Reply(ctx, in, lead+fmt.Sprintf(CopyAskBudgetFor, items[i].Draft.Title), "")
 	}

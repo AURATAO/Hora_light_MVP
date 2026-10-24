@@ -11,6 +11,7 @@ package channel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
@@ -69,22 +70,78 @@ func (r *Router) startCancel(ctx context.Context, in Inbound, id Identity, conv 
 	if err != nil {
 		return fmt.Errorf("startCancel: %w", err)
 	}
+	more := len(open) > MaxCancelChoices
+	if more {
+		open = open[:MaxCancelChoices]
+	}
 	switch len(open) {
 	case 0:
 		return r.Reply(ctx, in, CopyCancelNone, "")
 	case 1:
 		return r.quoteCancel(ctx, in, id, conv, open[0])
 	}
-	conv.State = StateAwaitingCancel
-	conv.PendingCancel = &PendingCancel{Choices: open, AskedAtUnix: r.now().Unix()}
-	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+	asked, err := r.Conversations.AskCancel(ctx, id.ID, PendingCancel{Choices: open, AskedAtUnix: r.now().Unix()}, ShownUnconfirmed)
+	if err != nil {
 		return fmt.Errorf("startCancel: %w", err)
+	}
+	if !asked {
+		return r.cancelPreempted(ctx, in, id)
 	}
 	var b strings.Builder
 	for i, t := range open {
 		fmt.Fprintf(&b, "\n%d. %s", i+1, t.Title)
 	}
-	return r.Reply(ctx, in, fmt.Sprintf(CopyCancelWhich, b.String()), "")
+	if more {
+		b.WriteString("\n" + CopyCancelMoreInApp)
+	}
+	if err := r.Reply(ctx, in, fmt.Sprintf(CopyCancelWhich, b.String()), ""); err != nil {
+		return err
+	}
+	r.markShown(ctx, id.ID)
+	return nil
+}
+
+// MaxCancelChoices: the numbered list's length; OpenTasks returns one more
+// so the list can say there are others (cancelled in the app).
+const MaxCancelChoices = 9
+
+// ErrTaskNotOpen: the task is past cancelling (finished, cancelled,
+// removed) — Booker.CancelQuote's answer for it.
+var ErrTaskNotOpen = errors.New("task is not open")
+
+// supporterAskedSince: a supporter's question ("…?", unanswered, on an
+// active task) arrived after `since`. A failed lookup counts as asked (fail
+// toward asking again).
+func (r *Router) supporterAskedSince(ctx context.Context, in Inbound, id Identity, since *time.Time) bool {
+	if r.Chat == nil || !id.Linked() || since == nil {
+		return false
+	}
+	last, lastTask, lastAt, answered, err := r.lastSupporterLineErr(ctx, in, id)
+	if err != nil {
+		log.Printf("[channel] cancel identity=%s: %v", id.ID, err)
+		return true
+	}
+	return lastTask != "" && lastAt.After(*since) && supporterQuestionOpen(last, lastAt, answered, r.now())
+}
+
+// cancelPreempted: the cancel question could not be opened — a supporter's
+// question took the thread while the tasks were looked up. That one is
+// answered first; the cancel is asked for again after.
+func (r *Router) cancelPreempted(ctx context.Context, in Inbound, id Identity) error {
+	fresh, err := r.Conversations.GetConversation(ctx, id.ID)
+	if err != nil {
+		return fmt.Errorf("cancel: %w", err)
+	}
+	log.Printf("[channel] cancel identity=%s: thread taken (state %s), question not sent", id.ID, fresh.State)
+	switch fresh.State {
+	case StateAwaitingApproval:
+		return r.Reply(ctx, in, CopyCancelAfterApproval+"\n\n"+approvalStillPending(fresh), "")
+	case StateHandoff:
+		return r.onHandoff(ctx, in, id)
+	case StatePosting:
+		return r.Reply(ctx, in, CopyBookingInFlight, "")
+	}
+	return r.Reply(ctx, in, stillWaiting(fresh), "")
 }
 
 // quoteCancel asks to confirm cancelling one task at the charge quoted now.
@@ -97,6 +154,9 @@ func (r *Router) quoteCancel(ctx context.Context, in Inbound, id Identity, conv 
 		return r.Reply(ctx, in, fmt.Sprintf(copy, t.Title), "")
 	}
 	q, err := r.Booker.CancelQuote(ctx, id.UserID, t.ID)
+	if errors.Is(err, ErrTaskNotOpen) {
+		return toIdle(CopyCancelGone)
+	}
 	if err != nil {
 		log.Printf("[channel] cancel quote identity=%s task=%s: %v", id.ID, t.ID, err)
 		return toIdle(CopyCancelFailed)
@@ -107,12 +167,16 @@ func (r *Router) quoteCancel(ctx context.Context, in Inbound, id Identity, conv 
 		log.Printf("[channel] cancel quote identity=%s task=%s: charge moving, sent to the app", id.ID, t.ID)
 		return toIdle(CopyCancelInApp)
 	}
-	conv.State = StateAwaitingCancel
-	conv.PendingCancel = &PendingCancel{TaskID: t.ID, Title: title, QuotedCents: q.ChargeCents, AskedAtUnix: r.now().Unix()}
-	shown := ShownUnconfirmed // R-1: no YES counts until the question is delivered
-	conv.QuestionShownAt = &shown
-	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+	// R-1: no YES counts until the question is delivered (ShownUnconfirmed,
+	// then markShown). Opened by compare-and-set, never a full save of the
+	// snapshot read before the quote (review 10/24 r2).
+	asked, err := r.Conversations.AskCancel(ctx, id.ID,
+		PendingCancel{TaskID: t.ID, Title: title, QuotedCents: q.ChargeCents, AskedAtUnix: r.now().Unix()}, ShownUnconfirmed)
+	if err != nil {
 		return fmt.Errorf("quoteCancel: %w", err)
+	}
+	if !asked {
+		return r.cancelPreempted(ctx, in, id)
 	}
 	if err := r.Reply(ctx, in, cancelQuestion(title, q), ""); err != nil {
 		return err
@@ -179,6 +243,15 @@ func (r *Router) onAwaitingCancel(ctx context.Context, in Inbound, id Identity, 
 	case strictYes && (conv.QuestionShownAt == nil || in.ReceivedAt.IsZero() || in.ReceivedAt.Before(*conv.QuestionShownAt)):
 		// Sent before the question reached them (a double tap): asked again.
 		return r.quoteCancel(ctx, in, id, conv, TaskRef{ID: pc.TaskID, Title: pc.Title})
+	case strictYes && in.Channel == WhatsApp && in.ReplyToProviderID != "":
+		// A swiped "YES" may be on another message (the cancel question's
+		// own id is not kept): the fee needs it typed on its own.
+		return r.Reply(ctx, in, fmt.Sprintf(CopyCancelReask, pc.Title), "")
+	case strictYes && r.supporterAskedSince(ctx, in, id, conv.QuestionShownAt):
+		// The supporter asked something after our question: this YES may
+		// be theirs. A cancel fee cannot be undone — asked again.
+		log.Printf("[channel] cancel identity=%s: supporter asked after the question, re-asked", id.ID)
+		return r.quoteCancel(ctx, in, id, conv, TaskRef{ID: pc.TaskID, Title: pc.Title})
 	case strictYes:
 		return r.confirmCancel(ctx, in, id, conv, pc)
 	case IsCancelRequest(text):
@@ -205,6 +278,9 @@ func (r *Router) onAwaitingCancel(ctx context.Context, in Inbound, id Identity, 
 // and does not cancel twice — and only then the app's cancel runs.
 func (r *Router) confirmCancel(ctx context.Context, in Inbound, id Identity, conv Conversation, pc *PendingCancel) error {
 	q, err := r.Booker.CancelQuote(ctx, id.UserID, pc.TaskID)
+	if errors.Is(err, ErrTaskNotOpen) {
+		return r.endCancel(ctx, in, id, pc, CopyCancelGone)
+	}
 	if err != nil {
 		log.Printf("[channel] cancel re-quote identity=%s task=%s: %v", id.ID, pc.TaskID, err)
 		return r.endCancel(ctx, in, id, pc, CopyCancelFailed)

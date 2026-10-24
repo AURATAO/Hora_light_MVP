@@ -76,7 +76,7 @@ func TestCancelResultMapping(t *testing.T) {
 		{200, `{}`, channel.CancelResult{OK: true, BillUnknown: true}},
 		{400, `{"error": "task already closed"}`, channel.CancelResult{Gone: true}},
 		{400, `{"error": "task_removed"}`, channel.CancelResult{Gone: true}},
-		{404, `{"error": "not found"}`, channel.CancelResult{Gone: true}},
+		{404, `{"error": "not found"}`, channel.CancelResult{}},
 		{400, `{"error": "reason required"}`, channel.CancelResult{}},
 		{403, `{"error": "only requester can cancel"}`, channel.CancelResult{}},
 		{500, `{"error": "calc error"}`, channel.CancelResult{}},

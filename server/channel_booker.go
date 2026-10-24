@@ -266,7 +266,7 @@ func (b *chatBooker) OpenTasks(ctx context.Context, userID string) ([]channel.Ta
 		  FROM public.tasks
 		 WHERE requester_id = $1::uuid AND status = 'open'
 		 ORDER BY created_at DESC
-		 LIMIT 9`, userID)
+		 LIMIT $2`, userID, channel.MaxCancelChoices+1)
 	if err != nil {
 		return nil, fmt.Errorf("open tasks: %w", err)
 	}
@@ -298,7 +298,7 @@ func (b *chatBooker) CancelQuote(ctx context.Context, userID, taskID string) (ch
 		return channel.CancelQuote{}, fmt.Errorf("cancel quote: %w", err)
 	}
 	if status != "open" {
-		return channel.CancelQuote{}, fmt.Errorf("cancel quote: task is %s", status)
+		return channel.CancelQuote{}, channel.ErrTaskNotOpen
 	}
 	// cancellationPreview reads a failed minutes query as zero minutes; a
 	// quote the person says YES to must not rest on that (review 10/24 #9).
@@ -360,8 +360,9 @@ func cancelResultFrom(status int, raw []byte) channel.CancelResult {
 			return channel.CancelResult{OK: true, BillUnknown: true}
 		}
 		return channel.CancelResult{OK: true, BillCents: *r.BillCents}
-	case status == http.StatusNotFound,
-		status == http.StatusBadRequest && (r.Error == "task already closed" || r.Error == "task_removed"):
+	// Not 404: cancelTask answers 404 on any lookup error too, and the
+	// quote just found this task — a 404 here is a failure, said as one.
+	case status == http.StatusBadRequest && (r.Error == "task already closed" || r.Error == "task_removed"):
 		return channel.CancelResult{Gone: true}
 	}
 	log.Printf("[channel-booker] cancel failed status=%d", status)

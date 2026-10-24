@@ -910,3 +910,33 @@ budget. Rulings:
 - **Deploy order:** `20261024120000_channel_cancel_by_chat.sql` must be
   applied before the build that reads `pending_cancel` (staging: applied
   first; production: with the merge, migration before deploy).
+
+#### Review 10/24 round 2 (FAIL, 1 MAJOR) — the fixes
+
+- **No question of ours over an armed approval.** The cancel question is
+  opened by compare-and-set (`AskCancel`: only from idle or the cancel
+  question itself); if a supporter's question armed while the tasks were
+  looked up or quoted, the cancel is not asked ("answer that first, then
+  send cancel again"). The draft path (details, name, budget, summary)
+  re-reads after its save and, if an approval armed meanwhile, says the
+  errand comes after it instead of sending a second YES-able question
+  (`preempted`; the draft was saved with the approval and resumes after).
+- **Cancel YES made ambiguous by a supporter question** (relayed "…?"
+  after our question): asked again. A swiped WhatsApp "YES" is asked
+  again (the cancel question's own id is not kept). A task past
+  cancelling at the re-quote says so (`ErrTaskNotOpen`); a 404 from
+  `cancelTask` is a failure, not "already closed" (it answers 404 on any
+  lookup error). The list says when there are more than nine open tasks.
+- **Ops texts** are not sent when the handed-off number cannot be looked
+  up (fail closed); the own-number skip is tested.
+- **errandForDraft** fails closed (the usual routing) when the supporter
+  line cannot be read.
+- **Accepted residuals (Arbiter to confirm):** a work session that starts
+  in the milliseconds between the re-quote and the cancel can bill above
+  the quote — the reply states the real amount; the P6 lead-in is spent
+  if the held-draft reply fails to send; `notify.SendEmail`'s error text
+  is logged (it carries no recipient: token missing, HTTP status, or the
+  transport error for the Postmark URL).
+- Migration header now carries deploy order and reversal; the CHECK's
+  name was confirmed on the staging branch (single constraint,
+  `channel_conversations_state_check`, includes `awaiting_cancel`).

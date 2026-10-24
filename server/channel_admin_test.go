@@ -114,6 +114,7 @@ func TestOpsNotifierReportsReach(t *testing.T) {
 	sms := &stubAdapter{}
 	touch := &stubToucher{}
 	n = newOpsNotifier(nil, sms, touch)
+	n.lookup = func(context.Context, string) (string, error) { return "+15550100777", nil }
 	if err := n.NotifyOps(context.Background(), notice); err != nil || len(sms.sent) != 1 || sms.sent[0].To != "+15550100199" || !strings.Contains(sms.sent[0].Text, "0100") {
 		t.Fatalf("err %v sms %+v", err, sms.sent)
 	}
@@ -132,8 +133,21 @@ func TestOpsNotifierReportsReach(t *testing.T) {
 	if err := n.NotifyOps(context.Background(), notice); err == nil || len(sms.sent) != 1 {
 		t.Fatalf("stamp failed: err %v texts %d", err, len(sms.sent))
 	}
-	if err := newOpsNotifier(nil, sms, nil).NotifyOps(context.Background(), notice); err == nil || len(sms.sent) != 1 {
+	noStamp := newOpsNotifier(nil, sms, nil)
+	noStamp.lookup = n.lookup
+	if err := noStamp.NotifyOps(context.Background(), notice); err == nil || len(sms.sent) != 1 {
 		t.Fatalf("no stamper: err %v texts %d", err, len(sms.sent))
+	}
+	// The handed-off number itself is not texted (and is not "reached").
+	touch.err = nil
+	n.lookup = func(context.Context, string) (string, error) { return "+15550100199", nil }
+	if err := n.NotifyOps(context.Background(), notice); err == nil || len(sms.sent) != 1 {
+		t.Fatalf("own number: err %v texts %d", err, len(sms.sent))
+	}
+	// Lookup failed: cannot tell — no texts (fail closed).
+	n.lookup = func(context.Context, string) (string, error) { return "", errors.New("db down") }
+	if err := n.NotifyOps(context.Background(), notice); err == nil || len(sms.sent) != 1 {
+		t.Fatalf("lookup failed: err %v texts %d", err, len(sms.sent))
 	}
 }
 

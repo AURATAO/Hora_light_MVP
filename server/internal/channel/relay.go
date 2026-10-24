@@ -1220,7 +1220,11 @@ func (r *Router) errandForDraft(ctx context.Context, in Inbound, id Identity, te
 		if _, named := supporterNamed(active, text); named {
 			return false
 		}
-		last, lastTask, lastAt, answered := r.lastSupporterLine(ctx, in, id)
+		last, lastTask, lastAt, answered, err := r.lastSupporterLineErr(ctx, in, id)
+		if err != nil {
+			log.Printf("[channel] errand rule identity=%s: %v", id.ID, err)
+			return false // cannot tell who spoke: the usual routing decides (P7)
+		}
 		if _, ok := taskIn(active, lastTask); ok {
 			if supporterQuestionOpen(last, lastAt, answered, r.now()) {
 				return false

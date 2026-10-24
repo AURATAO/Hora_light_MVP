@@ -126,6 +126,10 @@ func (m *memConversations) GetConversation(_ context.Context, iid string) (Conve
 		p := *c.Pending
 		c.Pending = &p
 	}
+	if c.PendingCancel != nil { // a copy, like a row read
+		pc := *c.PendingCancel
+		c.PendingCancel = &pc
+	}
 	return c, nil
 }
 func (m *memConversations) SaveConversation(_ context.Context, c Conversation) error {
@@ -354,6 +358,21 @@ func (m *memConversations) ClaimCancel(_ context.Context, iid, task string) (boo
 	return true, nil
 }
 
+func (m *memConversations) AskCancel(_ context.Context, iid string, pc PendingCancel, shownAt time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.convs[iid]
+	if !ok || (c.State != StateIdle && c.State != StateAwaitingCancel) {
+		return false, nil
+	}
+	c.State, c.PendingCancel = StateAwaitingCancel, &pc
+	if c.QuestionShownAt == nil || shownAt.After(*c.QuestionShownAt) {
+		c.QuestionShownAt = &shownAt // GREATEST, like the SQL
+	}
+	m.convs[iid] = c
+	return true, nil
+}
+
 func (m *memConversations) HoldDraft(_ context.Context, iid, ext string, d PendingDraft) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -439,6 +458,8 @@ type fakeBooker struct {
 	quote     CancelQuote
 	quotes2   []CancelQuote // successive CancelQuote answers when set
 	onQuote   func()        // runs at each CancelQuote (a parallel message, in tests)
+	onPrice   func()        // runs at each draft Quote
+	quoteErr  error         // CancelQuote fails with it when set
 	cancelled []string
 	cancelRes CancelResult
 }
@@ -454,6 +475,9 @@ func (b *fakeBooker) CancelQuote(_ context.Context, _, taskID string) (CancelQuo
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.quoteErr != nil {
+		return CancelQuote{}, b.quoteErr
+	}
 	if len(b.quotes2) > 0 {
 		q := b.quotes2[0]
 		b.quotes2 = b.quotes2[1:]
@@ -469,6 +493,9 @@ func (b *fakeBooker) Cancel(_ context.Context, _, taskID string) CancelResult {
 }
 
 func (b *fakeBooker) Quote(_ context.Context, _ llm.TaskDraft, budgetCents int) (int, int, error) {
+	if b.onPrice != nil {
+		b.onPrice()
+	}
 	b.mu.Lock()
 	b.quotes++
 	b.mu.Unlock()

@@ -199,3 +199,90 @@ func TestWeakErrandDefersToTheModel(t *testing.T) {
 		t.Fatal("a new errand said outright is still ours")
 	}
 }
+
+// Review 10/24 r2 MAJOR: a supporter's question armed while the cancel was
+// being quoted is the open question — the cancel question is not sent on
+// top of it, and the YES that follows answers the supporter's, knowingly.
+func TestCancelQuestionNotSentOverAnArmedApproval(t *testing.T) {
+	g := cancelRig(t)
+	g.booker.onQuote = func() {
+		g.booker.onQuote = nil
+		g.arm(t, "ext-b1")
+	}
+	got := g.say(t, "cancel it")
+	if g.state() != StateAwaitingApproval || !strings.Contains(got, "answer that first") {
+		t.Fatalf("state %s reply %q", g.state(), got)
+	}
+	for _, o := range g.ad.sent {
+		if strings.Contains(o.Text, "Reply YES to cancel") {
+			t.Fatalf("a cancel question went out over the armed approval: %q", o.Text)
+		}
+	}
+}
+
+// The same for a draft: a summary is not sent over an approval armed
+// while the draft was priced; the draft waits and is told so.
+func TestSummaryNotSentOverAnArmedApproval(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.booker.onPrice = func() {
+		g.booker.onPrice = nil
+		g.arm(t, "ext-b1")
+	}
+	got := g.say(t, "pick up my laundry at 12 Bedford Ave")
+	if g.state() != StateAwaitingApproval || !strings.Contains(got, "right after you answer") {
+		t.Fatalf("state %s reply %q", g.state(), got)
+	}
+	for _, o := range g.ad.sent {
+		if strings.Contains(o.Text, "Reply YES to book") {
+			t.Fatalf("a summary went out over the armed approval: %q", o.Text)
+		}
+	}
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.Pending == nil {
+		t.Fatal("the draft must be kept for after the answer")
+	}
+}
+
+// Review 10/24 r2 MINOR: a supporter's question delivered after the cancel
+// question makes a YES ambiguous — asked again, not cancelled.
+func TestCancelYesAfterASupporterQuestionIsReasked(t *testing.T) {
+	g, _, tasks, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.booker.open = []TaskRef{{ID: "task-9", Title: "Laundry pickup"}}
+	g.booker.quote = CancelQuote{Title: "Laundry pickup", ChargeCents: 1200, BaseFeeCents: 1200, Committed: true}
+	g.booker.cancelRes = CancelResult{OK: true, BillCents: 1200}
+	g.say(t, "cancel it")
+	tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: are you home?", "task-2", time.Now().Add(time.Second)
+	got := g.say(t, "YES")
+	if len(g.booker.cancelled) != 0 || !strings.Contains(got, "Cancel “Laundry pickup”") {
+		t.Fatalf("cancelled %v reply %q", g.booker.cancelled, got)
+	}
+}
+
+// A swiped WhatsApp "YES" (on some message — the cancel question's own id
+// is not kept) is asked again; the fee needs it typed on its own.
+func TestCancelSwipedYesOnWhatsAppIsReasked(t *testing.T) {
+	g := cancelRig(t)
+	g.r.Adapters[WhatsApp] = g.ad
+	g.say(t, "cancel it")
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	id := Identity{ID: "id-" + me, Channel: WhatsApp, Address: me, UserID: "user-1"}
+	in := Inbound{Channel: WhatsApp, From: me, Text: "YES", ReceivedAt: time.Now().Add(time.Second), ReplyToProviderID: "wamid.other"}
+	if err := g.r.onAwaitingCancel(context.Background(), in, id, c, "YES"); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.booker.cancelled) != 0 || !strings.Contains(g.ad.last(), "reply YES on its own") {
+		t.Fatalf("cancelled %v reply %q", g.booker.cancelled, g.ad.last())
+	}
+}
+
+// A task already past cancelling is said as such (not "try again").
+func TestCancelNotOpenIsGone(t *testing.T) {
+	g := cancelRig(t)
+	g.say(t, "cancel it")
+	g.booker.quoteErr = ErrTaskNotOpen
+	got := g.say(t, "YES")
+	if !strings.Contains(got, "can't be cancelled any more") || len(g.booker.cancelled) != 0 {
+		t.Fatalf("%q", got)
+	}
+}

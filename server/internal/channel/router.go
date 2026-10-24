@@ -518,6 +518,9 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 			return fmt.Errorf("startDraft: %w", err)
 		}
+		if done, err := r.preempted(ctx, in, conv.IdentityID, p); done {
+			return err
+		}
 		return r.Reply(ctx, in, lead+detailsQuestion(p), "")
 	}
 	if !id.Linked() && conv.PendingName == "" {
@@ -526,6 +529,9 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		lead := r.leadIn(p)
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 			return fmt.Errorf("startDraft: %w", err)
+		}
+		if done, err := r.preempted(ctx, in, conv.IdentityID, p); done {
+			return err
 		}
 		return r.Reply(ctx, in, lead+fmt.Sprintf(CopyAskName, p.Headline()), "")
 	}
@@ -559,6 +565,9 @@ func (r *Router) showSummary(ctx context.Context, in Inbound, conv Conversation)
 	conv.QuestionShownAt = &shown
 	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 		return fmt.Errorf("showSummary: %w", err)
+	}
+	if done, err := r.preempted(ctx, in, conv.IdentityID, conv.Pending); done {
+		return err
 	}
 	if err := r.Reply(ctx, in, summary, ""); err != nil {
 		return err
@@ -1058,6 +1067,27 @@ func (r *Router) holdDraft(ctx context.Context, in Inbound, id Identity, conv Co
 // vagueRequestRE: a request to book with nothing in it — "book another
 // thing?", "can I book something", "I'd like to make a new request".
 var vagueRequestRE = regexp.MustCompile(`(?i)^\W*(?:hi\W+)?(?:can i|could i|may i|i want to|i'd like to|id like to|let me|i need to)?\s*(?:book|post|order|make|request|get|add)\s*(?:me\s+)?(?:another|a new|one more|a|something|an?other)?\s*(?:thing|task|errand|one|request|booking|order)?\s*(?:please|pls)?\W*$`)
+
+// preempted: after a full-row save of our question, a supporter's approval
+// question armed meanwhile (the save keeps it — S-11/5) is the open one, so
+// ours must not go out on top of it: two YES-able questions in one thread
+// (review 10/24 r2). The draft was saved with it and comes back after the
+// answer (ResumeState / resumeLine). done=true: replied instead.
+func (r *Router) preempted(ctx context.Context, in Inbound, identityID string, p *PendingDraft) (bool, error) {
+	fresh, err := r.Conversations.GetConversation(ctx, identityID)
+	if err != nil {
+		return true, fmt.Errorf("preempted: %w", err)
+	}
+	if fresh.State != StateAwaitingApproval {
+		return false, nil
+	}
+	log.Printf("[channel] identity=%s: an approval question armed while ours was prepared; ours waits", identityID)
+	text := approvalStillPending(fresh)
+	if p != nil {
+		text = fmt.Sprintf(CopyErrandAfterApproval, p.Headline()) + "\n\n" + text
+	}
+	return true, r.Reply(ctx, in, text, "")
+}
 
 // supporterSpokeSince: a supporter on an active task wrote after `since`
 // (nil: any line counts).

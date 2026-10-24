@@ -48,6 +48,8 @@ type opsEmailNotifier struct {
 	// make a question on that thread no longer the last thing we said, as
 	// every other send does. No stamp, no text (fail closed).
 	touch outboundToucher
+	// lookup: the handed-off identity's address (tests); nil = the DB.
+	lookup func(ctx context.Context, identityID string) (string, error)
 }
 
 // outboundToucher is PGStore.TouchOutbound.
@@ -138,8 +140,16 @@ func (o opsEmailNotifier) NotifyOps(ctx context.Context, n channel.HandoffNotice
 	}
 	if !n.Update && o.sms != nil {
 		text := fmt.Sprintf("[HO:RA] Chat handoff (%s) — %s %s. Details in the ops email / admin.", reasonLabelOps(n.Reason), n.Channel, n.PhoneHint)
-		own := o.identityAddress(ctx, n.IdentityID)
+		own, err := o.addressOf(ctx, n.IdentityID)
+		if err != nil {
+			// Cannot tell whether an ops number is the person handed off:
+			// no texts (fail closed); the emails above still went.
+			log.Printf("[channel-admin] handoff texts not sent: identity lookup: %v", err)
+		}
 		for _, to := range o.numbers {
+			if err != nil {
+				break
+			}
 			if to == own {
 				// The person handed off is this ops number: texting them
 				// about themselves reaches no one else.
@@ -170,18 +180,21 @@ func (o opsEmailNotifier) NotifyOps(ctx context.Context, n channel.HandoffNotice
 	return nil
 }
 
-// identityAddress: the handed-off thread's own number ("" when unknown).
-func (o opsEmailNotifier) identityAddress(ctx context.Context, identityID string) string {
-	if o.sqlDB == nil || identityID == "" {
-		return ""
+// addressOf: the handed-off thread's own number. A test seam (lookup);
+// without one it reads channel_identities.
+func (o opsEmailNotifier) addressOf(ctx context.Context, identityID string) (string, error) {
+	if o.lookup != nil {
+		return o.lookup(ctx, identityID)
+	}
+	if o.sqlDB == nil {
+		return "", fmt.Errorf("no database")
 	}
 	var addr string
 	if err := o.sqlDB.QueryRowContext(ctx,
 		`select address from channel_identities where id = $1::uuid`, identityID).Scan(&addr); err != nil {
-		log.Printf("[channel-admin] handoff notice: identity lookup id=%s: %v", identityID, err)
-		return ""
+		return "", fmt.Errorf("identity %s: %w", identityID, err)
 	}
-	return addr
+	return addr, nil
 }
 
 // sendOpsEmail is notify.SendEmail; a variable so tests can stand in.
