@@ -159,7 +159,13 @@ func evaluateTimeCap(ctx context.Context, taskID string) {
 		fireTimeCapWarning(ctx, taskID, st)
 	}
 	if st.Reached {
-		fireTimeCapReached(ctx, taskID, st)
+		// The clock stops at the ceiling (D-06, Arbiter 2026-10-24 23:34) —
+		// on EVERY evaluation, not behind the once-per-task latch: a
+		// session clocked in again without an approval, or one running
+		// when a failure spent the latch, is cut just the same. A no-op
+		// once no session is open.
+		closed := clockOutAtCap(ctx, taskID, st.Cap.CapMinutes)
+		fireTimeCapReached(ctx, taskID, st, closed)
 		fireTimeCapOpsAlert(ctx, taskID, st)
 	}
 }
@@ -253,7 +259,7 @@ func fireTimeCapWarning(ctx context.Context, taskID string, st timeCapState) {
 }
 
 // fireTimeCapReached — Layer 1's announcement. Billing has stopped.
-func fireTimeCapReached(ctx context.Context, taskID string, st timeCapState) {
+func fireTimeCapReached(ctx context.Context, taskID string, st timeCapState, closed int) {
 	if !claimLatch(ctx, taskID, "time_cap_reached_at") {
 		return
 	}
@@ -261,7 +267,6 @@ func fireTimeCapReached(ctx context.Context, taskID string, st timeCapState) {
 	if err != nil {
 		return
 	}
-	closed := clockOutAtCap(ctx, taskID, st.Cap.CapMinutes)
 	log.Printf("[timecap] reached task=%s logged=%d cap=%d sessions_closed=%d", taskID, st.LoggedMinutes, st.Cap.CapMinutes, closed)
 	writeAudit(ctx, taskID, systemActorUID, "TIME_CAP_REACHED", "", map[string]any{
 		"logged_minutes":  st.LoggedMinutes,
@@ -270,25 +275,28 @@ func fireTimeCapReached(ctx context.Context, taskID string, st timeCapState) {
 		"sessions_closed": closed,
 	})
 
+	// The words match what happened: a session was cut at the cap, or
+	// there was none running (a manual clock-out past the cap).
+	supporterBody := fmt.Sprintf(
+		"You've reached the %d minutes agreed for %q, so your session has been clocked out there — time past it isn't billed. If the job isn't done, ask for more time in the app and clock in again once it's approved.",
+		st.Cap.CapMinutes, t.Title)
+	requesterBody := fmt.Sprintf(
+		"%s has worked the %d minutes agreed for %q, so the clock has been stopped there. Approve 15 or 30 more minutes in the app if the job isn't finished.",
+		t.AssigneeName, st.Cap.CapMinutes, t.Title)
+	if closed == 0 {
+		supporterBody = fmt.Sprintf(
+			"You've reached the %d minutes agreed for %q — time past it isn't billed. If the job isn't done, ask for more time in the app before clocking in again.",
+			st.Cap.CapMinutes, t.Title)
+		requesterBody = fmt.Sprintf(
+			"%s has worked the %d minutes agreed for %q and isn't being paid for anything beyond it. Approve 15 or 30 more minutes in the app if the job isn't finished.",
+			t.AssigneeName, st.Cap.CapMinutes, t.Title)
+	}
 	notifyUser(ctx, derefOrEmpty(t.AssigneeID), t.AssigneeEmail, notify.CreateNotificationInput{
-		TaskID: taskID,
-		Type:   "TIME_CAP_REACHED",
-		Title:  "Time cap reached",
-		Body: fmt.Sprintf(
-			"You've reached the %d minutes agreed for %q, so your session has been clocked out there — time past it isn't billed. If the job isn't done, ask for more time in the app and clock in again once it's approved.",
-			st.Cap.CapMinutes, t.Title),
-		TaskTitle: t.Title,
+		TaskID: taskID, Type: "TIME_CAP_REACHED", Title: "Time cap reached", Body: supporterBody, TaskTitle: t.Title,
 	})
-
 	notifyUser(ctx, t.RequesterID, t.RequesterEmail, notify.CreateNotificationInput{
-		TaskID: taskID,
-		Type:   "TIME_CAP_REACHED",
-		Title:  "Your supporter has reached the time limit",
-		Body: fmt.Sprintf(
-			"%s has worked the %d minutes agreed for %q, so the clock has been stopped there. Approve 15 or 30 more minutes in the app if the job isn't finished.",
-			t.AssigneeName, st.Cap.CapMinutes, t.Title),
-		TaskTitle:     t.Title,
-		SupporterName: t.AssigneeName,
+		TaskID: taskID, Type: "TIME_CAP_REACHED", Title: "Your supporter has reached the time limit", Body: requesterBody,
+		TaskTitle: t.Title, SupporterName: t.AssigneeName,
 	})
 }
 
@@ -332,6 +340,12 @@ func fireTimeCapOpsAlert(ctx context.Context, taskID string, st timeCapState) {
 		return
 	}
 	if time.Since(*reachedAt) < time.Duration(Billing.GracePeriodMinutes)*time.Minute {
+		return
+	}
+	// With the clock stopped at the cap (D-06 addendum 2) nobody is working
+	// unpaid: ops hear only when time IS past the cap — a session the cut
+	// could not close.
+	if st.LoggedMinutes <= st.Cap.CapMinutes {
 		return
 	}
 	// A pending time request means the requester has not been asked and
@@ -445,9 +459,13 @@ func sweepLiveTimeCaps(ctx context.Context) {
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
+			log.Printf("[timecap][live-sweep] scan: %v", err)
 			break
 		}
 		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[timecap][live-sweep] rows: %v", err)
 	}
 	rows.Close()
 	for _, id := range ids {

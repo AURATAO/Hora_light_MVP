@@ -81,3 +81,14 @@ it is approved; the requester is told the clock was stopped. "No automatic
 cancellation" still holds — only the session ends. A phone that keeps
 pinging after that gets the existing 403 "not clocked in". Built with the
 live sweep, so the clock stops within a minute of the cap on either app.
+
+**Review r1 (FAIL) → fixes.** The cut runs on every evaluation when the
+cap is reached (idempotent; a session clocked in again without an
+approval, or one left running when a failure spent the latch, is cut just
+the same) — the latch gates only the notifications; the notification
+words follow what happened (a session cut, or none running); the ops
+"unresponsive requester" alert fires only when time is actually past the
+cap (a session the cut could not close) — with the clock stopped nobody
+works unpaid; a manual clock-out racing the cut keeps the cap-minute
+end_at; the live sweep logs iteration errors. Accepted: a forced split
+can bill up to one extra rounded minute (bounded by the cap).

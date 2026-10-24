@@ -1528,3 +1528,45 @@ func TestTimeCapClocksOutAtTheCap(t *testing.T) {
 		t.Fatalf("%d TIME_CAP_REACHED, want 1", n)
 	}
 }
+
+// Review (time cap r1): the cut is not behind the once-per-task latch — a
+// session clocked in again past the cap with no approval is cut too, and
+// an approval that raises the cap lets the next session run to the new one.
+func TestTimeCapCutsEverySessionPastTheCap(t *testing.T) {
+	setupStripeWebhookDB(t)
+	w := seedOpsWorld(t, "open")
+	seedWorklog(t, w.taskID, 50, true)
+	evaluateTimeCap(context.Background(), w.taskID) // latch + cut at 45
+
+	// Clocks in again without asking: cut at once (0 minutes left).
+	seedWorklog(t, w.taskID, 3, true)
+	evaluateTimeCap(context.Background(), w.taskID)
+	var open int
+	if err := db.QueryRow(context.Background(), `select count(*) from public.worklogs where task_id=$1::uuid and end_at is null`, w.taskID).Scan(&open); err != nil {
+		t.Fatal(err)
+	}
+	if open != 0 {
+		t.Fatal("a second session past the cap was left running")
+	}
+	if n := countNotifications(t, w.supporterID, "TIME_CAP_REACHED"); n != 1 {
+		t.Fatalf("the notification fires once: %d", n)
+	}
+
+	// +15 approved: cap 60, 46 logged → a new session has 14 minutes.
+	if _, err := db.Exec(context.Background(), `
+		insert into public.extension_requests (task_id, supporter_id, kind, requested_minutes, status, resolved_at)
+		values ($1::uuid, $2::uuid, 'time', 15, 'approved', now())`, w.taskID, w.supporterID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(context.Background(), `update public.tasks set time_cap_warned_at=null, time_cap_reached_at=null, time_cap_ops_alerted_at=null where id=$1::uuid`, w.taskID); err != nil {
+		t.Fatal(err)
+	}
+	seedWorklog(t, w.taskID, 5, true) // 5 minutes in: under the new cap
+	evaluateTimeCap(context.Background(), w.taskID)
+	if err := db.QueryRow(context.Background(), `select count(*) from public.worklogs where task_id=$1::uuid and end_at is null`, w.taskID).Scan(&open); err != nil {
+		t.Fatal(err)
+	}
+	if open != 1 {
+		t.Fatal("a session under the raised cap was cut")
+	}
+}

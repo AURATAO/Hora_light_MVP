@@ -3290,9 +3290,15 @@ func clockOut(c *gin.Context) {
 	err = db.QueryRow(ctx, `
       update public.worklogs
       set end_at=now(), updated_at=now()
-      WHERE id = $1::uuid
+      WHERE id = $1::uuid and end_at is null
       returning start_at, end_at, created_at, updated_at
     `, wlID).Scan(&startAt, &endAt, &createdAt, &updatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Closed meanwhile — the time cap stopped the clock (timecap.go)
+		// between the read above and this write. Its end_at stands.
+		err = db.QueryRow(ctx, `select start_at, end_at, created_at, updated_at from public.worklogs where id = $1::uuid`,
+			wlID).Scan(&startAt, &endAt, &createdAt, &updatedAt)
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
