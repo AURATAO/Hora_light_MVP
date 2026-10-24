@@ -940,3 +940,16 @@ budget. Rulings:
 - Migration header now carries deploy order and reversal; the CHECK's
   name was confirmed on the staging branch (single constraint,
   `channel_conversations_state_check`, includes `awaiting_cancel`).
+
+#### Review 10/24 round 3 — PASS
+
+No MAJOR. MINORs done: PG test for `AskCancel` (no row, idle, re-ask
+keeps the later stamp, refused over an armed approval with the row
+untouched); router test for the choice list over an armed approval; a
+missing row now says "send cancel again" instead of an unrelated
+still-waiting line. **Accepted residual (added):** the window between the
+re-read / compare-and-set and the provider send — an approval would have
+to be claimed, sent and confirmed inside our in-flight send; the same
+window exists at every state-change-then-send in the design. Left as is
+(pre-existing, not YES-able): `askWhichTask`'s numbered list can follow
+an approval armed during its lookup.

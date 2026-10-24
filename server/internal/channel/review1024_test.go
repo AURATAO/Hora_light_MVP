@@ -286,3 +286,23 @@ func TestCancelNotOpenIsGone(t *testing.T) {
 		t.Fatalf("%q", got)
 	}
 }
+
+// r3: the choice list is not sent over an approval armed while the open
+// tasks were looked up either.
+func TestCancelListNotSentOverAnArmedApproval(t *testing.T) {
+	g := cancelRig(t)
+	g.booker.open = []TaskRef{{ID: "a", Title: "Bagel run"}, {ID: "b", Title: "Laundry pickup"}}
+	g.booker.onOpen = func() {
+		g.booker.onOpen = nil
+		g.arm(t, "ext-b1")
+	}
+	got := g.say(t, "cancel")
+	if g.state() != StateAwaitingApproval || !strings.Contains(got, "answer that first") {
+		t.Fatalf("state %s reply %q", g.state(), got)
+	}
+	for _, o := range g.ad.sent {
+		if strings.Contains(o.Text, "Reply with the number") {
+			t.Fatalf("the list went out over the armed approval: %q", o.Text)
+		}
+	}
+}

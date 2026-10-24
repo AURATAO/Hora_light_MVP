@@ -460,11 +460,15 @@ type fakeBooker struct {
 	onQuote   func()        // runs at each CancelQuote (a parallel message, in tests)
 	onPrice   func()        // runs at each draft Quote
 	quoteErr  error         // CancelQuote fails with it when set
+	onOpen    func()        // runs at each OpenTasks
 	cancelled []string
 	cancelRes CancelResult
 }
 
 func (b *fakeBooker) OpenTasks(context.Context, string) ([]TaskRef, error) {
+	if b.onOpen != nil {
+		b.onOpen()
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.open, nil

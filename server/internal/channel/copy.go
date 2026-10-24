@@ -111,6 +111,7 @@ const (
 	CopyCancelSetAside            = "(I've set aside cancelling “%s” — send “cancel” again after this if you still want to.)"
 	CopyCancelAfterApproval       = "Your supporter just sent a request — answer that first, then send “cancel” again."
 	CopyCancelMoreInApp           = "(You have more open tasks — those can be cancelled in the app.)"
+	CopyCancelRetry               = "I couldn't start the cancel just now — please send “cancel” again in a moment, or cancel it in the app."
 	CopyCancelTakenOver           = "Your supporter's request came in first, so “%s” was not cancelled. Answer it above, then send “cancel” again if you still want to."
 	CopyStillWaitingCancel        = "Still waiting on your YES or NO — cancel “%s”."
 	CopyStillWaitingCancelChoice  = "Still waiting on which task to cancel — reply with its number."

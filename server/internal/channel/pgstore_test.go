@@ -1242,3 +1242,56 @@ func TestPGCancelClaimAndHoldDraft(t *testing.T) {
 		t.Fatalf("held draft: %+v", got)
 	}
 }
+
+// Review 10/24 r3: AskCancel opens the cancel question only from idle or
+// the cancel question itself, moves question_shown_at forward (NULL taken
+// as unset), and never touches a row an approval holds.
+func TestPGAskCancel(t *testing.T) {
+	db := testDB(t)
+	s := &PGStore{DB: db}
+	ctx := context.Background()
+	a, err := s.UpsertIdentity(ctx, IMessage, "+15550000722")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc := PendingCancel{TaskID: "00000000-0000-0000-0000-0000000000c1", Title: "Laundry pickup", QuotedCents: 1200, AskedAtUnix: 1}
+	if ok, err := s.AskCancel(ctx, a.ID, pc, ShownUnconfirmed); err != nil || ok {
+		t.Fatalf("no row: %v %v", ok, err)
+	}
+	if err := s.TouchConversation(ctx, a.ID, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.AskCancel(ctx, a.ID, pc, ShownUnconfirmed); err != nil || !ok {
+		t.Fatalf("from idle: %v %v", ok, err)
+	}
+	got, _ := s.GetConversation(ctx, a.ID)
+	if got.State != StateAwaitingCancel || got.PendingCancel == nil || got.PendingCancel.QuotedCents != 1200 ||
+		got.QuestionShownAt == nil || !got.QuestionShownAt.Equal(ShownUnconfirmed) {
+		t.Fatalf("after ask: %+v", got)
+	}
+	pc.QuotedCents = 1550
+	if ok, err := s.AskCancel(ctx, a.ID, pc, time.Now()); err != nil || !ok {
+		t.Fatalf("re-ask: %v %v", ok, err)
+	}
+	if got, _ = s.GetConversation(ctx, a.ID); got.PendingCancel.QuotedCents != 1550 || !got.QuestionShownAt.Equal(ShownUnconfirmed) {
+		t.Fatalf("re-ask must keep the later stamp (GREATEST): %+v", got)
+	}
+	var ext string
+	if err := db.QueryRow(`INSERT INTO extension_requests DEFAULT VALUES RETURNING id`).Scan(&ext); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.HoldApproval(ctx, a.ID, DeferredApproval{UserID: "u", TaskID: "t", ExtensionID: ext, AtUnix: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.ClaimHold(ctx, a.ID, ext, "", time.Now()); err != nil || !ok {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+	before, _ := s.GetConversation(ctx, a.ID)
+	if ok, err := s.AskCancel(ctx, a.ID, pc, ShownUnconfirmed); err != nil || ok {
+		t.Fatalf("over an armed approval: %v %v", ok, err)
+	}
+	after, _ := s.GetConversation(ctx, a.ID)
+	if after.State != StateAwaitingApproval || after.PendingCancel != nil || after.PendingExtensionID != before.PendingExtensionID {
+		t.Fatalf("the approval row was touched: %+v", after)
+	}
+}

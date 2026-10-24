@@ -141,6 +141,11 @@ func (r *Router) cancelPreempted(ctx context.Context, in Inbound, id Identity) e
 	case StatePosting:
 		return r.Reply(ctx, in, CopyBookingInFlight, "")
 	}
+	if fresh.State == StateIdle {
+		// Nothing took the thread (its row was missing — a failed touch):
+		// not "still waiting" on anything; try again.
+		return r.Reply(ctx, in, CopyCancelRetry, "")
+	}
 	return r.Reply(ctx, in, stillWaiting(fresh), "")
 }
 
