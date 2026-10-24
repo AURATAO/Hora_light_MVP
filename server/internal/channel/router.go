@@ -424,6 +424,12 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 	}
 	p.SetItems(items)
 	conv.Pending = p
+	if conv.State == StateAwaitingApproval {
+		// Approval first, then the draft (Arbiter 2026-10-24): the draft is
+		// kept and its next question comes back once the approval is
+		// answered (ResumeState / resumeLine).
+		return r.holdDraft(ctx, in, id, conv)
+	}
 
 	if !id.Linked() && conv.PendingName == "" {
 		conv.State = StateAwaitingName
@@ -536,6 +542,12 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 		}
 		return wrapErr("onConfirm", err)
 	default:
+		// A new errand typed while the draft waits joins the draft — it is
+		// not relayed to a supporter (staging 2026-10-24: "buy me a bagel"
+		// went to the bagel supporter; Arbiter: draft-first).
+		if r.errandForDraft(ctx, in, id, text) {
+			return r.startDraft(ctx, in, id, conv, conv.Pending.Source+"\n"+text)
+		}
 		// With a supporter on the job, a sentence here may be for them
 		// (D-17): relayed, the draft stays pending.
 		handled, label, err := r.routeInContextLabel(ctx, in, id, conv, text)
@@ -880,4 +892,23 @@ func (r *Router) sentWithText(ctx context.Context, identityID string, in Inbound
 	}
 	gap := at.Sub(*prev.LastInboundAt)
 	return gap >= -previewWindow && gap <= previewWindow
+}
+
+// holdDraft keeps a draft made while an approval question waits: its next
+// step (name, budget or summary) is set for ResumeState, the approval stays
+// the open question, and the person is told the errand is next.
+func (r *Router) holdDraft(ctx context.Context, in Inbound, id Identity, conv Conversation) error {
+	p := conv.Pending
+	switch {
+	case !id.Linked() && conv.PendingName == "":
+		p.NameAsked = true
+	default:
+		if i := nextBudgetAsk(p); i >= 0 {
+			p.BudgetAskIndex = i
+		}
+	}
+	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+		return fmt.Errorf("holdDraft: %w", err)
+	}
+	return r.Reply(ctx, in, fmt.Sprintf(CopyErrandAfterApproval, p.Headline())+"\n\n"+approvalStillPending(conv), "")
 }

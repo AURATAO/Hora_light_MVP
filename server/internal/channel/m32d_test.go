@@ -906,3 +906,50 @@ func TestApprovalPassOnTemplates(t *testing.T) {
 		}
 	}
 }
+
+// Arbiter 2026-10-24 — approval first, then the draft, then messages.
+// Staging: during an approval, "I want something buy me a apple" was
+// relayed to the supporter; with a draft waiting, "buy me a bagel to 260
+// Mercer" was relayed too.
+func TestApprovalThenDraftThenMessages(t *testing.T) {
+	// During an approval: the errand is kept, not relayed; after YES the
+	// draft comes back with its question.
+	g, chat, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.r.Purchases = &fakePurchases{yes: true}
+	g.arm(t, "ext-2")
+	got := g.say(t, "I want something buy me a apple")
+	c, err := g.convs.GetConversation(context.Background(), "id-"+me)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chat.posted) != 0 || c.State != StateAwaitingApproval || c.Pending == nil || !strings.Contains(got, "right after you answer") {
+		t.Fatalf("held: posted %v state %s pending %v reply %q", chat.posted, c.State, c.Pending != nil, got)
+	}
+	got = g.say(t, "YES")
+	if len(g.booker.resolved) != 1 || g.state() != StateAwaitingBudget || !strings.Contains(got, "set aside") {
+		t.Fatalf("after YES: resolved %v state %s reply %q", g.booker.resolved, g.state(), got)
+	}
+
+	// A draft waiting: a new errand joins the draft, not the supporter.
+	g, chat, _, _ = contextRig(llm.IntentToSupporter, bagelT)
+	g.say(t, "new task: pick up my laundry tomorrow at 3")
+	g.say(t, "I want you to buy me a bagel To 260 Mercer street")
+	c, err = g.convs.GetConversation(context.Background(), "id-"+me)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chat.posted) != 0 || c.Pending == nil || !strings.Contains(c.Pending.Source, "bagel") {
+		t.Fatalf("draft-first: posted %v pending %+v", chat.posted, c.Pending)
+	}
+
+	// Still for the supporter: a named supporter, or an answer to the
+	// question the supporter just asked.
+	g, chat, tasks, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.say(t, "new task: pick up my laundry tomorrow at 3")
+	g.say(t, "for Sam: buy me the sesame one")
+	tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: which bagel should I get?", "task-2", time.Now().Add(-time.Minute)
+	g.say(t, "get me the everything bagel")
+	if len(chat.posted) != 2 {
+		t.Fatalf("supporter words: posted %v", chat.posted)
+	}
+}

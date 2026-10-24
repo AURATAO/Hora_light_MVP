@@ -429,10 +429,12 @@ func TestEscapesKeepTheApprovalArmed(t *testing.T) {
 	if len(chat.posted) != 1 || c.State != StateAwaitingApproval || c.PendingExtensionID != "ext-5" || c.Pending == nil || !strings.Contains(got, CopyApprovalStillPending) {
 		t.Fatalf("posted %v conv %+v reply %q", chat.posted, c, got)
 	}
+	// Arbiter 2026-10-24 (approval first, then the draft): a new errand is
+	// kept for after the answer — not refused, not relayed.
 	got = g.say(t, "new task: walk my dog at 5")
 	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
-	if got != CopyApprovalFirst || c.State != StateAwaitingApproval || c.PendingExtensionID != "ext-5" {
-		t.Fatalf("reply %q conv %+v", got, c)
+	if !strings.Contains(got, "right after you answer") || c.State != StateAwaitingApproval || c.PendingExtensionID != "ext-5" || c.Pending == nil || len(chat.posted) != 1 {
+		t.Fatalf("reply %q conv %+v posted %v", got, c, chat.posted)
 	}
 	g.say(t, "YES")
 	if len(g.booker.resolved) != 1 || !strings.HasSuffix(g.booker.resolved[0], ":ext-5:true") || g.booker.posts != 0 {

@@ -256,6 +256,16 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 		// request stays open (R-2, R-3).
 		return r.passOnKeepingQuestion(ctx, in, id, conv, text)
 	default:
+		// A new errand while the request is pending is kept for after the
+		// answer — approval first, then the draft, then messages (Arbiter
+		// 2026-10-24; staging: "buy me an apple" went to the supporter).
+		if r.errandForDraft(ctx, in, id, text) {
+			source := text
+			if conv.Pending != nil {
+				source = conv.Pending.Source + "\n" + text // joins a draft that was waiting
+			}
+			return r.startDraft(ctx, in, id, conv, source)
+		}
 		// A sentence while the request is pending may be for the
 		// supporter ("why $10 more?") — relayed, the question stays open.
 		if handled, err := r.routeInContext(ctx, in, id, conv, text); handled {

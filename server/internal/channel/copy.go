@@ -94,6 +94,7 @@ const (
 	Copy3DSHandoff                = "Your bank wants to confirm this payment. A HO:RA teammate will text you shortly to finish it."
 	CopyPostFailed                = "Something went wrong on our side while booking. Reply YES to try again."
 	CopyHandoffHolding            = "A HO:RA teammate will get back to you shortly."
+	CopyErrandAfterApproval       = "Got it — I'll set up “%s” right after you answer this request."
 	CopyHandoffFailed             = "I couldn't reach the HO:RA team just now. Please try again in a few minutes, or email info@my-hora.com."
 	CopyHandoffUpdateFailed       = "I couldn't pass that to the HO:RA team just now. Please send it again in a few minutes, or email info@my-hora.com."
 	CopyHandoffStart              = "Let me get a HO:RA teammate for you. They'll text you here shortly — you can keep writing in the meantime."

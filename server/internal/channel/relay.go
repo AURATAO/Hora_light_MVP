@@ -1174,3 +1174,36 @@ func AgentContextFor(active []ActiveTask, openQuestion string, line SupporterLin
 	}
 	return c
 }
+
+// errandRE: words that describe an errand to do — a purchase (purchaseRE)
+// or one of these. Read by rule to keep a new errand out of a supporter's
+// chat while a question of ours waits (Arbiter 2026-10-24).
+var errandRE = regexp.MustCompile(`(?i)\b(pick up|drop off|deliver|need someone|can someone|i want (you|someone) to|walk my|wait in line|book (another|a|something)|another (task|errand|thing)|new (task|errand))\b|幫我`)
+
+// errandForDraft: while a draft or an approval question waits, this
+// message describes an errand for US — not words for a supporter: it
+// reads as an errand, names no supporter, and answers no question a
+// supporter asked in the last minutes (D-17, Arbiter 2026-10-24:
+// approval first, then the draft, then messages).
+func (r *Router) errandForDraft(ctx context.Context, in Inbound, id Identity, text string) bool {
+	if !errandRE.MatchString(text) && !LooksLikePurchase(text) {
+		return false
+	}
+	if forSupporterRE.MatchString(text) {
+		return false
+	}
+	if r.Chat != nil && id.Linked() {
+		active, err := r.Chat.ActiveTasks(ctx, id.UserID)
+		if err != nil {
+			return false // cannot tell: the usual routing decides
+		}
+		if _, named := supporterNamed(active, text); named {
+			return false
+		}
+		last, lastTask, lastAt, answered := r.lastSupporterLine(ctx, in, id)
+		if _, ok := taskIn(active, lastTask); ok && supporterQuestionOpen(last, lastAt, answered, r.now()) {
+			return false
+		}
+	}
+	return true
+}
