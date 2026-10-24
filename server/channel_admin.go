@@ -358,7 +358,12 @@ func registerChannelAdminRoutes(r *gin.Engine, sqlDB *sql.DB, store *channel.PGS
 		}
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
 		defer cancel()
-		if err := router.Release(ctx, id); err != nil {
+		err := router.Release(ctx, id)
+		switch {
+		case errors.Is(err, channel.ErrNotInHandoff):
+			c.JSON(http.StatusConflict, gin.H{"error": "not_handed_off", "message": "This chat is already with the bot."})
+			return
+		case err != nil:
 			log.Printf("[channel-admin] release identity=%s by=%s: %v", id.ID, c.GetString("uid"), err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "server_error"})
 			return

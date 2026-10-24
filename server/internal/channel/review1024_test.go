@@ -2,6 +2,7 @@ package channel
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -449,5 +450,41 @@ func TestReleaseDoesNotStackQuestions(t *testing.T) {
 	}
 	if g.state() != StateAwaitingApproval {
 		t.Fatalf("the supporter's question was not asked: %s", g.state())
+	}
+}
+
+// Hand-off review r2: a release that holds our question back for the
+// supporter's still marks the thread's question in flight (R-1) — a YES
+// right after cannot book the old draft; a budget carries only when the
+// kind is unambiguous; spelled-out durations count.
+func TestReleaseMarksQuestionInFlight(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.r.Ops = &memOps{}
+	g.say(t, "pick up my laundry at 12 Bedford Ave")
+	g.say(t, "real person")
+	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
+	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: evBudgetRequested, TaskID: "task-2", TaskTitle: "Bagel run", SupporterName: "Sam",
+		ExtensionID: "ext-b1", ApprovalMinutes: 5, Approval: &PendingApproval{ID: "ext-b1", Kind: "budget", Cents: 1000}}); err != nil {
+		t.Fatal(err)
+	}
+	// The hold is live at the release's check but gone when resumeDeferred
+	// runs (it expired): no question is put, yet the draft's question is
+	// in flight.
+	id := Identity{ID: "id-" + me, Channel: IMessage, Address: me, UserID: "user-1"}
+	if err := g.r.Release(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.State == StateAwaitingConfirm && (c.QuestionShownAt == nil || !c.QuestionShownAt.Equal(ShownUnconfirmed)) {
+		t.Fatalf("question not marked in flight: %+v", c.QuestionShownAt)
+	}
+	if err := g.r.Release(context.Background(), id); !errors.Is(err, ErrNotInHandoff) {
+		t.Fatalf("a second release must say the bot has it: %v", err)
+	}
+	for _, s := range []string{"two hours", "a couple of hours", "1h", "an hour"} {
+		if !namesDuration(s) {
+			t.Errorf("%q names a duration", s)
+		}
 	}
 }

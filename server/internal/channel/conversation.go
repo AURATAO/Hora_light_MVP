@@ -728,11 +728,12 @@ func (s *PGStore) ReleaseHandoff(ctx context.Context, identityID string, o Relea
 }
 
 // StartHandoffClocks starts the clock of a handed-off thread that has none
-// (handed off by a build from before the column, e.g. mid-rollout) at its
-// last update — never "stale at once".
+// (handed off by a build from before the column, e.g. mid-rollout) now —
+// a full HandoffTimeout from first sight, never "stale at once" (review
+// r2 F3: ops may be mid-conversation through the old build).
 func (s *PGStore) StartHandoffClocks(ctx context.Context) error {
 	if _, err := s.DB.ExecContext(ctx, `
-		UPDATE channel_conversations SET handoff_activity_at = updated_at
+		UPDATE channel_conversations SET handoff_activity_at = now()
 		WHERE state = $1 AND handoff_activity_at IS NULL`, string(StateHandoff)); err != nil {
 		return fmt.Errorf("start handoff clocks: %w", err)
 	}

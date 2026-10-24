@@ -8,9 +8,9 @@
 ALTER TABLE public.channel_conversations
   ADD COLUMN IF NOT EXISTS handoff_activity_at timestamptz;
 
--- Threads already handed off start their clock at their last update.
+-- Threads already handed off get a full window from this moment.
 UPDATE public.channel_conversations
-   SET handoff_activity_at = updated_at
+   SET handoff_activity_at = now()
  WHERE state = 'handoff' AND handoff_activity_at IS NULL;
 
 COMMENT ON COLUMN public.channel_conversations.handoff_activity_at IS

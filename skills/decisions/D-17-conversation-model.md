@@ -1005,3 +1005,21 @@ time, so an ops message landing at the same moment wins.
   one has replied in the last 10 minutes… the team has your messages".
   Open for the Arbiter: should 3DS-payment and agent-safety hand-offs
   follow the flat 10 minutes? Built flat, as ruled.
+
+#### Hand-off timeout review r2 — PASS (minors fixed)
+
+Done: a "real person" that loses the release race no longer says a
+teammate is coming over a bot-held thread; any question state the thread
+returns to is marked in flight (R-1) even when our question is held back
+for the supporter's; clocks started by the sweeper (and the backfill)
+start now, a full window from first sight; the person's "I'm back" goes
+out before the ops email; the auto-release email carries the full recent
+thread; an ops release of a thread already with the bot answers 409; a
+budget carries on a correction only when its category is unambiguous
+among the errands; spelled-out durations ("two hours", "a couple of
+hours", "1h") count. **Accepted:** the preview-silence window is measured
+from the last inbound (a run of captionless photos within 15 s of a link
+is silent); a hand-off made right after the timeout can produce two lines
+if ops are unreachable; "from 3 to 5pm" is not a duration (the summary
+shows 30 and the person corrects). Open for the Arbiter: flat 10 minutes
+for 3DS and agent-safety hand-offs.

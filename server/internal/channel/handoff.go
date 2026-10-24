@@ -164,7 +164,7 @@ func (r *Router) notifyOps(ctx context.Context, id Identity, reason HandoffReaso
 		OpenRequestID: open.extensionID, OpenRequestTaskID: open.taskID, OpenRequestUnconfirmed: open.unconfirmed, Detail: open.detail,
 		AutoReleased: open.autoReleased}
 	limit := handoffThreadLen
-	if update || open.autoReleased {
+	if update {
 		limit = 1
 	}
 	if r.Thread != nil {
@@ -204,7 +204,10 @@ func (r *Router) lastReplyWasParseFailure(ctx context.Context, id Identity) bool
 // Released on the state alone: an ops message landing meanwhile does not
 // make the ops tap a silent no-op.
 func (r *Router) Release(ctx context.Context, id Identity) error {
-	_, err := r.release(ctx, id, true, CopyHandoffReleased, true, false)
+	released, err := r.release(ctx, id, true, CopyHandoffReleased, true, false)
+	if err == nil && !released {
+		return ErrNotInHandoff // already with the bot (released, or timed out)
+	}
 	return err
 }
 
@@ -249,7 +252,12 @@ func (r *Router) release(ctx context.Context, id Identity, anyClock bool, text s
 	if !r.nextHoldLive(ctx, id, conv) {
 		back = r.resumeLine(ctx, id, resumed)
 	}
-	won, err := r.Conversations.ReleaseHandoff(ctx, id.ID, ReleaseOpts{Resume: resumed.State, Seen: conv.HandoffActivityAt, AnyClock: anyClock, PutAgain: back != ""})
+	// R-1: any question state we return to is "in flight" until a question
+	// is actually put again (markShown) — even when ours is held back for
+	// the supporter's: a YES to something ops asked must not book the old
+	// draft (review r2 F2).
+	putAgain := back != "" || awaitingAnswer(resumed.State)
+	won, err := r.Conversations.ReleaseHandoff(ctx, id.ID, ReleaseOpts{Resume: resumed.State, Seen: conv.HandoffActivityAt, AnyClock: anyClock, PutAgain: putAgain})
 	if err != nil {
 		return false, fmt.Errorf("release: %w", err)
 	}
@@ -258,11 +266,6 @@ func (r *Router) release(ctx context.Context, id Identity, anyClock bool, text s
 	}
 	if timedOut {
 		log.Printf("[channel] handoff identity=%s: no ops activity for %s, back to the bot", id.ID, HandoffTimeout)
-		// Ops still think they hold it: told, so a late reply is not a
-		// surprise 409 and a payment or a report is followed up by email.
-		if err := r.notifyOps(ctx, id, "", false, handoffOpen{autoReleased: true}); err != nil {
-			log.Printf("[channel] handoff identity=%s: auto-release notice: %v", id.ID, err)
-		}
 	}
 	if back != "" {
 		text += "\n\n" + back
@@ -275,6 +278,14 @@ func (r *Router) release(ctx context.Context, id Identity, anyClock bool, text s
 			r.markShown(c, id.ID) // our question was put again (R-1)
 		}
 		r.resumeDeferred(c, id) // a supporter's question held during the handoff
+		if timedOut {
+			// Ops still think they hold it: told (after the person, whose
+			// reply must not wait on the email), so a late reply is not a
+			// surprise 409 and a payment or a report is followed up.
+			if err := r.notifyOps(c, id, "", false, handoffOpen{autoReleased: true}); err != nil {
+				log.Printf("[channel] handoff identity=%s: auto-release notice: %v", id.ID, err)
+			}
+		}
 		return nil
 	})
 }

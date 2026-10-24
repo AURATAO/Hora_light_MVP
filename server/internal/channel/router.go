@@ -243,10 +243,16 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 			// Asking for a person again: ops are told afresh and the clock
 			// restarts — not "I'm back" followed by "getting a teammate".
 			if err := r.notifyOps(ctx, id, HandoffHumanRequested, false, handoffOpen{}); err == nil {
-				if _, err := r.Conversations.TouchHandoff(ctx, id.ID); err != nil {
+				held, err := r.Conversations.TouchHandoff(ctx, id.ID)
+				if err != nil {
 					log.Printf("[channel] handoff identity=%s: %v", id.ID, err)
 				}
-				return r.Reply(ctx, in, CopyHandoffStart, "")
+				if held {
+					return r.Reply(ctx, in, CopyHandoffStart, "")
+				}
+				// Released meanwhile (the sweeper, ops): not "a teammate
+				// will text you" over a thread the bot holds — the re-read
+				// below routes it, and IsHumanRequest hands off afresh.
 			}
 		}
 		// Ops never picked it up (HandoffTimeout): back to the bot first,
@@ -480,7 +486,8 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 			// A budget already given carries over to a correction of the
 			// same kind of errand (Arbiter 2026-10-24 22:48: asked once,
 			// never again) — not to a different kind now at that position.
-			if !it.BudgetAsked && !latestNamed && len(prev) == len(errands) && prev[i].BudgetAsked && sameErrand(prev[i].Draft, draft) {
+			if !it.BudgetAsked && !latestNamed && len(prev) == len(errands) && prev[i].BudgetAsked && sameErrand(prev[i].Draft, draft) &&
+				(len(errands) == 1 || categoryCount(prev, draft.Category) == 1) {
 				it.BudgetCents, it.BudgetAsked = prev[i].BudgetCents, true
 			}
 		}
@@ -1035,8 +1042,20 @@ func sameErrand(a, b llm.TaskDraft) bool {
 	return a.Category == b.Category
 }
 
+// categoryCount: how many of the items are of this category (a budget
+// carries by position only when the kind is unambiguous — review r2).
+func categoryCount(items []DraftItem, category string) int {
+	n := 0
+	for _, it := range items {
+		if it.Draft.Category == category {
+			n++
+		}
+	}
+	return n
+}
+
 // durationRE: the person named how long — minutes, hours, 分鐘/小時.
-var durationRE = regexp.MustCompile(`(?i)\b\d+\s*(?:min|mins|minute|minutes|hr|hrs|hour|hours)\b|(?:an?|one|half an?)\s+hour|[\d一二三四五六七八九十兩]+\s*(?:分鐘|分|個?小時|個?鐘頭)|半小時|半個小時`)
+var durationRE = regexp.MustCompile(`(?i)\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|twelve|a couple of|a few|half an?|an?)\s*(?:h|hr|hrs|hour|hours|min|mins|minute|minutes)\b|[\d一二三四五六七八九十兩]+\s*(?:分鐘|分|個?小時|個?鐘頭)|半小時|半個小時`)
 
 // namesDuration reports whether the errand text says how long it takes.
 func namesDuration(text string) bool { return durationRE.MatchString(text) }
