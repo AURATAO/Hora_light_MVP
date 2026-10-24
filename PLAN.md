@@ -553,6 +553,24 @@ needs a new card re-verifies email on the page; status updates to the chat
   `task-completions` (private) were created by hand on this one.
 - Tear down after Oct 31 if unused: delete the Render service and the branch.
 
+## 13b. Dispatch automation (raised 2026-10-25 00:00, Aura) — not yet ruled
+
+Today a new task tells only ops ("New task posted" email); supporters see
+it only by opening Earn, so Aura dispatches by hand and "immediate" rests
+on her reacting. Proposed, each stage shippable alone:
+
+1. **Broadcast** (~1 day): on post, push + an iMessage/SMS from our line
+   to every verified supporter ("New task near X, N min, $Y. Open HO:RA
+   to accept."); first accept wins (D-10 handles the race); ops are
+   notified only if nobody accepts within N minutes.
+2. **Availability** (~1 day, mobile): an "I'm available" toggle with an
+   auto-off; the broadcast goes only to supporters who have it on.
+3. **Tiers** (~½ day): trusted supporters first, everyone after M minutes.
+
+Open for the Arbiter: SMS needs supporters' numbers linked (a setup
+link each) or push only; N (minutes before ops are pinged). Sequenced
+after the agent work.
+
 ## 14. Paused
 
 App Store public release of the requester app; requester-side app features;
