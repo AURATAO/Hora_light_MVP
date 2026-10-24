@@ -236,6 +236,17 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 		return r.Reply(ctx, in, CopyTextOnly, "")
 	}
 
+	if r.handoffStale(conv) {
+		// Ops never picked it up (HandoffTimeout): back to the bot first,
+		// then this message is handled by the bot as usual.
+		if released, err := r.AutoRelease(ctx, id, false); err != nil {
+			return fmt.Errorf("HandleInbound: %w", err)
+		} else if released {
+			if conv, err = r.Conversations.GetConversation(ctx, id.ID); err != nil {
+				return fmt.Errorf("HandleInbound: %w", err)
+			}
+		}
+	}
 	switch conv.State {
 	case StateHandoff:
 		return r.onHandoff(ctx, in, id)

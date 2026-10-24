@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -107,6 +108,8 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 	})
 	registerChannelSetupRoutes(r, sqlDB, store, router)
 	registerChannelAdminRoutes(r, sqlDB, store, router)
+	// Hand-offs ops never picked up go back to the bot (D-17, 10 minutes).
+	go watchHandoffs(context.Background(), store, router, time.Minute)
 	log.Printf("[channel] webhooks enabled: sendblue, whatsapp; model=%s; setup base=%s", model.Model, base)
 }
 

@@ -953,3 +953,22 @@ to be claimed, sent and confirmed inside our in-flight send; the same
 window exists at every state-change-then-send in the design. Left as is
 (pre-existing, not YES-able): `askWhichTask`'s numbered list can follow
 an approval armed during its lookup.
+
+### Arbiter answer — 2026-10-24 22:39 (Aura): hand-off timeout
+
+Staging: a "Real person" test at 17:53 left the thread handed off for
+hours; every later errand got "A HO:RA teammate will get back to you
+shortly" and nothing else (no auto-release, release only by API). Ruling:
+**10 minutes** ("we bill by the minute; 2 hours is far too long").
+
+Built (I-AV): `channel_conversations.handoff_activity_at` (migration
+`20261024210000`, applied to the staging branch first) — set when the
+thread is handed off, moved by an ops message (`TouchHandoff`), cleared on
+release. After `HandoffTimeout` (10 min) with no ops activity the thread
+goes back to the bot: a server sweeper (every minute) and, lazily, the
+person's next message (released first, then that message is the bot's).
+The person is told ("no one from the HO:RA team has picked this up yet…
+email info@my-hora.com or say “real person” again"); our earlier
+question, if any, is put again; a held supporter question resumes.
+Release — by ops or by the timeout — is compare-and-set on the activity
+time, so an ops message landing at the same moment wins.

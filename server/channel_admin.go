@@ -343,6 +343,42 @@ func registerChannelAdminRoutes(r *gin.Engine, sqlDB *sql.DB, store *channel.PGS
 	})
 }
 
+// watchHandoffs hands stale hand-offs back to the bot every `every`
+// (channel.HandoffTimeout without ops activity). The person's next message
+// does the same on its own; this tells them without waiting for one.
+func watchHandoffs(ctx context.Context, store *channel.PGStore, router *channel.Router, every time.Duration) {
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sweepHandoffs(ctx, store, router)
+		}
+	}
+}
+
+func sweepHandoffs(ctx context.Context, store *channel.PGStore, router *channel.Router) {
+	ids, err := store.StaleHandoffs(ctx, time.Now().Add(-channel.HandoffTimeout))
+	if err != nil {
+		log.Printf("[channel-admin] handoff sweep: %v", err)
+		return
+	}
+	for _, iid := range ids {
+		id, err := store.IdentityByID(ctx, iid)
+		if err != nil {
+			log.Printf("[channel-admin] handoff sweep identity=%s: %v", iid, err)
+			continue
+		}
+		c, cancel := context.WithTimeout(ctx, 30*time.Second)
+		if _, err := router.AutoRelease(c, id, false); err != nil {
+			log.Printf("[channel-admin] handoff sweep identity=%s: %v", iid, err)
+		}
+		cancel()
+	}
+}
+
 func loadIdentityParam(c *gin.Context, store *channel.PGStore) (channel.Identity, bool) {
 	id, err := store.IdentityByID(c.Request.Context(), c.Param("identity"))
 	if errors.Is(err, channel.ErrIdentityNotFound) {

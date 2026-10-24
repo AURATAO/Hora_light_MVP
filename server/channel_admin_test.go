@@ -198,8 +198,8 @@ func (s *stubToucher) TouchOutbound(_ context.Context, _ channel.Channel, addr s
 
 type stubAdapter struct{ sent []channel.Outbound }
 
-func (s *stubAdapter) Channel() channel.Channel                     { return channel.IMessage }
-func (s *stubAdapter) VerifyRequest(*http.Request, []byte) error     { return nil }
+func (s *stubAdapter) Channel() channel.Channel                       { return channel.IMessage }
+func (s *stubAdapter) VerifyRequest(*http.Request, []byte) error      { return nil }
 func (s *stubAdapter) ParseInbound([]byte) ([]channel.Inbound, error) { return nil, nil }
 func (s *stubAdapter) Send(_ context.Context, out channel.Outbound) (string, error) {
 	s.sent = append(s.sent, out)

@@ -149,12 +149,27 @@ func (m *memConversations) SaveConversation(_ context.Context, c Conversation) e
 			c.ApprovalClaimedAt, c.ApprovalQuestionOutAt, c.ApprovalTaskID, c.ApprovalQuestionPID = nil, nil, "", ""
 		}
 		c.LastOutboundAt = old.LastOutboundAt // not in the upsert
+		// handoff_activity_at: store-managed, like the SQL CASE.
+		switch {
+		case c.State != StateHandoff:
+			c.HandoffActivityAt = nil
+		case old.State == StateHandoff && old.HandoffActivityAt != nil:
+			c.HandoffActivityAt = old.HandoffActivityAt
+		default:
+			now := time.Now()
+			c.HandoffActivityAt = &now
+		}
 		if old.QuestionShownAt != nil && (c.QuestionShownAt == nil || old.QuestionShownAt.After(*c.QuestionShownAt)) {
 			c.QuestionShownAt = old.QuestionShownAt // GREATEST, like the SQL
 		}
 	} else {
 		c.Deferred = nil
 		c.LastInboundAt = nil
+		c.HandoffActivityAt = nil
+		if c.State == StateHandoff {
+			now := time.Now()
+			c.HandoffActivityAt = &now
+		}
 	}
 	m.convs[c.IdentityID] = c
 	return nil
@@ -368,6 +383,34 @@ func (m *memConversations) AskCancel(_ context.Context, iid string, pc PendingCa
 	c.State, c.PendingCancel = StateAwaitingCancel, &pc
 	if c.QuestionShownAt == nil || shownAt.After(*c.QuestionShownAt) {
 		c.QuestionShownAt = &shownAt // GREATEST, like the SQL
+	}
+	m.convs[iid] = c
+	return true, nil
+}
+
+func (m *memConversations) TouchHandoff(_ context.Context, iid string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if c, ok := m.convs[iid]; ok && c.State == StateHandoff {
+		now := time.Now()
+		c.HandoffActivityAt = &now
+		m.convs[iid] = c
+	}
+	return nil
+}
+
+func (m *memConversations) ReleaseHandoff(_ context.Context, iid string, resume State, seen *time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.convs[iid]
+	same := (c.HandoffActivityAt == nil && seen == nil) || (c.HandoffActivityAt != nil && seen != nil && c.HandoffActivityAt.Equal(*seen))
+	if !ok || c.State != StateHandoff || !same {
+		return false, nil
+	}
+	c.State, c.HandoffActivityAt = resume, nil
+	sentinel := ShownUnconfirmed
+	if c.QuestionShownAt == nil || sentinel.After(*c.QuestionShownAt) {
+		c.QuestionShownAt = &sentinel
 	}
 	m.convs[iid] = c
 	return true, nil

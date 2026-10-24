@@ -306,3 +306,52 @@ func TestCancelListNotSentOverAnArmedApproval(t *testing.T) {
 		}
 	}
 }
+
+// Arbiter 2026-10-24 22:39: a hand-off ops never pick up goes back to the
+// bot after HandoffTimeout, and the person is told; an ops message restarts
+// the clock; the person's next message after the timeout is the bot's.
+func TestHandoffTimesOut(t *testing.T) {
+	g := newRig(llm.IntentOther)
+	g.ids.link(me, "user-1")
+	g.r.Ops = &memOps{}
+	g.say(t, "real person")
+	if g.state() != StateHandoff {
+		t.Fatalf("state %s", g.state())
+	}
+	id := Identity{ID: "id-" + me, Channel: IMessage, Address: me, UserID: "user-1"}
+	if ok, err := g.r.AutoRelease(context.Background(), id, false); err != nil || ok {
+		t.Fatalf("fresh hand-off released: %v %v", ok, err)
+	}
+	// Handed off 20 minutes ago; ops write now: not stale.
+	g.convs.mu.Lock()
+	c := g.convs.convs["id-"+me]
+	old := time.Now().Add(-2 * HandoffTimeout)
+	c.HandoffActivityAt = &old
+	g.convs.convs["id-"+me] = c
+	g.convs.mu.Unlock()
+	if err := g.r.OpsSend(context.Background(), id, "Hi, Aura here"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := g.r.AutoRelease(context.Background(), id, false); ok {
+		t.Fatal("an ops message must restart the clock")
+	}
+	g.r.Now = func() time.Time { return time.Now().Add(2*HandoffTimeout + time.Minute) }
+	if ok, err := g.r.AutoRelease(context.Background(), id, false); err != nil || !ok {
+		t.Fatalf("stale hand-off kept: %v %v", ok, err)
+	}
+	if g.state() != StateIdle || !strings.Contains(g.ad.last(), "no one from the HO:RA team has picked this up") {
+		t.Fatalf("state %s reply %q", g.state(), g.ad.last())
+	}
+
+	// Lazily, on the person's next message: released, then the message is
+	// the bot's (here: drafted).
+	g = newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.r.Ops = &memOps{}
+	g.say(t, "real person")
+	g.r.Now = func() time.Time { return time.Now().Add(HandoffTimeout + time.Minute) }
+	got := g.say(t, "pick up my laundry at 12 Bedford Ave")
+	if g.state() == StateHandoff || !strings.Contains(got, "Laundry pickup") {
+		t.Fatalf("state %s reply %q", g.state(), got)
+	}
+}

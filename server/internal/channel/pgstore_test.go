@@ -59,7 +59,7 @@ func testDB(t *testing.T) *sql.DB {
 	if _, err := db.Exec(string(mig2)); err != nil {
 		t.Fatalf("migration e164: %v", err)
 	}
-	for _, f := range []string{"20261022120000_channel_approval_columns.sql", "20261022130000_channel_approval_question_pid.sql", "20261024120000_channel_cancel_by_chat.sql"} {
+	for _, f := range []string{"20261022120000_channel_approval_columns.sql", "20261022130000_channel_approval_question_pid.sql", "20261024120000_channel_cancel_by_chat.sql", "20261024210000_channel_handoff_timeout.sql"} {
 		mig, err := os.ReadFile(filepath.Join("..", "..", "..", "supabase", "migrations", f))
 		if err != nil {
 			t.Fatal(err)
@@ -1293,5 +1293,48 @@ func TestPGAskCancel(t *testing.T) {
 	after, _ := s.GetConversation(ctx, a.ID)
 	if after.State != StateAwaitingApproval || after.PendingCancel != nil || after.PendingExtensionID != before.PendingExtensionID {
 		t.Fatalf("the approval row was touched: %+v", after)
+	}
+}
+
+// The hand-off clock: set when handed off, kept while handed off, moved by
+// TouchHandoff, cleared on release; release is compare-and-set on it.
+func TestPGHandoffActivity(t *testing.T) {
+	db := testDB(t)
+	s := &PGStore{DB: db}
+	ctx := context.Background()
+	a, err := s.UpsertIdentity(ctx, IMessage, "+15550000723")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateHandoff}); err != nil {
+		t.Fatal(err)
+	}
+	c1, _ := s.GetConversation(ctx, a.ID)
+	if c1.HandoffActivityAt == nil {
+		t.Fatal("not set on hand-off")
+	}
+	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateHandoff}); err != nil {
+		t.Fatal(err)
+	}
+	c2, _ := s.GetConversation(ctx, a.ID)
+	if !c2.HandoffActivityAt.Equal(*c1.HandoffActivityAt) {
+		t.Fatal("a save while handed off must keep the clock")
+	}
+	if stale, err := s.StaleHandoffs(ctx, time.Now().Add(time.Minute)); err != nil || len(stale) == 0 {
+		t.Fatalf("stale: %v %v", stale, err)
+	}
+	if err := s.TouchHandoff(ctx, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.ReleaseHandoff(ctx, a.ID, StateIdle, c1.HandoffActivityAt); err != nil || ok {
+		t.Fatalf("release with an old clock: %v %v", ok, err)
+	}
+	c3, _ := s.GetConversation(ctx, a.ID)
+	if ok, err := s.ReleaseHandoff(ctx, a.ID, StateIdle, c3.HandoffActivityAt); err != nil || !ok {
+		t.Fatalf("release: %v %v", ok, err)
+	}
+	c4, _ := s.GetConversation(ctx, a.ID)
+	if c4.State != StateIdle || c4.HandoffActivityAt != nil {
+		t.Fatalf("after release: %+v", c4)
 	}
 }

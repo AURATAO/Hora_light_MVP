@@ -163,7 +163,12 @@ type Conversation struct {
 	// confirmed sent. Equal = nothing of ours since the question, so a
 	// reaction word ("Great", 👍) can only be about it (D-17 R-3). Both
 	// read-only here.
-	LastOutboundAt        *time.Time
+	LastOutboundAt *time.Time
+	// HandoffActivityAt: when ops last acted on a handed-off thread (the
+	// hand-off itself, or an ops message). Store-managed: set when the
+	// state becomes handoff, moved by TouchHandoff, cleared on release.
+	// HandoffTimeout after it, the thread goes back to the bot.
+	HandoffActivityAt     *time.Time
 	ApprovalQuestionOutAt *time.Time
 	// ApprovalQuestionPID: the armed question's own provider message id (a
 	// WhatsApp swipe on it answers it). Read-only here.
@@ -269,6 +274,14 @@ type ConversationStore interface {
 	// question armed meanwhile); the caller must not send the cancel
 	// question (review 10/24 r2: never two YES-able questions).
 	AskCancel(ctx context.Context, identityID string, pc PendingCancel, shownAt time.Time) (bool, error)
+	// TouchHandoff records ops acting on a handed-off thread (an ops
+	// message): the HandoffTimeout restarts. No-op when not handed off.
+	TouchHandoff(ctx context.Context, identityID string) error
+	// ReleaseHandoff hands the thread back to the bot — state `resume`,
+	// question_shown_at moved forward to ShownUnconfirmed (our question is
+	// put again) — only if it is still handed off with the activity time
+	// the caller read (compare-and-set: ops acting meanwhile wins).
+	ReleaseHandoff(ctx context.Context, identityID string, resume State, seen *time.Time) (bool, error)
 	// HoldDraft stores a draft made while an approval question waits —
 	// only the draft, and only if extensionID is still the armed request
 	// (false otherwise: the caller carries on without the hold).
@@ -553,7 +566,7 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 	var state string
 	var pending []byte
 	var name, ext, relay sql.NullString
-	var terms, armed, lastIn, claimed, lastOut, qOut, shown sql.NullTime
+	var terms, armed, lastIn, claimed, lastOut, qOut, shown, hAct sql.NullTime
 	var choicesJSON string
 	var deferred, apTask, qPID, cancel sql.NullString
 	err := s.DB.QueryRowContext(ctx, `
@@ -561,10 +574,10 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 		       COALESCE(array_to_json(pending_task_choices)::text, '[]'), pending_relay_text,
 		       deferred_approval::text, approval_armed_at, last_inbound_at, approval_claimed_at,
 		       approval_task_id::text, last_outbound_at, approval_question_out_at, question_shown_at,
-		       approval_question_pid, pending_cancel::text
+		       approval_question_pid, pending_cancel::text, handoff_activity_at
 		FROM channel_conversations WHERE identity_id = $1
 	`, identityID).Scan(&state, &pending, &name, &terms, &ext, &choicesJSON, &relay, &deferred, &armed, &lastIn, &claimed,
-		&apTask, &lastOut, &qOut, &shown, &qPID, &cancel)
+		&apTask, &lastOut, &qOut, &shown, &qPID, &cancel, &hAct)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, nil
 	}
@@ -613,7 +626,7 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 	for _, f := range []struct {
 		v   sql.NullTime
 		dst **time.Time
-	}{{lastOut, &c.LastOutboundAt}, {qOut, &c.ApprovalQuestionOutAt}, {shown, &c.QuestionShownAt}} {
+	}{{lastOut, &c.LastOutboundAt}, {qOut, &c.ApprovalQuestionOutAt}, {shown, &c.QuestionShownAt}, {hAct, &c.HandoffActivityAt}} {
 		if f.v.Valid {
 			t := f.v.Time
 			*f.dst = &t
@@ -666,6 +679,63 @@ func (s *PGStore) AskCancel(ctx context.Context, identityID string, pc PendingCa
 	return true, nil
 }
 
+func (s *PGStore) TouchHandoff(ctx context.Context, identityID string) error {
+	if _, err := s.DB.ExecContext(ctx, `
+		UPDATE channel_conversations SET handoff_activity_at = now(), updated_at = now()
+		WHERE identity_id = $1 AND state = $2`, identityID, string(StateHandoff)); err != nil {
+		return fmt.Errorf("touch handoff: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) ReleaseHandoff(ctx context.Context, identityID string, resume State, seen *time.Time) (bool, error) {
+	var seenV any
+	if seen != nil {
+		seenV = *seen
+	}
+	var one int
+	err := s.DB.QueryRowContext(ctx, `
+		UPDATE channel_conversations SET state = $2, handoff_activity_at = NULL,
+		  question_shown_at = GREATEST(question_shown_at, $5), updated_at = now()
+		WHERE identity_id = $1 AND state = $4 AND handoff_activity_at IS NOT DISTINCT FROM $3
+		RETURNING 1
+	`, identityID, string(resume), seenV, string(StateHandoff), ShownUnconfirmed).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("release handoff: %w", err)
+	}
+	return true, nil
+}
+
+// StaleHandoffs lists handed-off threads with no ops activity since before
+// (a NULL activity time — a row handed off before the column — counts as
+// stale). Read by the server's sweeper.
+func (s *PGStore) StaleHandoffs(ctx context.Context, before time.Time) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT identity_id::text FROM channel_conversations
+		WHERE state = $1 AND (handoff_activity_at IS NULL OR handoff_activity_at < $2)
+		LIMIT 100`, string(StateHandoff), before)
+	if err != nil {
+		return nil, fmt.Errorf("stale handoffs: %w", err)
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			log.Printf("[channel] stale handoffs: close rows: %v", cerr)
+		}
+	}()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("stale handoffs: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 func (s *PGStore) HoldDraft(ctx context.Context, identityID, extensionID string, d PendingDraft) (bool, error) {
 	b, err := json.Marshal(d)
 	if err != nil {
@@ -716,9 +786,11 @@ func (s *PGStore) SaveConversation(ctx context.Context, c Conversation) error {
 	_, err := s.DB.ExecContext(ctx, `
 		INSERT INTO channel_conversations
 		  (identity_id, state, pending_draft, pending_name, terms_accepted_at, pending_extension_id,
-		   pending_task_choices, pending_relay_text, approval_armed_at, approval_task_id, question_shown_at, pending_cancel, updated_at)
+		   pending_task_choices, pending_relay_text, approval_armed_at, approval_task_id, question_shown_at, pending_cancel,
+		   handoff_activity_at, updated_at)
 		VALUES ($1, $2, $3::jsonb, NULLIF($4, ''), $5, NULLIF($6, '')::uuid,
-		        NULLIF($7, '{}')::uuid[], NULLIF($8, ''), $9, NULLIF($10, '')::uuid, $11, $12::jsonb, now())
+		        NULLIF($7, '{}')::uuid[], NULLIF($8, ''), $9, NULLIF($10, '')::uuid, $11, $12::jsonb,
+		        CASE WHEN $2 = 'handoff' THEN now() END, now())
 		ON CONFLICT (identity_id) DO UPDATE SET
 		  -- An armed question (a claim that landed after this caller read
 		  -- its snapshot) is kept unless the caller is ending it on purpose
@@ -747,6 +819,12 @@ func (s *PGStore) SaveConversation(ctx context.Context, c Conversation) error {
 		  pending_task_choices = EXCLUDED.pending_task_choices,
 		  pending_relay_text = EXCLUDED.pending_relay_text,
 		  pending_cancel = EXCLUDED.pending_cancel,
+		  -- Store-managed: starts when the thread is handed off, kept while
+		  -- it stays handed off, gone when it is not.
+		  handoff_activity_at = CASE WHEN EXCLUDED.state = 'handoff'
+		               THEN CASE WHEN channel_conversations.state = 'handoff'
+		                         THEN COALESCE(channel_conversations.handoff_activity_at, now()) ELSE now() END
+		               ELSE NULL END,
 		  updated_at = now()
 	`, c.IdentityID, string(c.State), pending, c.PendingName, terms, c.PendingExtensionID,
 		pgUUIDArray(c.PendingTaskChoices), c.PendingRelayText, armed, c.ApprovalTaskID, shown, cancel)
