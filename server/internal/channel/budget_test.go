@@ -225,6 +225,46 @@ func TestCorrectionKeepsTheBudget(t *testing.T) {
 	if !strings.Contains(got, "Shopping budget: $25") {
 		t.Fatalf("new amount ignored: %q", got)
 	}
+	// Staging 2026-10-24 22:48: the re-parse of a correction worded the
+	// place differently ("Farmer's Market") and the budget was asked again.
+	// Same kind of errand: kept.
+	reworded := bagelD
+	reworded.Location1 = "Russ and Daughters, Houston St"
+	g.parser.draft = reworded
+	got = g.say(t, "not asap, on Friday")
+	if g.state() != StateAwaitingConfirm || !strings.Contains(got, "Shopping budget: $25") {
+		t.Fatalf("budget asked again after a reworded place: %q state %s", got, g.state())
+	}
+}
+
+// Arbiter 2026-10-24 22:48: 30 minutes unless the person says how long —
+// the model's own guess ("15" for a pack of eggs) is not used.
+func TestDefaultThirtyMinutesUnlessNamed(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	guess := laundry
+	guess.DurationMinutes = 15
+	g.parser.draft = guess
+	g.say(t, "pick up my laundry at 12 Bedford Ave")
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.Pending == nil || c.Pending.Items()[0].Draft.DurationMinutes != 0 {
+		t.Fatalf("the model's guess was kept: %+v", c.Pending)
+	}
+	g.say(t, "make it 45 minutes")
+	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.Pending.Items()[0].Draft.DurationMinutes != 15 { // the fake parser still says 15: what matters is it is kept when named
+		t.Fatalf("a named duration must be kept: %+v", c.Pending.Items()[0].Draft)
+	}
+	for _, s := range []string{"15 mins", "an hour", "half an hour", "2 hours", "20分鐘", "一個小時"} {
+		if !namesDuration(s) {
+			t.Errorf("%q names a duration", s)
+		}
+	}
+	for _, s := range []string{"a pack of eggs", "at 5pm", "on Friday", "15 Bedford Ave"} {
+		if namesDuration(s) {
+			t.Errorf("%q does not name a duration", s)
+		}
+	}
 }
 
 // Arbiter 2026-10-24: no summary for a request with nothing in it or no

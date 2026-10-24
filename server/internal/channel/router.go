@@ -213,12 +213,14 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	if err := r.Identities.AttachMessage(ctx, in.Channel, in.ProviderMessageID, id.ID); err != nil {
 		log.Printf("[channel] attach message id=%s: %v", in.ProviderMessageID, err)
 	}
-	if strings.TrimSpace(in.Text) == "" && len(in.MediaURLs) == 0 && r.sentWithText(ctx, id.ID, in) {
+	if strings.TrimSpace(in.Text) == "" && (len(in.MediaURLs) == 0 || r.linkJustSent(ctx, id)) && r.sentWithText(ctx, id.ID, in) {
 		// iMessage delivers a link's preview card as one or two extra
 		// messages with no text, a moment after the link itself (staging
 		// 2026-10-24: a Google Maps link drew two "I can only read text"
-		// replies although the link had reached the supporter). Part of the
-		// message just handled: nothing to answer.
+		// replies although the link had reached the supporter). The card
+		// may carry the preview image as media (second staging pass, same
+		// day): with a link just sent, media without text is still the
+		// card. Part of the message just handled: nothing to answer.
 		if err := r.Identities.TouchConversation(ctx, id.ID, in.ReceivedAt); err != nil {
 			log.Printf("[channel] touch conversation identity=%s: %v", id.ID, err)
 		}
@@ -453,6 +455,12 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 			continue
 		}
 		log.Printf("[channel] parsed model=%s latency=%s in=%d out=%d category=%s", usage.Model, usage.Latency.Round(time.Millisecond), usage.InputTokens, usage.OutputTokens, draft.Category)
+		if !namesDuration(text) {
+			// Default 30 minutes unless the person says otherwise (Arbiter
+			// 2026-10-24 22:48: the model guessed 15 for "a pack of eggs";
+			// the person then had to correct it). The Booker's default.
+			draft.DurationMinutes = 0
+		}
 		it := DraftItem{Draft: draft}
 		if r.needsPurchase(ctx, text, draft) {
 			it.NeedsBudget = true
@@ -469,9 +477,9 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 					it.BudgetCents, it.BudgetAsked = cents, true
 				}
 			}
-			// A budget already given carries over only to the SAME errand
-			// (same kind, same place) — not to whatever errand now sits at
-			// that position.
+			// A budget already given carries over to a correction of the
+			// same kind of errand (Arbiter 2026-10-24 22:48: asked once,
+			// never again) — not to a different kind now at that position.
 			if !it.BudgetAsked && !latestNamed && len(prev) == len(errands) && prev[i].BudgetAsked && sameErrand(prev[i].Draft, draft) {
 				it.BudgetCents, it.BudgetAsked = prev[i].BudgetCents, true
 			}
@@ -1020,12 +1028,18 @@ func sentBefore(in Inbound, stamp *time.Time) string {
 
 // latestLine is the last line of a draft's source — the correction just
 // typed (startDraft joins earlier words and the new ones with "\n").
-// sameErrand: a re-drafted errand is the one drafted before — same kind of
-// task at the same place.
+// sameErrand: a re-drafted errand is the one drafted before — the same
+// kind of task. (Not the place: a re-parse words it differently — staging
+// 2026-10-24 asked the eggs budget twice over "farmer's market".)
 func sameErrand(a, b llm.TaskDraft) bool {
-	norm := func(v string) string { return strings.ToLower(strings.TrimSpace(v)) }
-	return a.Category == b.Category && norm(a.Location1) == norm(b.Location1)
+	return a.Category == b.Category
 }
+
+// durationRE: the person named how long — minutes, hours, 分鐘/小時.
+var durationRE = regexp.MustCompile(`(?i)\b\d+\s*(?:min|mins|minute|minutes|hr|hrs|hour|hours)\b|(?:an?|one|half an?)\s+hour|[\d一二三四五六七八九十兩]+\s*(?:分鐘|分|個?小時|個?鐘頭)|半小時|半個小時`)
+
+// namesDuration reports whether the errand text says how long it takes.
+func namesDuration(text string) bool { return durationRE.MatchString(text) }
 
 func latestLine(source string) string {
 	if i := strings.LastIndex(source, "\n"); i >= 0 {
@@ -1056,6 +1070,29 @@ func (r *Router) sentWithText(ctx context.Context, identityID string, in Inbound
 	gap := at.Sub(*prev.LastInboundAt)
 	return gap >= -previewWindow && gap <= previewWindow
 }
+
+// linkJustSent: the person's previous message carried a URL (its preview
+// card may follow as media with no text).
+func (r *Router) linkJustSent(ctx context.Context, id Identity) bool {
+	if r.Thread == nil {
+		return false
+	}
+	msgs, err := r.Thread.RecentMessages(ctx, id.Channel, id.Address, 4)
+	if err != nil {
+		log.Printf("[channel] link preview check identity=%s: %v", id.ID, err)
+		return false
+	}
+	for i := len(msgs) - 1; i >= 0; i-- { // oldest first: walk back to the last inbound with text
+		m := msgs[i]
+		if m.Direction != "inbound" || strings.TrimSpace(m.Text) == "" {
+			continue
+		}
+		return urlRE.MatchString(m.Text)
+	}
+	return false
+}
+
+var urlRE = regexp.MustCompile(`(?i)\bhttps?://\S+`)
 
 // holdDraft keeps a draft made while an approval question waits: its next
 // step (name, budget or summary) is set for ResumeState, the approval stays

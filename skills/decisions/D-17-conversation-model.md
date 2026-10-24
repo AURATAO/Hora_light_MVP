@@ -972,3 +972,36 @@ email info@my-hora.com or say “real person” again"); our earlier
 question, if any, is put again; a held supporter question resumes.
 Release — by ops or by the timeout — is compare-and-set on the activity
 time, so an ops message landing at the same moment wins.
+
+### Arbiter answers — 2026-10-24 22:48 (Aura, third staging pass)
+
+- **A. Time and budget on a correction.** Staging: "buy a pack of eggs"
+  → budget asked (good) → summary said 15 minutes → "not ASAP but
+  Wednesday" → the budget was asked AGAIN, then the summary said 30.
+  Ruling: **default is always 30 minutes**; the person changes it by
+  saying so, and the re-draft follows; **a budget asked once is never
+  asked again** for that draft. Built: the model's own duration guess is
+  dropped unless the errand text names a duration (`namesDuration`:
+  minutes/hours/分鐘/小時); the carried budget is matched on the kind of
+  errand (category) alone — the re-parse had reworded the place, which
+  broke the stricter same-place match from review r1.
+- **B. Google Maps link still drew two "I can only read text".** Staging
+  logs: the preview-card messages carried the preview image as media, so
+  the "no media" guard from review r1 let them through. Built: with a URL
+  in the person's previous message, media without text inside the preview
+  window is the card and is silent; a photo after plain text is still
+  answered.
+- **Hand-off timeout** (22:39) reviewed FAIL (4 MAJOR) and fixed in the
+  same push: a thread with no clock is never stale (clocks are started by
+  the sweeper, so a hand-off made mid-rollout by an older build is not
+  released at once); ops are emailed on auto-release ("back to the bot,
+  follow up by email if it was a payment or a problem") and can restart
+  the clock without writing (`POST /admin/channel/:identity/claim`); a
+  release puts our own question again only when no supporter question is
+  about to be asked (never two YES-able questions); the lazy path re-reads
+  after the release attempt whatever its result; an ops release goes
+  through on the state alone; `OpsSend` refuses once the thread is back
+  with the bot. The person's copy no longer claims nobody looked — "no
+  one has replied in the last 10 minutes… the team has your messages".
+  Open for the Arbiter: should 3DS-payment and agent-safety hand-offs
+  follow the flat 10 minutes? Built flat, as ruled.

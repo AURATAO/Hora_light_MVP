@@ -1044,6 +1044,13 @@ func TestFinishSetupClaimFailureIsAnError(t *testing.T) {
 // Staging 2026-10-24: a link's preview arrives as extra empty messages a
 // moment later — no "text only" reply to those; a lone empty message (a
 // photo with nothing else) still gets it.
+// fixedThread answers RecentMessages with these messages, oldest first.
+type fixedThread []ThreadMessage
+
+func (f fixedThread) RecentMessages(context.Context, Channel, string, int) ([]ThreadMessage, error) {
+	return f, nil
+}
+
 func TestLinkPreviewIsSilent(t *testing.T) {
 	g := newRig(llm.IntentNewTask)
 	now := time.Now()
@@ -1057,6 +1064,25 @@ func TestLinkPreviewIsSilent(t *testing.T) {
 		if strings.Contains(m.Text, CopyTextOnly) {
 			t.Fatalf("preview answered: %q", m.Text)
 		}
+	}
+	// The card may carry its preview image as media (staging 2026-10-24,
+	// second pass): still silent after a link; a photo after plain text is
+	// not (it is answered, as any media without text is).
+	g3 := newRig(llm.IntentNewTask)
+	g3.r.Thread = fixedThread{{Direction: "inbound", Text: "https://maps.app.goo.gl/abc"}}
+	g3.say(t, "https://maps.app.goo.gl/abc")
+	if err := g3.r.HandleInbound(context.Background(), Inbound{Channel: IMessage, ProviderMessageID: "card", From: me, MediaURLs: []string{"https://cdn.example/preview.jpg"}, ReceivedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if g3.ad.last() == CopyTextOnly {
+		t.Fatal("a preview card with an image was answered")
+	}
+	g3.r.Thread = fixedThread{{Direction: "inbound", Text: "pick up my laundry"}}
+	if err := g3.r.HandleInbound(context.Background(), Inbound{Channel: IMessage, ProviderMessageID: "photo", From: me, MediaURLs: []string{"https://cdn.example/photo.jpg"}, ReceivedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if g3.ad.last() != CopyTextOnly {
+		t.Fatalf("a photo after plain text: %q", g3.ad.last())
 	}
 	g2 := newRig(llm.IntentNewTask)
 	if err := g2.r.HandleInbound(context.Background(), Inbound{Channel: IMessage, ProviderMessageID: "alone", From: me, Text: "", ReceivedAt: time.Now()}); err != nil {
