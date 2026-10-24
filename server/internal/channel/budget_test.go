@@ -220,3 +220,43 @@ func TestCorrectionKeepsTheBudget(t *testing.T) {
 		t.Fatalf("new amount ignored: %q", got)
 	}
 }
+
+// Arbiter 2026-10-24: no summary for a request with nothing in it or no
+// place — the person is asked first; a YES then books nothing; the answer
+// re-drafts. Staging: "Book another thing?" was summarised and booked.
+func TestDetailsBeforeASummary(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.parser.draft = llm.TaskDraft{Title: "Book another task", Category: "anything_else", DurationMinutes: 30}
+	got := g.say(t, "Book another thing?")
+	if got != CopyAskWhatWhere || g.state() != StateAwaitingConfirm {
+		t.Fatalf("vague: %q state %s", got, g.state())
+	}
+	g.say(t, "YES")
+	if g.booker.posts != 0 {
+		t.Fatal("a YES must not book a draft that was never summarised")
+	}
+	g.parser.draft = bagelD
+	got = g.say(t, "buy me a bagel to 260 Mercer street")
+	if !strings.Contains(got, bagelD.Title) && !strings.Contains(got, "set aside") {
+		t.Fatalf("after details: %q", got)
+	}
+	if last := g.parser.sources[len(g.parser.sources)-1]; strings.Contains(last, "Book another") {
+		t.Fatalf("the empty request must not be re-parsed with the details: %q", last)
+	}
+
+	// A real errand with no place: asked where; the place re-drafts with
+	// both lines.
+	g = newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.parser.draft = llm.TaskDraft{Title: "Hot Cheetos", Category: "delivery", DurationMinutes: 30}
+	got = g.say(t, "buy me hot cheetos")
+	if !strings.Contains(got, "Where should the supporter go") {
+		t.Fatalf("no place: %q", got)
+	}
+	g.parser.draft = llm.TaskDraft{Title: "Hot Cheetos", Category: "delivery", Location1: "260 Mercer St", DurationMinutes: 30}
+	g.say(t, "260 Mercer st")
+	if last := g.parser.sources[len(g.parser.sources)-1]; !strings.Contains(last, "hot cheetos") || !strings.Contains(last, "260 Mercer") {
+		t.Fatalf("re-draft source: %q", last)
+	}
+}

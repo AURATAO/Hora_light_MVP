@@ -379,6 +379,9 @@ func (r *Router) resumeLine(ctx context.Context, id Identity, conv Conversation)
 			return CopyBackToDraft + "\n" + CopyAskBudget
 		}
 	case StateAwaitingConfirm:
+		if conv.Pending != nil && conv.Pending.DetailsAsked {
+			return CopyBackToDraft + "\n" + detailsQuestion(conv.Pending)
+		}
 		if conv.Pending != nil {
 			return CopyBackToDraft + "\n" + r.Summary(conv.Pending)
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"time"
 
@@ -423,6 +424,7 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		p.WhileActive, p.WhileActiveShown = conv.Pending.WhileActive, conv.Pending.WhileActiveShown
 	}
 	p.SetItems(items)
+	p.DetailsAsked = needsDetails(items)
 	conv.Pending = p
 	if conv.State == StateAwaitingApproval {
 		// Approval first, then the draft (Arbiter 2026-10-24): the draft is
@@ -431,6 +433,16 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		return r.holdDraft(ctx, in, id, conv)
 	}
 
+	if p.DetailsAsked {
+		// Nothing concrete or no place: ask before any summary — a summary
+		// of "book another task" was booked on staging (2026-10-24).
+		conv.State = StateAwaitingConfirm
+		lead := r.leadIn(p)
+		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+			return fmt.Errorf("startDraft: %w", err)
+		}
+		return r.Reply(ctx, in, lead+detailsQuestion(p), "")
+	}
 	if !id.Linked() && conv.PendingName == "" {
 		conv.State = StateAwaitingName
 		p.NameAsked = true
@@ -505,6 +517,24 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 			return fmt.Errorf("onConfirm: %w", err)
 		}
 		return r.onIdle(ctx, in, id, conv, text)
+	}
+	if conv.Pending.DetailsAsked {
+		switch {
+		case IsNo(text):
+			return r.dropDraft(ctx, in, conv)
+		case IsYes(text):
+			// Nothing to say yes to yet.
+			return r.Reply(ctx, in, detailsQuestion(conv.Pending), "")
+		case forSupporterRE.MatchString(text):
+			if handled, err := r.routeInContext(ctx, in, id, conv, text); handled {
+				return err
+			}
+		}
+		source := conv.Pending.Source + "\n" + text
+		if vagueRequestRE.MatchString(conv.Pending.Source) {
+			source = text // "book another thing?" carried nothing to keep
+		}
+		return r.startDraft(ctx, in, id, conv, source)
 	}
 	switch {
 	case IsNo(text):
@@ -900,6 +930,8 @@ func (r *Router) sentWithText(ctx context.Context, identityID string, in Inbound
 func (r *Router) holdDraft(ctx context.Context, in Inbound, id Identity, conv Conversation) error {
 	p := conv.Pending
 	switch {
+	case p.DetailsAsked:
+		// asked when the approval is answered (resumeLine)
 	case !id.Linked() && conv.PendingName == "":
 		p.NameAsked = true
 	default:
@@ -911,4 +943,28 @@ func (r *Router) holdDraft(ctx context.Context, in Inbound, id Identity, conv Co
 		return fmt.Errorf("holdDraft: %w", err)
 	}
 	return r.Reply(ctx, in, fmt.Sprintf(CopyErrandAfterApproval, p.Headline())+"\n\n"+approvalStillPending(conv), "")
+}
+
+// vagueRequestRE: a request to book with nothing in it — "book another
+// thing?", "can I book something", "I'd like to make a new request".
+var vagueRequestRE = regexp.MustCompile(`(?i)^\W*(?:hi\W+)?(?:can i|could i|may i|i want to|i'd like to|id like to|let me|i need to)?\s*(?:book|post|order|make|request|get|add)\s*(?:me\s+)?(?:another|a new|one more|a|something|an?other)?\s*(?:thing|task|errand|one|request|booking|order)?\s*(?:please|pls)?\W*$`)
+
+// needsDetails: a draft that names no place for some errand, or came from a
+// request with nothing in it.
+func needsDetails(items []DraftItem) bool {
+	for _, it := range items {
+		if strings.TrimSpace(it.Draft.Location1) == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// detailsQuestion asks what is missing: what and where for an empty
+// request, where for a draft without a place.
+func detailsQuestion(p *PendingDraft) string {
+	if vagueRequestRE.MatchString(p.Source) {
+		return CopyAskWhatWhere
+	}
+	return fmt.Sprintf(CopyAskWhere, p.Headline())
 }

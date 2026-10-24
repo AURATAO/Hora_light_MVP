@@ -64,6 +64,10 @@ type PendingDraft struct {
 	// NameAsked: the draft is waiting on the first name (awaiting_name), so
 	// an interruption (an approval) can resume there.
 	NameAsked bool `json:"name_asked,omitempty"`
+	// DetailsAsked: the draft had no place (or nothing concrete to do), so
+	// the person was asked what and where instead of shown a summary
+	// (Arbiter 2026-10-24). No YES books it; the next words re-draft it.
+	DetailsAsked bool `json:"details_asked,omitempty"`
 	// WhileActive is the supporter's first name when the draft was started
 	// while that supporter was on the job (D-17 P6): the summary says so
 	// and "for <name>" relays the words instead.
