@@ -20,7 +20,13 @@ are in production. What's new is the entry point and the conversation around it.
 
 Architecture diagrams: https://claude.ai/artifact/SjaN4gT57zcfAnGm9HD1cV
 
-## 2. App Store review freeze (in force until v1 review completes)
+## 2. App Store review freeze (LIFTED 2026-10-24 — v1 approved; kept for the record)
+
+**2026-10-24 23:54 (Aura): the app passed review.** C-3 of the merge
+conditions is met. The rules below no longer bind; `main` is still not
+merged into until C-1/C-2 are green and staging is signed off (M5).
+
+
 
 The reviewer tests against production. Until review is done:
 
