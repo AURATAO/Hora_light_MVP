@@ -1074,3 +1074,10 @@ is "negated and nothing else about cancelling" (`isNegatedCancel`), so
 取消 is a negation; the choice-list miss and the YES-step fall-through say
 "nothing cancelled" / "I haven't cancelled X" before the message is read
 fresh.
+
+#### Cancel reason step — review r3: PASS (minors fixed)
+
+"7. Other" / "(2)" pasted back pick by the number; "mistake with/on the
+address" is wrong details; "accidentally" is posted by mistake; a negated
+cancel at the YES step keeps the task; ’ is normalised once for the whole
+cancel state.

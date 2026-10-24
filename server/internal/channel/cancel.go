@@ -70,11 +70,13 @@ var CancelReasonChoices = []CancelReasonChoice{
 	{"plans_changed", "Plans changed", []string{"plans changed", "plan changed", "changed my mind", "change of plan", "計畫", "计划", "改變主意", "改变主意"}},
 	{"no_longer_needed", "No longer needed", []string{"no longer need", "no longer needed", "don't need", "dont need", "not needed", "不需要"}},
 	{"found_another_way", "Found another way", []string{"another way", "someone else", "do it myself", "found someone", "找到別人", "自己來", "自己去"}},
-	{"wrong_details", "Posted with wrong details", []string{"wrong detail", "wrong details", "wrong address", "wrong time", "wrong info", "wrong place", "details were wrong", "mistake in", "錯誤", "寫錯", "弄錯"}},
-	{"posted_by_mistake", "Posted by mistake", []string{"by mistake", "by accident", "a mistake", "accident", "didn't mean", "dont mean", "didnt mean", "不小心", "誤發", "誤"}},
+	{"wrong_details", "Posted with wrong details", []string{"wrong detail", "wrong details", "wrong address", "wrong time", "wrong info", "wrong place", "details were wrong", "mistake in", "mistake with", "mistake on", "錯誤", "寫錯", "弄錯"}},
+	{"posted_by_mistake", "Posted by mistake", []string{"by mistake", "by accident", "accidentally", "a mistake", "accident", "didn't mean", "dont mean", "didnt mean", "不小心", "誤發", "誤"}},
 	{"timing_no_longer_works", "Timing no longer works", []string{"timing", "too late", "too long", "taking too", "時間不", "时间不", "太久", "來不及"}},
 	{"other", "Other", []string{"something else", "其他", "別的"}},
 }
+
+var leadingNumberRE = regexp.MustCompile(`^\s*\(?(\d+)\s*[.)#]?\s*(?:[a-z].*)?$`)
 
 // cancelReasonList renders the numbered reasons.
 func cancelReasonList() string {
@@ -89,8 +91,12 @@ func cancelReasonList() string {
 // the reason in the person's own words. "" when nothing matched.
 func pickCancelReason(text string) string {
 	t := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(text, "’", "'")))
-	if n, err := strconv.Atoi(strings.Trim(t, ".#)")); err == nil && n >= 1 && n <= len(CancelReasonChoices) {
-		return CancelReasonChoices[n-1].Code
+	t = strings.Trim(t, "'\"“”()")
+	// "7", "7.", "7. Other" (the list line pasted back): the number decides.
+	if m := leadingNumberRE.FindStringSubmatch(t); m != nil {
+		if n, err := strconv.Atoi(m[1]); err == nil && n >= 1 && n <= len(CancelReasonChoices) {
+			return CancelReasonChoices[n-1].Code
+		}
 	}
 	// The label itself, as listed (or "other" alone).
 	for _, c := range CancelReasonChoices {
@@ -317,6 +323,7 @@ func (r *Router) cancelLapsed(pc *PendingCancel) bool {
 // within CancelTTL) cancels at the quoted charge; NO keeps it; anything else
 // leaves the cancel and is read as a fresh message.
 func (r *Router) onAwaitingCancel(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
+	text = strings.ReplaceAll(text, "’", "'")
 	pc := conv.PendingCancel
 	leave := func() error {
 		conv.State, conv.PendingCancel = StateIdle, nil
@@ -415,7 +422,7 @@ func (r *Router) onAwaitingCancel(ctx context.Context, in Inbound, id Identity, 
 	case IsCancelRequest(text):
 		// "cancel" again (IsNo would read it as a no): the question stands.
 		return r.Reply(ctx, in, fmt.Sprintf(CopyCancelReask, pc.Title), "")
-	case IsNo(text):
+	case IsNo(text), isNegatedCancel(text):
 		if err := leave(); err != nil {
 			return err
 		}

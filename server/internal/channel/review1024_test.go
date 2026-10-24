@@ -574,7 +574,7 @@ func TestCancelReasonStepEdges(t *testing.T) {
 			t.Errorf("label %q → %q", c.Label, got)
 		}
 	}
-	for _, tc := range []struct{ in, code string }{{"wrong details", "wrong_details"}, {"it's no longer needed", "no_longer_needed"}, {"I don’t need it anymore", "no_longer_needed"}, {"it was a mistake", "posted_by_mistake"}, {"Other.", "other"}} {
+	for _, tc := range []struct{ in, code string }{{"wrong details", "wrong_details"}, {"it's no longer needed", "no_longer_needed"}, {"I don’t need it anymore", "no_longer_needed"}, {"it was a mistake", "posted_by_mistake"}, {"Other.", "other"}, {"7. Other", "other"}, {"(2)", "no_longer_needed"}, {"I made a mistake with the address", "wrong_details"}, {"I accidentally posted it", "posted_by_mistake"}} {
 		if got := pickCancelReason(tc.in); got != tc.code {
 			t.Errorf("%q → %q, want %q", tc.in, got, tc.code)
 		}
