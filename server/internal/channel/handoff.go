@@ -61,6 +61,9 @@ type HandoffNotice struct {
 	OpenRequestUnconfirmed bool
 	// Detail is the agent's escalation reason (safety, dispute, …), "" otherwise.
 	Detail string
+	// AutoReleased: no ops activity for HandoffTimeout — the thread went
+	// back to the bot and the person was told. Emailed, never texted.
+	AutoReleased bool
 }
 
 // OpsNotifier delivers a notice to the people who will take over.
@@ -150,6 +153,7 @@ type handoffOpen struct {
 	extensionID, taskID string
 	unconfirmed         bool
 	detail              string // the agent's escalation reason
+	autoReleased        bool   // the thread went back to the bot (HandoffTimeout)
 }
 
 func (r *Router) notifyOps(ctx context.Context, id Identity, reason HandoffReason, update bool, open handoffOpen) error {
@@ -157,9 +161,10 @@ func (r *Router) notifyOps(ctx context.Context, id Identity, reason HandoffReaso
 		return fmt.Errorf("notify ops: no OpsNotifier configured")
 	}
 	n := HandoffNotice{IdentityID: id.ID, Channel: id.Channel, PhoneHint: PhoneHint(id.Address), UserID: id.UserID, Reason: reason, Update: update,
-		OpenRequestID: open.extensionID, OpenRequestTaskID: open.taskID, OpenRequestUnconfirmed: open.unconfirmed, Detail: open.detail}
+		OpenRequestID: open.extensionID, OpenRequestTaskID: open.taskID, OpenRequestUnconfirmed: open.unconfirmed, Detail: open.detail,
+		AutoReleased: open.autoReleased}
 	limit := handoffThreadLen
-	if update {
+	if update || open.autoReleased {
 		limit = 1
 	}
 	if r.Thread != nil {
@@ -196,24 +201,11 @@ func (r *Router) lastReplyWasParseFailure(ctx context.Context, id Identity) bool
 
 // Release returns a handed-off thread to the bot (ops action). The pending
 // draft, if any, is re-shown so the person can pick up where they were.
+// Released on the state alone: an ops message landing meanwhile does not
+// make the ops tap a silent no-op.
 func (r *Router) Release(ctx context.Context, id Identity) error {
-	conv, err := r.Conversations.GetConversation(ctx, id.ID)
-	if err != nil {
-		return fmt.Errorf("Release: %w", err)
-	}
-	if conv.State != StateHandoff {
-		return nil
-	}
-	won, err := r.Conversations.ReleaseHandoff(ctx, id.ID, conv.ResumeState(), conv.HandoffActivityAt)
-	if err != nil {
-		return fmt.Errorf("Release: %w", err)
-	}
-	if !won {
-		return nil // released meanwhile (the timeout, or another ops tap)
-	}
-	// The state change is the action; the message goes off the request
-	// path (S-32).
-	return r.afterRelease(ctx, id, conv, CopyHandoffReleased, true)
+	_, err := r.release(ctx, id, true, CopyHandoffReleased, true, false)
+	return err
 }
 
 // HandoffTimeout: a handed-off thread with no ops activity for this long
@@ -221,46 +213,61 @@ func (r *Router) Release(ctx context.Context, id Identity) error {
 // tasks are billed by the minute — two hours is far too long; 10 minutes).
 const HandoffTimeout = 10 * time.Minute
 
-// handoffStale: handed off and no ops activity within HandoffTimeout (no
-// activity time at all — a row from before the column — counts as stale).
+// handoffStale: handed off and no ops activity within HandoffTimeout. A
+// thread with no clock is not stale here — the sweeper starts its clock
+// first (StartHandoffClocks), so a hand-off is never released at once.
 func (r *Router) handoffStale(conv Conversation) bool {
-	return conv.State == StateHandoff &&
-		(conv.HandoffActivityAt == nil || r.now().Sub(*conv.HandoffActivityAt) >= HandoffTimeout)
+	return conv.State == StateHandoff && conv.HandoffActivityAt != nil &&
+		r.now().Sub(*conv.HandoffActivityAt) >= HandoffTimeout
 }
 
-// AutoRelease hands a stale hand-off back to the bot and tells the person
-// (the server's sweeper, and the person's next message). async: the
-// message off the caller's path. released=false: not stale, or ops acted
-// / released meanwhile.
+// AutoRelease hands a stale hand-off back to the bot, tells the person and
+// tells ops (the server's sweeper, and the person's next message). async:
+// the message off the caller's path. released=false: not stale, or ops
+// acted / released meanwhile.
 func (r *Router) AutoRelease(ctx context.Context, id Identity, async bool) (bool, error) {
+	return r.release(ctx, id, false, CopyHandoffTimedOut, async, true)
+}
+
+// release is the one release path. anyClock: an ops release (on the state
+// alone); otherwise compare-and-set on the activity time the caller read,
+// and only when stale.
+func (r *Router) release(ctx context.Context, id Identity, anyClock bool, text string, async, timedOut bool) (bool, error) {
 	conv, err := r.Conversations.GetConversation(ctx, id.ID)
 	if err != nil {
-		return false, fmt.Errorf("AutoRelease: %w", err)
+		return false, fmt.Errorf("release: %w", err)
 	}
-	if !r.handoffStale(conv) {
+	if conv.State != StateHandoff || (!anyClock && !r.handoffStale(conv)) {
 		return false, nil
 	}
-	won, err := r.Conversations.ReleaseHandoff(ctx, id.ID, conv.ResumeState(), conv.HandoffActivityAt)
+	resumed := conv
+	resumed.State = conv.ResumeState()
+	// Our earlier question is put again — unless a supporter's question is
+	// about to be asked (resumeDeferred below): two YES-able questions in
+	// one burst invite a YES for the wrong one. Ours comes back after.
+	back := ""
+	if !r.nextHoldLive(ctx, id, conv) {
+		back = r.resumeLine(ctx, id, resumed)
+	}
+	won, err := r.Conversations.ReleaseHandoff(ctx, id.ID, ReleaseOpts{Resume: resumed.State, Seen: conv.HandoffActivityAt, AnyClock: anyClock, PutAgain: back != ""})
 	if err != nil {
-		return false, fmt.Errorf("AutoRelease: %w", err)
+		return false, fmt.Errorf("release: %w", err)
 	}
 	if !won {
 		return false, nil
 	}
-	log.Printf("[channel] handoff identity=%s: no ops activity for %s, back to the bot", id.ID, HandoffTimeout)
-	return true, r.afterRelease(ctx, id, conv, CopyHandoffTimedOut, async)
-}
-
-// afterRelease tells the person the bot is back, puts our earlier question
-// again if one was waiting, and resumes a supporter's question held during
-// the hand-off.
-func (r *Router) afterRelease(ctx context.Context, id Identity, conv Conversation, text string, async bool) error {
-	conv.State = conv.ResumeState()
-	back := r.resumeLine(ctx, id, conv)
+	if timedOut {
+		log.Printf("[channel] handoff identity=%s: no ops activity for %s, back to the bot", id.ID, HandoffTimeout)
+		// Ops still think they hold it: told, so a late reply is not a
+		// surprise 409 and a payment or a report is followed up by email.
+		if err := r.notifyOps(ctx, id, "", false, handoffOpen{autoReleased: true}); err != nil {
+			log.Printf("[channel] handoff identity=%s: auto-release notice: %v", id.ID, err)
+		}
+	}
 	if back != "" {
 		text += "\n\n" + back
 	}
-	return r.dispatch(ctx, async, func(c context.Context) error {
+	return true, r.dispatch(ctx, async, func(c context.Context) error {
 		if err := r.Send(c, Outbound{Channel: id.Channel, To: id.Address, Text: text}, ""); err != nil {
 			return err
 		}
@@ -272,6 +279,21 @@ func (r *Router) afterRelease(ctx context.Context, id Identity, conv Conversatio
 	})
 }
 
+// OpsClaim: ops are on it without writing yet (a call, the app) — the
+// HandoffTimeout restarts.
+func (r *Router) OpsClaim(ctx context.Context, id Identity) error {
+	ok, err := r.Conversations.TouchHandoff(ctx, id.ID)
+	if err != nil {
+		return fmt.Errorf("OpsClaim: %w", err)
+	}
+	if !ok {
+		return ErrNotInHandoff
+	}
+	return nil
+}
+
+// OpsSend sends ops' words to a handed-off thread (and restarts the
+// HandoffTimeout). ErrNotInHandoff when the bot holds it.
 func (r *Router) OpsSend(ctx context.Context, id Identity, text string) error {
 	conv, err := r.Conversations.GetConversation(ctx, id.ID)
 	if err != nil {
@@ -280,9 +302,14 @@ func (r *Router) OpsSend(ctx context.Context, id Identity, text string) error {
 	if conv.State != StateHandoff {
 		return ErrNotInHandoff
 	}
-	// Ops are on it: the HandoffTimeout restarts.
-	if err := r.Conversations.TouchHandoff(ctx, id.ID); err != nil {
+	// Ops are on it: the HandoffTimeout restarts — and the thread is still
+	// theirs at this moment (the timeout may have just released it).
+	ok, err := r.Conversations.TouchHandoff(ctx, id.ID)
+	if err != nil {
 		return fmt.Errorf("OpsSend: %w", err)
+	}
+	if !ok {
+		return ErrNotInHandoff
 	}
 	// Queued, not awaited (S-32): a slow provider must not hold the ops
 	// request open. Delivery failures are logged by dispatch.

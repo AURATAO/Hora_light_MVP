@@ -237,14 +237,26 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	}
 
 	if r.handoffStale(conv) {
+		if IsHumanRequest(text) {
+			// Asking for a person again: ops are told afresh and the clock
+			// restarts — not "I'm back" followed by "getting a teammate".
+			if err := r.notifyOps(ctx, id, HandoffHumanRequested, false, handoffOpen{}); err == nil {
+				if _, err := r.Conversations.TouchHandoff(ctx, id.ID); err != nil {
+					log.Printf("[channel] handoff identity=%s: %v", id.ID, err)
+				}
+				return r.Reply(ctx, in, CopyHandoffStart, "")
+			}
+		}
 		// Ops never picked it up (HandoffTimeout): back to the bot first,
 		// then this message is handled by the bot as usual.
-		if released, err := r.AutoRelease(ctx, id, false); err != nil {
+		if _, err := r.AutoRelease(ctx, id, false); err != nil {
 			return fmt.Errorf("HandleInbound: %w", err)
-		} else if released {
-			if conv, err = r.Conversations.GetConversation(ctx, id.ID); err != nil {
-				return fmt.Errorf("HandleInbound: %w", err)
-			}
+		}
+		// Read again whatever happened: the sweeper or ops may have
+		// released it a moment ago (review: never "teammate coming" right
+		// after "I'm back").
+		if conv, err = r.Conversations.GetConversation(ctx, id.ID); err != nil {
+			return fmt.Errorf("HandleInbound: %w", err)
 		}
 	}
 	switch conv.State {

@@ -388,29 +388,34 @@ func (m *memConversations) AskCancel(_ context.Context, iid string, pc PendingCa
 	return true, nil
 }
 
-func (m *memConversations) TouchHandoff(_ context.Context, iid string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if c, ok := m.convs[iid]; ok && c.State == StateHandoff {
-		now := time.Now()
-		c.HandoffActivityAt = &now
-		m.convs[iid] = c
-	}
-	return nil
-}
-
-func (m *memConversations) ReleaseHandoff(_ context.Context, iid string, resume State, seen *time.Time) (bool, error) {
+func (m *memConversations) TouchHandoff(_ context.Context, iid string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	c, ok := m.convs[iid]
-	same := (c.HandoffActivityAt == nil && seen == nil) || (c.HandoffActivityAt != nil && seen != nil && c.HandoffActivityAt.Equal(*seen))
+	if !ok || c.State != StateHandoff {
+		return false, nil
+	}
+	now := time.Now()
+	c.HandoffActivityAt = &now
+	m.convs[iid] = c
+	return true, nil
+}
+
+func (m *memConversations) ReleaseHandoff(_ context.Context, iid string, o ReleaseOpts) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.convs[iid]
+	same := o.AnyClock || (c.HandoffActivityAt == nil && o.Seen == nil) ||
+		(c.HandoffActivityAt != nil && o.Seen != nil && c.HandoffActivityAt.Equal(*o.Seen))
 	if !ok || c.State != StateHandoff || !same {
 		return false, nil
 	}
-	c.State, c.HandoffActivityAt = resume, nil
-	sentinel := ShownUnconfirmed
-	if c.QuestionShownAt == nil || sentinel.After(*c.QuestionShownAt) {
-		c.QuestionShownAt = &sentinel
+	c.State, c.HandoffActivityAt = o.Resume, nil
+	if o.PutAgain {
+		sentinel := ShownUnconfirmed
+		if c.QuestionShownAt == nil || sentinel.After(*c.QuestionShownAt) {
+			c.QuestionShownAt = &sentinel
+		}
 	}
 	m.convs[iid] = c
 	return true, nil

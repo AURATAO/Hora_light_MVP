@@ -1323,18 +1323,45 @@ func TestPGHandoffActivity(t *testing.T) {
 	if stale, err := s.StaleHandoffs(ctx, time.Now().Add(time.Minute)); err != nil || len(stale) == 0 {
 		t.Fatalf("stale: %v %v", stale, err)
 	}
-	if err := s.TouchHandoff(ctx, a.ID); err != nil {
-		t.Fatal(err)
+	if ok, err := s.TouchHandoff(ctx, a.ID); err != nil || !ok {
+		t.Fatalf("touch: %v %v", ok, err)
 	}
-	if ok, err := s.ReleaseHandoff(ctx, a.ID, StateIdle, c1.HandoffActivityAt); err != nil || ok {
+	if ok, err := s.ReleaseHandoff(ctx, a.ID, ReleaseOpts{Resume: StateIdle, Seen: c1.HandoffActivityAt}); err != nil || ok {
 		t.Fatalf("release with an old clock: %v %v", ok, err)
 	}
 	c3, _ := s.GetConversation(ctx, a.ID)
-	if ok, err := s.ReleaseHandoff(ctx, a.ID, StateIdle, c3.HandoffActivityAt); err != nil || !ok {
+	if ok, err := s.ReleaseHandoff(ctx, a.ID, ReleaseOpts{Resume: StateIdle, Seen: c3.HandoffActivityAt}); err != nil || !ok {
 		t.Fatalf("release: %v %v", ok, err)
 	}
 	c4, _ := s.GetConversation(ctx, a.ID)
 	if c4.State != StateIdle || c4.HandoffActivityAt != nil {
 		t.Fatalf("after release: %+v", c4)
+	}
+	// Handed off again: a fresh clock, not the old one.
+	time.Sleep(10 * time.Millisecond)
+	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateHandoff}); err != nil {
+		t.Fatal(err)
+	}
+	c5, _ := s.GetConversation(ctx, a.ID)
+	if c5.HandoffActivityAt == nil || !c5.HandoffActivityAt.After(*c3.HandoffActivityAt) {
+		t.Fatalf("re-handoff clock: %v vs %v", c5.HandoffActivityAt, c3.HandoffActivityAt)
+	}
+	// An ops release goes through whatever the clock (AnyClock).
+	if ok, err := s.ReleaseHandoff(ctx, a.ID, ReleaseOpts{Resume: StateIdle, AnyClock: true}); err != nil || !ok {
+		t.Fatalf("any-clock release: %v %v", ok, err)
+	}
+	if ok, err := s.TouchHandoff(ctx, a.ID); err != nil || ok {
+		t.Fatalf("touch when not handed off: %v %v", ok, err)
+	}
+	// No clock (handed off by an older build): started, not listed stale.
+	if _, err := db.Exec(`UPDATE channel_conversations SET state = 'handoff', handoff_activity_at = NULL WHERE identity_id = $1`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StartHandoffClocks(ctx); err != nil {
+		t.Fatal(err)
+	}
+	c6, _ := s.GetConversation(ctx, a.ID)
+	if c6.HandoffActivityAt == nil {
+		t.Fatal("clock not started")
 	}
 }

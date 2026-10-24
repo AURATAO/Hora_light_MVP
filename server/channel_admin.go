@@ -24,6 +24,7 @@ import (
 //	GET  /admin/channel/:identity/thread    recent messages of one
 //	POST /admin/channel/:identity/send      {text} → the person (queued, 202)
 //	POST /admin/channel/:identity/release   back to the bot
+//	POST /admin/channel/:identity/claim     on it (restarts the 10-minute timeout)
 //
 // Auth (S-13): dualAuth + requireOpsAdmin on every route, the same control
 // as the rest of /admin. Every send and release writes an audit row with the
@@ -103,7 +104,9 @@ func (o opsEmailNotifier) NotifyOps(ctx context.Context, n channel.HandoffNotice
 		}
 	}
 	subject := fmt.Sprintf("[HO:RA] Chat handoff — %s %s", n.Channel, n.PhoneHint)
-	if n.Update {
+	if n.AutoReleased {
+		subject = fmt.Sprintf("[HO:RA] Chat handoff — back to the bot (no reply in %s) — %s %s", channel.HandoffTimeout, n.Channel, n.PhoneHint)
+	} else if n.Update {
 		subject = fmt.Sprintf("[HO:RA] Chat handoff — new message — %s %s", n.Channel, n.PhoneHint)
 	}
 	body := opsNoticeHTML(n, who)
@@ -138,7 +141,7 @@ func (o opsEmailNotifier) NotifyOps(ctx context.Context, n channel.HandoffNotice
 			}
 		}
 	}
-	if !n.Update && o.sms != nil {
+	if !n.Update && !n.AutoReleased && o.sms != nil {
 		text := fmt.Sprintf("[HO:RA] Chat handoff (%s) — %s %s. Details in the ops email / admin.", reasonLabelOps(n.Reason), n.Channel, n.PhoneHint)
 		own, err := o.addressOf(ctx, n.IdentityID)
 		if err != nil {
@@ -209,6 +212,9 @@ func opsNoticeHTML(n channel.HandoffNotice, who string) string {
 	}
 	if n.Update {
 		heading = "New message in a handed-off chat"
+	}
+	if n.AutoReleased {
+		heading = fmt.Sprintf("No one replied within %s — the chat went back to the bot and the person was told. Follow up by email if it was a payment or a problem.", channel.HandoffTimeout)
 	}
 	var lines strings.Builder
 	for _, m := range n.Thread {
@@ -324,6 +330,27 @@ func registerChannelAdminRoutes(r *gin.Engine, sqlDB *sql.DB, store *channel.PGS
 		// Queued: delivery runs off the request path (S-32).
 		c.JSON(http.StatusAccepted, gin.H{"queued": true})
 	})
+	r.POST("/admin/channel/:identity/claim", dualAuth(sqlDB), requireOpsAdmin(), func(c *gin.Context) {
+		// Ops are on it without writing yet: the 10-minute timeout restarts.
+		id, ok := loadIdentityParam(c, store)
+		if !ok {
+			return
+		}
+		err := router.OpsClaim(c.Request.Context(), id)
+		switch {
+		case errors.Is(err, channel.ErrNotInHandoff):
+			c.JSON(http.StatusConflict, gin.H{"error": "not_handed_off", "message": "This chat is with the bot."})
+			return
+		case err != nil:
+			log.Printf("[channel-admin] claim identity=%s by=%s: %v", id.ID, c.GetString("uid"), err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "server_error"})
+			return
+		}
+		writeAudit(c.Request.Context(), systemActorUID, c.GetString("uid"), "CHANNEL_OPS_CLAIM", "", map[string]any{
+			"identity_id": id.ID, "channel": id.Channel,
+		})
+		c.JSON(http.StatusOK, gin.H{"claimed": true})
+	})
 	r.POST("/admin/channel/:identity/release", dualAuth(sqlDB), requireOpsAdmin(), func(c *gin.Context) {
 		id, ok := loadIdentityParam(c, store)
 		if !ok {
@@ -354,12 +381,24 @@ func watchHandoffs(ctx context.Context, store *channel.PGStore, router *channel.
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			sweepHandoffs(ctx, store, router)
+			func() {
+				// A panic here must not take the API down with it.
+				defer func() {
+					if p := recover(); p != nil {
+						log.Printf("[channel-admin] handoff sweep panic: %v", p)
+					}
+				}()
+				sweepHandoffs(ctx, store, router)
+			}()
 		}
 	}
 }
 
 func sweepHandoffs(ctx context.Context, store *channel.PGStore, router *channel.Router) {
+	if err := store.StartHandoffClocks(ctx); err != nil {
+		log.Printf("[channel-admin] handoff sweep: %v", err)
+		return
+	}
 	ids, err := store.StaleHandoffs(ctx, time.Now().Add(-channel.HandoffTimeout))
 	if err != nil {
 		log.Printf("[channel-admin] handoff sweep: %v", err)
@@ -371,7 +410,7 @@ func sweepHandoffs(ctx context.Context, store *channel.PGStore, router *channel.
 			log.Printf("[channel-admin] handoff sweep identity=%s: %v", iid, err)
 			continue
 		}
-		c, cancel := context.WithTimeout(ctx, 30*time.Second)
+		c, cancel := context.WithTimeout(ctx, 20*time.Second)
 		if _, err := router.AutoRelease(c, id, false); err != nil {
 			log.Printf("[channel-admin] handoff sweep identity=%s: %v", iid, err)
 		}

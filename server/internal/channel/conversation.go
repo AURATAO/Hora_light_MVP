@@ -221,6 +221,14 @@ type PendingCancel struct {
 	AskedAtUnix int64 `json:"asked_at_unix,omitempty"`
 }
 
+// ReleaseOpts: see ConversationStore.ReleaseHandoff.
+type ReleaseOpts struct {
+	Resume   State
+	Seen     *time.Time
+	AnyClock bool
+	PutAgain bool
+}
+
 // CancelTTL: how long a cancel question stays answerable.
 const CancelTTL = 10 * time.Minute
 
@@ -275,13 +283,15 @@ type ConversationStore interface {
 	// question (review 10/24 r2: never two YES-able questions).
 	AskCancel(ctx context.Context, identityID string, pc PendingCancel, shownAt time.Time) (bool, error)
 	// TouchHandoff records ops acting on a handed-off thread (an ops
-	// message): the HandoffTimeout restarts. No-op when not handed off.
-	TouchHandoff(ctx context.Context, identityID string) error
-	// ReleaseHandoff hands the thread back to the bot — state `resume`,
-	// question_shown_at moved forward to ShownUnconfirmed (our question is
-	// put again) — only if it is still handed off with the activity time
-	// the caller read (compare-and-set: ops acting meanwhile wins).
-	ReleaseHandoff(ctx context.Context, identityID string, resume State, seen *time.Time) (bool, error)
+	// message, or ops claiming it): the HandoffTimeout restarts. false: the
+	// thread is not handed off (any more).
+	TouchHandoff(ctx context.Context, identityID string) (bool, error)
+	// ReleaseHandoff hands the thread back to the bot (state o.Resume) —
+	// only if it is still handed off and, unless o.AnyClock, with the
+	// activity time the caller read (compare-and-set: ops acting meanwhile
+	// wins over the timeout). o.PutAgain: our earlier question is put again,
+	// so question_shown_at moves forward to ShownUnconfirmed (R-1).
+	ReleaseHandoff(ctx context.Context, identityID string, o ReleaseOpts) (bool, error)
 	// HoldDraft stores a draft made while an approval question waits —
 	// only the draft, and only if extensionID is still the armed request
 	// (false otherwise: the caller carries on without the hold).
@@ -679,27 +689,35 @@ func (s *PGStore) AskCancel(ctx context.Context, identityID string, pc PendingCa
 	return true, nil
 }
 
-func (s *PGStore) TouchHandoff(ctx context.Context, identityID string) error {
-	if _, err := s.DB.ExecContext(ctx, `
+func (s *PGStore) TouchHandoff(ctx context.Context, identityID string) (bool, error) {
+	res, err := s.DB.ExecContext(ctx, `
 		UPDATE channel_conversations SET handoff_activity_at = now(), updated_at = now()
-		WHERE identity_id = $1 AND state = $2`, identityID, string(StateHandoff)); err != nil {
-		return fmt.Errorf("touch handoff: %w", err)
+		WHERE identity_id = $1 AND state = $2`, identityID, string(StateHandoff))
+	if err != nil {
+		return false, fmt.Errorf("touch handoff: %w", err)
 	}
-	return nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("touch handoff: %w", err)
+	}
+	return n == 1, nil
 }
 
-func (s *PGStore) ReleaseHandoff(ctx context.Context, identityID string, resume State, seen *time.Time) (bool, error) {
-	var seenV any
-	if seen != nil {
-		seenV = *seen
+func (s *PGStore) ReleaseHandoff(ctx context.Context, identityID string, o ReleaseOpts) (bool, error) {
+	var seenV, shownV any
+	if o.Seen != nil {
+		seenV = *o.Seen
+	}
+	if o.PutAgain {
+		shownV = ShownUnconfirmed
 	}
 	var one int
 	err := s.DB.QueryRowContext(ctx, `
 		UPDATE channel_conversations SET state = $2, handoff_activity_at = NULL,
-		  question_shown_at = GREATEST(question_shown_at, $5), updated_at = now()
-		WHERE identity_id = $1 AND state = $4 AND handoff_activity_at IS NOT DISTINCT FROM $3
+		  question_shown_at = GREATEST(question_shown_at, $5::timestamptz), updated_at = now()
+		WHERE identity_id = $1 AND state = $4 AND ($6 OR handoff_activity_at IS NOT DISTINCT FROM $3::timestamptz)
 		RETURNING 1
-	`, identityID, string(resume), seenV, string(StateHandoff), ShownUnconfirmed).Scan(&one)
+	`, identityID, string(o.Resume), seenV, string(StateHandoff), shownV, o.AnyClock).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -709,14 +727,26 @@ func (s *PGStore) ReleaseHandoff(ctx context.Context, identityID string, resume 
 	return true, nil
 }
 
-// StaleHandoffs lists handed-off threads with no ops activity since before
-// (a NULL activity time — a row handed off before the column — counts as
-// stale). Read by the server's sweeper.
+// StartHandoffClocks starts the clock of a handed-off thread that has none
+// (handed off by a build from before the column, e.g. mid-rollout) at its
+// last update — never "stale at once".
+func (s *PGStore) StartHandoffClocks(ctx context.Context) error {
+	if _, err := s.DB.ExecContext(ctx, `
+		UPDATE channel_conversations SET handoff_activity_at = updated_at
+		WHERE state = $1 AND handoff_activity_at IS NULL`, string(StateHandoff)); err != nil {
+		return fmt.Errorf("start handoff clocks: %w", err)
+	}
+	return nil
+}
+
+// StaleHandoffs lists handed-off threads with no ops activity since before,
+// oldest first (a thread with no clock yet is not listed — see
+// StartHandoffClocks). Read by the server's sweeper.
 func (s *PGStore) StaleHandoffs(ctx context.Context, before time.Time) ([]string, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT identity_id::text FROM channel_conversations
-		WHERE state = $1 AND (handoff_activity_at IS NULL OR handoff_activity_at < $2)
-		LIMIT 100`, string(StateHandoff), before)
+		WHERE state = $1 AND handoff_activity_at < $2
+		ORDER BY handoff_activity_at LIMIT 100`, string(StateHandoff), before)
 	if err != nil {
 		return nil, fmt.Errorf("stale handoffs: %w", err)
 	}

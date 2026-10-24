@@ -339,7 +339,7 @@ func TestHandoffTimesOut(t *testing.T) {
 	if ok, err := g.r.AutoRelease(context.Background(), id, false); err != nil || !ok {
 		t.Fatalf("stale hand-off kept: %v %v", ok, err)
 	}
-	if g.state() != StateIdle || !strings.Contains(g.ad.last(), "no one from the HO:RA team has picked this up") {
+	if g.state() != StateIdle || !strings.Contains(g.ad.last(), "no one from the HO:RA team has replied") {
 		t.Fatalf("state %s reply %q", g.state(), g.ad.last())
 	}
 
@@ -353,5 +353,101 @@ func TestHandoffTimesOut(t *testing.T) {
 	got := g.say(t, "pick up my laundry at 12 Bedford Ave")
 	if g.state() == StateHandoff || !strings.Contains(got, "Laundry pickup") {
 		t.Fatalf("state %s reply %q", g.state(), got)
+	}
+}
+
+// Hand-off review r1: a thread with no clock is never released at once; a
+// release with a live supporter question does not also put our summary
+// (two YES-able questions); ops are told; the lazy path re-reads after a
+// lost race; "real person" after the timeout re-notifies instead of
+// "I'm back" + "teammate coming".
+func TestHandoffTimeoutEdges(t *testing.T) {
+	id := Identity{ID: "id-" + me, Channel: IMessage, Address: me, UserID: "user-1"}
+	// No clock: not stale.
+	g := newRig(llm.IntentOther)
+	g.ids.link(me, "user-1")
+	g.r.Ops = &memOps{}
+	g.say(t, "real person")
+	g.convs.mu.Lock()
+	c := g.convs.convs["id-"+me]
+	c.HandoffActivityAt = nil
+	g.convs.convs["id-"+me] = c
+	g.convs.mu.Unlock()
+	g.r.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
+	if ok, _ := g.r.AutoRelease(context.Background(), id, false); ok {
+		t.Fatal("a thread with no clock was released")
+	}
+
+	// Ops told on auto-release.
+	g = newRig(llm.IntentOther)
+	g.ids.link(me, "user-1")
+	ops := &memOps{}
+	g.r.Ops = ops
+	g.say(t, "real person")
+	g.r.Now = func() time.Time { return time.Now().Add(HandoffTimeout + time.Minute) }
+	if ok, err := g.r.AutoRelease(context.Background(), id, false); err != nil || !ok {
+		t.Fatalf("%v %v", ok, err)
+	}
+	if n := ops.notices[len(ops.notices)-1]; !n.AutoReleased {
+		t.Fatalf("ops not told: %+v", n)
+	}
+
+	// "real person" after the timeout: ops told again, clock restarts.
+	g = newRig(llm.IntentOther)
+	g.ids.link(me, "user-1")
+	ops = &memOps{}
+	g.r.Ops = ops
+	g.say(t, "real person")
+	g.r.Now = func() time.Time { return time.Now().Add(HandoffTimeout + time.Minute) }
+	got := g.say(t, "real person please")
+	if g.state() != StateHandoff || len(ops.notices) != 2 || strings.Contains(got, "back to help") {
+		t.Fatalf("state %s notices %d reply %q", g.state(), len(ops.notices), got)
+	}
+
+	// Ops released it a moment ago (the lazy path loses the race): the
+	// message is the bot's, not "a teammate will get back to you".
+	g = newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.r.Ops = &memOps{}
+	g.say(t, "real person")
+	if err := g.r.Release(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	got = g.say(t, "pick up my laundry at 12 Bedford Ave")
+	if strings.Contains(got, "will get back to you") || !strings.Contains(got, "Laundry pickup") {
+		t.Fatalf("reply %q", got)
+	}
+}
+
+// A supporter's question held during the hand-off is asked on release; our
+// own pending summary is NOT put in the same burst.
+func TestReleaseDoesNotStackQuestions(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.r.Ops = &memOps{}
+	g.say(t, "pick up my laundry at 12 Bedford Ave") // a summary waits
+	g.say(t, "real person")
+	if g.state() != StateHandoff {
+		t.Fatalf("state %s", g.state())
+	}
+	// A supporter's question arrives during the hand-off: held.
+	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
+	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: evBudgetRequested, TaskID: "task-2", TaskTitle: "Bagel run", SupporterName: "Sam",
+		ExtensionID: "ext-b1", ApprovalMinutes: 5, Approval: &PendingApproval{ID: "ext-b1", Kind: "budget", Cents: 1000}}); err != nil {
+		t.Fatal(err)
+	}
+	if g.state() != StateHandoff {
+		t.Fatalf("held during hand-off: %s", g.state())
+	}
+	if err := g.r.Release(context.Background(), Identity{ID: "id-" + me, Channel: IMessage, Address: me, UserID: "user-1"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range g.ad.sent {
+		if strings.Contains(o.Text, "back with me") && strings.Contains(o.Text, "Reply YES to book") {
+			t.Fatalf("the summary was put together with the supporter's question: %q", o.Text)
+		}
+	}
+	if g.state() != StateAwaitingApproval {
+		t.Fatalf("the supporter's question was not asked: %s", g.state())
 	}
 }

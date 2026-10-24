@@ -122,7 +122,7 @@ const (
 	CopyHandoffUpdateFailed       = "I couldn't pass that to the HO:RA team just now. Please send it again in a few minutes, or email info@my-hora.com."
 	CopyHandoffStart              = "Let me get a HO:RA teammate for you. They'll text you here shortly — you can keep writing in the meantime."
 	CopyHandoffReleased           = "You're back with me. What can I do for you?"
-	CopyHandoffTimedOut           = "Sorry — no one from the HO:RA team has picked this up yet, so I'm back to help. If you still need a person, email info@my-hora.com or say “real person” again."
+	CopyHandoffTimedOut           = "Sorry — no one from the HO:RA team has replied in the last 10 minutes, so I'm back to help. The team has your messages; if it's about a payment or a problem, email info@my-hora.com and we'll follow up. You can also say “real person” again."
 	CopyApprovalNote              = "%s's note: %s"
 	CopyApprovalAsk               = "Reply YES to approve or NO to decline."
 	CopyApprovalAskTimed          = "Reply YES to approve or NO to decline. No answer within %d minutes counts as a no."
