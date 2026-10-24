@@ -865,7 +865,7 @@ budget. Rulings:
   app's cancel; a second YES, or an approval armed meanwhile, loses the
   claim and does not cancel.
 - **Moving charges go to the app.** `CancelQuote.Moving` when a work
-  session is open or the free window closes within 2 minutes — no chat
+  session is open or the free window closes within 15 seconds (was 2 minutes; narrowed 2026-10-24 21:50 — the re-quote at the YES already catches a window that closed while the person read the question) — no chat
   quote, at the question or at the YES. A failed minutes query fails the
   quote (cancellationPreview would read it as zero). Result mapping: Gone
   only for 404 / "task already closed" / "task_removed"; a 200 whose bill

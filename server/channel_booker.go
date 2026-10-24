@@ -340,8 +340,11 @@ func (b *chatBooker) Cancel(ctx context.Context, userID, taskID string) channel.
 }
 
 // cancelQuoteMargin: a free window closing sooner than this is a moving
-// charge — the YES could arrive after it closed.
-const cancelQuoteMargin = 2 * time.Minute
+// charge. Only the gap between the re-quote at the YES and the cancel itself
+// needs covering — a window that closes before the YES arrives is caught by
+// the re-quote (the higher charge is asked again). With the 3-minute free
+// window, a wider margin would send most free cancels to the app.
+const cancelQuoteMargin = 15 * time.Second
 
 // cancelResultFrom reads cancelTask's response. Gone only for the two
 // answers that mean the task is past cancelling (already closed, removed) or
