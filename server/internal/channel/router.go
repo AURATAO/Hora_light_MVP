@@ -180,6 +180,17 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	if err := r.Identities.AttachMessage(ctx, in.Channel, in.ProviderMessageID, id.ID); err != nil {
 		log.Printf("[channel] attach message id=%s: %v", in.ProviderMessageID, err)
 	}
+	if strings.TrimSpace(in.Text) == "" && r.sentWithText(ctx, id.ID, in) {
+		// iMessage delivers a link's preview card as one or two extra
+		// messages with no text, a moment after the link itself (staging
+		// 2026-10-24: a Google Maps link drew two "I can only read text"
+		// replies although the link had reached the supporter). Part of the
+		// message just handled: nothing to answer.
+		if err := r.Identities.TouchConversation(ctx, id.ID, in.ReceivedAt); err != nil {
+			log.Printf("[channel] touch conversation identity=%s: %v", id.ID, err)
+		}
+		return nil
+	}
 	if err := r.Identities.TouchConversation(ctx, id.ID, in.ReceivedAt); err != nil {
 		log.Printf("[channel] touch conversation identity=%s: %v", id.ID, err)
 	}
@@ -850,4 +861,23 @@ func latestLine(source string) string {
 		return source[i+1:]
 	}
 	return source
+}
+
+// previewWindow: how soon after a message an empty one is taken as its
+// link preview.
+const previewWindow = 15 * time.Second
+
+// sentWithText reports whether the person wrote within previewWindow
+// before this (empty) message.
+func (r *Router) sentWithText(ctx context.Context, identityID string, in Inbound) bool {
+	prev, err := r.Conversations.GetConversation(ctx, identityID)
+	if err != nil || prev.LastInboundAt == nil {
+		return false
+	}
+	at := in.ReceivedAt
+	if at.IsZero() {
+		at = r.now()
+	}
+	gap := at.Sub(*prev.LastInboundAt)
+	return gap >= -previewWindow && gap <= previewWindow
 }

@@ -20,6 +20,8 @@ type memIdentities struct {
 	tokens   []memToken
 	attached map[string]string
 	touched  map[string]time.Time
+	// convs, when set, gets last_inbound_at like the PG row (GREATEST).
+	convs *memConversations
 }
 
 type memToken struct {
@@ -64,6 +66,21 @@ func (m *memIdentities) TouchConversation(_ context.Context, iid string, at time
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.touched[iid] = at
+	cv := m.convs
+	m.mu.Unlock()
+	if cv != nil {
+		cv.mu.Lock()
+		c := cv.convs[iid]
+		if c.LastInboundAt == nil || at.After(*c.LastInboundAt) {
+			c.IdentityID, c.LastInboundAt = iid, &at
+			if c.State == "" {
+				c.State = StateIdle
+			}
+			cv.convs[iid] = c
+		}
+		cv.mu.Unlock()
+	}
+	m.mu.Lock()
 	return nil
 }
 func (m *memIdentities) SetupTokenIssuedSince(_ context.Context, iid string, since time.Time) (bool, error) {
@@ -497,6 +514,7 @@ var laundry = llm.TaskDraft{Title: "Laundry pickup", Category: "laundry", Locati
 func newRig(intent llm.Intent) *rig {
 	ids := newMemIdentities()
 	convs := &memConversations{convs: map[string]Conversation{}, ids: ids}
+	ids.convs = convs
 	ad := &fakeSendAdapter{}
 	st := &fakeStore{}
 	p := &fakeParser{draft: laundry}
@@ -884,5 +902,31 @@ func TestFinishSetupClaimFailureIsAnError(t *testing.T) {
 	}
 	if g.booker.posts != 0 {
 		t.Fatal("nothing may be posted when the claim failed")
+	}
+}
+
+// Staging 2026-10-24: a link's preview arrives as extra empty messages a
+// moment later — no "text only" reply to those; a lone empty message (a
+// photo with nothing else) still gets it.
+func TestLinkPreviewIsSilent(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	now := time.Now()
+	for i, text := range []string{"https://maps.app.goo.gl/abc", "", ""} {
+		in := Inbound{Channel: IMessage, ProviderMessageID: fmt.Sprintf("lp-%d", i), From: me, Text: text, ReceivedAt: now.Add(time.Duration(i) * time.Second)}
+		if err := g.r.HandleInbound(context.Background(), in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, m := range g.ad.sent {
+		if strings.Contains(m.Text, CopyTextOnly) {
+			t.Fatalf("preview answered: %q", m.Text)
+		}
+	}
+	g2 := newRig(llm.IntentNewTask)
+	if err := g2.r.HandleInbound(context.Background(), Inbound{Channel: IMessage, ProviderMessageID: "alone", From: me, Text: "", ReceivedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if g2.ad.last() != CopyTextOnly {
+		t.Fatalf("lone empty message: %q", g2.ad.last())
 	}
 }
