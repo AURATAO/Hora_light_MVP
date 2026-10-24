@@ -1462,3 +1462,34 @@ func seedDisplayCard(t *testing.T, paymentID, brand, last4 string) {
 		t.Fatalf("seed display card: %v", err)
 	}
 }
+
+// Staging 2026-10-24 (Aura): a web-app supporter sends no GPS pings, so a
+// 60-minute cap was announced at minute 73 — whenever a screen was opened.
+// The live sweeper evaluates every task with a session RUNNING, each minute,
+// without any ping; a task whose session is closed is left to the 6h
+// backstop.
+func TestLiveTimeCapSweepNeedsNoPing(t *testing.T) {
+	setupStripeWebhookDB(t)
+	w := seedOpsWorld(t, "open")
+	seedWorklog(t, w.taskID, 60, true) // open session, past the 45-minute ceiling
+
+	sweepLiveTimeCaps(context.Background())
+	if n := countNotifications(t, w.requesterID, "TIME_CAP_REACHED"); n != 1 {
+		t.Fatalf("%d requester TIME_CAP_REACHED after the live sweep, want 1", n)
+	}
+	if got := taskStatus(t, w.taskID); got != "open" {
+		t.Fatalf("task status = %q — the sweep must never cancel", got)
+	}
+
+}
+
+// A closed session is not the live sweep's business (the 6h backstop's).
+func TestLiveTimeCapSweepSkipsClosedSessions(t *testing.T) {
+	setupStripeWebhookDB(t)
+	w := seedOpsWorld(t, "open")
+	seedWorklog(t, w.taskID, 60, false)
+	sweepLiveTimeCaps(context.Background())
+	if n := countNotifications(t, w.requesterID, "TIME_CAP_REACHED"); n != 0 {
+		t.Fatalf("%d TIME_CAP_REACHED for a closed session from the live sweep", n)
+	}
+}

@@ -386,6 +386,63 @@ func sweepTimeCaps(ctx context.Context) {
 	}
 }
 
+// sweepLiveTimeCaps is the minute-by-minute pass over tasks with a session
+// RUNNING right now (end_at is null). The GPS heartbeat only comes from the
+// mobile app; a supporter working from the web app sends none, and on
+// staging (2026-10-24) a 60-minute cap was announced at minute 73 — when a
+// screen happened to be opened. Billing was capped correctly; the people
+// were told late. With a session open, the clock is the signal: one cheap
+// query a minute, evaluate each. Idle tasks (no session) stay with the 6h
+// backstop.
+func sweepLiveTimeCaps(ctx context.Context) {
+	rows, err := db.Query(ctx, `
+		select distinct t.id::text
+		  from public.tasks t
+		  join public.worklogs w on w.task_id = t.id and w.end_at is null
+		 where t.status = 'open'
+		   and t.assigned_to_id is not null
+		   and coalesce(t.estimated_minutes, 0) > 0
+		   and t.time_cap_ops_alerted_at is null
+	`)
+	if err != nil {
+		log.Printf("[timecap][live-sweep] %v", err)
+		return
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			break
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	for _, id := range ids {
+		evaluateTimeCap(ctx, id)
+	}
+}
+
+// watchLiveTimeCaps runs sweepLiveTimeCaps every `every` (a minute).
+func watchLiveTimeCaps(ctx context.Context, every time.Duration) {
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			func() {
+				defer func() {
+					if p := recover(); p != nil {
+						log.Printf("[timecap][live-sweep] panic: %v", p)
+					}
+				}()
+				sweepLiveTimeCaps(ctx)
+			}()
+		}
+	}
+}
+
 func maxInt(a, b int) int {
 	if a > b {
 		return a

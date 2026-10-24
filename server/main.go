@@ -427,6 +427,10 @@ func main() {
 	// costs nobody who is actually waiting on an answer anything. See
 	// server/extensions.go and server/timecap.go.
 	go watchPhase2bBacklog(context.Background(), 6*time.Hour)
+	// Tasks with a session running: the cap's warning and ceiling are
+	// announced within a minute of being reached, GPS heartbeat or not
+	// (web-app supporters send none).
+	go watchLiveTimeCaps(context.Background(), time.Minute)
 
 	pgxCfg, err := pgx.ParseConfig(dbURL)
 	if err != nil {

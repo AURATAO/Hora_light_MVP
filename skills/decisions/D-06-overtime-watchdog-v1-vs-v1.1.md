@@ -51,3 +51,24 @@ prevents the harder, more valuable version from being forgotten once
   implementation.
 - `server/main.go` `clockOut`/`completeTask` — confirms no existing
   server-side elapsed-time enforcement or admin time-adjustment path today.
+
+## Addendum 2026-10-24 — the live sweep (Aura, staging)
+
+"Pick up laundry from dry cleaning": estimate 30 + 15 approved + 15
+auto-extend = 60-minute cap; the supporter (web app) clocked 80 minutes.
+Billing WAS capped (45 billable minutes, $34.50) — the design held. But the
+warning fired at minute 59 and "cap reached" at minute 73 (18:34:59),
+because the only evaluation points are the mobile app's GPS ping, screen
+opens, clock-out and the 6-hour backstop: a web-app supporter sends no
+ping, so the layers fired whenever someone happened to open a screen.
+Aura: "整個超過 time cap 但都沒有被制止".
+
+Built (channel branch, server-side only): `watchLiveTimeCaps` — every
+minute, `sweepLiveTimeCaps` evaluates every open task with a session
+RUNNING (`worklogs.end_at is null`); nothing else changes — no automatic
+stop (the D-06 rule stands), the latches still fire once, idle tasks stay
+with the 6h backstop. Cost: one indexed query a minute plus one evaluation
+per running session. Still open (product): "no automatic stop" means a
+supporter can keep the clock running unpaid past the cap, and the receipt
+shows the clocked time (1h 20min) next to the capped bill — whether the
+cap should also end the session is the Arbiter's call, not made here.
