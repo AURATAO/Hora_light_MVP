@@ -85,7 +85,10 @@ func (o *OpenAICompat) SplitErrands(ctx context.Context, text string) ([]string,
 // this errand involve the supporter paying for something? Used only when the
 // rule saw no purchase word. The answer never sets an amount.
 func (o *OpenAICompat) NeedsPurchase(ctx context.Context, text string) (bool, error) {
-	out, _, err := o.completeJSON(ctx, purchasePrompt, text, "purchase", purchaseSchema(), 32)
+	// 256: the answer is a few tokens, but a model that thinks first ran past
+	// 32 on staging (2026-10-24) and the check fell back to "no purchase" —
+	// a bagel errand was drafted without the budget question.
+	out, _, err := o.completeJSON(ctx, purchasePrompt, text, "purchase", purchaseSchema(), 256)
 	if err != nil {
 		return false, fmt.Errorf("needs purchase: %w", err)
 	}

@@ -363,7 +363,14 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 	prompt := r.Prompt(r.now().In(r.loc()))
 	var items []DraftItem
 	var unparsed []string
-	for _, text := range errands {
+	// A correction re-drafts from everything said; a budget the person
+	// already gave stands unless this message names a new amount (staging
+	// 2026-10-24: "can you do 15 mins?" asked for the budget again).
+	var prev []DraftItem
+	if conv.Pending != nil {
+		prev = conv.Pending.Items()
+	}
+	for i, text := range errands {
 		draft, usage, err := r.Parser.ParseTask(ctx, prompt, text)
 		if err != nil {
 			log.Printf("[channel] parse failed model=%s latency=%s: %v", usage.Model, usage.Latency, err)
@@ -378,6 +385,11 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 			// question ("budget 60", "$20 for the bagels").
 			if cents, ok := AmountCents(text); ok {
 				it.BudgetCents, it.BudgetAsked = cents, true
+			}
+			if !it.BudgetAsked && len(prev) == len(errands) && prev[i].BudgetAsked {
+				if _, named := AmountCents(latestLine(source)); !named {
+					it.BudgetCents, it.BudgetAsked = prev[i].BudgetCents, true
+				}
 			}
 		}
 		cents, minutes, err := r.Booker.Quote(ctx, draft, it.BudgetCents)
@@ -829,4 +841,13 @@ func sentBefore(in Inbound, stamp *time.Time) string {
 		return "(no time)"
 	}
 	return stamp.Sub(in.ReceivedAt).Round(time.Millisecond).String()
+}
+
+// latestLine is the last line of a draft's source — the correction just
+// typed (startDraft joins earlier words and the new ones with "\n").
+func latestLine(source string) string {
+	if i := strings.LastIndex(source, "\n"); i >= 0 {
+		return source[i+1:]
+	}
+	return source
 }

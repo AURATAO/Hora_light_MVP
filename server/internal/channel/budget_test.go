@@ -199,3 +199,24 @@ func TestSummaryRefusesWithoutAutoExtendWindow(t *testing.T) {
 		t.Fatal("expected a configuration error")
 	}
 }
+
+// Staging 2026-10-24: a correction ("can you do 15 mins?") keeps the budget
+// already agreed; a correction that names an amount replaces it.
+func TestCorrectionKeepsTheBudget(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.parser.draft = bagelD
+	g.say(t, "bring me a bagel from Russ & Daughters")
+	g.say(t, "10 usd is fine")
+	if g.state() != StateAwaitingConfirm {
+		t.Fatalf("state %s", g.state())
+	}
+	got := g.say(t, "Can you do 15 mins?")
+	if g.state() != StateAwaitingConfirm || !strings.Contains(got, "Shopping budget: $10") {
+		t.Fatalf("budget asked again: %q state %s", got, g.state())
+	}
+	got = g.say(t, "actually make the budget $25")
+	if !strings.Contains(got, "Shopping budget: $25") {
+		t.Fatalf("new amount ignored: %q", got)
+	}
+}
