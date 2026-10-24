@@ -164,7 +164,7 @@ The setup step is the one to watch.
 ## 13. Open questions
 
 - Dani: confirm approval timeouts and copy for budget/time requests by text.
-- **Post-freeze mobile change:** supporter task screen shows "Ask for a budget" at budget 0 (today gated on `hasBudget`), so a misread chat task is recoverable (see incident 2026-10-21).
+- **Post-freeze mobile change:** supporter task screen shows "Ask for a budget" at budget 0 (today gated on `hasBudget`), so a misread chat task is recoverable (see incident 2026-10-21). **Laundry first (Aura 2026-10-24):** a laundry task can ask for money at $0 (laundromat / dry-cleaning fees paid up front) — done in the webapp (`TaskDetail.jsx` `canAskBudget`); **mobile `mobile/src/app/task/[id].tsx` to do after the review freeze**. The chat side (asking a budget for laundry fees when the task is drafted) is not ruled yet.
 - ~~Does Sendblue expose threaded-reply context?~~ **Closed 2026-10-21 (D-17, I-N):
   the field exists and is wrong** — `reply_to.message_handle` named our most
   recent outbound message in both controlled trials, whatever bubble was
