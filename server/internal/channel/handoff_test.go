@@ -145,17 +145,32 @@ func TestTwoParseFailuresInARowHandOff(t *testing.T) {
 	}
 }
 
-// If ops cannot be told, the person is not told "a teammate is coming": the
-// route fails so the message is retried, and the state stays as it was.
+// If ops cannot be told, the person is not told "a teammate is coming": they
+// are told the team could not be reached, and the thread is not handed off
+// (staging 2026-10-24: the notifier reported success while every email
+// failed). Ops are told before the state changes.
 func TestHandoffFailsLoudlyWhenOpsUnreachable(t *testing.T) {
 	g, ops := handoffRig(t, llm.IntentOther)
 	ops.err = errors.New("mail down")
 	in := Inbound{Channel: IMessage, ProviderMessageID: "h1", From: me, Text: "talk to a human", ReceivedAt: time.Now()}
-	if err := g.r.HandleInbound(context.Background(), in); err == nil {
-		t.Fatal("expected an error")
+	if err := g.r.HandleInbound(context.Background(), in); err != nil {
+		t.Fatal(err)
 	}
-	if last := g.ad.last(); last == CopyHandoffStart {
-		t.Fatal("must not promise a teammate ops never heard about")
+	if last := g.ad.last(); last != CopyHandoffFailed || g.state() == StateHandoff {
+		t.Fatalf("reply %q state %s", last, g.state())
+	}
+	// Reachable again: the next ask hands off.
+	ops.err = nil
+	g.say(t, "real person please")
+	if g.state() != StateHandoff || g.ad.last() != CopyHandoffStart {
+		t.Fatalf("retry: reply %q state %s", g.ad.last(), g.state())
+	}
+	// While held, a message ops cannot be told about is not answered "a
+	// teammate will get back to you".
+	ops.err = errors.New("mail down")
+	g.say(t, "hello?")
+	if g.ad.last() != CopyHandoffUpdateFailed {
+		t.Fatalf("held update: %q", g.ad.last())
 	}
 }
 

@@ -65,7 +65,7 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		Location: nycLocation,
 		SetupURL: func(token string) string { return setupLink(base, token) },
 		Status:   store,
-		Ops:      opsEmailNotifier{sqlDB: sqlDB},
+		Ops:      newOpsNotifier(sqlDB, sb),
 		Thread:   store,
 		Tasks:    store,
 	}

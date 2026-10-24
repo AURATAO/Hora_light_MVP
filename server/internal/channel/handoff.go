@@ -112,6 +112,14 @@ func (r *Router) handOffDetail(ctx context.Context, in Inbound, id Identity, con
 		open = handoffOpen{extensionID: conv.PendingExtensionID, taskID: conv.ApprovalTaskID, unconfirmed: conv.Unconfirmed()}
 	}
 	open.detail = detail
+	// Ops are told FIRST. If no one could be reached, the thread is not
+	// handed off and the person is told so — never "a teammate will text
+	// you" with nobody notified (staging 2026-10-24: every ops email
+	// failed, the person was told help was coming).
+	if err := r.notifyOps(ctx, id, reason, false, open); err != nil {
+		log.Printf("[channel] handoff identity=%s reason=%s: ops NOT reached: %v", id.ID, reason, err)
+		return r.Reply(ctx, in, CopyHandoffFailed, "")
+	}
 	conv.State = StateHandoff
 	conv.PendingExtensionID = ""
 	// A held relay message is dropped: ops now read the thread, and the
@@ -121,18 +129,14 @@ func (r *Router) handOffDetail(ctx context.Context, in Inbound, id Identity, con
 		return fmt.Errorf("handOff: %w", err)
 	}
 	log.Printf("[channel] handoff identity=%s reason=%s", id.ID, reason)
-	if err := r.notifyOps(ctx, id, reason, false, open); err != nil {
-		// Ops not told is the one failure that must not be silent to the
-		// person: say so and let the route fail so the message is retried.
-		return fmt.Errorf("handOff: %w", err)
-	}
 	return r.Reply(ctx, in, CopyHandoffStart, "")
 }
 
 // onHandoff is every message while ops hold the thread.
 func (r *Router) onHandoff(ctx context.Context, in Inbound, id Identity) error {
 	if err := r.notifyOps(ctx, id, "", true, handoffOpen{}); err != nil {
-		return fmt.Errorf("onHandoff: %w", err)
+		log.Printf("[channel] handoff update identity=%s: ops NOT reached: %v", id.ID, err)
+		return r.Reply(ctx, in, CopyHandoffUpdateFailed, "")
 	}
 	return r.Reply(ctx, in, CopyHandoffHolding, "")
 }

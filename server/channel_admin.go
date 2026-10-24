@@ -8,12 +8,14 @@ import (
 	"html"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"hora-auth/internal/channel"
+	"hora-auth/internal/notify"
 )
 
 // Ops side of a chat handoff (channel/handoff.go, M3):
@@ -32,7 +34,45 @@ import (
 // in the email because that is what ops act on; the number is not (last four
 // digits only), and the linked account is named by its email, as every other
 // ops email does.
-type opsEmailNotifier struct{ sqlDB *sql.DB }
+type opsEmailNotifier struct {
+	sqlDB *sql.DB
+	// emails: CHANNEL_OPS_EMAILS, else the ops-admin allowlist.
+	emails []string
+	// sms + numbers: CHANNEL_OPS_NUMBERS (E.164, comma-separated), texted
+	// through the iMessage line on a new hand-off. Optional.
+	sms     channel.Adapter
+	numbers []string
+}
+
+// newOpsNotifier reads the hand-off recipients from the environment.
+// CHANNEL_OPS_EMAILS lets a deployment (staging) notify a different list
+// from the admin allowlist, which also grants admin access.
+func newOpsNotifier(sqlDB *sql.DB, sms channel.Adapter) opsEmailNotifier {
+	n := opsEmailNotifier{sqlDB: sqlDB, sms: sms}
+	if v := strings.TrimSpace(os.Getenv("CHANNEL_OPS_EMAILS")); v != "" {
+		for _, e := range strings.Split(v, ",") {
+			if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
+				n.emails = append(n.emails, e)
+			}
+		}
+	} else {
+		for e := range opsAdmins {
+			n.emails = append(n.emails, e)
+		}
+		sortStrings(n.emails)
+	}
+	for _, raw := range strings.Split(os.Getenv("CHANNEL_OPS_NUMBERS"), ",") {
+		if strings.TrimSpace(raw) == "" {
+			continue
+		}
+		if e164, err := channel.NormalizeE164(raw); err == nil {
+			n.numbers = append(n.numbers, e164)
+		} else {
+			log.Printf("[channel-admin] CHANNEL_OPS_NUMBERS: an entry is not a phone number, skipped")
+		}
+	}
+	return n
+}
 
 func (o opsEmailNotifier) NotifyOps(ctx context.Context, n channel.HandoffNotice) error {
 	who := "not linked to an account"
@@ -50,9 +90,34 @@ func (o opsEmailNotifier) NotifyOps(ctx context.Context, n channel.HandoffNotice
 		subject = fmt.Sprintf("[HO:RA] Chat handoff — new message — %s %s", n.Channel, n.PhoneHint)
 	}
 	body := opsNoticeHTML(n, who)
-	emailOpsAdmins(subject, body)
+	// Sent here, not in the background: the router must know whether anyone
+	// was reached before it tells the person a teammate is coming.
+	reached := 0
+	for _, to := range o.emails {
+		if err := sendOpsEmail(notify.EmailPayload{To: to, Subject: subject, Html: body}); err != nil {
+			log.Printf("[channel-admin] handoff email failed to=%s: %v", to, err)
+			continue
+		}
+		reached++
+	}
+	if !n.Update && o.sms != nil {
+		text := fmt.Sprintf("[HO:RA] Chat handoff (%s) — %s %s. Details in the ops email / admin.", reasonLabelOps(n.Reason), n.Channel, n.PhoneHint)
+		for _, to := range o.numbers {
+			if _, err := o.sms.Send(ctx, channel.Outbound{Channel: o.sms.Channel(), To: to, Text: text}); err != nil {
+				log.Printf("[channel-admin] handoff text failed to=%s: %v", channel.PhoneHint(to), err)
+				continue
+			}
+			reached++
+		}
+	}
+	if reached == 0 {
+		return fmt.Errorf("handoff notice reached no one (%d emails, %d numbers configured)", len(o.emails), len(o.numbers))
+	}
 	return nil
 }
+
+// sendOpsEmail is notify.SendEmail; a variable so tests can stand in.
+var sendOpsEmail = notify.SendEmail
 
 // opsNoticeHTML renders the notice. Every user-typed value is escaped; the
 // number never appears (PhoneHint is the last four digits).
