@@ -770,3 +770,27 @@ Recorded as given, in the order asked; nothing below is built yet.
   listed errand, or has BOTH its own time AND amount; beside a SIMILAR
   errand, a time alone or an amount alone stays with the supporter until
   ruled otherwise (case #103).
+
+### Arbiter answers — 2026-10-24 (Aura, after staging test)
+
+Staging, 2026-10-24 (agent OFF): "Book another thing?" became a vague
+draft and was booked; "I want you to buy me a bagel to 260 Mercer" was
+relayed to the running bagel supporter while that draft waited; "Can you
+cancel the task?" got "Got it"; "Can you do 15 mins?" re-asked the
+budget. Rulings:
+
+- **Cancel by chat (c):** a requester can cancel a posted task by text —
+  recognised by rule, confirmed once, charged by the existing
+  cancellation policy (the same as the app). To build (T3).
+- **Draft-first while a draft waits:** with a booking draft awaiting
+  YES, a new errand description that is not an answer to a supporter's
+  open question and does not name a supporter is folded into that draft
+  (re-drafted), not relayed. To build.
+- **Time:** not asked. A draft with no time is "as soon as possible",
+  duration 30 minutes by default, both stated in the summary; a change of
+  duration or a future time re-drafts at once, keeping answers already
+  given (budget, name). A draft with nothing to do or no place is not
+  summarised: the person is asked what and where first. To build.
+- Built now (9267698): a correction keeps the agreed budget unless it
+  names a new amount; the purchase check no longer truncates (32 → 256
+  tokens) and silently skips the budget question.
