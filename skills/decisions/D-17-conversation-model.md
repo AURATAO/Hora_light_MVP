@@ -1081,3 +1081,7 @@ fresh.
 address" is wrong details; "accidentally" is posted by mistake; a negated
 cancel at the YES step keeps the task; ’ is normalised once for the whole
 cancel state.
+
+**Arbiter 2026-10-24 23:26:** flat 10 minutes for every hand-off reason,
+3DS-payment and agent-safety included — confirmed. (The auto-release email
+tells ops which it was; a payment or a report is followed up by email.)
