@@ -7,6 +7,7 @@ import { opsFetch as fetchJSON, removeTask, reassignTask, listApprovedSupporters
 import OpsSupporters from './OpsSupporters.jsx'
 import OpsPromoCodes from './OpsPromoCodes.jsx'
 import OpsReports from './OpsReports.jsx'
+import OpsChats from './OpsChats.jsx'
 import Modal from '../components/Modal.jsx'
 
 // Display gate only — the server re-checks every /ops/* call against its own
@@ -27,6 +28,7 @@ const TABS = [
   { key: 'supporters', label: 'Supporter applications' },
   { key: 'promo', label: 'Promo codes' },
   { key: 'reports', label: 'User reports' },
+  { key: 'chats', label: 'Chats' },
 ];
 
 export default function OpsFeed() {
@@ -231,6 +233,8 @@ export default function OpsFeed() {
           <div className="py-4"><OpsPromoCodes /></div>
         ) : tab === 'reports' ? (
           <div className="py-4"><OpsReports /></div>
+        ) : tab === 'chats' ? (
+          <div className="py-4"><OpsChats /></div>
         ) : (
         <>
         <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 py-4">

@@ -279,6 +279,21 @@ func registerChannelAdminRoutes(r *gin.Engine, sqlDB *sql.DB, store *channel.PGS
 		}
 		c.JSON(http.StatusOK, gin.H{"handoffs": rows})
 	})
+	// The ledger behind the ops Chats page: every conversation, newest
+	// first. Hints and states only — the thread endpoint carries text, one
+	// chat at a time, and never a full number (S-12).
+	r.GET("/admin/channel/conversations", dualAuth(sqlDB), requireOpsAdmin(), func(c *gin.Context) {
+		rows, err := store.Conversations(c.Request.Context(), 100)
+		if err != nil {
+			log.Printf("[channel-admin] conversations: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "server_error"})
+			return
+		}
+		if rows == nil {
+			rows = []channel.ConversationRow{}
+		}
+		c.JSON(http.StatusOK, gin.H{"conversations": rows, "handoff_timeout_minutes": int(channel.HandoffTimeout.Minutes())})
+	})
 	r.GET("/admin/channel/:identity/thread", dualAuth(sqlDB), requireOpsAdmin(), func(c *gin.Context) {
 		id, ok := loadIdentityParam(c, store)
 		if !ok {

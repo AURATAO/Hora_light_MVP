@@ -3,6 +3,7 @@ package channel
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -43,7 +44,7 @@ func testDB(t *testing.T) *sql.DB {
 		  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='anon') THEN CREATE ROLE anon; END IF;
 		  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='authenticated') THEN CREATE ROLE authenticated; END IF;
 		END $$;
-		CREATE TABLE users (id uuid PRIMARY KEY DEFAULT gen_random_uuid());
+		CREATE TABLE users (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text);
 		CREATE TABLE tasks (id uuid PRIMARY KEY DEFAULT gen_random_uuid());
 		CREATE TABLE extension_requests (id uuid PRIMARY KEY DEFAULT gen_random_uuid());`
 	if _, err := db.Exec(reset); err != nil {
@@ -600,6 +601,31 @@ func TestPGThreadAndHandedOff(t *testing.T) {
 	}
 	if _, err := s.IdentityByID(ctx, "00000000-0000-0000-0000-000000000009"); !errors.Is(err, ErrIdentityNotFound) {
 		t.Fatalf("want ErrIdentityNotFound, got %v", err)
+	}
+
+	// The ops Chats ledger: every conversation, state and hint, no number,
+	// no text; the linked account's name when there is one.
+	convs, err := s.Conversations(ctx, 50)
+	if err != nil || len(convs) != 1 {
+		t.Fatalf("%+v %v", convs, err)
+	}
+	if c := convs[0]; c.IdentityID != a.ID || c.State != string(StateHandoff) || c.PhoneHint != "•••• 0505" ||
+		c.HandoffActivityAt == nil || c.UserName != "" {
+		t.Fatalf("conversation row: %+v", c)
+	}
+	var uid string
+	if err := db.QueryRow(`INSERT INTO users (name) VALUES ('Rita') RETURNING id`).Scan(&uid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE channel_identities SET user_id = $1 WHERE id = $2`, uid, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	convs, err = s.Conversations(ctx, 50)
+	if err != nil || len(convs) != 1 || convs[0].UserName != "Rita" || convs[0].UserID != uid {
+		t.Fatalf("%+v %v", convs, err)
+	}
+	if b, _ := json.Marshal(msgs[0]); !strings.Contains(string(b), `"direction":"inbound"`) {
+		t.Fatalf("ThreadMessage JSON: %s", b)
 	}
 }
 

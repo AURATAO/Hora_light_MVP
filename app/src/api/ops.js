@@ -165,3 +165,37 @@ export function resolveUserReport(id, resolution) {
     body: JSON.stringify({ resolution }),
   })
 }
+
+// ── Chats (server/channel_admin.go — the iMessage/WhatsApp requester channel) ─
+//
+// Hints only: the server never sends a full phone number (S-12); a thread
+// carries message text for one chat at a time.
+export function listChannelConversations() {
+  return opsFetch('/admin/channel/conversations')
+}
+
+// GET /admin/channel/:identity/thread — the last 50 messages, oldest first.
+export function getChannelThread(identityId) {
+  return opsFetch(`/admin/channel/${encodeURIComponent(identityId)}/thread`)
+}
+
+// POST /admin/channel/:identity/send — queued (202). 409 when the chat is
+// with the bot: nothing is sent, claim it first.
+export function sendChannelMessage(identityId, text) {
+  return opsFetch(`/admin/channel/${encodeURIComponent(identityId)}/send`, {
+    method: 'POST',
+    body: JSON.stringify({ text }),
+  })
+}
+
+// POST /admin/channel/:identity/claim — "on it": restarts the hand-off
+// timeout without sending anything. 409 when the chat is with the bot.
+export function claimChannelChat(identityId) {
+  return opsFetch(`/admin/channel/${encodeURIComponent(identityId)}/claim`, { method: 'POST' })
+}
+
+// POST /admin/channel/:identity/release — back to the bot. 409 when it
+// already is.
+export function releaseChannelChat(identityId) {
+  return opsFetch(`/admin/channel/${encodeURIComponent(identityId)}/release`, { method: 'POST' })
+}

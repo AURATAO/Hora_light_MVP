@@ -34,12 +34,12 @@ const (
 
 // ThreadMessage is one line of the conversation, for ops.
 type ThreadMessage struct {
-	Direction string // inbound / outbound
-	Text      string
-	At        time.Time
+	Direction string    `json:"direction"` // inbound / outbound
+	Text      string    `json:"text"`
+	At        time.Time `json:"at"`
 	// Relay: an outbound line that carried a supporter's words (the
 	// store's flag) — not HO:RA's own voice.
-	Relay bool
+	Relay bool `json:"relay"`
 }
 
 // HandoffNotice is what ops receive.

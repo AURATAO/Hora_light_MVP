@@ -295,3 +295,76 @@ type HandoffRow struct {
 }
 
 var ErrIdentityNotFound = errors.New("channel: identity not found")
+
+// ConversationRow is one conversation as the ops Chats page lists it: who
+// (by last four digits and, when linked, the account's display name), where
+// the bot has it, and when either side last spoke. No full number, no
+// message text (S-12) — the thread endpoint carries text, one chat at a time.
+type ConversationRow struct {
+	IdentityID        string     `json:"identity_id"`
+	Channel           Channel    `json:"channel"`
+	PhoneHint         string     `json:"phone_hint"`
+	UserID            string     `json:"user_id,omitempty"`
+	UserName          string     `json:"user_name,omitempty"`
+	State             string     `json:"state"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+	LastInboundAt     *time.Time `json:"last_inbound_at,omitempty"`
+	LastOutboundAt    *time.Time `json:"last_outbound_at,omitempty"`
+	HandoffActivityAt *time.Time `json:"handoff_activity_at,omitempty"`
+}
+
+// Conversations lists the most recently active conversations, newest first.
+// Hand-offs are not pulled to the top here — HandedOff is the queue; this is
+// the ledger — the page orders them.
+func (s *PGStore) Conversations(ctx context.Context, limit int) ([]ConversationRow, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT i.id, i.channel, i.address, COALESCE(i.user_id::text, ''),
+		       COALESCE(u.name, ''), c.state, c.updated_at,
+		       c.last_inbound_at, c.last_outbound_at, c.handoff_activity_at
+		FROM channel_conversations c
+		JOIN channel_identities i ON i.id = c.identity_id
+		LEFT JOIN users u ON u.id = i.user_id
+		ORDER BY c.updated_at DESC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("conversations: %w", err)
+	}
+	var out []ConversationRow
+	for rows.Next() {
+		var r ConversationRow
+		var address string
+		var in, outAt, act sql.NullTime
+		if err := rows.Scan(&r.IdentityID, &r.Channel, &address, &r.UserID, &r.UserName,
+			&r.State, &r.UpdatedAt, &in, &outAt, &act); err != nil {
+			if cerr := rows.Close(); cerr != nil {
+				log.Printf("[channel] conversations: close rows: %v", cerr)
+			}
+			return nil, fmt.Errorf("conversations: scan: %w", err)
+		}
+		r.PhoneHint = PhoneHint(address)
+		if in.Valid {
+			t := in.Time
+			r.LastInboundAt = &t
+		}
+		if outAt.Valid {
+			t := outAt.Time
+			r.LastOutboundAt = &t
+		}
+		if act.Valid {
+			t := act.Time
+			r.HandoffActivityAt = &t
+		}
+		out = append(out, r)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("conversations: close rows: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("conversations: %w", err)
+	}
+	return out, nil
+}
