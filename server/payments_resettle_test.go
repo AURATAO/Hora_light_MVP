@@ -281,3 +281,43 @@ func TestResettleSweepDoesNotFlagARunningSettlement(t *testing.T) {
 		t.Fatalf("%d SETTLEMENT_INCOMPLETE rows once the lock is gone, want 1", n)
 	}
 }
+
+// In-process exclusion: session-level advisory locks are re-entrant within
+// one session, so the database alone would let a second goroutine of this
+// process through. The lock's own bookkeeping must not.
+func TestSettleCompletedTaskRefusesToOverlapInProcess(t *testing.T) {
+	setupStripeWebhookDB(t)
+	f := stubStripe(t)
+	ctx := context.Background()
+	w := seedOpsWorld(t, "open")
+	seedWorklog(t, w.taskID, 30, false)
+	seedLiveHold(t, w.taskID, w.requesterID, "authorized", 7675)
+	markCompletedAgo(t, w.taskID, 15, w)
+
+	got, err := tryLockTaskSettlement(ctx, w.taskID)
+	if err != nil || !got {
+		t.Fatalf("first lock: got=%v err=%v", got, err)
+	}
+	t.Cleanup(func() { unlockTaskSettlement(w.taskID) })
+
+	again, err := tryLockTaskSettlement(ctx, w.taskID)
+	if err != nil || again {
+		t.Fatalf("second lock in the same process: got=%v err=%v, want false", again, err)
+	}
+	if running, err := isTaskSettlementRunning(ctx, w.taskID); err != nil || !running {
+		t.Fatalf("isTaskSettlementRunning: %v %v, want true", running, err)
+	}
+	out := settleCompletedTask(ctx, w.taskID, orSystemActor(""), 2700, 0)
+	if !out.Busy || len(f.captures) != 0 {
+		t.Fatalf("a settlement ran while this process already held the task: %+v captures=%d", out, len(f.captures))
+	}
+
+	unlockTaskSettlement(w.taskID)
+	if running, _ := isTaskSettlementRunning(ctx, w.taskID); running {
+		t.Fatal("still reported running after unlock")
+	}
+	out = settleCompletedTask(ctx, w.taskID, orSystemActor(""), 2700, 0)
+	if out.Busy || out.Err != nil || len(f.captures) != 1 {
+		t.Fatalf("after unlock the settlement should run once: %+v captures=%d", out, len(f.captures))
+	}
+}

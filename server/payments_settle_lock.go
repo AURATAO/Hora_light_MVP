@@ -21,6 +21,11 @@ package main
 //
 // Budget against DB_MAX_CONNS: one connection, in addition to the pool.
 //
+// In-process exclusion is NOT the database's job here: session-level
+// advisory locks are re-entrant within a session, so two goroutines on the
+// shared connection would both be told "taken". settleLock.held is the
+// in-process half; the database lock is the cross-process half.
+//
 // Lock space is shared with transaction-level advisory locks, so a test (or
 // any caller) holding pg_advisory_xact_lock(advisoryLockTaskSettle, hashtext(task))
 // blocks this just the same.
@@ -39,6 +44,12 @@ import (
 var settleLock struct {
 	mu   sync.Mutex
 	conn *pgx.Conn
+	// held: the tasks THIS process has locked. Session-level advisory locks
+	// are re-entrant within one session — a second pg_try_advisory_lock for
+	// the same key on the same connection returns true and stacks — so the
+	// database alone cannot tell two goroutines of this process apart. This
+	// set does; the database lock is what keeps other processes out.
+	held map[string]bool
 }
 
 // errSettleLockUnavailable: the lock could not be ASKED for — the
@@ -74,6 +85,9 @@ func settleLockConn(ctx context.Context) (*pgx.Conn, error) {
 func tryLockTaskSettlement(ctx context.Context, taskID string) (bool, error) {
 	settleLock.mu.Lock()
 	defer settleLock.mu.Unlock()
+	if settleLock.held[taskID] {
+		return false, nil // this process is already settling it
+	}
 	conn, err := settleLockConn(ctx)
 	if err != nil {
 		return false, err
@@ -87,7 +101,14 @@ func tryLockTaskSettlement(ctx context.Context, taskID string) (bool, error) {
 		// next caller reconnects rather than failing the same way.
 		_ = conn.Close(context.Background())
 		settleLock.conn = nil
+		settleLock.held = nil
 		return false, fmt.Errorf("%w: %v", errSettleLockUnavailable, err)
+	}
+	if got {
+		if settleLock.held == nil {
+			settleLock.held = map[string]bool{}
+		}
+		settleLock.held[taskID] = true
 	}
 	return got, nil
 }
@@ -99,9 +120,11 @@ func tryLockTaskSettlement(ctx context.Context, taskID string) (bool, error) {
 func unlockTaskSettlement(taskID string) {
 	settleLock.mu.Lock()
 	defer settleLock.mu.Unlock()
+	delete(settleLock.held, taskID)
 	if settleLock.conn == nil || settleLock.conn.IsClosed() {
 		// The connection is gone and so is the lock. Nothing to release.
 		settleLock.conn = nil
+		settleLock.held = nil
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -112,6 +135,7 @@ func unlockTaskSettlement(taskID string) {
 		log.Printf("[payments][settle] task=%s: unlock: %v (connection dropped; its locks are released with it)", taskID, err)
 		_ = settleLock.conn.Close(context.Background())
 		settleLock.conn = nil
+		settleLock.held = nil
 		return
 	}
 	if !released {

@@ -221,3 +221,11 @@ Proposed standards (from the reviewer, for the Arbiter): "a lock or
 pool-holding construct in payments code states its connection budget
 against DB_MAX_CONNS"; "a skipped settlement is distinguishable from an
 errored one, and an errored one hits the ops path".
+
+**Self-found while briefing r4 (fixed before the verdict).** Session-level
+advisory locks are re-entrant within one session: a second
+`pg_try_advisory_lock` for the same key on the shared connection returns
+true, so two goroutines of one process would both have been let through.
+The lock now keeps an in-process `held` set (the in-process half); the
+database lock is the cross-process half. `TestSettleCompletedTaskRefusesToOverlapInProcess`
+fails without it.
