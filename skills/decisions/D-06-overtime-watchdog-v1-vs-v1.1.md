@@ -273,3 +273,12 @@ generation leases, stale-unlock guard all confirmed sound).
    under a sick DB ~40 s for the request-path callers (cancel,
    force-complete). No money at stake; bounded.
 6. (NIT) In-process test no longer unlocks the same lease twice.
+
+**Review r6: PASS.** Minors fixed/accepted: a caller-cancelled query that
+pgx closed under us is now recognised (`IsClosed`) and recorded as a drop
+rather than silently losing the locks; accepted — a non-`ErrNoRows` error
+on the pre-read falls through to the lock path (reported, never swallowed;
+a false "capture failed" is possible only on a hold-less task hit by a DB
+blip); the drop email's 10-minute rate limit can omit a later drop's task
+ids (they are in the log). Reviewer's NIT stands: the `Busy` branches in
+cancel and force-complete are belt-and-braces behind status-gated writes.

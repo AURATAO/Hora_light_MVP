@@ -158,10 +158,13 @@ func tryLockTaskSettlement(ctx context.Context, taskID string) (settleLease, boo
 		cancel()
 		if err != nil {
 			lastErr = err
-			if ctx.Err() != nil {
-				// The CALLER's context ended (a client went away, a shutdown).
-				// The connection is not at fault; dropping it would cost every
-				// other in-flight settlement its lock for nothing.
+			if ctx.Err() != nil && !conn.IsClosed() {
+				// The CALLER's context ended (a client went away, a shutdown)
+				// and the connection survived it. It is not at fault; dropping
+				// it would cost every other in-flight settlement its lock for
+				// nothing. (pgx closes a connection whose query was cancelled
+				// mid-flight — then IsClosed is true, and the drop below
+				// records that the locks went with it.)
 				return settleLease{}, false, fmt.Errorf("%w: %v", errSettleLockUnavailable, ctx.Err())
 			}
 			settleLockDropConn("lock query failed")
