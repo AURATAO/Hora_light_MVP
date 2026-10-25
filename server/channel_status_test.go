@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"hora-auth/internal/channel"
 	"hora-auth/internal/notify"
@@ -218,6 +219,9 @@ func TestResolutionNamesItsRequest(t *testing.T) {
 // lost a time request (never asked on the phone; expired). The lookups
 // retry before the event is dropped.
 func TestStatusHookRetriesTransientLookupFailures(t *testing.T) {
+	prev := lookupRetryWaits
+	lookupRetryWaits = []time.Duration{0, time.Millisecond, time.Millisecond}
+	defer func() { lookupRetryWaits = prev }()
 	calls := 0
 	requesterOf := func(context.Context, string) (string, error) {
 		calls++

@@ -429,9 +429,9 @@ completable at any time — it will settle at the capped amount.</p>`
   <li>Logged: %s against a cap of %s</li>
 </ul>
 <p>Worth a phone call to both sides.</p>`,
-			formatMinutes(Billing.GracePeriodMinutes),
-			t.Title, taskID, t.RequesterEmail, t.AssigneeEmail,
-			formatMinutes(st.LoggedMinutes), formatMinutes(st.Cap.CapMinutes)))
+		formatMinutes(Billing.GracePeriodMinutes),
+		t.Title, taskID, t.RequesterEmail, t.AssigneeEmail,
+		formatMinutes(st.LoggedMinutes), formatMinutes(st.Cap.CapMinutes)))
 }
 
 // sweepTimeCaps is the backstop in the existing 6h watcher — no new scheduler.

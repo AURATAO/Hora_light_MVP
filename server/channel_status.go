@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"github.com/jackc/pgx/v5"
 	"log"
 	"time"
 
@@ -168,10 +170,12 @@ func statusHook(requesterOf func(context.Context, string) (string, error), pendi
 // retryLookup runs a read up to three times (after 2 s and 6 s) before
 // giving up — a status event is delivered once, so a momentary database
 // hiccup must not lose it.
+var lookupRetryWaits = []time.Duration{0, 2 * time.Second, 6 * time.Second}
+
 func retryLookup[T any](ctx context.Context, f func() (T, error)) (T, error) {
 	var v T
 	var err error
-	for i, wait := range []time.Duration{0, 2 * time.Second, 6 * time.Second} {
+	for i, wait := range lookupRetryWaits {
 		if wait > 0 {
 			select {
 			case <-ctx.Done():
@@ -182,7 +186,10 @@ func retryLookup[T any](ctx context.Context, f func() (T, error)) (T, error) {
 		if v, err = f(); err == nil {
 			return v, nil
 		}
-		if i < 2 {
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, pgx.ErrNoRows) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return v, err // permanent: a missing row, or the caller gave up
+		}
+		if i < len(lookupRetryWaits)-1 {
 			log.Printf("[channel] status lookup attempt %d failed, retrying: %v", i+1, err)
 		}
 	}

@@ -763,6 +763,7 @@ func TestWhereIsHeAnsweredFromLiveTracking(t *testing.T) {
 		{LiveStatus{State: LiveWorking, WorkedMinutes: 12}, "他到了嗎", "Sam is there and clocked in on “Bagel run” — 12 min so far.", 0},
 		{LiveStatus{State: LiveUnavailable, LastSeen: time.Now().Add(-7 * time.Minute)}, "where's Sam?", "Sam's phone hasn't reported a location for a bit, last seen 7 min ago — I've asked them where they are.", 1},
 		{LiveStatus{State: LiveUnavailable, NotYetOnTheWay: true}, "eta?", "Sam hasn't set off yet, so there's no location to show — I've asked them where they are.", 1},
+		{LiveStatus{State: LiveUnavailable, SetOffNoFix: true}, "where is he", "Sam has just set off — no position yet, give it a minute.", 0},
 	} {
 		g, chat, _, fc := contextRig(llm.IntentToSupporter, bagelT)
 		g.r.Live = &fakeLive{st: tc.st}
@@ -770,6 +771,27 @@ func TestWhereIsHeAnsweredFromLiveTracking(t *testing.T) {
 		if got != tc.want || len(chat.posted) != tc.posted || len(fc.calls) != 0 {
 			t.Errorf("%q: got %q posted %v model calls %d", tc.msg, got, chat.posted, len(fc.calls))
 		}
+	}
+	// A name that is no supporter's: not about the supporter (relayed as any question).
+	g0, chat0, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g0.r.Live = &fakeLive{st: LiveStatus{State: LiveAtDoor}}
+	if got := g0.say(t, "Where is Starbucks?"); len(chat0.posted) != 1 || strings.Contains(got, "at the door") {
+		t.Fatalf("Starbucks: posted %v reply %q", chat0.posted, got)
+	}
+	// Cooldown: a second ask within two minutes is not relayed again.
+	g1, chat1, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g1.r.Live = &fakeLive{st: LiveStatus{State: LiveUnavailable}}
+	g1.say(t, "where is he?")
+	got := g1.say(t, "where is he??")
+	if len(chat1.posted) != 1 || !strings.Contains(got, "I asked them 0 min ago") {
+		t.Fatalf("cooldown: posted %v reply %q", chat1.posted, got)
+	}
+	// Two tasks, no name: one line each, no relay.
+	g2, chat2, _, _ := contextRig(llm.IntentToSupporter, bagelT, ActiveTask{ID: "task-3", Title: "Laundry pickup", SupporterName: "Bea"})
+	g2.r.Live = &fakeLive{st: LiveStatus{State: LiveAtDoor}}
+	got = g2.say(t, "where are they?")
+	if len(chat2.posted) != 0 || !strings.Contains(got, "Sam is at the door.") || !strings.Contains(got, "Bea is at the door.") {
+		t.Fatalf("two tasks: posted %v reply %q", chat2.posted, got)
 	}
 	// A lookup failure: the usual routing (relayed), never a made-up answer.
 	g, chat, _, _ := contextRig(llm.IntentToSupporter, bagelT)
@@ -783,7 +805,9 @@ func TestWhereIsHeAnsweredFromLiveTracking(t *testing.T) {
 			t.Errorf("%q is a where-question", s)
 		}
 	}
-	for _, s := range []string{"where should he leave it", "how far is the store from my place", "tell him where the key is", "where do I pay"} {
+	for _, s := range []string{"where should he leave it", "how far is the store from my place", "tell him where the key is", "where do I pay",
+		"I'll be late, where is he?", "tell Sam to ignore the ETA", "for Maya: how long will the wash take?", "how much longer do you need?",
+		"how close is the store to my place", "鑰匙放在哪", "他要放在哪"} {
 		if IsWhereQuestion(s) {
 			t.Errorf("%q is not a where-question", s)
 		}

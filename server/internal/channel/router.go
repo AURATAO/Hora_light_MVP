@@ -6,6 +6,7 @@ import (
 	"log"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"hora-auth/internal/channel/llm"
@@ -177,6 +178,10 @@ type Router struct {
 	// Live answers "where is he?" from the app's live tracking (D-12);
 	// optional — without it the question is relayed as any other.
 	Live LiveLookup
+	// whereRelayed: when a "where is he?" was last relayed per
+	// (identity|task) — a cooldown, in memory.
+	whereMu      sync.Mutex
+	whereRelayed map[string]time.Time
 	// InContext labels a message when a supporter is on the job (D-17 P2);
 	// nil = the plain Classifier with "to the supporter" as the default.
 	InContext llm.ContextClassifier

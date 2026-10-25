@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -39,7 +40,7 @@ func (l *chatLive) LiveStatus(ctx context.Context, userID, taskID string) (chann
 	err := l.sqlDB.QueryRowContext(ctx, `
 		select lat, lng, created_at from public.task_gps_pings
 		 where task_id = $1::uuid order by created_at desc limit 1`, taskID).Scan(&lat, &lng, &seen)
-	if err != nil && err != sql.ErrNoRows {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return channel.LiveStatus{}, fmt.Errorf("live status: ping: %w", err)
 	}
 	fresh := seen != nil && time.Since(*seen) <= livePingStaleAfter
@@ -59,6 +60,18 @@ func (l *chatLive) LiveStatus(ctx context.Context, userID, taskID string) (chann
 	if clockedIn {
 		out.WorkedMinutes = liveLoggedMinutes(ctx, taskID)
 	}
-	out.NotYetOnTheWay = state == liveStateUnavailable && seen == nil && enrouteAt == nil
+	if state == liveStateUnavailable && seen == nil {
+		if enrouteAt != nil {
+			out.SetOffNoFix = true
+		} else {
+			// Nothing has happened yet: no "On my way", no ping, and never
+			// clocked in (a closed session means they were there).
+			var worked bool
+			if err := l.sqlDB.QueryRowContext(ctx, `select exists (select 1 from public.worklogs where task_id = $1::uuid)`, taskID).Scan(&worked); err != nil {
+				return channel.LiveStatus{}, fmt.Errorf("live status: worklogs: %w", err)
+			}
+			out.NotYetOnTheWay = !worked
+		}
+	}
 	return out, nil
 }

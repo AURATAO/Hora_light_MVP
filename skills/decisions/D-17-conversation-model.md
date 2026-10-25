@@ -1185,3 +1185,20 @@ yet set off → the question IS relayed and the person is told "I've asked
 them". A lookup failure → the usual routing (never a made-up answer). A
 question of ours still open is repeated after the answer. Distance in
 miles/blocks (no routing API).
+
+#### "Where is he?" — review r1 → fixes
+
+The question is matched as the whole message (a greeting and punctuation
+aside), so "I'll be late, where is he?" and "tell Sam to ignore the ETA"
+are relayed as before; "how much longer do you need?" is for the
+supporter; a capitalised name that is no supporter's ("Where is
+Starbucks?") is not about the supporter; the Chinese forms are anchored
+too (鑰匙放在哪 is not). A relay failure is said once (relaySent's own
+line). Several tasks and no name: one status line per supporter, no
+relay. "On my way" tapped with no fix yet: "has just set off — give it a
+minute", not relayed; "not set off" means no enroute tap, no ping and
+never clocked in. A silent-phone relay is not repeated within 2 minutes
+("I asked them N min ago, nothing back yet"). Ages switch to hours and
+days. The status-hook retry skips permanent errors (no row, context) and
+its waits are injectable (the test no longer sleeps 8 s). Still untested:
+`chatLive.LiveStatus` itself against the DB (follow-up).
