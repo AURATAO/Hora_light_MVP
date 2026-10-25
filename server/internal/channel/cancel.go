@@ -278,15 +278,20 @@ func (r *Router) quoteCancel(ctx context.Context, in Inbound, id Identity, conv 
 	}
 	title := firstNonEmpty(q.Title, t.Title)
 	t.Title = title
-	if q.Moving {
-		log.Printf("[channel] cancel quote identity=%s task=%s: charge moving, sent to the app", id.ID, t.ID)
+	// A moving charge is quoted as its ceiling ("up to $X"): the YES is
+	// consent to that, the cancel bills the real amount (Arbiter
+	// 2026-10-25 21:58 — cancel by chat even while the supporter works).
+	// With no ceiling to quote (no time cap on the task), the app.
+	if q.Moving && q.CeilingCents <= 0 {
+		log.Printf("[channel] cancel quote identity=%s task=%s: charge moving, no ceiling, sent to the app", id.ID, t.ID)
 		return toIdle(CopyCancelInApp)
 	}
+	quoted := quotedCents(q)
 	// R-1: no YES counts until the question is delivered (ShownUnconfirmed,
 	// then markShown). Opened by compare-and-set, never a full save of the
 	// snapshot read before the quote (review 10/24 r2).
 	asked, err := r.Conversations.AskCancel(ctx, id.ID,
-		PendingCancel{TaskID: t.ID, Title: title, QuotedCents: q.ChargeCents, ReasonCode: reasonCode, AskedAtUnix: r.now().Unix()}, ShownUnconfirmed)
+		PendingCancel{TaskID: t.ID, Title: title, QuotedCents: quoted, ReasonCode: reasonCode, AskedAtUnix: r.now().Unix()}, ShownUnconfirmed)
 	if err != nil {
 		return fmt.Errorf("quoteCancel: %w", err)
 	}
@@ -300,12 +305,24 @@ func (r *Router) quoteCancel(ctx context.Context, in Inbound, id Identity, conv 
 	return nil
 }
 
+// quotedCents: what the person is asked to say YES to — the charge, or
+// its ceiling while it is moving.
+func quotedCents(q CancelQuote) int {
+	if q.Moving && q.CeilingCents > q.ChargeCents {
+		return q.CeilingCents
+	}
+	return q.ChargeCents
+}
+
 func cancelQuestion(title string, q CancelQuote, reasonCode string) string {
 	reason := ""
 	for _, c := range CancelReasonChoices {
 		if c.Code == reasonCode {
 			reason = fmt.Sprintf(CopyCancelReasonEcho, c.Label)
 		}
+	}
+	if q.Moving && q.CeilingCents > 0 {
+		return fmt.Sprintf(CopyCancelConfirmUpTo, title, reason, Dollars(q.CeilingCents), Dollars(q.BaseFeeCents))
 	}
 	if q.ChargeCents <= 0 {
 		return fmt.Sprintf(CopyCancelConfirmFree, title, reason)
@@ -453,12 +470,13 @@ func (r *Router) confirmCancel(ctx context.Context, in Inbound, id Identity, con
 		log.Printf("[channel] cancel re-quote identity=%s task=%s: %v", id.ID, pc.TaskID, err)
 		return r.endCancel(ctx, in, id, pc, CopyCancelFailed)
 	}
-	if q.Moving {
-		log.Printf("[channel] cancel identity=%s task=%s: charge moving, sent to the app", id.ID, pc.TaskID)
+	if q.Moving && q.CeilingCents <= 0 {
+		log.Printf("[channel] cancel identity=%s task=%s: charge moving, no ceiling, sent to the app", id.ID, pc.TaskID)
 		return r.endCancel(ctx, in, id, pc, CopyCancelInApp)
 	}
-	if q.ChargeCents > pc.QuotedCents {
-		// The price went up since the question: the YES was not to this.
+	if quotedCents(q) > pc.QuotedCents {
+		// The price (or its ceiling — an extension approved meanwhile)
+		// went up since the question: the YES was not to this.
 		log.Printf("[channel] cancel identity=%s task=%s: charge rose %d→%d, re-asked", id.ID, pc.TaskID, pc.QuotedCents, q.ChargeCents)
 		return r.quoteCancel(ctx, in, id, conv, TaskRef{ID: pc.TaskID, Title: pc.Title}, pc.ReasonCode)
 	}

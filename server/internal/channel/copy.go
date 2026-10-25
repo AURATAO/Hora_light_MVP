@@ -109,6 +109,7 @@ const (
 	CopyCancelKept                = "OK, “%s” stays booked."
 	CopyCancelGone                = "“%s” can't be cancelled any more — it's already finished or closed."
 	CopyCancelFailed              = "I couldn't cancel “%s” just now. You can cancel it in the app, or try again in a minute."
+	CopyCancelConfirmUpTo         = "Cancel “%s”%s? Your supporter is working on it right now, so cancelling costs up to %s (the %s base fee plus the time worked so far, capped at the agreed time). The exact amount is set the moment you confirm. Reply YES to cancel, or NO to keep it."
 	CopyCancelInApp               = "Your supporter is on “%s” right now, so the cancellation charge is still changing. Please cancel it in the app, where you'll see the exact amount first."
 	CopyCancelledUnknown          = "Cancelled “%s”. Any cancellation charge will show in the app."
 	CopyCancelSetAside            = "(I've set aside cancelling “%s” — send “cancel” again after this if you still want to.)"

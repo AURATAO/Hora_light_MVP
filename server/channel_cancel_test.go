@@ -12,7 +12,7 @@ import (
 // handler: the quote a person agrees to is the charge recorded, and only the
 // requester can quote or cancel.
 func TestChatCancelQuotesAndCancelsLikeTheApp(t *testing.T) {
-	setupAdminOpsDB(t)
+	setupStripeWebhookDB(t) // the fuller schema: the time cap reads auto_extend_consent
 	w := seedOpsWorld(t, "open")
 	setAcceptedAt(t, w.taskID, time.Hour) // committed, outside the grace window
 	ctx := context.Background()
@@ -37,8 +37,19 @@ func TestChatCancelQuotesAndCancelsLikeTheApp(t *testing.T) {
 	if _, err := db.Exec(ctx, `insert into public.worklogs (task_id, "user", start_at, end_at) values ($1::uuid, $2::uuid, now() - interval '5 minutes', null)`, w.taskID, w.supporterID); err != nil {
 		t.Fatal(err)
 	}
-	if q2, err := b.CancelQuote(ctx, w.requesterID, w.taskID); err != nil || !q2.Moving {
+	if _, err := db.Exec(ctx, `update public.tasks set estimated_minutes = 30 where id = $1::uuid`, w.taskID); err != nil {
+		t.Fatal(err)
+	}
+	q2, err := b.CancelQuote(ctx, w.requesterID, w.taskID)
+	if err != nil || !q2.Moving {
 		t.Fatalf("session open: %+v err %v", q2, err)
+	}
+	// The ceiling: the committed charge with the session taken to the cap
+	// (Arbiter 2026-10-25 21:58) — never below the charge as of now.
+	capMinutes, _ := taskTimeCapMinutes(ctx, w.taskID)
+	want := cancelSettlementCents(taskCategory(ctx, w.taskID), capMinutes, true, taskRateCentsPerMin(ctx, w.taskID))
+	if q2.CeilingCents != want || q2.CeilingCents < q2.ChargeCents {
+		t.Fatalf("ceiling %d, want %d (charge now %d)", q2.CeilingCents, want, q2.ChargeCents)
 	}
 	if _, err := db.Exec(ctx, `delete from public.worklogs where task_id = $1::uuid`, w.taskID); err != nil {
 		t.Fatal(err)

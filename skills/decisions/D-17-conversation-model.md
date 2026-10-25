@@ -1085,3 +1085,21 @@ cancel state.
 **Arbiter 2026-10-24 23:26:** flat 10 minutes for every hand-off reason,
 3DS-payment and agent-safety included — confirmed. (The auto-release email
 tells ops which it was; a payment or a report is followed up by email.)
+
+### Arbiter answer — 2026-10-25 21:58 (Aura): cancel while the supporter works
+
+Staging (agent ON): after the supporter clocked in, "cancel" got "please
+cancel it in the app" (review 10/24 r1 #9: a moving charge is not quoted).
+Ruling: cancel by chat anyway — same quote-and-confirm flow.
+
+Built (I-AX): a moving charge (session running, or the free window closing
+within 15 s) is quoted as its **ceiling** — the committed charge with the
+running session taken to the time cap (where the clock now stops, D-06),
+or just the committed charge when only the window is closing — "costs up
+to $X … the exact amount is set the moment you confirm". The YES is
+consent to the ceiling (S-11/5: the YES is to the real exposure); the
+app's cancel bills the actual amount, never above it. The re-quote at the
+YES compares ceilings: an extension approved meanwhile raises it → asked
+again; a flat quote whose charge started moving before the YES → asked
+again at the ceiling. A task with no estimate (no cap to bound the charge)
+still goes to the app.

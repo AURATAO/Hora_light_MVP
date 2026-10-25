@@ -102,21 +102,42 @@ func TestCancelClaimedOnce(t *testing.T) {
 	}
 }
 
-// #9: a charge that is moving (a session running, the free window about
-// to close) is sent to the app — at the question and at the YES.
-func TestCancelMovingChargeGoesToTheApp(t *testing.T) {
+// Arbiter 2026-10-25 21:58: a moving charge (a session running) is quoted
+// as its ceiling — "up to $X" — and a YES to that cancels; the real amount
+// billed is never above it. A ceiling that rose since the question (an
+// extension approved) is asked again. A YES to the plain charge given
+// while the charge started moving afterwards is asked again at the ceiling.
+func TestCancelWhileWorkingQuotesTheCeiling(t *testing.T) {
 	g := cancelRig(t)
-	g.booker.quote.Moving = true
+	g.booker.quote.Moving, g.booker.quote.CeilingCents = true, 3450
+	g.booker.cancelRes = CancelResult{OK: true, BillCents: 1950}
 	got := askCancel(t, g)
-	if !strings.Contains(got, "cancel it in the app") || g.state() != StateIdle {
+	if !strings.Contains(got, "up to $34.50") || g.state() != StateAwaitingCancel {
 		t.Fatalf("question: %q state %s", got, g.state())
 	}
+	got = g.say(t, "YES")
+	if len(g.booker.cancelled) != 1 || !strings.Contains(got, "$19.50") || g.state() != StateIdle {
+		t.Fatalf("YES: cancelled %v reply %q state %s", g.booker.cancelled, got, g.state())
+	}
+
+	// The ceiling rose between the question and the YES: asked again.
+	g = cancelRig(t)
+	g.booker.quote.Moving, g.booker.quote.CeilingCents = true, 3450
+	askCancel(t, g)
+	g.booker.quote.CeilingCents = 4200
+	got = g.say(t, "YES")
+	if len(g.booker.cancelled) != 0 || !strings.Contains(got, "up to $42") {
+		t.Fatalf("rose: cancelled %v reply %q", g.booker.cancelled, got)
+	}
+
+	// Quoted $12 flat; the supporter clocked in before the YES: the ceiling
+	// is higher, so it is asked again — never cancelled on the old number.
 	g = cancelRig(t)
 	askCancel(t, g)
-	g.booker.quote.Moving = true
+	g.booker.quote.Moving, g.booker.quote.CeilingCents = true, 3450
 	got = g.say(t, "YES")
-	if len(g.booker.cancelled) != 0 || !strings.Contains(got, "cancel it in the app") || g.state() != StateIdle {
-		t.Fatalf("YES: cancelled %v reply %q state %s", g.booker.cancelled, got, g.state())
+	if len(g.booker.cancelled) != 0 || !strings.Contains(got, "up to $34.50") {
+		t.Fatalf("started moving: cancelled %v reply %q", g.booker.cancelled, got)
 	}
 }
 

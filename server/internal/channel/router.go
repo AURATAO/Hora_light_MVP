@@ -64,6 +64,12 @@ type CancelQuote struct {
 	// free window closes within a minute. A chat cancel is a YES to one
 	// amount, so a moving charge is sent to the app, which shows it live.
 	Moving bool
+	// CeilingCents: the most the cancel can cost while Moving — the charge
+	// with the running session taken to the agreed time cap (where the
+	// clock stops), or the committed charge once the free window closes.
+	// The chat quotes this ("up to $X"); a YES is consent to it, and the
+	// cancel bills the real amount, never more (Arbiter 2026-10-25 21:58).
+	CeilingCents int
 }
 
 // CancelResult is what a cancel did.

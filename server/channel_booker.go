@@ -315,10 +315,33 @@ func (b *chatBooker) CancelQuote(ctx context.Context, userID, taskID string) (ch
 		return channel.CancelQuote{}, fmt.Errorf("cancel quote: no preview")
 	}
 	// Moving: the charge can change before the cancel lands — a session is
-	// running, or the free window closes within cancelQuoteMargin.
+	// running, or the free window closes within cancelQuoteMargin. The chat
+	// then quotes the ceiling: the committed charge with the running
+	// session taken to the time cap (the clock stops there, timecap.go), or
+	// just the committed charge when only the free window is closing.
 	closing := p.WithinGrace && p.GraceEndsAt != nil && time.Until(*p.GraceEndsAt) < cancelQuoteMargin
-	return channel.CancelQuote{Title: title, ChargeCents: p.ChargeCents, BaseFeeCents: p.BaseFeeCents,
-		Committed: p.Committed, WithinGrace: p.WithinGrace, Moving: sessionOpen || closing}, nil
+	q := channel.CancelQuote{Title: title, ChargeCents: p.ChargeCents, BaseFeeCents: p.BaseFeeCents,
+		Committed: p.Committed, WithinGrace: p.WithinGrace, Moving: sessionOpen || closing}
+	q.CeilingCents = q.ChargeCents
+	if q.Moving && p.Committed {
+		category := taskCategory(ctx, taskID)
+		rate := taskRateCentsPerMin(ctx, taskID)
+		q.CeilingCents = p.BaseFeeCents + p.TimeCostCents // the committed charge as of now
+		if sessionOpen {
+			capMinutes, _ := taskTimeCapMinutes(ctx, taskID)
+			if capMinutes <= 0 {
+				// No cap to bound the charge (no estimate on the task): no
+				// ceiling — the chat sends the cancel to the app.
+				q.CeilingCents = 0
+				return q, nil
+			}
+			q.CeilingCents = cancelSettlementCents(category, capMinutes, true, rate)
+		}
+		if q.CeilingCents < q.ChargeCents {
+			q.CeilingCents = q.ChargeCents
+		}
+	}
+	return q, nil
 }
 
 // Cancel runs the app's own cancel handler as the requester, with the reason
