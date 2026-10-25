@@ -427,6 +427,11 @@ func main() {
 	// costs nobody who is actually waiting on an answer anything. See
 	// server/extensions.go and server/timecap.go.
 	go watchPhase2bBacklog(context.Background(), 6*time.Hour)
+	// Completed tasks whose hold is still live: the detached completion
+	// chain died before the capture (payments_resettle.go). Every five
+	// minutes, against a ten-minute age — the only cost of a pass is one
+	// query when there is nothing to do.
+	go watchUnsettledCompletions(context.Background(), 5*time.Minute)
 	// Tasks with a session running: the cap's warning and ceiling are
 	// announced within a minute of being reached, GPS heartbeat or not
 	// (web-app supporters send none).
@@ -3781,6 +3786,9 @@ func getWorklogs(c *gin.Context) {
 //	not_charged     no hold was ever placed (PAYMENTS_ENFORCED off, or a task
 //	                that predates it). The figures are what WOULD be charged.
 //	estimated       the task is still running; this is the bill so far.
+//	settling        the task is complete and the hold is being captured —
+//	                the seconds between completeTask's status write and its
+//	                detached settlement. Rendered like estimated.
 //	captured        the money moved.
 //	capture_failed  the task is finished and the charge did not go through.
 //	                Ops have been emailed; nobody needs to do anything in-app.
@@ -3804,6 +3812,14 @@ func settlementState(ctx context.Context, taskID, taskStatus string) string {
 		return "capture_failed"
 	case paymentStatusCanceled:
 		return "not_charged"
+	}
+	// A live hold on a task that is over: the detached completion chain is
+	// between the status write and the capture (completeTask), or died
+	// there and the sweep has not reached it yet (payments_resettle.go).
+	// Not "estimated" — the task is not running — and not yet a charge.
+	// Clients fall through to their neutral "Settlement" rendering on it.
+	if taskStatus == "completed" {
+		return "settling"
 	}
 	return "estimated"
 }
@@ -4182,14 +4198,23 @@ func completeTask(c *gin.Context) {
 	_, promoDiscount := promoDiscountForTask(ctx, taskID)
 	requesterCostStr := formatCentsUSD(afterPromo(totalCents, promoDiscount))
 
-	if _, err := db.Exec(ctx, `
+	// Conditional on the task still being open: two completes racing (a
+	// double-tap, a retry after a dropped response) must produce ONE
+	// completion and ONE settlement chain. The loser sees "already closed",
+	// the same answer a late complete gets above.
+	tag, err := db.Exec(ctx, `
 		UPDATE public.tasks
 		SET status='completed', completion_photo_url=$2, completion_note=$3, completed_at=now(),
 		    receipt_amount_cents=$4, receipt_photo_url=nullif($5,'')
-		WHERE id = $1::uuid`,
+		WHERE id = $1::uuid AND status = 'open'`,
 		taskID, completionPhotoURL, body.CompletionNote,
-		body.ReceiptAmountCents, receiptPhotoURL); err != nil {
+		body.ReceiptAmountCents, receiptPhotoURL)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "already closed"})
 		return
 	}
 
@@ -4208,19 +4233,31 @@ func completeTask(c *gin.Context) {
 	// the web app. The supporter then saw "Complete failed" on a task that
 	// had completed, with the requester's confirmation already in their
 	// inbox. So the browser is answered now, with the task as it stands, and
-	// the chain runs on its own clock: context.Background(), because a
-	// browser that gives up or a proxy that drops the connection must not
-	// cancel a Stripe capture halfway through; a timeout of its own, so a
-	// hung provider cannot pin a goroutine forever; a recover, so a panic in
-	// an email template cannot take the process down. Tests run it inline
+	// the chain runs on its own clock: context.Background() with NO deadline,
+	// because a browser that gives up or a proxy that drops the connection
+	// must not cancel a Stripe capture halfway through, and a deadline of our
+	// own would do the same thing from the inside — expire mid-capture and
+	// then expire the `capture_failed` write that records it. Stripe, the
+	// mailer and pgx each bound their own calls. A recover, so a panic in an
+	// email template cannot take the process down — and the panic is mailed
+	// to ops, because a settlement that vanished quietly is the one failure
+	// this file promises never happens. Tests run it inline
 	// (completionDetach) so that what they assert after completeAs has
 	// happened.
 	//
+	// What if the process dies mid-chain (a deploy lands in those seconds)?
+	// The task is `completed` and its hold still `authorized`, and nobody
+	// is waiting on the request to notice. sweepUnsettledCompletions
+	// (payments_resettle.go) finds exactly that shape and settles it; a hold
+	// Stripe already captured fails the re-capture into `capture_failed`
+	// plus the ops email, which is the honest outcome.
+	//
 	// What the client sees differently: the task comes back `completed` with
-	// payment still `authorized` for a few seconds. Clients already render
-	// the payment block from the server's numbers and nothing else (S-05),
-	// and the requester's page re-reads the task on load, so the settled
-	// figures arrive on the next fetch rather than this one.
+	// payment still `authorized` for a few seconds — settlement.state says
+	// `settling` for that window. Clients already render the payment block
+	// from the server's numbers and nothing else (S-05), and the requester's
+	// page re-reads the task on load, so the settled figures arrive on the
+	// next fetch rather than this one.
 	//
 	// Inputs are computed above, on the request context, and captured by
 	// value: none of the reads are repeated on the detached side.
@@ -4230,11 +4267,17 @@ func completeTask(c *gin.Context) {
 	completionDetach(func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("[completeTask][PANIC] task=%s finishing after completion: %v", taskID, r)
+				// The value, not the inputs: a panic message can quote what
+				// it was formatting, and the completion note is the
+				// person's (S-12). Type and location are enough to find it.
+				log.Printf("[completeTask][PANIC] task=%s finishing after completion: %T", taskID, r)
+				emailOpsAdmins("[HO:RA] Settlement crashed — check task "+taskID,
+					fmt.Sprintf("<p>The post-completion chain (capture, payouts, receipts, emails) panicked for task <code>%s</code>. "+
+						"Check its payment row; the unsettled-completion sweep retries the money within %d minutes, "+
+						"but the completion emails for this task were not sent.</p>", taskID, int(resettleAfter.Minutes())))
 			}
 		}()
-		bg, cancel := context.WithTimeout(context.Background(), completionFinishTimeout)
-		defer cancel()
+		bg := context.Background()
 
 		settleCompletedTask(bg, taskID, meUID, timeCostCents, reimbursedCents)
 
@@ -4280,12 +4323,6 @@ func completeTask(c *gin.Context) {
 // inline runner so that assertions made right after completeAs see the
 // settled state (setupAdminOpsDB).
 var completionDetach = func(fn func()) { go fn() }
-
-// completionFinishTimeout bounds the detached chain. Generous: it covers a
-// Stripe capture, a balance charge, payouts and several emails, each with
-// its own retry; it exists so a hung provider cannot hold the goroutine
-// forever, not to hurry anything.
-const completionFinishTimeout = 3 * time.Minute
 
 // POST /tasks/:id/cancel
 //

@@ -112,3 +112,48 @@ freeze; web app now): treat 403 `time_cap_reached` on clock-in as "ask for
 more time", and 400 "no active session" on clock-out as "already clocked
 out". Accepted: the "stalled at its time cap" ops email fires for a silent
 requester with nothing at stake (as before; one per approval cycle).
+
+## Addendum 2026-10-25 — completion answers the browser before the money moves
+
+**Incident.** Both web-app completions on staging (10/24 20:33, 10/25 21:39)
+took ~15 s inside `POST /tasks/:id/complete` — capture, balance charge, two
+payouts, five emails, one iMessage, all synchronous — and Render's edge
+answered the browser **502** (same 223 KB error page both times) while Gin
+logged 200. The supporter saw "Complete failed" on a task that had completed
+two seconds in; the requester already had the confirmation email.
+
+**Change (0ce5781 + review fixes).** The status write is the commit and the
+handler answers right after it with `getTask`. Settlement + receipts +
+completion emails run detached (`completionDetach`, a goroutine in
+production, inline in tests) on `context.Background()` with **no deadline**
+— a deadline of our own would expire mid-capture and then expire the
+`capture_failed` write that records it — and a recover that **emails ops**
+(a settlement that vanished quietly is the one failure the payments code
+promises never happens). The web app, on a non-4xx failure, re-reads the
+task and treats `completed` as success.
+
+**Review r1 (FAIL, 4 MAJOR) → fixes.**
+1. A chain lost to a restart left no record → `sweepUnsettledCompletions`
+   (`payments_resettle.go`, every 5 min): a `completed` task older than 10
+   minutes whose task payment is still live is settled again from its own
+   row; a hold Stripe already captured fails the re-capture into
+   `capture_failed` + the ops email (honest, ops reconcile by the runbook).
+   Completion emails are not re-sent (courtesy; the receipt is the record).
+2. The 3-minute deadline and the silent recover → removed / ops-emailed.
+3. (Reviewer could not see `setupStripeWebhookDB`; it delegates to
+   `setupAdminOpsDB`, so every completion test runs the chain inline.)
+4. `settlement.state` read `estimated` for a completed task with a live hold
+   → new `settling`; both clients fall through to their neutral rendering on
+   an unknown state (checked: exact-match switches only).
+5. (MINOR) Two concurrent completes both settled → the UPDATE is
+   `… AND status='open'`, zero rows → 400 "already closed"; one chain.
+6. (MINOR, accepted) The web fallback's re-read: only the assignee can
+   complete, so "someone else completed it" is the same person retrying;
+   `completed` is not `settled` — the page says done, the money follows.
+7. (MINOR) The panic log prints `%T`, not `%v` (a formatted completion note
+   could ride along in a panic value — S-12).
+
+Tests: `TestResettleSweepSettlesAnOrphanedCompletion`,
+`TestCompleteTwiceIsOneCompletion`, `TestSettlementStateSettlingWhileHoldIsLive`.
+Runbook follow-up: add "`[payments][RESETTLE]` — a completion's chain died;
+the sweep settled it" to the log-only entries.

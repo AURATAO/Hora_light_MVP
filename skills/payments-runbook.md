@@ -222,3 +222,13 @@ requested card features") and **every post 402s**. Verified in test mode
 2026-09-14. Before flipping it: enable it in the dashboard, then re-run
 `STRIPE_SMOKE=1 go test ./ -run Phase2bSmoke -v` and check the logged
 `INCREMENTAL AUTHORIZATION RESULT` line says `method="incremental_authorization"`.
+
+### 6. Log-only: `[payments][RESETTLE]`
+
+A task was completed and its hold was still live ten minutes later: the
+detached completion chain (capture → balance → payouts → receipt) died
+before the capture, usually because a deploy landed in those seconds. The
+sweep (`payments_resettle.go`, every 5 min) ran the same settlement again.
+Nothing to do unless it is followed by a **Capture failed** email — that is
+the hold Stripe had already captured, refused a second time: reconcile the
+row by hand as in entry 1.
