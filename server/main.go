@@ -4570,6 +4570,20 @@ func cancelTask(c *gin.Context) {
 	settled := settlementOutcome{}
 	if billCents > 0 {
 		settled = settleCompletedTask(ctx, taskID, meUID, billCents, 0)
+		if settled.Busy {
+			// Another settlement of this task holds the lock — which, for a
+			// task that was open a moment ago, means a force-complete racing
+			// this cancel. The status write above already made this a
+			// cancelled task, which the sweep never revisits, so nobody but
+			// a person can check what the other settlement did with the
+			// hold. Say so where a person reads.
+			log.Printf("[cancelTask][ERROR] task=%s: settlement in progress elsewhere; cancel bill %d not settled here", taskID, billCents)
+			emailOpsAdmins("[HO:RA] Cancel found a settlement in progress — check task "+taskID,
+				fmt.Sprintf("<p>Task <code>%s</code> was cancelled with %s owed to the supporter, but another settlement of the "+
+					"same task was running at that moment and this one stood aside. Check the payment and payout rows against "+
+					"Stripe and settle the cancel fee by hand if the other run did not (payments runbook, entry 7).</p>",
+					taskID, formatCentsUSD(billCents)))
+		}
 	} else {
 		released = releaseTaskHold(ctx, taskID, meUID, "requester_cancelled") != nil
 		// Nobody was charged, so the promo code — if there was one — was not

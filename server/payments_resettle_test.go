@@ -251,3 +251,33 @@ func TestSettlementStateSettlingWhileHoldIsLive(t *testing.T) {
 		t.Errorf("completed task with a live hold: %q, want settling", got)
 	}
 }
+
+// Slow is not dead: a captured-but-unsettled task whose settlement still
+// holds the lock is not flagged — it is still running.
+func TestResettleSweepDoesNotFlagARunningSettlement(t *testing.T) {
+	setupStripeWebhookDB(t)
+	stubStripe(t)
+	ctx := context.Background()
+	w := seedOpsWorld(t, "open")
+	seedWorklog(t, w.taskID, 30, false)
+	seedLiveHold(t, w.taskID, w.requesterID, paymentStatusCaptured, 7675)
+	markCompletedAgo(t, w.taskID, 15, w)
+
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1, hashtext($2))`, advisoryLockTaskSettle, w.taskID); err != nil {
+		t.Fatal(err)
+	}
+	sweepUnsettledCompletions(ctx)
+	if n := len(auditRows(t, w.taskID, "SETTLEMENT_INCOMPLETE")); n != 0 {
+		t.Fatalf("%d SETTLEMENT_INCOMPLETE rows while the settlement holds the lock, want 0", n)
+	}
+	tx.Rollback(ctx)
+
+	sweepUnsettledCompletions(ctx)
+	if n := len(auditRows(t, w.taskID, "SETTLEMENT_INCOMPLETE")); n != 1 {
+		t.Fatalf("%d SETTLEMENT_INCOMPLETE rows once the lock is gone, want 1", n)
+	}
+}

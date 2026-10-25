@@ -569,29 +569,23 @@ func alreadyCaptured(ctx context.Context, taskID string) (bool, time.Time) {
 // is over either way and the supporter is not the person who should discover
 // a card problem.
 func settleCompletedTask(ctx context.Context, taskID, actorUID string, timeCostCents, receiptCents int) settlementOutcome {
-	// ONE settlement per task at a time. The lock lives in a transaction of
-	// its own that holds nothing but the lock (every write below goes
-	// through the pool as before), so a Stripe call that hangs releases it
-	// on the context's rollback and a panic releases it on the deferred one.
-	// Try, never wait: a second caller finding the lock taken means the
-	// first is mid-flight, and the right thing is to do nothing — the
-	// sweep's next pass sees whatever the first left.
-	tx, err := db.Begin(ctx)
-	if err != nil {
-		log.Printf("[payments][settle] task=%s: begin lock tx: %v", taskID, err)
-		return settlementOutcome{Busy: true}
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	var got bool
-	if err := tx.QueryRow(ctx, `select pg_try_advisory_xact_lock($1, hashtext($2))`,
-		advisoryLockTaskSettle, taskID).Scan(&got); err != nil {
-		log.Printf("[payments][settle] task=%s: lock: %v", taskID, err)
-		return settlementOutcome{Busy: true}
+	// ONE settlement per task at a time (payments_settle_lock.go). Try,
+	// never wait: a second caller finding the lock taken means the first is
+	// mid-flight, and the right thing is to do nothing — the sweep's next
+	// pass sees whatever the first left. Not being ABLE to ask is different:
+	// that is a failure, and it goes down the same path as a failed capture
+	// (audit row, ops email), never a quiet zero.
+	got, lockErr := tryLockTaskSettlement(ctx, taskID)
+	if lockErr != nil {
+		out := settlementOutcome{Attempted: true, TimeCostCents: timeCostCents, ReceiptCents: receiptCents, Err: lockErr}
+		reportCaptureFailure(ctx, taskID, out, actorUID)
+		return out
 	}
 	if !got {
 		log.Printf("[payments][settle] task=%s: settlement already in progress elsewhere — not started", taskID)
 		return settlementOutcome{Busy: true}
 	}
+	defer unlockTaskSettlement(taskID)
 	out := settleTaskPayment(ctx, taskID, timeCostCents, receiptCents)
 	switch {
 	case out.Err != nil:

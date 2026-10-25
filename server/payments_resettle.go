@@ -71,8 +71,10 @@ func sweepUnsettledCompletions(ctx context.Context) {
 	if !paymentsEnabled() {
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, 4*time.Minute)
-	defer cancel()
+	// No deadline on the pass: a settlement must not be cut mid-capture by
+	// a clock of ours (the same rule as completeTask's chain). Each query
+	// and provider call bounds itself; a hit is settled under the per-task
+	// lock, so a slow pass and the next tick cannot overlap on one task.
 	resettleLiveHolds(ctx)
 	flagIncompleteSettlements(ctx)
 	countStaleOrphans(ctx)
@@ -193,11 +195,25 @@ func flagIncompleteSettlements(ctx context.Context) {
 		return
 	}
 	for _, id := range ids {
-		// The audit row FIRST, so a mail failure cannot make this fire again
-		// every five minutes; the log line is the fallback if the mail fails.
-		writeAudit(ctx, id, orSystemActor(""), "SETTLEMENT_INCOMPLETE", "", map[string]any{
+		// Slow is not dead: a chain that captured and is still running past
+		// ten minutes holds the per-task lock. Leave it to finish.
+		running, err := isTaskSettlementRunning(ctx, id)
+		if err != nil {
+			log.Printf("[payments][resettle] task=%s: cannot tell whether a settlement is running: %v", id, err)
+			continue
+		}
+		if running {
+			continue
+		}
+		// The audit row FIRST, and only if it landed: it is the once-only
+		// marker, so a row that did not insert must not be followed by an
+		// email that would then repeat every five minutes.
+		if err := writeAuditErr(ctx, id, orSystemActor(""), "SETTLEMENT_INCOMPLETE", "", map[string]any{
 			"detail": "task payment captured; settlement did not finish (no settled_total_cents). Check payouts, balance charge, receipt.",
-		})
+		}); err != nil {
+			log.Printf("[payments][resettle] task=%s: could not record SETTLEMENT_INCOMPLETE: %v", id, err)
+			continue
+		}
 		log.Printf("[payments][INCOMPLETE SETTLEMENT] task=%s: hold captured, settlement never finished — ops emailed", id)
 		emailOpsAdmins("[HO:RA] Settlement incomplete — check task "+id,
 			fmt.Sprintf("<p>Task <code>%s</code> is completed and its hold was captured, but the settlement never finished: "+

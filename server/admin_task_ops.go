@@ -88,14 +88,21 @@ func closeOpenWorklogs(ctx context.Context, taskID string) int64 {
 // must not undo work that already happened — but it is logged loudly, because
 // a missing audit row is exactly the signal that went unnoticed for months.
 func writeAudit(ctx context.Context, taskID, actorUID, action, reason string, meta map[string]any) {
-	metaJSON, _ := json.Marshal(meta)
-	if _, err := db.Exec(ctx, `
-		insert into public.audit_logs (job_id, actor_id, action, reason, meta)
-		values ($1::uuid, $2::uuid, $3, nullif($4,''), $5::jsonb)
-	`, taskID, actorUID, action, reason, string(metaJSON)); err != nil {
+	if err := writeAuditErr(ctx, taskID, actorUID, action, reason, meta); err != nil {
 		log.Printf("[admin.ops][audit][ERROR] action=%s task=%s actor=%s err=%v",
 			action, taskID, actorUID, err)
 	}
+}
+
+// writeAuditErr is writeAudit for a caller that needs to know the row
+// landed — one that uses the row as a once-only marker (payments_resettle.go).
+func writeAuditErr(ctx context.Context, taskID, actorUID, action, reason string, meta map[string]any) error {
+	metaJSON, _ := json.Marshal(meta)
+	_, err := db.Exec(ctx, `
+		insert into public.audit_logs (job_id, actor_id, action, reason, meta)
+		values ($1::uuid, $2::uuid, $3, nullif($4,''), $5::jsonb)
+	`, taskID, actorUID, action, reason, string(metaJSON))
+	return err
 }
 
 // POST /admin/tasks/:id/force-complete
@@ -170,7 +177,15 @@ func adminForceCompleteTask(c *gin.Context) {
 	inputs := readSettlementInputs(ctx, taskID)
 	reimbursedCents := reimbursableReceiptCents(inputs.ReceiptCents, inputs.ApprovedBudgetCents)
 	totalCents := timeCostCents + reimbursedCents
-	settleCompletedTask(ctx, taskID, actorUID, timeCostCents, reimbursedCents)
+	if out := settleCompletedTask(ctx, taskID, actorUID, timeCostCents, reimbursedCents); out.Busy {
+		// A settlement of this task is already running (a complete that
+		// landed in the same seconds). It will record its own result; the
+		// admin is told theirs did not run rather than shown a success.
+		log.Printf("[admin.ops][force-complete] task=%s: settlement in progress elsewhere; not settled here", taskID)
+		emailOpsAdmins("[HO:RA] Force-complete found a settlement in progress — check task "+taskID,
+			fmt.Sprintf("<p>Task <code>%s</code> was force-completed while another settlement of it was running. "+
+				"The other run's result stands; verify the payment and payout rows against Stripe.</p>", taskID))
+	}
 	// What the REQUESTER pays: the total less any promo discount. The
 	// supporter's figures stay undiscounted.
 	_, promoDiscount := promoDiscountForTask(ctx, taskID)

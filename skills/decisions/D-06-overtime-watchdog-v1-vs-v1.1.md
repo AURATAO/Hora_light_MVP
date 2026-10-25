@@ -192,3 +192,32 @@ the sweep settled it" to the log-only entries.
 8. (MINOR, accepted) An admin time adjustment inside the settling window
    could change the figure the sweep later captures; the adjustment path
    refuses once captured, so the two never both land.
+
+**Review r3 (FAIL, 2 MAJOR) → fixes.**
+1. The lock held a *pool* connection for the whole ~15 s chain; with
+   `DB_MAX_CONNS=3` three overlapping settlements would deadlock the pool
+   and every handler behind it → the lock moved to ONE dedicated connection
+   outside the pool (`payments_settle_lock.go`: session-level
+   `pg_try_advisory_lock` / `pg_advisory_unlock`, a Go mutex around the
+   round-trips only, lazy reconnect; process death drops the locks, which
+   is when the sweep takes over). Budget: one connection beyond the pool.
+2. `Busy` also stood for "could not ask for the lock", and cancelTask turned
+   that into a silent zero → the two are split: lock *unavailable* is an
+   error and goes through `reportCaptureFailure` (audit row + ops email;
+   the hold stays live, so a completed task is retried by the sweep); lock
+   *held* is `Busy`, and the two callers for whom the sweep cannot follow
+   up — cancelTask (cancelled tasks are never swept) and force-complete —
+   log an `[ERROR]` and email ops instead of reporting a success.
+3. (MINOR) The pass-level 4-minute deadline could cut a settlement
+   mid-capture → removed, same rule as the chain.
+4. (MINOR) Shape two could flag a chain that captured and is still running
+   → the sweep asks the lock first (`isTaskSettlementRunning`); held = slow,
+   not dead, skipped.
+5. (MINOR) The once-only marker relied on `writeAudit`, which swallows
+   errors → `writeAuditErr`; no email unless the row landed.
+Tests added: `TestResettleSweepDoesNotFlagARunningSettlement`; the overlap
+test now exercises the session lock against a transaction-level holder.
+Proposed standards (from the reviewer, for the Arbiter): "a lock or
+pool-holding construct in payments code states its connection budget
+against DB_MAX_CONNS"; "a skipped settlement is distinguishable from an
+errored one, and an errored one hits the ops path".
