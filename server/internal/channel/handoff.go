@@ -37,6 +37,9 @@ type ThreadMessage struct {
 	Direction string // inbound / outbound
 	Text      string
 	At        time.Time
+	// Relay: an outbound line that carried a supporter's words (the
+	// store's flag) — not HO:RA's own voice.
+	Relay bool
 }
 
 // HandoffNotice is what ops receive.

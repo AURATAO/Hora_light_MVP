@@ -1206,8 +1206,8 @@ func (r *Router) ourLastLineText(ctx context.Context, id Identity) (string, time
 		if m.Direction != "outbound" || strings.TrimSpace(m.Text) == "" {
 			continue
 		}
-		if relayedLineRE.MatchString(m.Text) {
-			continue // a relayed supporter line, not ours
+		if m.Relay || relayedLineRE.MatchString(m.Text) {
+			continue // a relayed supporter line (the store's flag; the shape as a fallback), not ours
 		}
 		return m.Text, m.At
 	}
