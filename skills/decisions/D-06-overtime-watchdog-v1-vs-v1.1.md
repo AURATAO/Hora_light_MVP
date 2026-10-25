@@ -252,3 +252,24 @@ fixed in 4d02a5f before the verdict; the remaining MAJOR and minors:
    record.
 5. (MINOR) Fixture: `resetSettleLockForTests` on the DB swap's cleanup.
 6. (MINOR) Budget comment: one connection beyond the pool AND `sqldb`.
+
+**Review r5 (FAIL, 1 MAJOR) → fixes.** r4's findings held up (held map,
+generation leases, stale-unlock guard all confirmed sound).
+1. A lock outage on a task with nothing to settle (payments off, or no hold
+   — every beta task) became a `PAYMENT_CAPTURE_FAILED` row and an ops
+   email about money never owed → the lock is taken only when
+   `paymentsEnabled()` and a live hold exists; otherwise settleTaskPayment's
+   own no-op runs, as before the lock. `TestSettleCompletedTaskWithoutAHoldTakesNoLock`.
+2. (MINOR) A caller-cancelled context was read as a broken connection and
+   dropped every in-flight lock → the context's own error is returned and
+   the connection kept.
+3. (MINOR) Drop email rate-limited to one per 10 minutes.
+4. (MINOR, accepted) A *cancelled* task whose capture (or lock) failed keeps
+   a live hold the sweep never revisits, and the cancel response's
+   `released_cents` reads as if released — pre-existing for capture
+   failures; the audit row and ops email are the record. Follow-up: a cancel
+   shape in the sweep, or a `settling` state for cancelled tasks.
+5. (MINOR, accepted) Lock round-trips serialise behind one mutex; worst case
+   under a sick DB ~40 s for the request-path callers (cancel,
+   force-complete). No money at stake; bounded.
+6. (NIT) In-process test no longer unlocks the same lease twice.

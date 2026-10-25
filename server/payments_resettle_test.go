@@ -298,7 +298,6 @@ func TestSettleCompletedTaskRefusesToOverlapInProcess(t *testing.T) {
 	if err != nil || !got {
 		t.Fatalf("first lock: got=%v err=%v", got, err)
 	}
-	t.Cleanup(func() { unlockTaskSettlement(lease) })
 
 	_, again, err := tryLockTaskSettlement(ctx, w.taskID)
 	if err != nil || again {
@@ -372,5 +371,40 @@ func TestSettleLockStaleLeaseDoesNotReleaseANewerLock(t *testing.T) {
 	}
 	if free {
 		t.Fatal("the stale lease's unlock released the newer settlement's database lock")
+	}
+}
+
+// A task with nothing to settle takes no lock and reports nothing: with the
+// lock held elsewhere (or unavailable), a hold-less completion is still the
+// quiet no-op it was before the lock existed — never a "capture failed".
+func TestSettleCompletedTaskWithoutAHoldTakesNoLock(t *testing.T) {
+	setupStripeWebhookDB(t)
+	stubStripe(t)
+	ctx := context.Background()
+	w := seedOpsWorld(t, "open")
+	seedWorklog(t, w.taskID, 30, false)
+	markCompletedAgo(t, w.taskID, 15, w) // no payments row
+
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1, hashtext($2))`, advisoryLockTaskSettle, w.taskID); err != nil {
+		t.Fatal(err)
+	}
+
+	out := settleCompletedTask(ctx, w.taskID, orSystemActor(""), 2700, 0)
+	if out.Busy || out.Attempted || out.Err != nil {
+		t.Fatalf("hold-less task: %+v, want a quiet no-op", out)
+	}
+	if n := len(auditRows(t, w.taskID, "PAYMENT_CAPTURE_FAILED")); n != 0 {
+		t.Fatalf("%d PAYMENT_CAPTURE_FAILED rows on a task that owed nothing", n)
+	}
+	settleLock.mu.Lock()
+	_, marked := settleLock.held[w.taskID]
+	settleLock.mu.Unlock()
+	if marked {
+		t.Fatal("a hold-less settlement left an in-process lock mark")
 	}
 }

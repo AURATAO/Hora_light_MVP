@@ -575,6 +575,17 @@ func settleCompletedTask(ctx context.Context, taskID, actorUID string, timeCostC
 	// pass sees whatever the first left. Not being ABLE to ask is different:
 	// that is a failure, and it goes down the same path as a failed capture
 	// (audit row, ops email), never a quiet zero.
+	//
+	// Only when there is something to settle. With PAYMENTS_ENFORCED off, or
+	// on a task that never had a hold, settleTaskPayment is a no-op — and a
+	// lock outage on such a task must not become a "capture failed" audit
+	// row and an ops email about money that was never owed (review r5).
+	if !paymentsEnabled() {
+		return settleTaskPayment(ctx, taskID, timeCostCents, receiptCents)
+	}
+	if _, err := livePaymentForTask(ctx, taskID); errors.Is(err, pgx.ErrNoRows) {
+		return settleTaskPayment(ctx, taskID, timeCostCents, receiptCents)
+	}
 	lease, got, lockErr := tryLockTaskSettlement(ctx, taskID)
 	if lockErr != nil {
 		out := settlementOutcome{Attempted: true, TimeCostCents: timeCostCents, ReceiptCents: receiptCents, Err: lockErr}

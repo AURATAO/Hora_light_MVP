@@ -61,6 +61,8 @@ var settleLock struct {
 	conn *pgx.Conn
 	gen  uint64            // bumped on every (re)connect
 	held map[string]uint64 // tasks this process is settling right now → lease generation
+	// lastDropMail: a flapping connection must not mail ops on every flap.
+	lastDropMail time.Time
 }
 
 // settleLease is one taken lock: which task, under which connection.
@@ -90,6 +92,10 @@ func settleLockDropConn(reason string) {
 		sort.Strings(ids)
 		log.Printf("[payments][settle][ERROR] lock connection dropped (%s) while %d settlement(s) were running: %s — "+
 			"their cross-process exclusion is gone until they finish", reason, len(ids), strings.Join(ids, ", "))
+		if time.Since(settleLock.lastDropMail) < 10*time.Minute {
+			return
+		}
+		settleLock.lastDropMail = time.Now()
 		emailOpsAdmins("[HO:RA] Settlement lock connection dropped mid-settlement",
 			fmt.Sprintf("<p>The database connection that holds per-task settlement locks dropped while %d settlement(s) were running. "+
 				"They continue, but another process could now settle the same task(s) at the same time. "+
@@ -152,10 +158,13 @@ func tryLockTaskSettlement(ctx context.Context, taskID string) (settleLease, boo
 		cancel()
 		if err != nil {
 			lastErr = err
-			settleLockDropConn("lock query failed")
 			if ctx.Err() != nil {
-				break
+				// The CALLER's context ended (a client went away, a shutdown).
+				// The connection is not at fault; dropping it would cost every
+				// other in-flight settlement its lock for nothing.
+				return settleLease{}, false, fmt.Errorf("%w: %v", errSettleLockUnavailable, ctx.Err())
 			}
+			settleLockDropConn("lock query failed")
 			continue
 		}
 		if !got {
