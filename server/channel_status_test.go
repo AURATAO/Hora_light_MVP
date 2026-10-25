@@ -213,3 +213,26 @@ func TestResolutionNamesItsRequest(t *testing.T) {
 		}
 	}
 }
+
+// Staging 2026-10-25 21:11: a transient DB error on the requester lookup
+// lost a time request (never asked on the phone; expired). The lookups
+// retry before the event is dropped.
+func TestStatusHookRetriesTransientLookupFailures(t *testing.T) {
+	calls := 0
+	requesterOf := func(context.Context, string) (string, error) {
+		calls++
+		if calls < 3 {
+			return "", errors.New("failed to connect to `user=postgres`")
+		}
+		return "u1", nil
+	}
+	pendingOf := func(context.Context, string, string) (channel.PendingApproval, error) {
+		return channel.PendingApproval{ID: "ext-1", Kind: "time", Minutes: 15}, nil
+	}
+	n := &recNotifier{}
+	hook := statusHook(requesterOf, pendingOf, n)
+	hook(notify.CreateNotificationInput{Type: "TIME_EXTENSION_REQUESTED", TaskID: "t1", UserID: "u1"})
+	if calls != 3 || len(n.got) != 1 || n.got[0] != "u1:TIME_EXTENSION_REQUESTED" {
+		t.Fatalf("calls %d got %v", calls, n.got)
+	}
+}

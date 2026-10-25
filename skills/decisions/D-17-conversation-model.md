@@ -1155,3 +1155,16 @@ bills the base fee against a $0 quote — detected and logged as an
 incident, not prevented. Fixed: the closing-only ceiling is computed with
 the cancel's own formula over closed minutes, not the preview's fields.
 Test gaps noted (approved-extension arm, closing→session re-quote).
+
+### Staging 2026-10-25 21:11 — a time request never reached the phone
+
+Log: `[channel] status TIME_EXTENSION_REQUESTED … requester lookup: failed
+to connect to user=postgres.<branch>` — a transient database connection
+failure on a freshly deployed instance (the hook runs once per event, with
+no retry), so the hold was never made, the question never asked, and the
+request expired after 5 minutes. The app notification and email did go.
+Built: the status hook's read-only lookups (requester, pending request)
+retry twice (after 2 s and 6 s) before the event is dropped; nothing is
+sent until they succeed, so a retry never double-sends. Still worth
+watching: whether the branch pooler drops connections at deploy time more
+often than that — the lookup error is logged on every attempt.

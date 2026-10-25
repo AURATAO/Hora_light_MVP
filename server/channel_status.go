@@ -125,10 +125,14 @@ func statusHook(requesterOf func(context.Context, string) (string, error), pendi
 		if !chatEvent(ev) && ev.ExtensionID == "" && !(in.Type == "TIME_EXTENSION_REQUESTED" || in.Type == "BUDGET_INCREASE_REQUESTED") {
 			return // not a chat event; skip the lookups
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 
-		requesterID, err := requesterOf(ctx, in.TaskID)
+		// The lookups retry on a transient failure (staging 2026-10-25
+		// 21:11: "failed to connect" on a fresh instance ate a time request
+		// — the question never reached the phone and the request expired).
+		// Reads only: nothing is sent until they succeed.
+		requesterID, err := retryLookup(ctx, func() (string, error) { return requesterOf(ctx, in.TaskID) })
 		if err != nil {
 			log.Printf("[channel] status %s task=%s: requester lookup: %v", in.Type, in.TaskID, err)
 			return
@@ -147,7 +151,7 @@ func statusHook(requesterOf func(context.Context, string) (string, error), pendi
 			}
 		}
 		if kind := approvalKind(in.Type); kind != "" {
-			a, err := pendingExtensionOf(ctx, in.TaskID, kind)
+			a, err := retryLookup(ctx, func() (channel.PendingApproval, error) { return pendingExtensionOf(ctx, in.TaskID, kind) })
 			if err != nil {
 				log.Printf("[channel] status %s task=%s: pending request lookup: %v", in.Type, in.TaskID, err)
 				return
@@ -159,6 +163,30 @@ func statusHook(requesterOf func(context.Context, string) (string, error), pendi
 			log.Printf("[channel] status %s task=%s: %v", in.Type, in.TaskID, err)
 		}
 	}
+}
+
+// retryLookup runs a read up to three times (after 2 s and 6 s) before
+// giving up — a status event is delivered once, so a momentary database
+// hiccup must not lose it.
+func retryLookup[T any](ctx context.Context, f func() (T, error)) (T, error) {
+	var v T
+	var err error
+	for i, wait := range []time.Duration{0, 2 * time.Second, 6 * time.Second} {
+		if wait > 0 {
+			select {
+			case <-ctx.Done():
+				return v, ctx.Err()
+			case <-time.After(wait):
+			}
+		}
+		if v, err = f(); err == nil {
+			return v, nil
+		}
+		if i < 2 {
+			log.Printf("[channel] status lookup attempt %d failed, retrying: %v", i+1, err)
+		}
+	}
+	return v, err
 }
 
 func statusEvent(in notify.CreateNotificationInput) channel.StatusEvent {
