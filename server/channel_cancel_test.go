@@ -57,8 +57,8 @@ func TestChatCancelQuotesAndCancelsLikeTheApp(t *testing.T) {
 		t.Fatal(err)
 	}
 	res0 := b.Cancel(ctx, w.requesterID, w.taskID, "plans_changed")
-	if !res0.OK || res0.BillCents > q2.CeilingCents {
-		t.Fatalf("bill %d above the ceiling %d (%+v)", res0.BillCents, q2.CeilingCents, res0)
+	if !res0.OK || res0.BillCents != q2.CeilingCents || res0.BillCents <= q2.BaseFeeCents {
+		t.Fatalf("bill %d, want exactly the ceiling %d (the cap bites) (%+v)", res0.BillCents, q2.CeilingCents, res0)
 	}
 	// Re-seed an open task for the rest (the cancel above closed this one).
 	w.taskID = seedReassignTask(t, "open", w.requesterID, requesterEmail, w.supporterID, oldSupporterEmail)
@@ -67,8 +67,16 @@ func TestChatCancelQuotesAndCancelsLikeTheApp(t *testing.T) {
 		t.Fatal(err)
 	}
 	q, err = b.CancelQuote(ctx, w.requesterID, w.taskID)
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || !q.Committed || q.ChargeCents <= 0 {
+		t.Fatalf("re-seeded quote %+v err %v", q, err)
+	}
+	// Only the free window closing (accepted 2m50s ago, 3-minute window):
+	// quoted as the committed charge, said as the window ending.
+	w3 := seedReassignTask(t, "open", w.requesterID, requesterEmail, w.supporterID, oldSupporterEmail)
+	setAcceptedAt(t, w3, time.Duration(Billing.CancelGraceMinutes)*time.Minute-10*time.Second)
+	q3, err := b.CancelQuote(ctx, w.requesterID, w3)
+	if err != nil || !q3.Moving || q3.SessionOpen || !q3.WithinGrace || q3.ChargeCents != 0 || q3.CeilingCents != q3.BaseFeeCents || q3.BaseFeeCents <= 0 {
+		t.Fatalf("closing-only quote %+v err %v", q3, err)
 	}
 	if res := b.Cancel(ctx, w.supporterID, w.taskID, "plans_changed"); res.OK {
 		t.Fatal("the supporter cancelled the requester's task")
@@ -88,8 +96,8 @@ func TestChatCancelQuotesAndCancelsLikeTheApp(t *testing.T) {
 	if res := b.Cancel(ctx, w.requesterID, w.taskID, "other"); res.OK || !res.Gone {
 		t.Fatalf("second cancel: %+v", res)
 	}
-	if open, err := b.OpenTasks(ctx, w.requesterID); err != nil || len(open) != 0 {
-		t.Fatalf("open after cancel %v err %v", open, err)
+	if open, err := b.OpenTasks(ctx, w.requesterID); err != nil || len(open) != 1 || open[0].ID != w3 {
+		t.Fatalf("open after cancel %v err %v (only the closing-only task remains)", open, err)
 	}
 }
 

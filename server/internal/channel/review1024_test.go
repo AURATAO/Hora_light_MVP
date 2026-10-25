@@ -696,3 +696,43 @@ func TestCancelReasonStepEdges(t *testing.T) {
 	}
 	_ = c
 }
+
+// Review 10/25 r2: the short-ack gate bounds characters too (Chinese has
+// no spaces), our line must be recent, and on the held-relay list a short
+// reply drops the hold instead of delivering it.
+func TestAgentReplyGateEdges(t *testing.T) {
+	// A long Chinese instruction mislabelled "reply": relayed.
+	g, chat, _, _ := agentRig(llm.Proposal{Action: llm.ActionReply, Task: -1}, bagelT)
+	g.r.Thread = fixedThread{{Direction: "outbound", Text: "Got it.", At: time.Now().Add(-time.Minute)}}
+	got := g.say(t, "請告訴他把包裹放在門口然後按鈴，我下午三點回到家")
+	if len(chat.posted) != 1 {
+		t.Fatalf("a long Chinese message must reach the supporter: posted %v reply %q state %s", chat.posted, got, g.state())
+	}
+	// Our line an hour old: "he can leave it" is not an ack of it.
+	g, chat, _, _ = agentRig(llm.Proposal{Action: llm.ActionReply, Task: -1}, bagelT)
+	g.r.Thread = fixedThread{{Direction: "outbound", Text: "Your supporter has clocked in.", At: time.Now().Add(-time.Hour)}}
+	g.say(t, "he can leave it")
+	if len(chat.posted) != 1 {
+		t.Fatalf("an old line of ours must not claim the message: posted %v", chat.posted)
+	}
+	// A relayed line (the store's flag) is not ours even without the shape.
+	g, chat, _, _ = agentRig(llm.Proposal{Action: llm.ActionReply, Task: -1}, bagelT)
+	g.r.Thread = fixedThread{{Direction: "outbound", Text: "which one?", At: time.Now(), Relay: true}}
+	g.say(t, "the sesame one")
+	if len(chat.posted) != 1 {
+		t.Fatalf("a relayed line is not ours: posted %v", chat.posted)
+	}
+	// Held-relay list: "ok never mind" drops the hold, nothing is delivered.
+	g, chat, _, _ = agentRig(llm.Proposal{Action: llm.ActionReply, Task: -1}, bagelT, ActiveTask{ID: "task-3", Title: "Laundry pickup", SupporterName: "Bea"})
+	g.r.Thread = fixedThread{{Direction: "outbound", Text: "Which supporter is that for?", At: time.Now()}}
+	g.r.Agent = &fakeAgent{p: llm.Proposal{Action: llm.ActionAsk, Task: -1}}
+	g.say(t, "leave it at the door")
+	if g.state() != StateAwaitingTaskChoice {
+		t.Fatalf("expected the which-supporter list: %s", g.state())
+	}
+	g.r.Agent = &fakeAgent{p: llm.Proposal{Action: llm.ActionReply, Task: -1}}
+	got = g.say(t, "ok never mind")
+	if len(chat.posted) != 0 || g.state() != StateIdle || got != CopyHoldDropped {
+		t.Fatalf("held relay: posted %v state %s reply %q", chat.posted, g.state(), got)
+	}
+}

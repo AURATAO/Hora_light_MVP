@@ -1125,3 +1125,18 @@ anchored ("Name · Task: ") so our booking summary is never skipped. The
 rate is per task row (no time-of-day drift). Accepted: a question about
 HO:RA itself ("how much do you charge?") longer than five words goes to
 the supporter as before — a proper answer needs a help line (follow-up).
+
+#### Review 10/25 r2 (FAIL) → fixes
+
+The short-ack gate is "≤ 5 words AND ≤ 20 characters" (Chinese has no
+spaces) and our line must be within 10 minutes; a relayed line is known
+by the store's flag, not only its shape; the ceiling's inputs (category,
+rate, estimate, consent, approved extensions) are read with their errors
+in the quote path and checked for parity against the cap the cancel will
+bill at; the DB test asserts the bill EQUALS the ceiling with a session 3
+hours past the cap, and covers the free-window-closing quote; the ack
+with a question open is "Got it. Still waiting on…". Held-relay drop
+tested. **Accepted residual (Arbiter to confirm):** a supporter clocking
+in, or an extension approved, in the gap between the re-quote at the YES
+and the cancel can bill one rounded minute / the raised cap above the
+quote — detected and logged as an incident, not prevented.

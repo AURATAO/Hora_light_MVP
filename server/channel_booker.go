@@ -324,16 +324,41 @@ func (b *chatBooker) CancelQuote(ctx context.Context, userID, taskID string) (ch
 		Committed: p.Committed, WithinGrace: p.WithinGrace, Moving: sessionOpen || closing, SessionOpen: sessionOpen}
 	q.CeilingCents = q.ChargeCents
 	if q.Moving && p.Committed {
-		category := taskCategory(ctx, taskID)
-		rate := taskRateCentsPerMin(ctx, taskID)
+		// Every input to the ceiling is read with its error (review 10/25
+		// r2 M3): the billing helpers swallow a failed read as zero, which
+		// is conservative for a bill and backwards for a ceiling the
+		// person says YES to.
+		var category string
+		var rate int
+		if err := b.sqlDB.QueryRowContext(ctx, `SELECT COALESCE(category,''), COALESCE(rate_cents_per_min,0) FROM public.tasks WHERE id=$1::uuid`, taskID).Scan(&category, &rate); err != nil {
+			return channel.CancelQuote{}, fmt.Errorf("cancel quote: task: %w", err)
+		}
+		rate = normalizeRate(rate)
 		q.CeilingCents = p.BaseFeeCents + p.TimeCostCents // the committed charge as of now
 		if sessionOpen {
-			capMinutes, _ := taskTimeCapMinutes(ctx, taskID)
-			if capMinutes <= 0 {
+			var estimate, approvedExtra int
+			var consent bool
+			if err := b.sqlDB.QueryRowContext(ctx, `
+				SELECT coalesce(t.estimated_minutes, 0), coalesce(t.auto_extend_consent, true),
+				       (SELECT coalesce(sum(requested_minutes), 0) FROM public.extension_requests
+				         WHERE task_id = t.id AND kind = 'time' AND status = 'approved')
+				  FROM public.tasks t WHERE t.id = $1::uuid`, taskID).Scan(&estimate, &consent, &approvedExtra); err != nil {
+				return channel.CancelQuote{}, fmt.Errorf("cancel quote: cap: %w", err)
+			}
+			if estimate <= 0 {
 				// No cap to bound the charge (no estimate on the task): no
 				// ceiling — the chat sends the cancel to the app.
 				q.CeilingCents = 0
 				return q, nil
+			}
+			capMinutes := estimate + approvedExtra
+			if consent {
+				capMinutes += Billing.AutoExtendMinutes
+			}
+			if got, _ := taskTimeCapMinutes(ctx, taskID); got != capMinutes {
+				// Parity with the cap the cancel will bill at (one formula,
+				// two readers): any drift fails the quote.
+				return channel.CancelQuote{}, fmt.Errorf("cancel quote: cap drift %d vs %d", capMinutes, got)
 			}
 			q.CeilingCents = cancelSettlementCents(category, capMinutes, true, rate)
 		}

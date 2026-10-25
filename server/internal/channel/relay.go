@@ -1147,22 +1147,31 @@ func (r *Router) propose(ctx context.Context, id Identity, text string, active [
 // saidToUs: the premise of a "reply" the router accepts — HO:RA spoke more
 // recently than the supporter, and the message is short (an
 // acknowledgement, a withdrawal), so nothing a supporter needs is lost.
+//
+// Short: at most 5 words AND at most 20 characters (Chinese has no spaces:
+// 請告訴他把包裹放在門口 is one "word" and must not pass). Recent: our line
+// within ackWindow — an hour-old status push does not make "he can leave
+// it" ours (review 10/25 r2).
 func (r *Router) saidToUs(ctx context.Context, in Inbound, id Identity, text string, supporterAt time.Time) bool {
-	if len(strings.Fields(text)) > 5 && len([]rune(text)) > 12 {
+	if len(strings.Fields(text)) > 5 || utf8.RuneCountInString(strings.TrimSpace(text)) > 20 {
 		return false
 	}
 	ours := r.ourLastLineAt(ctx, id)
-	if ours.IsZero() {
+	if ours.IsZero() || r.now().Sub(ours) > ackWindow {
 		return false
 	}
 	return supporterAt.IsZero() || ours.After(supporterAt)
 }
 
+// ackWindow: how recent our line must be for a short reply to be read as
+// an acknowledgement of it.
+const ackWindow = 10 * time.Minute
+
 // ackWithQuestion: the acknowledgement, plus the question of ours that is
 // still open (never dropped behind an ack).
 func (r *Router) ackWithQuestion(conv Conversation) string {
 	if awaitingAnswer(conv.State) || conv.State == StateAwaitingTaskChoice {
-		return CopyAck + " " + stillWaiting(conv)
+		return CopyAckShort + " " + stillWaiting(conv)
 	}
 	return CopyAck
 }
