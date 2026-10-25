@@ -6,112 +6,244 @@ import (
 	"testing"
 )
 
-// The detached completion chain (completeTask) can die between the status
-// write and the capture. The sweep finds that shape and settles it; a
-// completion still inside its grace window is left to its own chain.
-//
-// Offline, like TestPhase2bCaptureFailureStillCompletesTheTask: the hold is
-// parked in requires_auth so Capture's status guard produces a real
-// settlement outcome (capture_failed + audit row) without the network. What
-// is under test is that the sweep RAN settlement on the right task.
-func TestResettleSweepSettlesAnOrphanedCompletion(t *testing.T) {
-	setupStripeWebhookDB(t)
-	t.Setenv("STRIPE_SECRET_KEY", "sk_test_offline_guard_only")
-	forceStripeKey(t, "sk_test_offline_guard_only")
-	ctx := context.Background()
-
-	seedHold := func(taskID, requesterID string) string {
-		var id string
-		if err := db.QueryRow(ctx, `
-			insert into public.payments (task_id, requester_id, kind, status,
-			                             stripe_payment_intent_id, authorized_cents)
-			values ($1::uuid, $2::uuid, $3, 'requires_auth', 'pi_orphan_'||$1::text, 7675)
-			returning id::text
-		`, taskID, requesterID, paymentKindTaskPayment).Scan(&id); err != nil {
-			t.Fatalf("seed hold: %v", err)
-		}
-		return id
+func seedLiveHold(t *testing.T, taskID, requesterID, status string, cents int) string {
+	t.Helper()
+	var id string
+	if err := db.QueryRow(context.Background(), `
+		insert into public.payments (task_id, requester_id, kind, status,
+		                             stripe_payment_intent_id, authorized_cents)
+		values ($1::uuid, $2::uuid, $3, $4, 'pi_'||replace($1::text,'-',''), $5)
+		returning id::text
+	`, taskID, requesterID, paymentKindTaskPayment, status, cents).Scan(&id); err != nil {
+		t.Fatalf("seed hold: %v", err)
 	}
+	return id
+}
 
-	w := seedOpsWorld(t, "open")
-
-	// Orphan: completed 15 minutes ago, hold still live — the chain died.
-	oldTask := w.taskID
-	seedWorklog(t, oldTask, 30, false)
-	oldPayment := seedHold(oldTask, w.requesterID)
-	if _, err := db.Exec(ctx, `
-		update public.tasks set status='completed', completed_at = now() - interval '15 minutes',
+func markCompletedAgo(t *testing.T, taskID string, minutesAgo int, w opsWorld) {
+	t.Helper()
+	if _, err := db.Exec(context.Background(), `
+		update public.tasks set status='completed', completed_at = now() - make_interval(mins => $2),
+		       assigned_to_id=$3::uuid, assigned_to=$4,
 		       completion_photo_url='https://example.test/done.jpg'
-		 where id=$1::uuid`, oldTask); err != nil {
+		 where id=$1::uuid`, taskID, minutesAgo, w.supporterID, oldSupporterEmail); err != nil {
 		t.Fatal(err)
-	}
-
-	// Fresh: completed just now, hold still live — its own chain is running.
-	freshTask := seedOpenTaskFor(t, w, "Fresh completion", 60)
-	freshPayment := seedHold(freshTask, w.requesterID)
-	if _, err := db.Exec(ctx, `
-		update public.tasks set status='completed', completed_at = now(),
-		       assigned_to_id=$2::uuid, assigned_to=$3,
-		       completion_photo_url='https://example.test/done.jpg'
-		 where id=$1::uuid`, freshTask, w.supporterID, oldSupporterEmail); err != nil {
-		t.Fatal(err)
-	}
-
-	sweepUnsettledCompletions(ctx)
-
-	if got := paymentStatusByID(t, oldPayment); got != paymentStatusCaptureFailed {
-		t.Errorf("orphan: payment status = %q, want %q (the sweep did not settle it)", got, paymentStatusCaptureFailed)
-	}
-	if rows := auditRows(t, oldTask, "PAYMENT_CAPTURE_FAILED"); len(rows) != 1 {
-		t.Errorf("orphan: %d PAYMENT_CAPTURE_FAILED audit rows, want 1", len(rows))
-	}
-	if got := paymentStatusByID(t, freshPayment); got != "requires_auth" {
-		t.Errorf("fresh: payment status = %q — the sweep touched a completion still in its grace window", got)
-	}
-
-	// Once settled (even into capture_failed) the task no longer matches:
-	// a second pass is a no-op, not a second audit row.
-	sweepUnsettledCompletions(ctx)
-	if rows := auditRows(t, oldTask, "PAYMENT_CAPTURE_FAILED"); len(rows) != 1 {
-		t.Errorf("second pass: %d PAYMENT_CAPTURE_FAILED audit rows, want 1", len(rows))
 	}
 }
 
-// Two completes for one task produce one completion: the second finds the
-// row no longer open and is told so, and does not start a second chain.
+// Shape one: the chain died before the capture. The sweep captures the
+// hold, pays, and records the settlement — the real orphan, on an
+// `authorized` row, against a fake Stripe that succeeds. A completion
+// still inside its grace window is left alone; a second pass finds nothing.
+func TestResettleSweepSettlesAnOrphanedCompletion(t *testing.T) {
+	setupStripeWebhookDB(t)
+	f := stubStripe(t)
+	ctx := context.Background()
+	w := seedOpsWorld(t, "open")
+
+	orphan := w.taskID
+	seedWorklog(t, orphan, 30, false)
+	orphanPayment := seedLiveHold(t, orphan, w.requesterID, "authorized", 7675)
+	markCompletedAgo(t, orphan, 15, w)
+
+	fresh := seedOpenTaskFor(t, w, "Fresh completion", 60)
+	seedWorklog(t, fresh, 30, false)
+	freshPayment := seedLiveHold(t, fresh, w.requesterID, "authorized", 7675)
+	markCompletedAgo(t, fresh, 0, w)
+
+	sweepUnsettledCompletions(ctx)
+
+	if got := paymentStatusByID(t, orphanPayment); got != paymentStatusCaptured {
+		t.Fatalf("orphan: payment status = %q, want captured", got)
+	}
+	if len(f.captures) != 1 {
+		t.Fatalf("orphan: %d captures at Stripe, want 1", len(f.captures))
+	}
+	var settled *int
+	if err := db.QueryRow(ctx, `select settled_total_cents from public.tasks where id=$1::uuid`, orphan).Scan(&settled); err != nil {
+		t.Fatal(err)
+	}
+	if settled == nil {
+		t.Fatal("orphan: settled_total_cents still NULL — the settlement did not finish")
+	}
+	rows := auditRows(t, orphan, "PAYMENT_CAPTURED")
+	if len(rows) != 1 {
+		t.Fatalf("orphan: %d PAYMENT_CAPTURED rows, want 1", len(rows))
+	}
+	if rows[0].ActorID != systemActorUID {
+		t.Errorf("orphan: audit actor = %s, want the system actor (a job acted, not a person)", rows[0].ActorID)
+	}
+	if got := paymentStatusByID(t, freshPayment); got != "authorized" {
+		t.Errorf("fresh: payment status = %q — the sweep touched a completion still in its grace window", got)
+	}
+
+	sweepUnsettledCompletions(ctx)
+	if len(f.captures) != 1 {
+		t.Errorf("second pass: %d captures, want still 1", len(f.captures))
+	}
+	if got := paymentStatusByID(t, freshPayment); got != "authorized" {
+		t.Errorf("second pass touched the fresh task: %q", got)
+	}
+}
+
+// Older than the window: counted, never captured.
+func TestResettleSweepLeavesStaleOrphansAlone(t *testing.T) {
+	setupStripeWebhookDB(t)
+	f := stubStripe(t)
+	w := seedOpsWorld(t, "open")
+	seedWorklog(t, w.taskID, 30, false)
+	payment := seedLiveHold(t, w.taskID, w.requesterID, "authorized", 7675)
+	markCompletedAgo(t, w.taskID, 8*24*60, w)
+
+	sweepUnsettledCompletions(context.Background())
+
+	if got := paymentStatusByID(t, payment); got != "authorized" {
+		t.Fatalf("stale orphan: payment status = %q — a cron charged a backlog it did not create", got)
+	}
+	if len(f.captures) != 0 {
+		t.Fatalf("stale orphan: %d captures, want 0", len(f.captures))
+	}
+}
+
+// Shape two: captured, but the settlement never finished. Not redone —
+// recorded once and escalated; a second pass does not record it again.
+func TestResettleSweepFlagsIncompleteSettlementOnce(t *testing.T) {
+	setupStripeWebhookDB(t)
+	stubStripe(t)
+	ctx := context.Background()
+	w := seedOpsWorld(t, "open")
+	seedWorklog(t, w.taskID, 30, false)
+	seedLiveHold(t, w.taskID, w.requesterID, paymentStatusCaptured, 7675)
+	markCompletedAgo(t, w.taskID, 15, w) // settled_total_cents stays NULL
+
+	sweepUnsettledCompletions(ctx)
+	sweepUnsettledCompletions(ctx)
+
+	rows := auditRows(t, w.taskID, "SETTLEMENT_INCOMPLETE")
+	if len(rows) != 1 {
+		t.Fatalf("%d SETTLEMENT_INCOMPLETE rows after two passes, want exactly 1", len(rows))
+	}
+	if rows[0].ActorID != systemActorUID {
+		t.Errorf("actor = %s, want the system actor", rows[0].ActorID)
+	}
+	if n := len(auditRows(t, w.taskID, "PAYMENT_CAPTURED")); n != 0 {
+		t.Errorf("%d PAYMENT_CAPTURED rows — the sweep re-ran a settlement it cannot resume", n)
+	}
+}
+
+// The per-task lock: a settlement already running on a task makes a second
+// caller do nothing — no capture, no audit row, Busy reported.
+func TestSettleCompletedTaskRefusesToOverlap(t *testing.T) {
+	setupStripeWebhookDB(t)
+	f := stubStripe(t)
+	ctx := context.Background()
+	w := seedOpsWorld(t, "open")
+	seedWorklog(t, w.taskID, 30, false)
+	seedLiveHold(t, w.taskID, w.requesterID, "authorized", 7675)
+	markCompletedAgo(t, w.taskID, 15, w)
+
+	// Hold the lock the way a running settlement does.
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1, hashtext($2))`, advisoryLockTaskSettle, w.taskID); err != nil {
+		t.Fatal(err)
+	}
+
+	out := settleCompletedTask(ctx, w.taskID, orSystemActor(""), 2700, 0)
+	if !out.Busy {
+		t.Fatalf("second settlement ran while the first held the lock: %+v", out)
+	}
+	if len(f.captures) != 0 {
+		t.Fatalf("%d captures while locked, want 0", len(f.captures))
+	}
+	if n := len(auditRows(t, w.taskID, "PAYMENT_CAPTURED")); n != 0 {
+		t.Fatalf("%d PAYMENT_CAPTURED rows while locked, want 0", n)
+	}
+	tx.Rollback(ctx)
+
+	out = settleCompletedTask(ctx, w.taskID, orSystemActor(""), 2700, 0)
+	if out.Busy || out.Err != nil || len(f.captures) != 1 {
+		t.Fatalf("after the lock is released the settlement should run once: %+v captures=%d", out, len(f.captures))
+	}
+}
+
+// Two completes in the same window produce one completion: the second
+// request passes the status check (the row is still open when it looks),
+// then finds the row no longer open at the write. One chain, one 400.
 func TestCompleteTwiceIsOneCompletion(t *testing.T) {
 	setupStripeWebhookDB(t)
 	w := seedOpsWorld(t, "open")
 	seedWorklog(t, w.taskID, 30, false)
 
 	runs := 0
-	prev := completionDetach
+	prevDetach := completionDetach
 	completionDetach = func(fn func()) { runs++; fn() }
-	t.Cleanup(func() { completionDetach = prev })
+	t.Cleanup(func() { completionDetach = prevDetach })
 
 	body := map[string]any{"completion_photo_url": "https://example.test/done.jpg"}
-	completeAs(t, w.taskID, w.supporterID, body, http.StatusOK)
+	// The racing complete lands between this request's status check and its
+	// status write: the seam completes the task from "underneath" it.
+	prevSeam := completeTaskBeforeWrite
+	raced := false
+	completeTaskBeforeWrite = func(taskID string) {
+		if raced {
+			return
+		}
+		raced = true
+		completeTaskBeforeWrite = prevSeam
+		completeAs(t, taskID, w.supporterID, body, http.StatusOK)
+	}
+	t.Cleanup(func() { completeTaskBeforeWrite = prevSeam })
+
 	second := completeAs(t, w.taskID, w.supporterID, body, http.StatusBadRequest)
 	if second["error"] != "already closed" {
-		t.Fatalf("second complete: %v, want already closed", second["error"])
+		t.Fatalf("loser: %v, want already closed", second["error"])
 	}
 	if runs != 1 {
 		t.Fatalf("settlement chains started = %d, want 1", runs)
 	}
+	if got := taskStatus(t, w.taskID); got != "completed" {
+		t.Fatalf("task status = %q", got)
+	}
 }
 
-// A completed task with a live hold reports `settling`, not `estimated`:
-// the task is not running, and the money has not moved yet.
+// A cancel that lands after a complete does not turn the task into a
+// cancelled one (and settle it a second time).
+func TestCancelAfterCompleteIsRefusedAtTheWrite(t *testing.T) {
+	setupStripeWebhookDB(t)
+	w := seedOpsWorld(t, "open")
+	seedWorklog(t, w.taskID, 30, false)
+	body := map[string]any{"completion_photo_url": "https://example.test/done.jpg"}
+
+	prevSeam := cancelTaskBeforeWrite
+	raced := false
+	cancelTaskBeforeWrite = func(taskID string) {
+		if raced {
+			return
+		}
+		raced = true
+		completeAs(t, taskID, w.supporterID, body, http.StatusOK)
+	}
+	t.Cleanup(func() { cancelTaskBeforeWrite = prevSeam })
+
+	code, out := cancelAs(t, w.taskID, w.requesterID, "changed my mind")
+	if code != http.StatusBadRequest || out["error"] != "task already closed" {
+		t.Fatalf("cancel after complete: %d %v, want 400 task already closed", code, out)
+	}
+	if got := taskStatus(t, w.taskID); got != "completed" {
+		t.Fatalf("task status = %q — a late cancel overwrote a completion", got)
+	}
+}
+
+// A completed task with a live hold reports `settling`, not `estimated`.
 func TestSettlementStateSettlingWhileHoldIsLive(t *testing.T) {
 	setupStripeWebhookDB(t)
 	ctx := context.Background()
 	w := seedOpsWorld(t, "open")
-	if _, err := db.Exec(ctx, `
-		insert into public.payments (task_id, requester_id, kind, status, stripe_payment_intent_id, authorized_cents)
-		values ($1::uuid, $2::uuid, $3, 'authorized', 'pi_live', 1950)`,
-		w.taskID, w.requesterID, paymentKindTaskPayment); err != nil {
-		t.Fatal(err)
-	}
+	seedLiveHold(t, w.taskID, w.requesterID, "authorized", 1950)
 	if got := settlementState(ctx, w.taskID, "open"); got != "estimated" {
 		t.Errorf("open task with a live hold: %q, want estimated", got)
 	}

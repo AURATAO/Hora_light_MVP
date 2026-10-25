@@ -4202,6 +4202,7 @@ func completeTask(c *gin.Context) {
 	// double-tap, a retry after a dropped response) must produce ONE
 	// completion and ONE settlement chain. The loser sees "already closed",
 	// the same answer a late complete gets above.
+	completeTaskBeforeWrite(taskID)
 	tag, err := db.Exec(ctx, `
 		UPDATE public.tasks
 		SET status='completed', completion_photo_url=$2, completion_note=$3, completed_at=now(),
@@ -4272,9 +4273,11 @@ func completeTask(c *gin.Context) {
 				// person's (S-12). Type and location are enough to find it.
 				log.Printf("[completeTask][PANIC] task=%s finishing after completion: %T", taskID, r)
 				emailOpsAdmins("[HO:RA] Settlement crashed — check task "+taskID,
-					fmt.Sprintf("<p>The post-completion chain (capture, payouts, receipts, emails) panicked for task <code>%s</code>. "+
-						"Check its payment row; the unsettled-completion sweep retries the money within %d minutes, "+
-						"but the completion emails for this task were not sent.</p>", taskID, int(resettleAfter.Minutes())))
+					fmt.Sprintf("<p>The post-completion chain (capture, balance, payouts, receipt, emails) panicked for task <code>%s</code>. "+
+						"Check its payment and payout rows against Stripe. If the hold was never captured, the unsettled-completion "+
+						"sweep captures it within %d minutes; if it was captured and the chain stopped after that, the sweep flags it "+
+						"as incomplete and the rest is by hand (payments runbook). The completion emails for this task were not sent.</p>",
+						taskID, int(resettleAfter.Minutes())))
 			}
 		}()
 		bg := context.Background()
@@ -4323,6 +4326,14 @@ func completeTask(c *gin.Context) {
 // inline runner so that assertions made right after completeAs see the
 // settled state (setupAdminOpsDB).
 var completionDetach = func(fn func()) { go fn() }
+
+// completeTaskBeforeWrite is a test seam between completeTask's status check
+// and its status write — the window a racing complete or cancel lands in.
+// A no-op in production.
+var completeTaskBeforeWrite = func(taskID string) {}
+
+// cancelTaskBeforeWrite: the same seam in cancelTask.
+var cancelTaskBeforeWrite = func(taskID string) {}
 
 // POST /tasks/:id/cancel
 //
@@ -4512,7 +4523,12 @@ func cancelTask(c *gin.Context) {
 	// from the supporter's world completely — including, under the rule above,
 	// a task they were just PAID for and never clocked into, where no worklog
 	// exists to reach it through either.
-	_, err = db.Exec(ctx, `
+	// Conditional on the task still being open: a cancel racing a complete
+	// (or a second cancel) must not turn a completed task into a cancelled
+	// one and settle it twice. The loser gets the same "already closed" the
+	// status check above gives a late cancel.
+	cancelTaskBeforeWrite(taskID)
+	cancelTag, err := db.Exec(ctx, `
 		update public.tasks
 		set status='cancelled',
 		    cancel_reason = $2,
@@ -4520,10 +4536,14 @@ func cancelTask(c *gin.Context) {
 		    cancelled_assignee_id = $4::uuid,
 		    cancel_bill_cents = $5,
 		    cancelled_at = now()
-		where id=$1
+		where id=$1 and status='open'
 	`, taskID, in.Reason, reasonCode, assignedToID, billCents)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+	if cancelTag.RowsAffected() == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "task already closed"})
 		return
 	}
 

@@ -279,6 +279,10 @@ type settlementOutcome struct {
 	// Err is set when the CAPTURE itself failed — nothing was collected at
 	// all. The task is still completed; the payment row is in capture_failed.
 	Err error
+	// Busy: another settlement of this task holds the per-task lock, so this
+	// call did nothing. Not a failure and not a result — the other caller's
+	// outcome is the task's.
+	Busy bool
 	// Who was paid, when anybody was. Empty on a task nobody accepted, and on
 	// every task settled before Phase 3. Reported so the completion response
 	// can tell the supporter what they earned without a second lookup.
@@ -565,6 +569,29 @@ func alreadyCaptured(ctx context.Context, taskID string) (bool, time.Time) {
 // is over either way and the supporter is not the person who should discover
 // a card problem.
 func settleCompletedTask(ctx context.Context, taskID, actorUID string, timeCostCents, receiptCents int) settlementOutcome {
+	// ONE settlement per task at a time. The lock lives in a transaction of
+	// its own that holds nothing but the lock (every write below goes
+	// through the pool as before), so a Stripe call that hangs releases it
+	// on the context's rollback and a panic releases it on the deferred one.
+	// Try, never wait: a second caller finding the lock taken means the
+	// first is mid-flight, and the right thing is to do nothing — the
+	// sweep's next pass sees whatever the first left.
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		log.Printf("[payments][settle] task=%s: begin lock tx: %v", taskID, err)
+		return settlementOutcome{Busy: true}
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var got bool
+	if err := tx.QueryRow(ctx, `select pg_try_advisory_xact_lock($1, hashtext($2))`,
+		advisoryLockTaskSettle, taskID).Scan(&got); err != nil {
+		log.Printf("[payments][settle] task=%s: lock: %v", taskID, err)
+		return settlementOutcome{Busy: true}
+	}
+	if !got {
+		log.Printf("[payments][settle] task=%s: settlement already in progress elsewhere — not started", taskID)
+		return settlementOutcome{Busy: true}
+	}
 	out := settleTaskPayment(ctx, taskID, timeCostCents, receiptCents)
 	switch {
 	case out.Err != nil:

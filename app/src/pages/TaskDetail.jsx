@@ -1058,7 +1058,10 @@ export default function TaskDetail() {
           // staging the browser was told 502 twice on tasks that had in fact
           // completed. So before reporting a failure, ask the server what the
           // task is now; a completed task is a success that arrived late.
-          if (e?.status && e.status >= 400 && e.status < 500) throw e
+          // "already closed" is the other shape of the same story: a retry
+          // whose first attempt did land. It too is settled by looking.
+          const alreadyClosed = e?.status === 400 && e?.body?.error === 'already closed'
+          if (!alreadyClosed && e?.status && e.status >= 400 && e.status < 500) throw e
           const now = await api(`/tasks/${id}`).catch(() => null)
           if (now?.status !== 'completed') throw e
         }

@@ -232,3 +232,15 @@ sweep (`payments_resettle.go`, every 5 min) ran the same settlement again.
 Nothing to do unless it is followed by a **Capture failed** email — that is
 the hold Stripe had already captured, refused a second time: reconcile the
 row by hand as in entry 1.
+
+### 7. `[HO:RA] Settlement incomplete — check task …`
+
+The task is completed and its hold **was** captured, but the chain stopped
+before recording the settlement (`settled_total_cents` is NULL): a payout,
+a balance charge or the requester's receipt may be missing. The sweep does
+not redo this — it cannot know which steps ran — so it writes one
+`SETTLEMENT_INCOMPLETE` audit row and sends this once. Compare `payments`
+and `payouts` for the task with Stripe (the PaymentIntent, any
+`completion_balance` intent, the transfers) and finish by hand: create the
+missing transfer in the dashboard, send the receipt from the task page, and
+set `settled_total_cents` so the task reads as settled.

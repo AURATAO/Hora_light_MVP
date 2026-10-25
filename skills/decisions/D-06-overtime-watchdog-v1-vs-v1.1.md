@@ -157,3 +157,38 @@ Tests: `TestResettleSweepSettlesAnOrphanedCompletion`,
 `TestCompleteTwiceIsOneCompletion`, `TestSettlementStateSettlingWhileHoldIsLive`.
 Runbook follow-up: add "`[payments][RESETTLE]` — a completion's chain died;
 the sweep settled it" to the log-only entries.
+
+**Review r2 (FAIL, 4 MAJOR) → fixes.**
+1. The sweep covered only the pre-capture window; a chain dying after the
+   capture (payout / balance / receipt missing) left no trace → a second
+   shape, *captured but `settled_total_cents` NULL*, is recorded once
+   (`SETTLEMENT_INCOMPLETE` audit row) and escalated to ops by email; it is
+   not re-run, because settlement cannot resume from the middle and
+   guessing with money is worse than a person reconciling (runbook entry 7).
+2. No mutual exclusion: Stripe's idempotent capture would *replay* into an
+   overlapping second caller, which would then charge the balance twice →
+   `settleCompletedTask` takes a per-task advisory try-lock
+   (`advisoryLockTaskSettle`, in a transaction that holds only the lock);
+   a second caller gets `Busy` and does nothing. Covers the chain, cancel,
+   force-complete and the sweep alike.
+3. No lookback bound: a first tick would have captured any historical
+   backlog → 7-day window; older orphans are counted in a log line only.
+   (Production checked: 14 completed tasks, all captured and settled — the
+   first tick finds nothing.)
+4. The double-complete test could not fail → test seams
+   `completeTaskBeforeWrite` / `cancelTaskBeforeWrite` let a racing
+   complete land between the status check and the write; the loser gets
+   400 and starts no chain. Same guard added to **cancelTask**'s UPDATE
+   (`and status='open'`): a cancel after a complete no longer overwrites it.
+5. (MINOR) Sweep actor → system actor; per-task recover with ops email;
+   pass-level 4-minute query deadline; the sweep's comments no longer claim
+   an idempotency the balance charge does not have; the panic email says
+   what the sweep will and will not do.
+6. (MINOR, accepted) `settling` is outside mobile's TypeScript union; at
+   runtime both clients fall through to the neutral "Settlement" rendering
+   (exact-match switches). Add to the union with the next mobile build.
+7. (MINOR) Web: a 400 "already closed" on complete is also settled by
+   re-reading the task (a retry whose first attempt landed).
+8. (MINOR, accepted) An admin time adjustment inside the settling window
+   could change the figure the sweep later captures; the adjustment path
+   refuses once captured, so the two never both land.
