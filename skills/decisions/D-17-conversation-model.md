@@ -1140,3 +1140,18 @@ tested. **Accepted residual (Arbiter to confirm):** a supporter clocking
 in, or an extension approved, in the gap between the re-quote at the YES
 and the cancel can bill one rounded minute / the raised cap above the
 quote — detected and logged as an incident, not prevented.
+
+#### Review 10/25 r3: PASS (residuals declared)
+
+**Accepted residuals (Arbiter to confirm):** (1) an instruction of ≤ 5
+words and ≤ 20 characters that the agent mislabels `reply`, sent within
+10 minutes of a line of ours and after the supporter's last line, is
+answered "Got it." and not relayed — the gate bounds a mislabel, it is
+not a classifier; (2) the gap between the re-quote at the YES and the
+cancel: a supporter clocking in or an extension approved in it can bill
+one rounded minute / the raised cap above the quote, and a free window
+closing in that gap (re-quote inside the last 15 s of it, cancel after)
+bills the base fee against a $0 quote — detected and logged as an
+incident, not prevented. Fixed: the closing-only ceiling is computed with
+the cancel's own formula over closed minutes, not the preview's fields.
+Test gaps noted (approved-extension arm, closing→session re-quote).

@@ -334,7 +334,14 @@ func (b *chatBooker) CancelQuote(ctx context.Context, userID, taskID string) (ch
 			return channel.CancelQuote{}, fmt.Errorf("cancel quote: task: %w", err)
 		}
 		rate = normalizeRate(rate)
-		q.CeilingCents = p.BaseFeeCents + p.TimeCostCents // the committed charge as of now
+		// The committed charge as of now, from the same formula the cancel
+		// bills with (not the preview's fields, which may be zeroed inside
+		// the free window — review 10/25 r3 #5).
+		closedMin, err := totalClosedMinutes(ctx, taskID)
+		if err != nil {
+			return channel.CancelQuote{}, fmt.Errorf("cancel quote: minutes: %w", err)
+		}
+		q.CeilingCents = cancelSettlementCents(category, closedMin, true, rate)
 		if sessionOpen {
 			var estimate, approvedExtra int
 			var consent bool

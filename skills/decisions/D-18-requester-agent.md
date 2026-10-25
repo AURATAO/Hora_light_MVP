@@ -404,3 +404,16 @@ a `reply` proposal is now answered by HO:RA (`CopyAck`) — never relayed
 no longer counts reply as relay). Cases 106–110. Prompt v0.4.0; the
 baseline is owed again (Aura, local key). Review: folded into the next
 channel review batch (routing only; no money path).
+
+## v0.4.1 — the reply gate (2026-10-25, reviews r1–r3)
+
+v0.4.0's "a reply is never relayed" was too wide: a wrong `reply` would
+swallow words meant for the supporter (P7). Now a `reply` is answered by
+HO:RA only as a short acknowledgement of our own recent line — ≤ 5 words
+and ≤ 20 characters (Chinese has no spaces), our line within 10 minutes
+(`ackWindow`) and more recent than the supporter's last line; with a
+question of ours open the ack repeats it ("Got it. Still waiting on…");
+on the held-relay list it drops the hold ("OK, I won't send that"). Any
+other `reply` falls to the supporter as before. A relayed line is known by
+the store's `relay` flag (shape match as fallback). Declared residual: a
+mislabelled ≤5-word instruction inside the window is swallowed (D-17 r3).
