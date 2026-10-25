@@ -229,3 +229,26 @@ true, so two goroutines of one process would both have been let through.
 The lock now keeps an in-process `held` set (the in-process half); the
 database lock is the cross-process half. `TestSettleCompletedTaskRefusesToOverlapInProcess`
 fails without it.
+
+**Review r4 (FAIL: 1 BLOCKER, 3 MAJOR) → fixes.** The BLOCKER (in-process
+re-entrancy) and two of the MAJORs (the running-probe, and tests that only
+proved cross-session exclusion) were the self-found hole above, already
+fixed in 4d02a5f before the verdict; the remaining MAJOR and minors:
+1. A connection break dropped every in-flight settlement's lock silently,
+   and a late unlock could release a newer settlement's lock on the remade
+   connection → leases carry a connection generation; a stale lease
+   releases nothing on the live connection and only its own in-process
+   mark; the drop itself is logged `[ERROR]` and emailed to ops with the
+   tasks mid-flight (ids only). `TestSettleLockStaleLeaseDoesNotReleaseANewerLock`.
+2. (MINOR) An idle connection the server dropped would have reported a
+   capture failure on its first use → one reconnect-and-retry before the
+   error path.
+3. (MINOR) pgx connect errors (host/user/db) reached the audit row and the
+   ops email through `out.Err` → logged only; the error carried is fixed text.
+4. (MINOR) cancelTask also lands in `reportCaptureFailure` → its email copy
+   now says "closed (completed, or cancelled with work owed)". Accepted: a
+   cancelled task whose lock could not be asked for is not retried by the
+   sweep (cancelled tasks are never swept); the audit row and email are the
+   record.
+5. (MINOR) Fixture: `resetSettleLockForTests` on the DB swap's cleanup.
+6. (MINOR) Budget comment: one connection beyond the pool AND `sqldb`.

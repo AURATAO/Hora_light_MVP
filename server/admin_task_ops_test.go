@@ -217,6 +217,7 @@ func setupAdminOpsDB(t *testing.T) {
 	completionDetach = func(fn func()) { fn() }
 	t.Cleanup(func() {
 		completionDetach = prevDetach
+		resetSettleLockForTests()
 		_ = stdDB.Close()
 		pool.Close()
 		db, sqldb = prevPool, prevSQL

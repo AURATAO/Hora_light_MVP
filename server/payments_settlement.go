@@ -499,10 +499,10 @@ func reportCaptureFailure(ctx context.Context, taskID string, out settlementOutc
 	owed := formatCentsUSD(out.TimeCostCents + out.ReceiptCents)
 	emailOpsAdmins(
 		fmt.Sprintf("[HO:RA] Capture failed — %s uncollected", owed),
-		fmt.Sprintf(`<p><strong>A completed task could not be charged.</strong></p>
-<p>The task is completed and the supporter has been told it is done — that is deliberate, a payment
-problem never blocks a completion. Nobody has been charged, and this needs settling by hand in the
-Stripe dashboard.</p>
+		fmt.Sprintf(`<p><strong>A closed task could not be charged.</strong></p>
+<p>The task is closed (completed, or cancelled with work owed) and both sides have been told — that is
+deliberate, a payment problem never blocks a completion or a cancel. Nobody has been charged, and this
+needs settling by hand in the Stripe dashboard.</p>
 <ul>
   <li>Task: %s</li>
   <li>Owed: %s (time %s + receipt %s)</li>
@@ -575,7 +575,7 @@ func settleCompletedTask(ctx context.Context, taskID, actorUID string, timeCostC
 	// pass sees whatever the first left. Not being ABLE to ask is different:
 	// that is a failure, and it goes down the same path as a failed capture
 	// (audit row, ops email), never a quiet zero.
-	got, lockErr := tryLockTaskSettlement(ctx, taskID)
+	lease, got, lockErr := tryLockTaskSettlement(ctx, taskID)
 	if lockErr != nil {
 		out := settlementOutcome{Attempted: true, TimeCostCents: timeCostCents, ReceiptCents: receiptCents, Err: lockErr}
 		reportCaptureFailure(ctx, taskID, out, actorUID)
@@ -585,7 +585,7 @@ func settleCompletedTask(ctx context.Context, taskID, actorUID string, timeCostC
 		log.Printf("[payments][settle] task=%s: settlement already in progress elsewhere — not started", taskID)
 		return settlementOutcome{Busy: true}
 	}
-	defer unlockTaskSettlement(taskID)
+	defer unlockTaskSettlement(lease)
 	out := settleTaskPayment(ctx, taskID, timeCostCents, receiptCents)
 	switch {
 	case out.Err != nil:

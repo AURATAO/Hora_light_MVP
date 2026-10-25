@@ -294,13 +294,13 @@ func TestSettleCompletedTaskRefusesToOverlapInProcess(t *testing.T) {
 	seedLiveHold(t, w.taskID, w.requesterID, "authorized", 7675)
 	markCompletedAgo(t, w.taskID, 15, w)
 
-	got, err := tryLockTaskSettlement(ctx, w.taskID)
+	lease, got, err := tryLockTaskSettlement(ctx, w.taskID)
 	if err != nil || !got {
 		t.Fatalf("first lock: got=%v err=%v", got, err)
 	}
-	t.Cleanup(func() { unlockTaskSettlement(w.taskID) })
+	t.Cleanup(func() { unlockTaskSettlement(lease) })
 
-	again, err := tryLockTaskSettlement(ctx, w.taskID)
+	_, again, err := tryLockTaskSettlement(ctx, w.taskID)
 	if err != nil || again {
 		t.Fatalf("second lock in the same process: got=%v err=%v, want false", again, err)
 	}
@@ -312,12 +312,65 @@ func TestSettleCompletedTaskRefusesToOverlapInProcess(t *testing.T) {
 		t.Fatalf("a settlement ran while this process already held the task: %+v captures=%d", out, len(f.captures))
 	}
 
-	unlockTaskSettlement(w.taskID)
+	unlockTaskSettlement(lease)
 	if running, _ := isTaskSettlementRunning(ctx, w.taskID); running {
 		t.Fatal("still reported running after unlock")
 	}
 	out = settleCompletedTask(ctx, w.taskID, orSystemActor(""), 2700, 0)
 	if out.Busy || out.Err != nil || len(f.captures) != 1 {
 		t.Fatalf("after unlock the settlement should run once: %+v captures=%d", out, len(f.captures))
+	}
+}
+
+// A lease from a dropped connection releases nothing on the connection that
+// replaced it: the newer settlement's lock stays.
+func TestSettleLockStaleLeaseDoesNotReleaseANewerLock(t *testing.T) {
+	setupStripeWebhookDB(t)
+	ctx := context.Background()
+	w := seedOpsWorld(t, "open")
+
+	stale, got, err := tryLockTaskSettlement(ctx, w.taskID)
+	if err != nil || !got {
+		t.Fatalf("lock: %v %v", got, err)
+	}
+	// The connection breaks under the running settlement.
+	settleLock.mu.Lock()
+	settleLockDropConn("test")
+	settleLock.mu.Unlock()
+	// Its in-process half still excludes a local second attempt…
+	if _, again, _ := tryLockTaskSettlement(ctx, w.taskID); again {
+		t.Fatal("a second local settlement got the task while the first still runs")
+	}
+	// …and once it finishes, a newer settlement locks on the new connection.
+	unlockTaskSettlement(stale)
+	fresh, got, err := tryLockTaskSettlement(ctx, w.taskID)
+	if err != nil || !got {
+		t.Fatalf("fresh lock: %v %v", got, err)
+	}
+	defer unlockTaskSettlement(fresh)
+	if stale.gen == fresh.gen {
+		t.Fatal("the reconnect did not bump the generation")
+	}
+	// A late release of the stale lease must free neither half of the fresh
+	// lock: not the in-process mark…
+	unlockTaskSettlement(stale)
+	settleLock.mu.Lock()
+	_, heldNow := settleLock.held[w.taskID]
+	settleLock.mu.Unlock()
+	if !heldNow {
+		t.Fatal("the stale lease's unlock cleared the newer settlement's in-process mark")
+	}
+	// …nor the database lock, as another session sees it:
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	var free bool
+	if err := tx.QueryRow(ctx, `select pg_try_advisory_xact_lock($1, hashtext($2))`, advisoryLockTaskSettle, w.taskID).Scan(&free); err != nil {
+		t.Fatal(err)
+	}
+	if free {
+		t.Fatal("the stale lease's unlock released the newer settlement's database lock")
 	}
 }
