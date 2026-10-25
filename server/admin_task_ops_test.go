@@ -210,7 +210,13 @@ func setupAdminOpsDB(t *testing.T) {
 
 	prevPool, prevSQL := db, sqldb
 	db, sqldb = pool, stdDB
+	// completeTask settles and notifies off the request in production; here
+	// it runs inline so that what a test asserts after completeAs — the
+	// capture, the payout, the receipt — has happened by the time it looks.
+	prevDetach := completionDetach
+	completionDetach = func(fn func()) { fn() }
 	t.Cleanup(func() {
+		completionDetach = prevDetach
 		_ = stdDB.Close()
 		pool.Close()
 		db, sqldb = prevPool, prevSQL

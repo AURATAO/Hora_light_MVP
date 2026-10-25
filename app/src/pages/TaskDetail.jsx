@@ -1045,10 +1045,23 @@ export default function TaskDetail() {
           if (receiptPhotoURL) completeBody.receipt_photo_url = receiptPhotoURL
         }
         console.log('[completeTask] body:', completeBody)
-        await api(`/tasks/${id}/complete`, {
-          method: 'POST',
-          body: completeBody,
-        })
+        try {
+          await api(`/tasks/${id}/complete`, {
+            method: 'POST',
+            body: completeBody,
+          })
+        } catch (e) {
+          // A 4xx is the server declining — over-budget receipt, clock-out
+          // missing — and is shown below. Anything else (a 502 from the edge,
+          // a dropped connection) says nothing about whether the task
+          // completed: the status write happens first on the server, and on
+          // staging the browser was told 502 twice on tasks that had in fact
+          // completed. So before reporting a failure, ask the server what the
+          // task is now; a completed task is a success that arrived late.
+          if (e?.status && e.status >= 400 && e.status < 500) throw e
+          const now = await api(`/tasks/${id}`).catch(() => null)
+          if (now?.status !== 'completed') throw e
+        }
         setShowCompleteModal(false)
         // During the round, completing is the moment the supporter answers:
         // nothing else on web prompts them. Outside it, unchanged.

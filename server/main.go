@@ -4193,51 +4193,99 @@ func completeTask(c *gin.Context) {
 		return
 	}
 
-	// ── The money ──────────────────────────────────────────────────────────
+	// ── The money, then the word ───────────────────────────────────────────
 	//
 	// AFTER the status write, and unable to undo it. A capture that fails —
 	// an expired hold, an unreachable Stripe — leaves a completed task, a
 	// payments row in 'capture_failed', an audit row and an email to ops. It
 	// does not leave a supporter unable to finish a task they have finished.
-	settleCompletedTask(ctx, taskID, meUID, timeCostCents, reimbursedCents)
+	//
+	// DETACHED from the request. The status write above is the commit;
+	// everything below is its consequence — a capture, a balance charge, the
+	// payouts, five emails and a chat line — and on staging the chain took
+	// 15 s end to end, long enough that the edge in front of the server
+	// answered the browser with a 502 both times a task was completed from
+	// the web app. The supporter then saw "Complete failed" on a task that
+	// had completed, with the requester's confirmation already in their
+	// inbox. So the browser is answered now, with the task as it stands, and
+	// the chain runs on its own clock: context.Background(), because a
+	// browser that gives up or a proxy that drops the connection must not
+	// cancel a Stripe capture halfway through; a timeout of its own, so a
+	// hung provider cannot pin a goroutine forever; a recover, so a panic in
+	// an email template cannot take the process down. Tests run it inline
+	// (completionDetach) so that what they assert after completeAs has
+	// happened.
+	//
+	// What the client sees differently: the task comes back `completed` with
+	// payment still `authorized` for a few seconds. Clients already render
+	// the payment block from the server's numbers and nothing else (S-05),
+	// and the requester's page re-reads the task on load, so the settled
+	// figures arrive on the next fetch rather than this one.
+	//
+	// Inputs are computed above, on the request context, and captured by
+	// value: none of the reads are repeated on the detached side.
+	supporterName := resolveDisplayName(ctx, assigneeEmail)
+	completionPhotoLink := signTaskPhotoURL(completionPhotoURL, taskPhotoEmailTTL)
+	completionNote := body.CompletionNote
+	completionDetach(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[completeTask][PANIC] task=%s finishing after completion: %v", taskID, r)
+			}
+		}()
+		bg, cancel := context.WithTimeout(context.Background(), completionFinishTimeout)
+		defer cancel()
 
-	log.Printf("[completeTask] sending completion email for task %s", taskID)
+		settleCompletedTask(bg, taskID, meUID, timeCostCents, reimbursedCents)
 
-	// Email requester: summary with time logged + final cost
-	notifyRequesterRich(c, notify.CreateNotificationInput{
-		TaskID:        taskID,
-		Type:          "COMPLETED",
-		Title:         "Your task has been completed",
-		Body:          "Everything is done. Please leave a rating when you have a moment.",
-		SupporterName: resolveDisplayName(ctx, assigneeEmail),
-		TaskTitle:     completeTaskTitle,
-		TotalLogged:   completeTotalStr,
-		FinalCost:     requesterCostStr,
-		// A long-lived signed link: the email may be opened days later, and
-		// it is bounded either way (task_photos.go).
-		CompletionPhotoURL: signTaskPhotoURL(completionPhotoURL, taskPhotoEmailTTL),
-		CompletionNote:     body.CompletionNote,
+		log.Printf("[completeTask] sending completion email for task %s", taskID)
+
+		// Email requester: summary with time logged + final cost
+		notifyRequesterRichCtx(bg, notify.CreateNotificationInput{
+			TaskID:        taskID,
+			Type:          "COMPLETED",
+			Title:         "Your task has been completed",
+			Body:          "Everything is done. Please leave a rating when you have a moment.",
+			SupporterName: supporterName,
+			TaskTitle:     completeTaskTitle,
+			TotalLogged:   completeTotalStr,
+			FinalCost:     requesterCostStr,
+			// A long-lived signed link: the email may be opened days later, and
+			// it is bounded either way (task_photos.go).
+			CompletionPhotoURL: completionPhotoLink,
+			CompletionNote:     completionNote,
+		})
+
+		// Email supporter: confirmation with time logged + earnings
+		supporterBody := fmt.Sprintf("The task has been marked complete. Time logged: %s.", completeTotalStr)
+		if line := payoutBreakdownLine(supporterPay.ServiceCents, supporterPay.FeeCents, supporterPay.ReimbursementCents); line != "" {
+			supporterBody += fmt.Sprintf(" You earned %s — %s.", completeCostStr, line)
+		}
+		notifyAssigneeCtx(bg, notify.CreateNotificationInput{
+			TaskID:      taskID,
+			Type:        "COMPLETED_SUPPORTER",
+			Title:       "Task marked complete — great work!",
+			Body:        supporterBody,
+			TaskTitle:   completeTaskTitle,
+			TotalLogged: completeTotalStr,
+			FinalCost:   completeCostStr,
+		})
 	})
-	// TODO: WhatsApp notification here
-
-	// Email supporter: confirmation with time logged + earnings
-	supporterBody := fmt.Sprintf("The task has been marked complete. Time logged: %s.", completeTotalStr)
-	if line := payoutBreakdownLine(supporterPay.ServiceCents, supporterPay.FeeCents, supporterPay.ReimbursementCents); line != "" {
-		supporterBody += fmt.Sprintf(" You earned %s — %s.", completeCostStr, line)
-	}
-	notifyAssignee(c, notify.CreateNotificationInput{
-		TaskID:      taskID,
-		Type:        "COMPLETED_SUPPORTER",
-		Title:       "Task marked complete — great work!",
-		Body:        supporterBody,
-		TaskTitle:   completeTaskTitle,
-		TotalLogged: completeTotalStr,
-		FinalCost:   completeCostStr,
-	})
-	// TODO: WhatsApp notification here
 
 	getTask(c)
 }
+
+// completionDetach runs the post-completion chain (settlement, receipts,
+// notifications) off the request. Production: a goroutine. Tests swap in an
+// inline runner so that assertions made right after completeAs see the
+// settled state (setupAdminOpsDB).
+var completionDetach = func(fn func()) { go fn() }
+
+// completionFinishTimeout bounds the detached chain. Generous: it covers a
+// Stripe capture, a balance charge, payouts and several emails, each with
+// its own retry; it exists so a hung provider cannot hold the goroutine
+// forever, not to hurry anything.
+const completionFinishTimeout = 3 * time.Minute
 
 // POST /tasks/:id/cancel
 //
@@ -5120,7 +5168,13 @@ func requesterUIDAndEmail(ctx context.Context, taskID string) (uid string, email
 // calls notify.Create with all extra template fields pre-filled in `in`.
 // Callers must set: TaskID, Type, Title, Body, and any SupporterName/TaskTitle/etc.
 func notifyRequesterRich(c *gin.Context, in notify.CreateNotificationInput) {
-	ctx := c.Request.Context()
+	notifyRequesterRichCtx(c.Request.Context(), in)
+}
+
+// notifyRequesterRichCtx is notifyRequesterRich for callers that have no
+// request — the detached completion chain, which must outlive the browser's
+// connection (completeTask).
+func notifyRequesterRichCtx(ctx context.Context, in notify.CreateNotificationInput) {
 	uid, email, err := requesterUIDAndEmail(ctx, in.TaskID)
 	if err != nil {
 		log.Printf("[notify][skip] lookup requester uid/email task=%s: %v", in.TaskID, err)
@@ -5140,7 +5194,11 @@ func notifyRequesterRich(c *gin.Context, in notify.CreateNotificationInput) {
 // notifyAssignee looks up the assignee uid+email for the given task and calls
 // notify.Create. No-op if the task has no assignee.
 func notifyAssignee(c *gin.Context, in notify.CreateNotificationInput) {
-	ctx := c.Request.Context()
+	notifyAssigneeCtx(c.Request.Context(), in)
+}
+
+// notifyAssigneeCtx: notifyAssignee without a request (see notifyRequesterRichCtx).
+func notifyAssigneeCtx(ctx context.Context, in notify.CreateNotificationInput) {
 	var uid, email string
 	if err := sqldb.QueryRowContext(ctx, `
 		SELECT COALESCE(assigned_to_id::text,''), COALESCE(assigned_to,'')
