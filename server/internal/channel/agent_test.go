@@ -355,12 +355,13 @@ func TestAgentEscalationOverAnUnconfirmedClaim(t *testing.T) {
 }
 
 // The runner's SAME grade rests on this: with one errand active, the
-// agent's relay (with or without the label), reply and ask all reach that
-// errand's supporter — idle, at the summary and with an approval armed.
+// agent's relay (with or without the label) and ask reach that errand's
+// supporter — idle, at the summary and with an approval armed. (A reply is
+// answered by HO:RA itself since v0.4.0 — TestAgentReplyIsAnsweredNotRelayed.)
 func TestOneErrandRelayReplyAskAgree(t *testing.T) {
 	props := []llm.Proposal{
 		{Action: llm.ActionRelay, Task: 0}, {Action: llm.ActionRelay, Task: -1},
-		{Action: llm.ActionReply, Task: -1}, {Action: llm.ActionAsk, Task: -1},
+		{Action: llm.ActionAsk, Task: -1},
 	}
 	type result struct {
 		reply, posted string
@@ -399,5 +400,20 @@ func TestOneErrandRelayReplyAskAgree(t *testing.T) {
 				t.Errorf("%s / %s: %+v differs from %+v", state, p.Action, got, *first)
 			}
 		}
+	}
+}
+
+// Staging 2026-10-25: "Ok never mind" after "please cancel it in the app"
+// was relayed to the supporter. A "reply" proposal is HO:RA's to answer:
+// nothing is posted to the supporter, and the agent saw our last line.
+func TestAgentReplyIsAnsweredNotRelayed(t *testing.T) {
+	g, chat, _, fa := agentRig(llm.Proposal{Action: llm.ActionReply, Task: -1}, bagelT)
+	g.r.Thread = fixedThread{{Direction: "outbound", Text: "Please cancel it in the app, where you'll see the exact amount first.", At: time.Now().Add(-time.Minute)}}
+	got := g.say(t, "Ok never mind")
+	if len(chat.posted) != 0 || got != CopyAck {
+		t.Fatalf("posted %v reply %q", chat.posted, got)
+	}
+	if len(fa.calls) != 1 || fa.calls[0].HoraLine == nil || !strings.Contains(fa.calls[0].HoraLine.Text, "cancel it in the app") {
+		t.Fatalf("the agent must see our last line: %+v", fa.calls)
 	}
 }

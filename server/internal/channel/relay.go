@@ -787,6 +787,13 @@ func (r *Router) routeInContextLabel(ctx context.Context, in Inbound, id Identit
 		if p.Action == llm.ActionEscalate {
 			return true, "", r.agentHandOff(ctx, in, id, p)
 		}
+		if p.Action == llm.ActionReply {
+			// Said to HO:RA (a hello, a question about the service, an
+			// acknowledgement of our last line): answered by us, never
+			// relayed (staging 2026-10-25: "Ok never mind" after "cancel
+			// it in the app" went to the supporter).
+			return true, llm.IntentOther, r.Reply(ctx, in, CopyAck, "")
+		}
 		intent = llm.ToIntent(p)
 		if p.Task >= 0 && p.Task < len(active) {
 			agentTarget = active[p.Task].ID
@@ -1120,7 +1127,7 @@ func (r *Router) propose(ctx context.Context, id Identity, text string, active [
 	if !lastAt.IsZero() {
 		minutes = int(r.now().Sub(lastAt).Minutes())
 	}
-	c := AgentContextFor(active, openQuestion(conv.State), SupporterLine{Text: last, TaskID: lastTask, MinutesAgo: minutes, Answered: answered})
+	c := AgentContextFor(active, openQuestion(conv.State), SupporterLine{Text: last, TaskID: lastTask, MinutesAgo: minutes, Answered: answered}, r.ourLastLine(ctx, id))
 	p, err := r.Agent.Propose(ctx, text, c)
 	if err != nil {
 		log.Printf("[channel] agent (using %s): %v", llm.SafeProposal().Action, err)
@@ -1128,6 +1135,34 @@ func (r *Router) propose(ctx context.Context, id Identity, text string, active [
 	}
 	log.Printf("[channel] agent identity=%s action=%s", id.ID, p.Action)
 	return p
+}
+
+// ourLastLine: HO:RA's latest message in the thread (text and age), for
+// the agent's context; empty when none or unreadable.
+func (r *Router) ourLastLine(ctx context.Context, id Identity) SupporterLine {
+	if r.Thread == nil {
+		return SupporterLine{}
+	}
+	msgs, err := r.Thread.RecentMessages(ctx, id.Channel, id.Address, 6)
+	if err != nil {
+		log.Printf("[channel] our last line identity=%s: %v", id.ID, err)
+		return SupporterLine{}
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if m.Direction != "outbound" || strings.TrimSpace(m.Text) == "" {
+			continue
+		}
+		if strings.Contains(m.Text, " · ") && strings.Contains(m.Text, ": ") {
+			continue // a relayed supporter line, not ours
+		}
+		minutes := 0
+		if !m.At.IsZero() {
+			minutes = int(r.now().Sub(m.At).Minutes())
+		}
+		return SupporterLine{Text: m.Text, MinutesAgo: minutes}
+	}
+	return SupporterLine{}
 }
 
 // agentHandOff hands the thread to ops on an agent escalation (D-18). The
@@ -1172,8 +1207,11 @@ type SupporterLine struct {
 // router (propose) and the test runner (cmd/agenttest) both call it, so
 // what the model is tested on is what it sees (D-18 review r2). An empty
 // or answered line is not shown (the person already replied to it).
-func AgentContextFor(active []ActiveTask, openQuestion string, line SupporterLine) llm.AgentContext {
+func AgentContextFor(active []ActiveTask, openQuestion string, line SupporterLine, ours ...SupporterLine) llm.AgentContext {
 	c := llm.AgentContext{OpenQuestion: openQuestion}
+	if len(ours) > 0 && ours[0].Text != "" {
+		c.HoraLine = &llm.AgentLine{Task: -1, Text: ours[0].Text, MinutesAgo: ours[0].MinutesAgo}
+	}
 	for _, t := range active {
 		c.Tasks = append(c.Tasks, llm.AgentTask{Title: t.Title, Supporter: DisplayName(FirstName(t.SupporterName))})
 	}

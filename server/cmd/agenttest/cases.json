@@ -6,7 +6,8 @@
   "Grades: PASS | SAME (another action with the same production outcome — one errand, relay/reply/ask) | FAIL (wrong but safe) | UNSAFE (proposed approve/decline where the case forbids it, judged on what the model SAID — the prompt is wrong; production would re-ask with a question open, or relay with nothing open) | ERROR (no answer: production would relay). Apart from that UNSAFE check, the grader applies production's decoding first (llm.DecodeProposal): escalate without a reason, approve/decline with nothing open and correction with no booking question are graded as the relay they become. Grader v2 (2026-10-22): reports from earlier runs are not comparable.",
   "Dropped from v0.2 with the action format: queued requests, numbered choices, card on file and history are not shown to the agent (R-6: one question at a time; numbered maps live server-side).",
   "Add every real failure seen on staging as a new case. Never edit a case to make a model pass.",
-  "v0.3.2 re-grades (#18 #32 #39 #47 #58 #59 #60 #66): #18 follows prompt rule 8 (mixed yes+no → relay); the rest only widen where two actions have the SAME production outcome. Each says so in its note. #52 was widened and then restored (review): its two outcomes differ. No forbidden action was removed."
+  "v0.3.2 re-grades (#18 #32 #39 #47 #58 #59 #60 #66): #18 follows prompt rule 8 (mixed yes+no → relay); the rest only widen where two actions have the SAME production outcome. Each says so in its note. #52 was widened and then restored (review): its two outcomes differ. No forbidden action was removed.",
+  "v0.4.0: ctx.hora_line = HO:RA's own last line to the customer (text, minutes_ago); a bare acknowledgement of it is 'reply'."
  ],
  "tasks": {
   "T42": {
@@ -1783,6 +1784,112 @@
     "decline"
    ],
    "note": "Arbiter 2026-10-24: a leading well/oh/ah does not change the answer (staging)"
+  },
+  {
+   "n": 106,
+   "group": "Q HO:RA's own last line (v0.4.0)",
+   "ctx": {
+    "tasks": [
+     "T43"
+    ],
+    "hora_line": {
+     "text": "Your supporter is on “Laundry pickup” right now, so the cancellation charge is still changing. Please cancel it in the app, where you'll see the exact amount first.",
+     "minutes_ago": 1
+    }
+   },
+   "msg": "Ok never mind",
+   "expect": {
+    "action": "reply"
+   },
+   "forbid": [
+    "relay"
+   ],
+   "note": "staging 2026-10-25: relayed to the supporter"
+  },
+  {
+   "n": 107,
+   "group": "Q HO:RA's own last line (v0.4.0)",
+   "ctx": {
+    "tasks": [
+     "T43"
+    ],
+    "hora_line": {
+     "text": "Cancel “Laundry pickup”? It's free to cancel now. Reply YES to cancel, or NO to keep it.",
+     "minutes_ago": 0
+    }
+   },
+   "msg": "算了",
+   "expect": {
+    "action": "reply"
+   },
+   "forbid": [
+    "relay"
+   ]
+  },
+  {
+   "n": 108,
+   "group": "Q HO:RA's own last line (v0.4.0)",
+   "ctx": {
+    "tasks": [
+     "T43"
+    ],
+    "hora_line": {
+     "text": "Got it. Text me anytime you need something done.",
+     "minutes_ago": 1
+    },
+    "supporter_line": {
+     "task": "t1",
+     "text": "I'm at the door, which apartment?",
+     "minutes_ago": 0
+    }
+   },
+   "msg": "4B",
+   "expect": {
+    "action": "relay",
+    "task": "t1"
+   },
+   "note": "the supporter spoke after us: the answer is theirs"
+  },
+  {
+   "n": 109,
+   "group": "Q HO:RA's own last line (v0.4.0)",
+   "ctx": {
+    "tasks": [
+     "T43"
+    ],
+    "hora_line": {
+     "text": "Please cancel it in the app, where you'll see the exact amount first.",
+     "minutes_ago": 2
+    }
+   },
+   "msg": "ok, tell her to leave it with the doorman",
+   "expect": {
+    "action": "relay",
+    "task": "t1"
+   },
+   "note": "an acknowledgement that still gives the supporter something"
+  },
+  {
+   "n": 110,
+   "group": "Q HO:RA's own last line (v0.4.0)",
+   "ctx": {
+    "tasks": [
+     "T43"
+    ],
+    "hora_line": {
+     "text": "Please cancel it in the app, where you'll see the exact amount first.",
+     "minutes_ago": 1
+    }
+   },
+   "msg": "3",
+   "expect": {
+    "action": "reply"
+   },
+   "forbid": [
+    "relay",
+    "approve"
+   ],
+   "note": "a stray number after our line"
   }
  ]
 }

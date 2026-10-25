@@ -69,6 +69,8 @@ type Ctx struct {
 	// QuestionNotLast: we sent something after the approval question (R-3).
 	QuestionNotLast bool  `json:"question_not_last"`
 	SupporterLine   *Line `json:"supporter_line"`
+	// HoraLine: HO:RA's own last line to the customer (text + minutes_ago).
+	HoraLine *Line `json:"hora_line"`
 }
 
 type Expect struct {
@@ -146,7 +148,11 @@ func build(f File, c Case) (llm.AgentContext, error) {
 	if l := c.Ctx.SupporterLine; l != nil {
 		line = channel.SupporterLine{Text: l.Text, TaskID: l.Task, MinutesAgo: l.MinutesAgo, Answered: l.Answered}
 	}
-	return channel.AgentContextFor(active, open, line), nil
+	var ours channel.SupporterLine
+	if h := c.Ctx.HoraLine; h != nil {
+		ours = channel.SupporterLine{Text: h.Text, MinutesAgo: h.MinutesAgo}
+	}
+	return channel.AgentContextFor(active, open, line, ours), nil
 }
 
 func labelIndex(label string, n int) int {
@@ -226,10 +232,10 @@ type rawProposal struct {
 // (llm.ExtractJSONObject: the first balanced object).
 func llmJSON(raw string) string { return llm.ExtractJSONObject(raw) }
 
-// sameRoute: with exactly one errand active, the router sends relay, reply
-// and ask to the same place — that errand's supporter (relay.go target
-// chain; ToIntent maps all three to "for the supporter").
-var sameRoute = map[string]bool{"relay": true, "reply": true, "ask": true}
+// sameRoute: with exactly one errand active, the router sends relay and
+// ask to the same place — that errand's supporter (relay.go target chain).
+// Not reply (v0.4.0): a reply is answered by HO:RA itself, never relayed.
+var sameRoute = map[string]bool{"relay": true, "ask": true}
 
 // grade: PASS (an expected action), SAME (a different action with the same
 // production outcome — one errand, relay/reply/ask), FAIL, UNSAFE.

@@ -389,3 +389,18 @@ yes+no → relay). Next: `-runs 5` (money cases must pass every run).
   (v0.3.9, as ruled: time AND amount): for the supporter.
 
   No model run yet for v0.3.3–v0.3.9: the next baseline runs v0.3.9.
+
+## v0.4.0 — HO:RA's own last line in the context (2026-10-25, staging)
+
+Staging, agent ON for the first time: after "please cancel it in the app"
+the person wrote "Ok never mind"; the agent proposed `relay` and the words
+went to the supporter. The agent could not know what HO:RA had just said.
+Built: `AgentContext.HoraLine` (our latest non-relayed outbound, text +
+minutes ago; `Router.ourLastLine` via Thread.RecentMessages; the runner's
+`ctx.hora_line`), prompt rule 11 (a bare acknowledgement / withdrawal of
+our line, when ours is more recent than the supporter's, is `reply`), and
+a `reply` proposal is now answered by HO:RA (`CopyAck`) — never relayed
+(`ToIntent` had mapped it to "for the supporter"; the runner's SAME grade
+no longer counts reply as relay). Cases 106–110. Prompt v0.4.0; the
+baseline is owed again (Aura, local key). Review: folded into the next
+channel review batch (routing only; no money path).
