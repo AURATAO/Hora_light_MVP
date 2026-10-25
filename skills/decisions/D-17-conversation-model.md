@@ -1168,3 +1168,20 @@ retry twice (after 2 s and 6 s) before the event is dropped; nothing is
 sent until they succeed, so a retry never double-sends. Still worth
 watching: whether the branch pooler drops connections at deploy time more
 often than that — the lookup error is logged on every attempt.
+
+### Arbiter answer — 2026-10-25 22:27 (Aura): "where is he?"
+
+Staging: "Where is he now?" was relayed to the supporter. Ruling: the
+requester wants to see where the supporter is — answer it.
+
+Built (I-AY): `IsWhereQuestion` (where is he/she/Sam, how far, is he
+there, eta, 在哪/到了嗎/還要多久 — not "where should he leave it") is
+answered by rule, before any model, from the app's own live tracking
+(D-12; `chatLive` reads the same ping/clock/distance as GET /tasks/:id/live,
+requester-only, open+assigned only): on the way / almost there ("about
+0.8 mi away" / "about 3 blocks away", "last seen N min ago") / at the door
+/ working ("clocked in, 12 min so far"). Unavailable (phone silent) or not
+yet set off → the question IS relayed and the person is told "I've asked
+them". A lookup failure → the usual routing (never a made-up answer). A
+question of ours still open is repeated after the answer. Distance in
+miles/blocks (no routing API).

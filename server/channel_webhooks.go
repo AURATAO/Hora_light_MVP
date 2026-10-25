@@ -69,6 +69,7 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		Ops:      newOpsNotifier(sqlDB, sb, store),
 		Thread:   store,
 		Tasks:    store,
+		Live:     &chatLive{sqlDB: sqlDB},
 	}
 	// D-18: the requester agent replaces the context classifier only when
 	// CHANNEL_AGENT=1 (off by default; staging first). It proposes; the

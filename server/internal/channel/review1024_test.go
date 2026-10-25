@@ -736,3 +736,56 @@ func TestAgentReplyGateEdges(t *testing.T) {
 		t.Fatalf("held relay: posted %v state %s reply %q", chat.posted, g.state(), got)
 	}
 }
+
+type fakeLive struct {
+	st  LiveStatus
+	err error
+}
+
+func (f *fakeLive) LiveStatus(context.Context, string, string) (LiveStatus, error) {
+	return f.st, f.err
+}
+
+// Arbiter 2026-10-25 22:27: "where is he?" is answered from the live
+// tracking, not relayed — unless the phone has stopped reporting, when the
+// question goes to the supporter and the person is told so.
+func TestWhereIsHeAnsweredFromLiveTracking(t *testing.T) {
+	m := 1300.0
+	for _, tc := range []struct {
+		st     LiveStatus
+		msg    string
+		want   string
+		posted int
+	}{
+		{LiveStatus{State: LiveOnTheWay, DistanceMeters: &m, LastSeen: time.Now().Add(-2 * time.Minute)}, "Where is he now?", "Sam is on the way — about 0.8 mi away, last seen 2 min ago.", 0},
+		{LiveStatus{State: LiveAlmostThere, DistanceMeters: func() *float64 { v := 240.0; return &v }(), LastSeen: time.Now()}, "how far is she", "Sam is almost there — about 3 blocks away, last seen just now.", 0},
+		{LiveStatus{State: LiveAtDoor}, "has he arrived?", "Sam is at the door.", 0},
+		{LiveStatus{State: LiveWorking, WorkedMinutes: 12}, "他到了嗎", "Sam is there and clocked in on “Bagel run” — 12 min so far.", 0},
+		{LiveStatus{State: LiveUnavailable, LastSeen: time.Now().Add(-7 * time.Minute)}, "where's Sam?", "Sam's phone hasn't reported a location for a bit, last seen 7 min ago — I've asked them where they are.", 1},
+		{LiveStatus{State: LiveUnavailable, NotYetOnTheWay: true}, "eta?", "Sam hasn't set off yet, so there's no location to show — I've asked them where they are.", 1},
+	} {
+		g, chat, _, fc := contextRig(llm.IntentToSupporter, bagelT)
+		g.r.Live = &fakeLive{st: tc.st}
+		got := g.say(t, tc.msg)
+		if got != tc.want || len(chat.posted) != tc.posted || len(fc.calls) != 0 {
+			t.Errorf("%q: got %q posted %v model calls %d", tc.msg, got, chat.posted, len(fc.calls))
+		}
+	}
+	// A lookup failure: the usual routing (relayed), never a made-up answer.
+	g, chat, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.r.Live = &fakeLive{err: errors.New("db")}
+	g.say(t, "where is he?")
+	if len(chat.posted) != 1 {
+		t.Fatalf("lookup failed: posted %v", chat.posted)
+	}
+	for _, s := range []string{"where is he", "Where's Sam", "how far away is she", "is he there yet", "在哪", "到了嗎", "還要多久", "how much longer"} {
+		if !IsWhereQuestion(s) {
+			t.Errorf("%q is a where-question", s)
+		}
+	}
+	for _, s := range []string{"where should he leave it", "how far is the store from my place", "tell him where the key is", "where do I pay"} {
+		if IsWhereQuestion(s) {
+			t.Errorf("%q is not a where-question", s)
+		}
+	}
+}

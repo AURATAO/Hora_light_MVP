@@ -708,6 +708,17 @@ func (r *Router) routeInContextLabel(ctx context.Context, in Inbound, id Identit
 	if err != nil {
 		return true, "", fmt.Errorf("routeInContext: %w", err)
 	}
+	// "Where is he?" is answered from the live tracking, by rule, before
+	// any model (Arbiter 2026-10-25 22:27) — a question of ours still open
+	// is repeated after it. Unanswerable here → the usual routing.
+	if IsWhereQuestion(text) && !IsCancelRequest(text) {
+		if handled, err := r.answerWhere(ctx, in, id, conv, text, active); handled {
+			if err == nil && (awaitingAnswer(conv.State) || conv.State == StateAwaitingTaskChoice) {
+				err = r.Reply(ctx, in, stillWaiting(conv), "")
+			}
+			return true, "", err
+		}
+	}
 	// Step 6: the one-word ways out — except that a pending approval is
 	// answered first (P4): "new task:" then is re-asked, "for Maya" relays
 	// but keeps the question armed.

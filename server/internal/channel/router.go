@@ -174,6 +174,9 @@ type Router struct {
 	// a linked requester's small talk gets CopyAck as before.
 	Chat  TaskChat
 	Tasks TaskLookup
+	// Live answers "where is he?" from the app's live tracking (D-12);
+	// optional — without it the question is relayed as any other.
+	Live LiveLookup
 	// InContext labels a message when a supporter is on the job (D-17 P2);
 	// nil = the plain Classifier with "to the supporter" as the default.
 	InContext llm.ContextClassifier
