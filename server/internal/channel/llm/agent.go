@@ -304,7 +304,10 @@ func ToIntent(p Proposal) Intent {
 	case ActionDraftTask:
 		return IntentNewTask
 	}
-	return IntentToSupporter // relay, ask, reply, escalate (the router handles escalate first)
+	// relay, ask, reply, escalate: the router handles escalate first, and a
+	// reply that is a short acknowledgement of HO:RA's own last line
+	// (saidToUs); any other reply falls to the supporter — the safe default.
+	return IntentToSupporter
 }
 
 // ValidEscalation reports whether e is one of the listed reasons — an

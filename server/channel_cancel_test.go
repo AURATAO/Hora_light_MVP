@@ -51,7 +51,23 @@ func TestChatCancelQuotesAndCancelsLikeTheApp(t *testing.T) {
 	if q2.CeilingCents != want || q2.CeilingCents < q2.ChargeCents {
 		t.Fatalf("ceiling %d, want %d (charge now %d)", q2.CeilingCents, want, q2.ChargeCents)
 	}
-	if _, err := db.Exec(ctx, `delete from public.worklogs where task_id = $1::uuid`, w.taskID); err != nil {
+	// S-11/5: cancelled WITH the session open and long past the cap, the
+	// bill never exceeds the ceiling the person said YES to.
+	if _, err := db.Exec(ctx, `update public.worklogs set start_at = now() - interval '3 hours' where task_id = $1::uuid`, w.taskID); err != nil {
+		t.Fatal(err)
+	}
+	res0 := b.Cancel(ctx, w.requesterID, w.taskID, "plans_changed")
+	if !res0.OK || res0.BillCents > q2.CeilingCents {
+		t.Fatalf("bill %d above the ceiling %d (%+v)", res0.BillCents, q2.CeilingCents, res0)
+	}
+	// Re-seed an open task for the rest (the cancel above closed this one).
+	w.taskID = seedReassignTask(t, "open", w.requesterID, requesterEmail, w.supporterID, oldSupporterEmail)
+	setAcceptedAt(t, w.taskID, time.Hour)
+	if _, err := db.Exec(ctx, `update public.tasks set estimated_minutes = 30 where id = $1::uuid`, w.taskID); err != nil {
+		t.Fatal(err)
+	}
+	q, err = b.CancelQuote(ctx, w.requesterID, w.taskID)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if res := b.Cancel(ctx, w.supporterID, w.taskID, "plans_changed"); res.OK {

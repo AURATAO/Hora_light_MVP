@@ -109,10 +109,10 @@ func TestCancelClaimedOnce(t *testing.T) {
 // while the charge started moving afterwards is asked again at the ceiling.
 func TestCancelWhileWorkingQuotesTheCeiling(t *testing.T) {
 	g := cancelRig(t)
-	g.booker.quote.Moving, g.booker.quote.CeilingCents = true, 3450
+	g.booker.quote.Moving, g.booker.quote.SessionOpen, g.booker.quote.CeilingCents = true, true, 3450
 	g.booker.cancelRes = CancelResult{OK: true, BillCents: 1950}
 	got := askCancel(t, g)
-	if !strings.Contains(got, "up to $34.50") || g.state() != StateAwaitingCancel {
+	if !strings.Contains(got, "working on it right now") || !strings.Contains(got, "up to $34.50") || g.state() != StateAwaitingCancel {
 		t.Fatalf("question: %q state %s", got, g.state())
 	}
 	got = g.say(t, "YES")
@@ -122,7 +122,7 @@ func TestCancelWhileWorkingQuotesTheCeiling(t *testing.T) {
 
 	// The ceiling rose between the question and the YES: asked again.
 	g = cancelRig(t)
-	g.booker.quote.Moving, g.booker.quote.CeilingCents = true, 3450
+	g.booker.quote.Moving, g.booker.quote.SessionOpen, g.booker.quote.CeilingCents = true, true, 3450
 	askCancel(t, g)
 	g.booker.quote.CeilingCents = 4200
 	got = g.say(t, "YES")
@@ -134,10 +134,67 @@ func TestCancelWhileWorkingQuotesTheCeiling(t *testing.T) {
 	// is higher, so it is asked again — never cancelled on the old number.
 	g = cancelRig(t)
 	askCancel(t, g)
-	g.booker.quote.Moving, g.booker.quote.CeilingCents = true, 3450
+	g.booker.quote.Moving, g.booker.quote.SessionOpen, g.booker.quote.CeilingCents = true, true, 3450
 	got = g.say(t, "YES")
 	if len(g.booker.cancelled) != 0 || !strings.Contains(got, "up to $34.50") {
 		t.Fatalf("started moving: cancelled %v reply %q", g.booker.cancelled, got)
+	}
+
+	// Only the free window closing (no session): its own words, the
+	// committed charge as the amount.
+	g = cancelRig(t)
+	g.booker.quote = CancelQuote{Title: "Laundry pickup", ChargeCents: 0, BaseFeeCents: 1200, Committed: true, WithinGrace: true, Moving: true, CeilingCents: 1200}
+	got = askCancel(t, g)
+	if strings.Contains(got, "working on it") || !strings.Contains(got, "window is about to end") || !strings.Contains(got, "$12") {
+		t.Fatalf("closing only: %q", got)
+	}
+
+	// Moving with no ceiling (no time cap): still the app.
+	g = cancelRig(t)
+	g.booker.quote = CancelQuote{Title: "Laundry pickup", ChargeCents: 1200, BaseFeeCents: 1200, Committed: true, Moving: true, SessionOpen: true}
+	got = askCancel(t, g)
+	if !strings.Contains(got, "cancel it in the app") || g.state() != StateIdle {
+		t.Fatalf("no ceiling: %q state %s", got, g.state())
+	}
+}
+
+// Review 10/25: a "reply" proposal is HO:RA's to answer only for a short
+// acknowledgement of our own last line; a longer message, or one after
+// the supporter spoke, still reaches the supporter (P7). With a question
+// of ours open, the ack repeats it. On the held-relay list, it drops the
+// hold instead of delivering it.
+func TestAgentReplyIsSafeByDefault(t *testing.T) {
+	// Long message wrongly proposed as a reply: relayed.
+	g, chat, _, _ := agentRig(llm.Proposal{Action: llm.ActionReply, Task: -1}, bagelT)
+	g.r.Thread = fixedThread{{Direction: "outbound", Text: "Please cancel it in the app.", At: time.Now().Add(-time.Minute)}}
+	g.say(t, "the door code is 1234, tell him to leave it inside")
+	if len(chat.posted) != 1 {
+		t.Fatalf("a long message must reach the supporter: posted %v", chat.posted)
+	}
+	// Supporter spoke after us: relayed.
+	g, chat, tasks, _ := agentRig(llm.Proposal{Action: llm.ActionReply, Task: -1}, bagelT)
+	g.r.Thread = fixedThread{{Direction: "outbound", Text: "Got it.", At: time.Now().Add(-5 * time.Minute)}}
+	tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: which one?", "task-2", time.Now().Add(-time.Minute)
+	g.say(t, "ok")
+	if len(chat.posted) != 1 {
+		t.Fatalf("after the supporter spoke: posted %v", chat.posted)
+	}
+	// With our summary open: the ack repeats the question.
+	g, chat, _, _ = agentRig(llm.Proposal{Action: llm.ActionReply, Task: -1}, bagelT)
+	g.r.Agent = nil
+	g.say(t, "new task: pick up my laundry at 12 Bedford Ave tomorrow at 3")
+	g.r.Agent = &fakeAgent{p: llm.Proposal{Action: llm.ActionReply, Task: -1}}
+	g.r.Thread = fixedThread{{Direction: "outbound", Text: "Here's the summary… Reply YES to book", At: time.Now()}}
+	got := g.say(t, "oh ok")
+	if len(chat.posted) != 0 || !strings.Contains(got, "Still waiting") || g.state() != StateAwaitingConfirm {
+		t.Fatalf("ack with a question open: posted %v reply %q state %s", chat.posted, got, g.state())
+	}
+	// Our booking summary is ours, not a relayed line.
+	if relayedLineRE.MatchString("Laundry pickup · about 30 min at 12 Bedford Ave\n\nBy booking you agree to our Terms: https://x") {
+		t.Fatal("the summary read as a relayed line")
+	}
+	if !relayedLineRE.MatchString("Sam · Bagel run: which one?") {
+		t.Fatal("a relayed line not recognised")
 	}
 }
 

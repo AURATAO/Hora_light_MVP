@@ -321,7 +321,7 @@ func (b *chatBooker) CancelQuote(ctx context.Context, userID, taskID string) (ch
 	// just the committed charge when only the free window is closing.
 	closing := p.WithinGrace && p.GraceEndsAt != nil && time.Until(*p.GraceEndsAt) < cancelQuoteMargin
 	q := channel.CancelQuote{Title: title, ChargeCents: p.ChargeCents, BaseFeeCents: p.BaseFeeCents,
-		Committed: p.Committed, WithinGrace: p.WithinGrace, Moving: sessionOpen || closing}
+		Committed: p.Committed, WithinGrace: p.WithinGrace, Moving: sessionOpen || closing, SessionOpen: sessionOpen}
 	q.CeilingCents = q.ChargeCents
 	if q.Moving && p.Committed {
 		category := taskCategory(ctx, taskID)

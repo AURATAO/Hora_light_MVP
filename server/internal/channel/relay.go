@@ -393,6 +393,11 @@ func (r *Router) onAwaitingTaskChoice(ctx context.Context, in Inbound, id Identi
 	if p.Action == llm.ActionEscalate {
 		return r.agentHandOff(ctx, in, id, p)
 	}
+	if p.Action == llm.ActionReply && r.saidToUs(ctx, in, id, text, time.Time{}) {
+		// "ok never mind" to our "which supporter?": the held words are
+		// dropped, not delivered with it (review 10/25 #7).
+		return r.clearHold(ctx, in, conv, CopyHoldDropped)
+	}
 	if intent == llm.IntentNewTask {
 		conv.State, conv.PendingTaskChoices, conv.PendingRelayText = StateIdle, nil, ""
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
@@ -787,12 +792,14 @@ func (r *Router) routeInContextLabel(ctx context.Context, in Inbound, id Identit
 		if p.Action == llm.ActionEscalate {
 			return true, "", r.agentHandOff(ctx, in, id, p)
 		}
-		if p.Action == llm.ActionReply {
-			// Said to HO:RA (a hello, a question about the service, an
-			// acknowledgement of our last line): answered by us, never
-			// relayed (staging 2026-10-25: "Ok never mind" after "cancel
-			// it in the app" went to the supporter).
-			return true, llm.IntentOther, r.Reply(ctx, in, CopyAck, "")
+		if p.Action == llm.ActionReply && r.saidToUs(ctx, in, id, text, lastAt) {
+			// A short acknowledgement of our own last line (staging
+			// 2026-10-25: "Ok never mind" after "cancel it in the app" went
+			// to the supporter): answered by us. Anything longer, or with
+			// the supporter the more recent voice, still goes to the
+			// supporter — a wrong "reply" must never swallow words meant
+			// for a person (P7). An open question of ours is said again.
+			return true, llm.IntentOther, r.Reply(ctx, in, r.ackWithQuestion(conv), "")
 		}
 		intent = llm.ToIntent(p)
 		if p.Task >= 0 && p.Task < len(active) {
@@ -1137,32 +1144,74 @@ func (r *Router) propose(ctx context.Context, id Identity, text string, active [
 	return p
 }
 
+// saidToUs: the premise of a "reply" the router accepts — HO:RA spoke more
+// recently than the supporter, and the message is short (an
+// acknowledgement, a withdrawal), so nothing a supporter needs is lost.
+func (r *Router) saidToUs(ctx context.Context, in Inbound, id Identity, text string, supporterAt time.Time) bool {
+	if len(strings.Fields(text)) > 5 && len([]rune(text)) > 12 {
+		return false
+	}
+	ours := r.ourLastLineAt(ctx, id)
+	if ours.IsZero() {
+		return false
+	}
+	return supporterAt.IsZero() || ours.After(supporterAt)
+}
+
+// ackWithQuestion: the acknowledgement, plus the question of ours that is
+// still open (never dropped behind an ack).
+func (r *Router) ackWithQuestion(conv Conversation) string {
+	if awaitingAnswer(conv.State) || conv.State == StateAwaitingTaskChoice {
+		return CopyAck + " " + stillWaiting(conv)
+	}
+	return CopyAck
+}
+
+// ourLastLineAt: when HO:RA last wrote (zero when unknown).
+func (r *Router) ourLastLineAt(ctx context.Context, id Identity) time.Time {
+	_, at := r.ourLastLineText(ctx, id)
+	return at
+}
+
 // ourLastLine: HO:RA's latest message in the thread (text and age), for
 // the agent's context; empty when none or unreadable.
 func (r *Router) ourLastLine(ctx context.Context, id Identity) SupporterLine {
-	if r.Thread == nil {
+	text, at := r.ourLastLineText(ctx, id)
+	if text == "" {
 		return SupporterLine{}
+	}
+	minutes := 0
+	if !at.IsZero() {
+		minutes = int(r.now().Sub(at).Minutes())
+	}
+	return SupporterLine{Text: text, MinutesAgo: minutes}
+}
+
+// relayedLineRE: a relayed supporter line as the thread stores it —
+// "Name · Task: words" at the start (relay.go). Anchored, so our own
+// booking summary ("… · about 30 min … Terms: …") is not mistaken for one.
+var relayedLineRE = regexp.MustCompile(`^[^\n:]{1,60} · [^\n:]{1,120}: `)
+
+func (r *Router) ourLastLineText(ctx context.Context, id Identity) (string, time.Time) {
+	if r.Thread == nil {
+		return "", time.Time{}
 	}
 	msgs, err := r.Thread.RecentMessages(ctx, id.Channel, id.Address, 6)
 	if err != nil {
 		log.Printf("[channel] our last line identity=%s: %v", id.ID, err)
-		return SupporterLine{}
+		return "", time.Time{}
 	}
 	for i := len(msgs) - 1; i >= 0; i-- {
 		m := msgs[i]
 		if m.Direction != "outbound" || strings.TrimSpace(m.Text) == "" {
 			continue
 		}
-		if strings.Contains(m.Text, " · ") && strings.Contains(m.Text, ": ") {
+		if relayedLineRE.MatchString(m.Text) {
 			continue // a relayed supporter line, not ours
 		}
-		minutes := 0
-		if !m.At.IsZero() {
-			minutes = int(r.now().Sub(m.At).Minutes())
-		}
-		return SupporterLine{Text: m.Text, MinutesAgo: minutes}
+		return m.Text, m.At
 	}
-	return SupporterLine{}
+	return "", time.Time{}
 }
 
 // agentHandOff hands the thread to ops on an agent escalation (D-18). The

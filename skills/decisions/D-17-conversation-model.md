@@ -1103,3 +1103,25 @@ YES compares ceilings: an extension approved meanwhile raises it → asked
 again; a flat quote whose charge started moving before the YES → asked
 again at the ceiling. A task with no estimate (no cap to bound the charge)
 still goes to the app.
+
+#### Review 10/25 r1 (FAIL on A under S-11/5) → fixes
+
+The bound is proven, not assumed: `cancelTask` caps billed minutes at
+the time cap (`cappedMinutes`) and the ceiling is the same formula at the
+cap — a DB test now cancels with a session open three hours past the cap
+and asserts bill ≤ ceiling; the router logs an `[ERROR]` should a bill
+ever exceed the quoted amount. The consent text is true: "working on it
+right now … up to $X" only with a session open (`CancelQuote.SessionOpen`);
+the free window closing alone says "the free-cancel window is about to
+end, so cancelling will cost $X". Tests: closing-only copy, Moving with no
+ceiling still to the app, the re-ask log prints the quoted value.
+**Agent reply (B):** a "reply" proposal is answered by HO:RA only when it
+is the premise of rule 11 — our line is more recent than the supporter's
+and the message is short (≤ 5 words); anything else falls to the
+supporter (P7, never swallow words meant for a person); with a question
+of ours open the ack repeats it; on the held-relay list a short reply
+drops the hold instead of delivering it; the relayed-line check is
+anchored ("Name · Task: ") so our booking summary is never skipped. The
+rate is per task row (no time-of-day drift). Accepted: a question about
+HO:RA itself ("how much do you charge?") longer than five words goes to
+the supporter as before — a proper answer needs a help line (follow-up).

@@ -61,9 +61,13 @@ type CancelQuote struct {
 	WithinGrace  bool // accepted moments ago: still free
 	// Moving: the charge may change between this quote and the cancel
 	// itself — a work session is running (every minute adds to it), or the
-	// free window closes within a minute. A chat cancel is a YES to one
-	// amount, so a moving charge is sent to the app, which shows it live.
+	// free window is about to close. The chat then quotes CeilingCents
+	// ("up to $X"); with no ceiling (CeilingCents 0 while Moving: no time
+	// cap on the task) the cancel is sent to the app, which shows it live.
 	Moving bool
+	// SessionOpen: a supporter is clocked in right now (the copy says so
+	// only when true — the free window closing alone is not "working").
+	SessionOpen bool
 	// CeilingCents: the most the cancel can cost while Moving — the charge
 	// with the running session taken to the agreed time cap (where the
 	// clock stops), or the committed charge once the free window closes.

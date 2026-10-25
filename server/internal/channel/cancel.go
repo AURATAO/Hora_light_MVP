@@ -322,7 +322,10 @@ func cancelQuestion(title string, q CancelQuote, reasonCode string) string {
 		}
 	}
 	if q.Moving && q.CeilingCents > 0 {
-		return fmt.Sprintf(CopyCancelConfirmUpTo, title, reason, Dollars(q.CeilingCents), Dollars(q.BaseFeeCents))
+		if q.SessionOpen {
+			return fmt.Sprintf(CopyCancelConfirmUpTo, title, reason, Dollars(q.CeilingCents), Dollars(q.BaseFeeCents))
+		}
+		return fmt.Sprintf(CopyCancelConfirmClosing, title, reason, Dollars(q.CeilingCents), Dollars(q.BaseFeeCents))
 	}
 	if q.ChargeCents <= 0 {
 		return fmt.Sprintf(CopyCancelConfirmFree, title, reason)
@@ -477,7 +480,7 @@ func (r *Router) confirmCancel(ctx context.Context, in Inbound, id Identity, con
 	if quotedCents(q) > pc.QuotedCents {
 		// The price (or its ceiling — an extension approved meanwhile)
 		// went up since the question: the YES was not to this.
-		log.Printf("[channel] cancel identity=%s task=%s: charge rose %d→%d, re-asked", id.ID, pc.TaskID, pc.QuotedCents, q.ChargeCents)
+		log.Printf("[channel] cancel identity=%s task=%s: charge rose %d→%d, re-asked", id.ID, pc.TaskID, pc.QuotedCents, quotedCents(q))
 		return r.quoteCancel(ctx, in, id, conv, TaskRef{ID: pc.TaskID, Title: pc.Title}, pc.ReasonCode)
 	}
 	won, err := r.Conversations.ClaimCancel(ctx, id.ID, pc.TaskID)
@@ -494,7 +497,13 @@ func (r *Router) confirmCancel(ctx context.Context, in Inbound, id Identity, con
 		return nil // the first YES answers
 	}
 	res := r.Booker.Cancel(ctx, id.UserID, pc.TaskID, pc.ReasonCode)
-	log.Printf("[channel] cancel identity=%s task=%s ok=%t gone=%t bill=%d unknown=%t", id.ID, pc.TaskID, res.OK, res.Gone, res.BillCents, res.BillUnknown)
+	log.Printf("[channel] cancel identity=%s task=%s ok=%t gone=%t bill=%d unknown=%t quoted=%d", id.ID, pc.TaskID, res.OK, res.Gone, res.BillCents, res.BillUnknown, pc.QuotedCents)
+	if res.OK && res.BillCents > pc.QuotedCents {
+		// S-11/5: the YES was to the quoted amount (or ceiling). The app
+		// caps the bill at the time cap, so this must not happen; if it
+		// does, it is an incident, said loudly.
+		log.Printf("[channel][ERROR] cancel identity=%s task=%s: billed %d ABOVE the quoted %d", id.ID, pc.TaskID, res.BillCents, pc.QuotedCents)
+	}
 	switch {
 	case res.OK && res.BillUnknown:
 		return r.Reply(ctx, in, fmt.Sprintf(CopyCancelledUnknown, pc.Title), "")

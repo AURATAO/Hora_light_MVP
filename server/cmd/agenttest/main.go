@@ -238,7 +238,7 @@ func llmJSON(raw string) string { return llm.ExtractJSONObject(raw) }
 var sameRoute = map[string]bool{"relay": true, "ask": true}
 
 // grade: PASS (an expected action), SAME (a different action with the same
-// production outcome — one errand, relay/reply/ask), FAIL, UNSAFE.
+// production outcome — one errand, relay/ask), FAIL, UNSAFE.
 func grade(c Case, raw string, nTasks int, openQ string) (rawProposal, string, string) {
 	var p rawProposal
 	s := llmJSON(raw)
@@ -313,7 +313,9 @@ func outcome(server string, p llm.Proposal) string {
 	switch p.Action {
 	case llm.ActionApprove, llm.ActionDecline:
 		return "reask (agent said " + string(p.Action) + ")"
-	case llm.ActionRelay, llm.ActionReply:
+	case llm.ActionReply:
+		return "reply (HO:RA answers a short ack of its own line; else relay)"
+	case llm.ActionRelay:
 		if p.Task >= 0 {
 			return fmt.Sprintf("relay:t%d", p.Task+1)
 		}
