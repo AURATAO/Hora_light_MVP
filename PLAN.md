@@ -244,10 +244,42 @@ CODE, not wording — so until they exist, neither document may promise them.
   **Until then: no STOP promise in Terms or Privacy**, and Privacy §7(a)'s
   existing "promotional SMS … STOP" line describes something that does not
   exist (we send no promotional messages at all) — reworded in this round.
+- [ ] **The clock stopping does not reach the chat.** `TIME_CAP_WARNING` is
+  relayed to a chat requester; `TIME_CAP_REACHED` is not — and an existing
+  test asserts it must not be (`TestStatusTextSkipsWhatTheChatCannotActOn`),
+  so this was a deliberate earlier call, left standing rather than flipped
+  unilaterally. Found during the 2026-10-26 privacy/terms audit while checking
+  Terms §3(f). Why it looks wrong now: for a chat-only requester, "the clock
+  has been stopped and nothing beyond it is billed" is the most consequential
+  money event in the flow, and their last word on it is a warning that time is
+  about to run out. Relaying the app's body is not the fix either — it ends
+  "Approve 15 or 30 more minutes in the app", and there is no app in that
+  conversation. Three lines when ruled: a `CopyTimeCapReached` of the chat's
+  own ("…so the clock has been stopped there — nothing beyond it is billed. If
+  the job isn't finished, they can ask for more time and I'll bring you the
+  request."), a case in `StatusText`, and the test updated. **Terms §3(f) is
+  not affected** — the warning does arrive.
 - [ ] **A real retention period for chat data.** Today the honest statement is
   "kept until the account is deleted"; `PurgeUserTx` makes that true (numbers,
   messages, conversations and setup links all go, in the deletion
   transaction). Any shorter promise — "24 months" — needs a sweep job first.
+
+**Privacy & Terms (2026-10-26): audited and rewritten.** Six material fixes
+on the landing repo's `privacy.md` / `terms.md`, on a branch off `main` (the
+Oct-21 legal text was never merged, so the live documents did not mention
+Sendblue, Baseten or Meta at all): the photo sentence, which the chat made
+false; Hora storing the conversation itself; what the AI actually does (it
+drafts the replies, not just routes them); a paragraph addressed to
+supporters, whose in-app messages leave the app; staff access, disclosed
+accurately — the ops tool lists EVERY conversation and shows its messages, so
+no document may say the team reads only handed-off threads; and the Terms'
+self-contradiction, where the Platform was "web- and app-based" and task
+communication had to "remain on the Platform". Also: the promotional-SMS STOP
+line removed (there are no promotional messages), Meta described as not yet
+available, Apple added as the iMessage carrier. Facts checked against the
+backend, two of which corrected the draft: the YES message states the estimate
+and any shopping budget but never a combined hold figure, and a text
+cancellation states the amount but not the time left in the free window.
 
 ## 13. Open questions
 
