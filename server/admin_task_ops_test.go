@@ -267,7 +267,6 @@ func seedWorklog(t *testing.T, taskID string, minutesAgo int, openEnded bool) st
 // handler, with the session identity gin's auth middleware would have set.
 func callAdminOps(t *testing.T, h gin.HandlerFunc, action, taskID, uid, email, body string) (int, map[string]any) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/admin/tasks/"+taskID+"/"+action, strings.NewReader(body))

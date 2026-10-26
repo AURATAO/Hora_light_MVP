@@ -147,7 +147,6 @@ func signStripePayload(payload, secret string, ts time.Time) string {
 
 func postStripeWebhook(t *testing.T, payload, signature string) int {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/webhooks/stripe", strings.NewReader(payload))

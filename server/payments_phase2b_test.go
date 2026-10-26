@@ -1201,7 +1201,6 @@ func num(v any) int {
 // auth middleware would have set.
 func callTaskHandler(t *testing.T, h gin.HandlerFunc, method, path, taskID, uid, email, body string, extra gin.Params) (int, *httptest.ResponseRecorder) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	var reader *strings.Reader

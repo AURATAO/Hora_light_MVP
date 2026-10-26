@@ -184,7 +184,6 @@ const testStripeV2Secret = "whsec_v2_test_secret"
 
 func postStripeV2Webhook(t *testing.T, payload, signature string) int {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/webhooks/stripe/v2", strings.NewReader(payload))

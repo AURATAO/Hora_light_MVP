@@ -322,7 +322,6 @@ func TestPendingPaymentTaskIsInvisibleToItsRequester(t *testing.T) {
 		t.Fatalf("park task: %v — the phase 2a migration's status CHECK may be missing", err)
 	}
 
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodGet, "/tasks", nil)
@@ -582,7 +581,6 @@ func TestPhase2aEditCannotOutgrowTheHold(t *testing.T) {
 	}
 
 	edit := func(minutes int, budgetCents int) (int, map[string]any) {
-		gin.SetMode(gin.TestMode)
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		payload := `{"title":"Coffee run","category":"delivery","estimated_minutes":` +

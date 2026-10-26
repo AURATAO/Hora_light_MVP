@@ -32,7 +32,6 @@ import (
 // of them.
 func clockAs(t *testing.T, handler gin.HandlerFunc, taskID, uid, email string) (int, map[string]any) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/tasks/"+taskID+"/clock", nil)

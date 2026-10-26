@@ -959,7 +959,6 @@ func callAdminRetry(t *testing.T, payoutID, actorUID string) (int, map[string]an
 
 func callAdminRetryAs(t *testing.T, payoutID, uid, email string) (int, map[string]any) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/admin/payouts/"+payoutID+"/retry",

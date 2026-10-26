@@ -117,7 +117,6 @@ func seedCompletedTask(t *testing.T, status string) (string, string, string) {
 
 func postReview(t *testing.T, taskID, uid, body string) (int, map[string]any) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/tasks/"+taskID+"/review", strings.NewReader(body))
@@ -135,7 +134,6 @@ func postReview(t *testing.T, taskID, uid, body string) (int, map[string]any) {
 // profileAggregate runs the real profile read path and returns (count, avg).
 func profileAggregate(t *testing.T, supporterID string) (int, *float64) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodGet, "/profiles/"+supporterID+"/reviews", nil)

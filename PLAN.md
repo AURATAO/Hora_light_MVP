@@ -208,7 +208,13 @@ reasoning on by default — measure latency with it on and off.
 - [ ] **Post-freeze refactor #1 (D-16 R-1):** `createTask` takes the principal as an argument; drop the synthetic context in `chatBooker.Post`.
 - [ ] **TalkJS identity verification (M3.2, R4 MINOR-5):** confirm "Identity verification" is enforced for the HO:RA Staging and production TalkJS apps — the webhook's sender id is a client-chosen email otherwise, and since M3.2 that id decides whose words reach a requester's phone.
 - [ ] Privacy Policy: add Sendblue, Meta (WhatsApp), Baseten to the provider list before launch — and state that chat text (the person's messages and the supporter's relayed lines) is processed by the LLM provider for routing (D-17).
-- [ ] **Inherited test race (found 2026-10-21, base `853bed5` red too — not a regression):** `go test -race` fails `TestLiveArrivalIsExactlyOnceUnderConcurrency` (`live_tracking_test.go:882`) because 8 goroutines call `gin.SetMode` via `postGpsPing` (`gps_ping_source_test.go:139`). Test-harness-only; fix after the freeze by moving `gin.SetMode` to `TestMain`. verify.sh runs the suite without `-race`, so it stays green there.
+- [x] **Inherited test race — FIXED 2026-10-26.** `gin.SetMode` moved to a
+  `TestMain` (`server/main_testmain_test.go`) and removed from all 36 call
+  sites plus one `init()`, so no test writes gin's package state while 8
+  goroutines are in `postGpsPing`. **`go test -race` is now green on the whole
+  of `server/` (79 s) and `internal/channel/` (4 s)** — it had been red since
+  before this branch. Nothing in the product changed; the racy writes were all
+  in test helpers.
 
 ## 12. Funnel metrics (from day one)
 

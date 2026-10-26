@@ -15,8 +15,6 @@ import (
 	"hora-auth/internal/channel"
 )
 
-func init() { gin.SetMode(gin.TestMode) }
-
 // echoBody answers 200 with the body the handler received, so a test can see
 // the middleware handed the exact bytes on.
 func echoBody(c *gin.Context) {

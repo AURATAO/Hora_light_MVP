@@ -366,7 +366,6 @@ func seedPing(t *testing.T, taskID, uid string, lat, lng float64, age time.Durat
 
 func getLiveAs(t *testing.T, taskID, uid string) (int, map[string]any) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodGet, "/tasks/"+taskID+"/live", nil)
@@ -382,7 +381,6 @@ func getLiveAs(t *testing.T, taskID, uid string) (int, map[string]any) {
 
 func postEnrouteAs(t *testing.T, taskID, uid string) (int, map[string]any) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/tasks/"+taskID+"/enroute", nil)

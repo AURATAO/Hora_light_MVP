@@ -37,7 +37,6 @@ func signTalkJS(t *testing.T, secret, timestamp string, body []byte) string {
 
 func postTalkJSWebhook(t *testing.T, body []byte, timestamp, signature string) *httptest.ResponseRecorder {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	// Nil DB: every test here stops before the user lookup, which no-ops on a
 	// nil handle rather than panicking.

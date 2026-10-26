@@ -159,7 +159,6 @@ const createdViaEmail = "requester@example.test"
 
 func postTaskJSON(t *testing.T, body string) (int, map[string]any) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(body))
@@ -267,7 +266,6 @@ func TestCreatedViaSurvivesAnEdit(t *testing.T) {
 	}
 	id, _ := body["id"].(string)
 
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPatch, "/tasks/"+id,

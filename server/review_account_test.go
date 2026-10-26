@@ -127,7 +127,6 @@ func TestReviewAccountUnconfiguredNeverMatches(t *testing.T) {
 // a panic here would mean a request got further than it should have.
 func postReviewLogin(t *testing.T, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	registerReviewAccountRoute(r, nil)
 
@@ -221,7 +220,6 @@ func TestReviewThrottleResetOnSuccess(t *testing.T) {
 func TestReviewLoginThrottlesRepeatedWrongCodes(t *testing.T) {
 	t.Setenv("REVIEW_ACCOUNT_EMAIL", "review@my-hora.com")
 	t.Setenv("REVIEW_ACCOUNT_CODE", "000000")
-	gin.SetMode(gin.TestMode)
 
 	// One engine, so the attempts share a throttle.
 	r := gin.New()
@@ -255,7 +253,6 @@ func TestReviewLoginThrottlesRepeatedWrongCodes(t *testing.T) {
 func TestReviewLoginOtherAccountsNeverSpendTheBudget(t *testing.T) {
 	t.Setenv("REVIEW_ACCOUNT_EMAIL", "review@my-hora.com")
 	t.Setenv("REVIEW_ACCOUNT_CODE", "000000")
-	gin.SetMode(gin.TestMode)
 
 	r := gin.New()
 	registerReviewAccountRoute(r, nil)
@@ -286,7 +283,6 @@ func TestReviewLoginOtherAccountsNeverSpendTheBudget(t *testing.T) {
 func TestReviewLoginSurfacesTheUnderlyingDBError(t *testing.T) {
 	t.Setenv("REVIEW_ACCOUNT_EMAIL", "review@my-hora.com")
 	t.Setenv("REVIEW_ACCOUNT_CODE", "000000")
-	gin.SetMode(gin.TestMode)
 
 	// Opens lazily, so the failure lands on the query — the same shape as a
 	// database that is up but refusing the statement.
