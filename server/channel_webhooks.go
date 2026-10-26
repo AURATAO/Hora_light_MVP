@@ -173,7 +173,23 @@ func channelSetupWebURL() string {
 		log.Printf("[channel-setup] CHANNEL_SETUP_WEB_URL contains a fragment — ignoring it and serving the built-in page")
 		return ""
 	}
+	// Pointing at this backend is the one value that breaks rather than
+	// degrades: GET /channel/setup would 302 to itself, forever.
+	if base := setupBaseURL(); base != "" && sameHost(v, base) {
+		log.Printf("[channel-setup] CHANNEL_SETUP_WEB_URL points back at this server — ignoring it and serving the built-in page")
+		return ""
+	}
 	return v
+}
+
+// sameHost compares two absolute URLs by host:port, ignoring scheme and path.
+func sameHost(a, b string) bool {
+	ua, erra := url.Parse(a)
+	ub, errb := url.Parse(b)
+	if erra != nil || errb != nil {
+		return false
+	}
+	return ua.Host != "" && strings.EqualFold(ua.Host, ub.Host)
 }
 
 // setupLink puts the token in the URL fragment, not the query: a fragment is

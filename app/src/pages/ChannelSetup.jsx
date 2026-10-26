@@ -35,11 +35,22 @@
 // read during the first render — before paint, before any effect — and taken
 // out of the address bar in the same breath.
 //
-// EVERY DEAD END HAS A WAY OUT, and the two it used to confuse are now
-// separate screens: a link the server rejects is "expired" (text us again),
-// and a server we could not reach is "offline" (reload — the token is kept).
-// Once the number is linked the token is spent, so a booking that then fails
-// retries the BOOKING, never the link.
+// EVERY DEAD END HAS A WAY OUT, and each retry retries the step that failed —
+// never one that cannot succeed twice. There are three, because there are
+// three things that can be spent: a link the server rejects is "expired" (text
+// us again) and one we could not reach is "offline" (try again, the token is
+// kept); once the CODE is spent the retry is the linking, not the code; once
+// the NUMBER is linked the retry is the booking, not the link. A button that
+// re-submits a used one-time code is how a person ends up asking for a third
+// email they do not need (review r2).
+//
+// WHOSE SESSION. The access token this visit minted is held here and passed
+// to every authenticated call; nothing re-reads it from shared storage and no
+// cookie is sent. `dualAuth` prefers the `hora_session` cookie over the
+// Authorization header, and that cookie is `SameSite=None` in production — so
+// a browser still holding one for an older account would otherwise decide
+// which account the phone number binds to, while this page said otherwise
+// (api/channelSetup.js).
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js'
 import { supabase } from '../lib/supabaseClient'
@@ -60,10 +71,12 @@ import {
 const stripePromises = new Map()
 async function stripeFor(publishableKey) {
   if (!stripePromises.has(publishableKey)) {
-    stripePromises.set(
-      publishableKey,
-      import('@stripe/stripe-js/pure').then(({ loadStripe }) => loadStripe(publishableKey)),
-    )
+    // Evicted if it rejects: a cached rejection makes "try again" fail
+    // forever, which is the one thing a retry must not do.
+    const p = import('@stripe/stripe-js/pure')
+      .then(({ loadStripe }) => loadStripe(publishableKey))
+      .catch((err) => { stripePromises.delete(publishableKey); throw err })
+    stripePromises.set(publishableKey, p)
   }
   return stripePromises.get(publishableKey)
 }
@@ -96,7 +109,9 @@ function readToken() {
     else t = sessionStorage.getItem('hora_setup_t') || ''
   } catch { /* storage blocked: keep it in memory only */ }
   if (window.location.search || window.location.hash) {
-    window.history.replaceState(null, '', window.location.pathname)
+    // Keep the existing history state: React Router keeps its own keys in
+    // there and nulling them breaks its back/forward bookkeeping.
+    window.history.replaceState(window.history.state, '', window.location.pathname)
   }
   return t
 }
@@ -105,10 +120,14 @@ function forgetToken() {
   try { sessionStorage.removeItem('hora_setup_t') } catch { /* ignore */ }
 }
 
-// A response the fetch never completed (status 0) or a 5xx is OUR problem, not
-// a bad link. A 400/410 from setupTokenAuth is a bad link.
-function unreachable(res) {
-  return !res.ok && (!res.status || res.status >= 500)
+// Only the two answers setupTokenAuth actually gives for a bad link mean the
+// link is bad: 410 (unknown, used or expired) and 400 (no token in the body).
+// Everything else — a 403 from a misconfigured origin, a 404 from the wrong
+// base URL, a 429, a 5xx, a request that never completed, a 200 of HTML from
+// an SPA rewrite — is our problem, and telling someone to ask for a new link
+// sends them round a loop that fails identically.
+function linkIsBad(res) {
+  return res.status === 410 || res.status === 400
 }
 
 function otpMessage(err) {
@@ -164,11 +183,23 @@ function CardForm({ email, busy, onDone, onSkip }) {
     // redirect: 'if_required' keeps the common card case in-page; a 3DS
     // challenge opens in Stripe's own modal. An EEA card usually takes that
     // path, and it is the same code either way.
-    const { error: stripeError } = await stripe.confirmSetup({
-      elements,
-      redirect: 'if_required',
-      confirmParams: email ? { payment_method_data: { billing_details: { email } } } : undefined,
-    })
+    let stripeError = null
+    try {
+      // Thrown, not returned, for an integration error — a payment method
+      // that can only be completed by redirect, with no return_url. Caught,
+      // because an uncaught one leaves both buttons locked for good, Skip
+      // included, and there is no other way off this screen.
+      ;({ error: stripeError } = await stripe.confirmSetup({
+        elements,
+        redirect: 'if_required',
+        confirmParams: email ? { payment_method_data: { billing_details: { email } } } : undefined,
+      }))
+    } catch (err) {
+      console.error('[channel-setup] confirmSetup threw:', err)
+      setError("That payment method can't be saved here. Try a card, or press Skip for now.")
+      setSaving(false)
+      return
+    }
     if (stripeError) {
       // Stripe's own message: it is written for the cardholder and names the
       // field that was wrong.
@@ -199,7 +230,7 @@ function CardForm({ email, busy, onDone, onSkip }) {
 // ── the page ──────────────────────────────────────────────────────────────
 
 export default function ChannelSetup() {
-  // loading | offline | expired | email | code | card | retry | done
+  // loading | offline | expired | email | code | linking | card | retry | done
   const [view, setView] = useState('loading')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -217,13 +248,16 @@ export default function ChannelSetup() {
   // rendered, and it must not change identity across renders.
   const tokenRef = useRef(null)
   if (tokenRef.current === null) tokenRef.current = readToken()
-  // Set once the number is attached. From then on the token is spent and the
-  // only thing left to retry is the booking.
-  const linkedRef = useRef(false)
+  // The access token this visit minted (verifyOtp). Held here, passed to every
+  // authenticated call, never re-read from shared storage.
+  const accessRef = useRef('')
+  // What the 'retry' screen retries: 'card' (the card step never opened) or
+  // 'book' (it did, or was skipped, and the booking failed).
+  const [retryKind, setRetryKind] = useState('book')
   const emailRef = useRef(null)
   const codeRef = useRef(null)
 
-  const step = view === 'done' || view === 'card' || view === 'retry' ? 3 : view === 'code' ? 2 : 1
+  const step = view === 'done' || view === 'card' || view === 'retry' ? 3 : view === 'code' || view === 'linking' ? 2 : 1
 
   async function load() {
     const token = tokenRef.current
@@ -234,10 +268,10 @@ export default function ChannelSetup() {
       checkSetupToken(token).catch(() => ({ ok: false, status: 0, data: {} })),
       supabase.auth.getSession().then((r) => r?.data?.session || null).catch(() => null),
     ])
-    if (unreachable(check)) { setView('offline'); return }
-    // A 2xx is not enough: a captive portal or an SPA rewrite answers 200 with
-    // something that is not this endpoint's body.
-    if (!check.ok || check.data.valid !== true) { setView('expired'); return }
+    if (linkIsBad(check)) { setView('expired'); return }
+    // A 2xx is not enough either: a captive portal or an SPA rewrite answers
+    // 200 with something that is not this endpoint's body.
+    if (!check.ok || check.data.valid !== true) { setView('offline'); return }
     setCfg(config.data || {})
     setPhoneHint(check.data.phone_hint || 'your phone')
     setBooking(check.data.booking || null)
@@ -280,60 +314,84 @@ export default function ChannelSetup() {
     setError('')
     setBusy(true)
     const { data, error: err } = await supabase.auth.verifyOtp({ email, token: digits, type: 'email' })
-    if (err || !data?.session) {
+    if (err || !data?.session?.access_token) {
       setBusy(false)
       setError("That code didn't work. Check the latest email, or go back and resend.")
       return
     }
+    // The code is spent from here on, so this view can never be returned to:
+    // its button would re-submit a used code and send the person to ask for
+    // an email they do not need.
+    accessRef.current = data.session.access_token
+    setView('linking')
     await linkThenCard()
   }
 
-  // Spend the token: attach the number to the account just proved. The only
-  // place it is spent, and the last place it is used.
+  // Spend the setup token: attach the number to the account whose mailbox was
+  // just proved. The only place it is spent, and the last place it is used.
+  // Reachable only from the 'linking' view, whose own button calls this again
+  // — so a failure that did NOT spend the token retries the link, and never
+  // the one-time code behind it.
   async function linkThenCard() {
     setError('')
     setBusy(true)
-    const res = await linkSetupNumber(tokenRef.current).catch(() => ({ ok: false, status: 0, data: {} }))
-    if (unreachable(res)) {
+    const res = await linkSetupNumber(tokenRef.current, accessRef.current)
+    if (res.status === 410) {
       setBusy(false)
-      setError("We couldn't reach HO:RA to connect your number. Check your connection and press Confirm again.")
+      forgetToken()
+      tokenRef.current = ''
+      setView('expired')
       return
     }
-    if (res.status === 410) { setBusy(false); forgetToken(); setView('expired'); return }
     if (res.status === 409) {
+      // The token is NOT spent — the number belongs to another account, and
+      // proving THAT account's mailbox is the way through. Back to the email
+      // step, where a fresh code is typed for it.
       setBusy(false)
       setError(
         'This phone number is already connected to a different HO:RA account. ' +
-        'Use that account’s email, or write to info@my-hora.com.',
+        'Use that account\u2019s email, or write to info@my-hora.com.',
       )
+      accessRef.current = ''
+      setCode('')
       setView('email')
       return
     }
     if (!res.ok || res.data.linked !== true) {
       setBusy(false)
-      setError("We couldn't connect your number. Please try again.")
+      setError("We couldn't connect your number. Check your connection and try again.")
       return
     }
-    linkedRef.current = true
     forgetToken()
     tokenRef.current = ''
     if (res.data.phone_hint) setPhoneHint(res.data.phone_hint)
+    await openCard()
+  }
 
-    // The card. 503 means payments are not configured here (staging): book
-    // straight away, and if the server does need a card, finish() says so.
-    // Any OTHER failure is not a reason to skip a card silently.
-    const si = await createSetupIntent().catch(() => ({ ok: false, status: 0, data: {} }))
+  // The card step. A 503 means payments are not configured here (staging):
+  // book straight away, and if the server does need a card, finish() says so.
+  // Any OTHER failure is not a reason to skip a card silently — it is a retry
+  // of the card step, which is what the 'retry' screen then offers.
+  async function openCard() {
+    setError('')
+    setBusy(true)
+    const si = await createSetupIntent(accessRef.current)
     if (si.status === 503) { await book(); return }
     if (!si.ok || !si.data.client_secret || !si.data.publishable_key) {
       setBusy(false)
-      setError("Your number is connected, but we couldn't open the card form. Press Try again.")
+      setError("Your number is connected, but we couldn't open the card form.")
+      setRetryKind('card')
       setView('retry')
       return
     }
-    const stripe = await stripeFor(si.data.publishable_key).catch(() => null)
+    const stripe = await stripeFor(si.data.publishable_key).catch((err) => {
+      console.error('[channel-setup] Stripe.js did not load:', err)
+      return null
+    })
     if (!stripe) {
       setBusy(false)
-      setError("Your number is connected, but we couldn't load the card form. Check your connection and press Try again.")
+      setError("Your number is connected, but we couldn't load the card form. Check your connection.")
+      setRetryKind('card')
       setView('retry')
       return
     }
@@ -348,10 +406,11 @@ export default function ChannelSetup() {
   async function book() {
     setError('')
     setBusy(true)
-    const res = await finishSetup().catch(() => ({ ok: false, status: 0, data: {} }))
+    const res = await finishSetup(accessRef.current)
     setBusy(false)
     if (!res.ok || typeof res.data.outcome !== 'string') {
       setError("We couldn't finish booking. Please try again.")
+      setRetryKind('book')
       setView('retry')
       return
     }
@@ -386,7 +445,7 @@ export default function ChannelSetup() {
     return () => { document.title = prevTitle; meta.remove() }
   }, [])
 
-  const showTerms = view === 'email' || view === 'code' || view === 'card'
+  const showTerms = view === 'email' || view === 'code' || view === 'linking' || view === 'card'
 
   return (
     <main className="min-h-screen bg-[#FAFAF7] text-[#222831]">
@@ -510,18 +569,48 @@ export default function ChannelSetup() {
           </>
         )}
 
+        {view === 'linking' && (
+          <>
+            <h1 className="mb-2 text-2xl font-semibold leading-tight">
+              {error ? 'Almost connected' : 'Connecting your number…'}
+            </h1>
+            <p className="mb-6 text-[#5F6670]">
+              {error
+                ? `Your email is confirmed. We still have to connect texts from ${phoneHint} to it — no need to type the code again.`
+                : `Confirming ${email} and connecting texts from ${phoneHint}.`}
+            </p>
+            {error && (
+              <button className={BTN} disabled={busy} onClick={linkThenCard}>
+                {busy ? 'One moment…' : 'Try again'}
+              </button>
+            )}
+          </>
+        )}
+
         {view === 'retry' && (
           <>
             <h1 className="mb-2 text-2xl font-semibold leading-tight">Your number is connected</h1>
             <p className="mb-6 text-[#5F6670]">
-              Texts from {phoneHint} now reach your HO:RA account. One thing left: placing the
-              booking you said yes to.
+              Texts from {phoneHint} now reach your HO:RA account.{' '}
+              {retryKind === 'card'
+                ? 'One thing left: the card, and then the booking you said yes to.'
+                : 'One thing left: placing the booking you said yes to.'}
             </p>
-            <button className={BTN} disabled={busy} onClick={book}>
-              {busy ? 'Booking…' : 'Try again'}
+            <button
+              className={BTN}
+              disabled={busy}
+              onClick={retryKind === 'card' ? openCard : book}
+            >
+              {busy ? 'One moment…' : 'Try again'}
             </button>
+            {retryKind === 'card' && (
+              <button className={LINK_BTN} disabled={busy} onClick={book}>
+                Book without a card
+              </button>
+            )}
             <p className="mt-4 text-[13px] text-[#5F6670]">
-              If this keeps failing, go back to Messages and text HO:RA — nothing is lost.
+              If this keeps failing, go back to Messages and text HO:RA — nothing is lost, and your
+              number stays connected.
             </p>
           </>
         )}

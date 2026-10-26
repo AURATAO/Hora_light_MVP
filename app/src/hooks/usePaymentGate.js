@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { loadStripe } from '@stripe/stripe-js'
+import { loadStripe } from '@stripe/stripe-js/pure'
 import {
   confirmTaskPayment,
   FALLBACK_PUBLISHABLE_KEY,

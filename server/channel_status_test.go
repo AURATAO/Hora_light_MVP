@@ -71,6 +71,13 @@ func TestSetupWebURLRejectsUnusableValues(t *testing.T) {
 			t.Errorf("%q should fall back to the built-in page, got %q", bad, got)
 		}
 	}
+	// Pointing back at this server would be a redirect loop.
+	t.Setenv("CHANNEL_SETUP_BASE_URL", "https://api.example.test")
+	t.Setenv("CHANNEL_SETUP_WEB_URL", "https://api.example.test/channel/setup")
+	if got := channelSetupWebURL(); got != "" {
+		t.Errorf("a web URL on this server's own host should be ignored, got %q", got)
+	}
+	t.Setenv("CHANNEL_SETUP_BASE_URL", "")
 	t.Setenv("CHANNEL_SETUP_WEB_URL", "http://localhost:5173/channel/setup")
 	if got := channelSetupWebURL(); got != "http://localhost:5173/channel/setup" {
 		t.Errorf("a local dev URL must be usable: %q", got)

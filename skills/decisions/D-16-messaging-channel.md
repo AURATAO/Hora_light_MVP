@@ -430,3 +430,59 @@ Also corrected from the same review: the live-switch migration
 card added while the test key is still live mints a test customer the one-shot
 migration has already passed. What happened on the day: deploy first, migration
 nine minutes later, no traffic in between.
+
+**Review r2 (FAIL, 1 MAJOR + one finding that needed a fact) → fixes.**
+
+1. (MAJOR) The pre-link failure path told the person to "press Confirm
+   again", and Confirm could not work: `verifyOtp` had already spent the code,
+   so the retry re-submitted a used one and ended on "that code didn't work —
+   resend", which can then hit Supabase's send rate limit. The post-link twin
+   of this was r1's finding 3; this was its mirror. Fixed by making the states
+   match what is spendable: a new `linking` view is entered the moment the
+   code is accepted, and ITS button retries the LINK (the setup token was
+   never spent). Three retries now, each retrying only its own step: the link
+   check, the linking, the booking.
+2. (was MINOR, now a real one — the fact the reviewer asked for) **`dualAuth`
+   tries the `hora_session` cookie FIRST** and the Authorization header
+   second, and in production that cookie is `SameSite=None; Secure`, so it is
+   sent on cross-origin calls from the webapp. The page was sending
+   `credentials: 'include'` and re-reading the session from localStorage per
+   call. A browser still holding a cookie for an older account would
+   therefore have decided which account the number bound to, while the page
+   said it was binding the email just proved — the r1 BLOCKER by another
+   route. Fixed: the access token from THIS visit's `verifyOtp` is held in the
+   page and passed explicitly to link / setup-intent / finish, and all four
+   calls send `credentials: 'omit'`. Nothing re-reads shared storage, so a
+   second tab changing accounts mid-flow cannot change the principal either.
+3. (MINOR) The `retry` screen said "card form" but its button called finish →
+   it now knows which step failed (`retryKind`) and offers that one, with
+   "Book without a card" as the explicit alternative. `stripeFor` evicts a
+   rejected promise instead of caching the failure forever.
+4. (MINOR) `confirmSetup` can THROW (a redirect-only method with no
+   return_url) → wrapped; an uncaught one left both buttons, Skip included,
+   locked for good.
+5. (MINOR) `/check` classification inverted: only the two answers
+   `setupTokenAuth` actually gives for a bad link (410, 400) mean "expired".
+   A 403 from a misconfigured CORS origin, a 404 from a wrong API base, a 429
+   or 200-of-HTML now say "we couldn't reach HO:RA" — telling someone to ask
+   for a new link when the origin is misconfigured sends them round a loop
+   that fails identically.
+6. (MINOR, and it defeated r1's fix 6) `@stripe/stripe-js` injects Stripe's
+   script at module IMPORT, and `App.jsx` imports every page statically — so
+   `PaymentMethods.jsx` and `usePaymentGate.js` were loading it on every page
+   of the app, including this one while the token was still in the URL. Both
+   switched to `@stripe/stripe-js/pure`; the whole app now loads Stripe only
+   where a card sheet opens.
+7. (MINOR) `CHANNEL_SETUP_WEB_URL` pointing back at this server is ignored
+   (it would be a 302 to itself, forever); `history.replaceState` preserves
+   React Router's own history state; failed fetches log a reason instead of
+   being swallowed; PLAN's description of the removed shortcut is gone.
+
+Residuals declared (for the Arbiter): the webapp origin has no CSP,
+`Referrer-Policy` or `X-Frame-Options` of its own, which the embedded page
+had — worth a `vercel.json` headers block before go-live, and the setup token
+now sits in `sessionStorage` on an origin shared with the rest of the app
+until it is spent. A reload between linking and booking still lands on
+"expired" though the number is linked (the booking can be finished by texting
+HO:RA). `nothing_to_book` after a retry says "tell HO:RA what you need" even
+when the first attempt did book.

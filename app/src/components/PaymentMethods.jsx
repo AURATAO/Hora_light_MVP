@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { loadStripe } from '@stripe/stripe-js'
+import { loadStripe } from '@stripe/stripe-js/pure'
 import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js'
 import { CreditCard, Plus, Trash2 } from 'lucide-react'
 import {
@@ -20,6 +20,13 @@ import { useToast } from '../providers/ToastProvider'
  * The card form is Stripe's own <PaymentElement>, rendered in an iframe served
  * from Stripe's origin: the number never touches this app, which is what keeps
  * the whole web client out of PCI scope and gets 3DS handling for free.
+ *
+ * The '/pure' entry point, not the plain one: the plain module injects
+ * Stripe's script the moment it is IMPORTED, and App.jsx imports every page
+ * statically — so a third-party script was loading on every page of this app,
+ * including the chat-booking setup page while a one-use token was still in
+ * its URL (D-16 setup review r2). With '/pure' the injection happens on the
+ * loadStripe call, which is where the card sheet actually is.
  *
  * loadStripe is called with the publishable key the BACKEND sends, not a
  * VITE_ variable, so rotating keys does not need a web deploy. It is memoised

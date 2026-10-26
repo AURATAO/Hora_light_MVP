@@ -173,8 +173,10 @@ reasoning on by default — measure latency with it on and off.
 - [x] **Go-live change (D-16 R-4):** setup page moved from `server/` to `app/`
   (`app/src/pages/ChannelSetup.jsx` + `app/src/api/channelSetup.js`, Tailwind,
   this app's Supabase and Stripe clients; 2026-10-26). Same endpoints, same
-  proof model; adds a "you're signed in as X — connect this number?" step
-  instead of making a signed-in person retype an email and a code. Switch it
+  proof model: a fresh email code is typed every time, and a signed-in session
+  only prefills the email field — a draft that offered to connect the number to
+  the signed-in account instead was a one-tap takeover and was removed in
+  review (D-16 addendum 2026-10-26). Switch it
   on per environment with **`CHANNEL_SETUP_WEB_URL`** (full page URL, e.g.
   `https://core.horaapp.co/channel/setup`): new texted links point there, and
   `GET /channel/setup` on the backend 302s to it so links already sent still
