@@ -546,7 +546,9 @@ scanner still flags. The earlier red runs predate the allowlist entry.
 **C-3 (review freeze).** Over — v1 approved 2026-10-24.
 
 **C-1 (schema drift, I-05).** Green: `supabase db diff --db-url <staging
-branch> --schema=public` → "No schema changes found". This was the first time
+branch> --schema=public` → "No schema changes found". **supabase CLI v2.122.0**,
+on a Mac with Docker, against the staging branch; the version is part of the
+evidence (I-05: a result from a different one does not count). This was the first time
 I-05 had ever been run — it had been INCOMPLETE on base and branch alike for
 want of Docker and a URL — and it earned its place twice over:
 

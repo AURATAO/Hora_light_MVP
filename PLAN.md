@@ -179,8 +179,9 @@ reasoning on by default — measure latency with it on and off.
   or do both halves with Supabase support's help.
 - [x] **C-1 · I-05 GREEN (2026-10-26).** `supabase db diff --db-url <staging
   branch> --schema=public` → **"No schema changes found"**, on Aura's Mac with
-  Docker, against the staging branch (`qxohqvkmzxokdyzrysgr`), never
-  `--linked`. It took two corrections to get a meaningful answer and both are
+  Docker, **supabase CLI v2.122.0**, against the staging branch
+  (`qxohqvkmzxokdyzrysgr`), never `--linked`. The version is recorded because
+  I-05 says a result from a different one is not evidence. It took two corrections to get a meaningful answer and both are
   now written into I-05 itself: `--schema=public` (without it the diff reports
   the `storage`/`auth`/`realtime` schemas Supabase upgrades on its own, so it
   can never be green), and the equals sign (this CLI parses `--schema public`

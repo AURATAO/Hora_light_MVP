@@ -36,7 +36,7 @@ flag goes on (phase 3), and adding them changes nothing by itself.
 
 | # | Condition | State 2026-10-26 |
 |---|---|---|
-| C-1 | I-05 schema check green on a machine with Docker + supabase CLI | **done** — "No schema changes found", 2026-10-26 |
+| C-1 | I-05 schema check green on a machine with Docker + supabase CLI | **done** — "No schema changes found", CLI v2.122.0, 2026-10-26 |
 | C-2 | gitleaks green on a full clone | **done** — v8.21.2, 425 commits, no leaks |
 | C-3 | App Store review freeze over | **done** — approved 2026-10-24 |
 | C-4 | Delete `server/channel_setup.html` + `.js` (S-02 exception expires at go-live) | **do during phase 5** |
