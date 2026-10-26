@@ -154,7 +154,21 @@ reasoning on by default — measure latency with it on and off.
 - [ ] Baseten API key
 - [ ] TalkJS: a **separate app** "HO:RA Staging" (its Test env) on the staging Render service — not a second key on the production app: TalkJS webhooks are per app, so a shared app would deliver production chat events to staging and vice versa (key rule, §16). Then its webhook → staging `/webhooks/talkjs` for M3 relay.
 - [ ] TalkJS production: confirm whether prod runs on the app's Test or Live environment; switch to Live before launch if needed
-- [ ] **D-16 merge conditions (deadline 2026-10-30, before any merge to main):** C-1 I-05 green on a Docker machine with CLI v2.118.0 against the staging branch; C-2 gitleaks green on a full clone (resolve inherited `payments_phase3_test.go:1109` placeholder by decision); C-3 review freeze over.
+- [x] **C-2 · gitleaks GREEN (2026-10-26).** gitleaks v8.21.2 on a FULL clone
+  (unshallowed, 425 commits): **no leaks found**. The inherited
+  `payments_phase3_test.go:1109` placeholder is resolved by the fingerprint
+  already in `.gitleaksignore`, not by skipping the scan — proved narrow by
+  putting an `sk_live_`-shaped literal in a copy of that same file, which the
+  scanner still flags. Nothing to decide; the earlier red runs predate the
+  allowlist entry.
+- [ ] **D-16 merge conditions (deadline 2026-10-30, before any merge to main):** C-1 I-05 green on a Docker machine with CLI v2.118.0 against the staging branch; ~~C-2~~ done; C-3 ~~review freeze~~ over (app approved 2026-10-24); C-4 delete the two `server/channel_setup.*` files (above).
+- [ ] **C-1 note (2026-10-26):** production's migration ledger CANNOT be
+  compared to the repo by filename. 33 versions are recorded there against 41
+  files here, and several differ in timestamp for the same content (e.g. repo
+  `20260818140000` vs production `20260818225732`) because they were applied
+  through the MCP `apply_migration`, which stamps at apply time. So I-05 has to
+  be the schema-based `supabase db diff`, and a "missing version" in the ledger
+  is not by itself evidence of drift.
 - [ ] **Env ticket (D-16 R-5):** a verification machine with Docker + supabase CLI v2.118.0 and a `VERIFY_DB_URL` for the staging branch, so I-05 can actually run (today: INCOMPLETE everywhere, base and branch alike). Optional: stop committing `supabase/.temp/`.
 - [x] **Go-live change (D-16 R-4):** setup page moved from `server/` to `app/`
   (`app/src/pages/ChannelSetup.jsx` + `app/src/api/channelSetup.js`, Tailwind,

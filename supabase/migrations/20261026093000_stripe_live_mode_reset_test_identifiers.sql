@@ -40,8 +40,14 @@
 -- went first and this was applied ~9 minutes later, with no traffic in
 -- between.)
 --
--- One-off: this is the 2026-10-26 production mode switch. On any database that
--- is still on test keys it clears test customers that would simply be recreated.
+-- ONE-OFF, AND DANGEROUS TO RE-RUN. On a database that has since been living
+-- on live keys, running this again clears every real customer and Connect
+-- account, and every requester has to add their card a second time. It is
+-- recorded as applied in production's `supabase_migrations.schema_migrations`
+-- (version 20261026093000, inserted by hand on 2026-10-26 because the UPDATEs
+-- themselves were run by hand), so `supabase db push` skips it. Anyone
+-- reaching for `--include-all` or a fresh ledger: this file is history, not a
+-- step to repeat.
 
 update public.users
    set stripe_customer_id = null
