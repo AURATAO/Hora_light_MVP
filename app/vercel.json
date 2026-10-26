@@ -1,4 +1,37 @@
 {
+  "//": "Response headers and SPA routing for the web app. The headers were added 2026-10-26 (D-16 setup-page review r2/r3): the chat-booking setup page moved out of the Go binary, which served its own strict headers, into this app, which had none. They apply to every route, because none of them costs anything on the others.",
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "//": "Nobody frames this app. The setup page has one-tap state changes (connect this number, save this card) and a framed copy is how a person is tricked into tapping one. CSP frame-ancestors is the modern spelling and is here too; this is the one older browsers obey.",
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        },
+        {
+          "//": "frame-ancestors only — NOT a full Content-Security-Policy. A real CSP has to name every origin this app loads (Stripe, TalkJS, Google Maps, Google Fonts, Supabase) and getting one wrong is a blank page, so it is its own task after go-live. This one directive is safe on its own: it restricts who may frame us and says nothing about what we may load.",
+          "key": "Content-Security-Policy",
+          "value": "frame-ancestors 'none'"
+        },
+        {
+          "//": "A URL on this origin can carry a one-use booking token in its fragment. Fragments are never sent in a Referer, but the path can be, and 'this person came from /channel/setup' is not something a third-party site needs.",
+          "key": "Referrer-Policy",
+          "value": "no-referrer"
+        },
+        {
+          "//": "Serve what the Content-Type says, and never let a browser guess a script out of something else.",
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "//": "Hardware this app never asks for. Geolocation is NOT in the list: the task pages use it. Payment is NOT either: Stripe's iframe needs it for Apple Pay and Google Pay.",
+          "key": "Permissions-Policy",
+          "value": "camera=(), microphone=(), usb=(), magnetometer=(), accelerometer=(), gyroscope=()"
+        }
+      ]
+    }
+  ],
   "rewrites": [
     { "source": "/assets/(.*)", "destination": "/assets/$1" },
     { "source": "/(.*\\..*)", "destination": "/$1" },

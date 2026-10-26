@@ -184,6 +184,15 @@ reasoning on by default — measure latency with it on and off.
   origin must be in `CORS_ALLOW_ORIGINS` — if it is not, every texted link
   opens and every visitor sees "we couldn't reach HO:RA" with nothing in the
   server log, so check it with one real link per environment.
+- [x] **Web app response headers (setup-page review r2/r3, 2026-10-26):**
+  `app/vercel.json` now sends `X-Frame-Options: DENY`,
+  `Content-Security-Policy: frame-ancestors 'none'`, `Referrer-Policy:
+  no-referrer`, `X-Content-Type-Options: nosniff` and a `Permissions-Policy`
+  that closes camera/microphone/USB/motion. Deliberately NOT a full CSP: that
+  has to enumerate Stripe, TalkJS, Google Maps, Google Fonts and Supabase, and
+  one omission is a blank page — its own task after go-live, with every page
+  clicked through afterwards. `geolocation` and `payment` are left permitted
+  (task tracking; Apple/Google Pay inside Stripe's iframe).
 - [ ] **Merge condition C-4 (from the setup-page review, 2026-10-26):** the
   S-02/S-30 exception for `server/channel_setup.html` + `.js` expires at
   go-live. They are kept now ONLY because staging has no webapp build pointed
