@@ -177,7 +177,17 @@ reasoning on by default — measure latency with it on and off.
   the `supabase_admin` set would survive and the result would read safer than
   it is. Decide: leave the per-table discipline as the rule (today's answer),
   or do both halves with Supabase support's help.
-- [ ] **D-16 merge conditions (deadline 2026-10-30, before any merge to main):** C-1 I-05 green on a Docker machine with CLI v2.118.0 against the staging branch; ~~C-2~~ done; C-3 ~~review freeze~~ over (app approved 2026-10-24); C-4 delete the two `server/channel_setup.*` files (above).
+- [x] **C-1 · I-05 GREEN (2026-10-26).** `supabase db diff --db-url <staging
+  branch> --schema=public` → **"No schema changes found"**, on Aura's Mac with
+  Docker, against the staging branch (`qxohqvkmzxokdyzrysgr`), never
+  `--linked`. It took two corrections to get a meaningful answer and both are
+  now written into I-05 itself: `--schema=public` (without it the diff reports
+  the `storage`/`auth`/`realtime` schemas Supabase upgrades on its own, so it
+  can never be green), and the equals sign (this CLI parses `--schema public`
+  as a positional argument). The first real run found something: three tables
+  revoked by hand and never written into a migration — fixed by
+  `20261026150000`, see above.
+- [ ] **D-16 merge conditions:** ~~C-1~~ green 2026-10-26; ~~C-2~~ green 2026-10-26; ~~C-3~~ over (app approved 2026-10-24); **C-4 is the only one left** — delete the two `server/channel_setup.*` files on merge day (above).
 - [ ] **C-1 note (2026-10-26):** production's migration ledger CANNOT be
   compared to the repo by filename. 33 versions are recorded there against 41
   files here, and several differ in timestamp for the same content (e.g. repo

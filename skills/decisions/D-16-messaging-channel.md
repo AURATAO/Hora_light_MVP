@@ -534,3 +534,48 @@ linking and booking lands on "expired" though the number is linked (texting
 HO:RA finishes it); `dualAuth` remains cookie-first, so "the code was typed
 this visit" is a property of this page's calls, not of the endpoint — the
 endpoint accepts any valid session, as it did before.
+
+## Addendum 2026-10-26 — merge conditions: C-1, C-2 and C-3 all met
+
+**C-2 (secret scan).** gitleaks v8.21.2 on a FULL clone, 425 commits: no leaks
+found. The inherited `payments_phase3_test.go` placeholder is covered by the
+fingerprint already in `.gitleaksignore`, and that allowlist was proved narrow
+by putting an `sk_live_`-shaped literal in a copy of the same file, which the
+scanner still flags. The earlier red runs predate the allowlist entry.
+
+**C-3 (review freeze).** Over — v1 approved 2026-10-24.
+
+**C-1 (schema drift, I-05).** Green: `supabase db diff --db-url <staging
+branch> --schema=public` → "No schema changes found". This was the first time
+I-05 had ever been run — it had been INCOMPLETE on base and branch alike for
+want of Docker and a URL — and it earned its place twice over:
+
+1. **Two corrections to the check itself**, both now in I-05 so the next
+   person does not lose an hour to them. `--schema=public` is required: the
+   default diffs every schema, including `storage`, `auth` and `realtime`,
+   which Supabase upgrades on its own and which our migrations never contain,
+   so pages of their triggers bury any real finding and the check can never be
+   green. And the flag needs its equals sign on the current CLI, which parses
+   `--schema public` as a positional argument.
+2. **A real finding.** `users`, `notifications` and `audit_logs` had their
+   client grants revoked BY HAND on the live databases and never written into
+   a migration. Nothing was open — both databases measured zero client DML
+   grants, and the Rule 3 queries on the staging branch return 3 / 0 / 0 / 0 —
+   but a database rebuilt from these migrations would have handed `anon` and
+   `authenticated` full DML on all three, with only RLS deny-all in front, and
+   CLAUDE.md Rule 3 is explicit that RLS is the lock and the absent grant is
+   the authorization. Closed by `20261026150000`.
+
+   The mechanism worth remembering: `pg_default_acl` on this schema grants
+   `anon` and `authenticated` ALL on **every new table**, set by both
+   `supabase_admin` and `postgres`. Every REVOKE in every migration is
+   therefore load-bearing, and a forgotten one is a table open to PostgREST
+   but for RLS. Whether to revoke the default privileges themselves is in
+   PLAN §11 for a ruling — `postgres` can only alter its own set, so doing it
+   halfway would read safer than it is.
+
+This is D-02's lesson a second time, and the format D-02 prescribed is what
+caught it: a security invariant states the query that proves it, so that
+checking is mechanical and deferring it is visible. **C-4 — deleting
+`server/channel_setup.html` and `.js` — is now the only merge condition left,
+and it is a merge-day step.**
