@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -182,14 +183,40 @@ func channelSetupWebURL() string {
 	return v
 }
 
-// sameHost compares two absolute URLs by host:port, ignoring scheme and path.
+// sameHost compares two absolute URLs by hostname and port, ignoring scheme
+// and path, with the default port for the scheme filled in so that
+// https://h:443 and https://h compare equal.
+//
+// FAILS CLOSED: a URL neither of us can parse is treated as the same host, so
+// an unparseable CHANNEL_SETUP_WEB_URL is ignored rather than used — the
+// fallback is the page this binary serves, which works.
 func sameHost(a, b string) bool {
-	ua, erra := url.Parse(a)
-	ub, errb := url.Parse(b)
+	ha, erra := hostPort(a)
+	hb, errb := hostPort(b)
 	if erra != nil || errb != nil {
-		return false
+		log.Printf("[channel-setup] cannot compare setup URLs (%v / %v) — treating them as the same host", erra, errb)
+		return true
 	}
-	return ua.Host != "" && strings.EqualFold(ua.Host, ub.Host)
+	return strings.EqualFold(ha, hb)
+}
+
+func hostPort(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("parse %q: %w", raw, err)
+	}
+	if u.Hostname() == "" {
+		return "", fmt.Errorf("no host in %q", raw)
+	}
+	port := u.Port()
+	if port == "" {
+		if u.Scheme == "http" {
+			port = "80"
+		} else {
+			port = "443"
+		}
+	}
+	return u.Hostname() + ":" + port, nil
 }
 
 // setupLink puts the token in the URL fragment, not the query: a fragment is

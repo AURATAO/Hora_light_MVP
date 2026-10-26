@@ -486,3 +486,51 @@ until it is spent. A reload between linking and booking still lands on
 "expired" though the number is linked (the booking can be finished by texting
 HO:RA). `nothing_to_book` after a retry says "tell HO:RA what you need" even
 when the first attempt did book.
+
+**Review r3: PASS** (no BLOCKER, no MAJOR; all seven r2 fixes verified in
+code). Minors fixed anyway, because each one was a person stuck on a screen:
+
+1. An expired access token (not refreshed by this page; Supabase's default is
+   an hour, and the card step can idle longer) made `finish` answer 401 and
+   "Try again" repeat it forever. There is now a sign-in-again path: the email
+   is known, one fresh code, and because the number is already attached it
+   resumes at the card step rather than the linking. 401/403 is handled on all
+   three authenticated calls.
+2. A 410 on a RETRIED link — the first request landed, the answer was lost —
+   said "text HO:RA for a fresh link", which is the one thing that will not
+   help. It now has its own screen: the number is probably connected, text
+   HO:RA to find out where the booking stands.
+3. `signInWithOtp` / `verifyOtp` are wrapped: supabase-js awaits every
+   `onAuthStateChange` subscriber inside them, so a listener that threw would
+   have left the button disabled with a spent code. (Checked: neither of this
+   app's two listeners throws or navigates on SIGNED_IN, and this route is
+   outside `ProtectedLayout` — so nothing kicks the person off mid-flow.)
+4. `getSession()` no longer gates the page: it can block on the auth lock and
+   a token refresh, and it only prefills an email. The page renders, the
+   prefill arrives when it arrives.
+5. `sameHost` fails CLOSED (an unparseable URL is treated as this server's own
+   host and the value ignored), logs why, and normalises default ports; the
+   test now covers the normal production shape (a different host with a base
+   set), which a `sameHost` stuck at `true` would have failed.
+6. The offline screen no longer claims "your link is fine" (it covers 403,
+   404, 429 too) and offers texting HO:RA as the way out. The router's
+   in-memory location is cleared with `navigate(replace)` as well as
+   `history.replaceState`, so `useLocation().hash` cannot hand the token to a
+   future analytics or error-reporting hook.
+
+**Declared trade-off (reviewer's NIT 7, worth stating):** switching
+`PaymentMethods.jsx` and `usePaymentGate.js` to `@stripe/stripe-js/pure` means
+Stripe.js is no longer present on every page, which is what Stripe recommends
+for its fraud signals. It is still loaded before every card sheet, which is
+where the signals that matter are collected, and the alternative was a
+third-party script on the page that holds a one-use booking token. Revisit if
+Radar ever shows thin device data.
+
+**Residuals carried (Arbiter to rule):** no CSP / `Referrer-Policy` /
+`X-Frame-Options` on the webapp origin (a `vercel.json` headers block before
+go-live — offered, not yet built); the setup token sits in `sessionStorage` on
+an origin shared with the rest of the app until it is spent; a reload between
+linking and booking lands on "expired" though the number is linked (texting
+HO:RA finishes it); `dualAuth` remains cookie-first, so "the code was typed
+this visit" is a property of this page's calls, not of the endpoint — the
+endpoint accepts any valid session, as it did before.

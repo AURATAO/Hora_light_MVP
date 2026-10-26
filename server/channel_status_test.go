@@ -71,8 +71,20 @@ func TestSetupWebURLRejectsUnusableValues(t *testing.T) {
 			t.Errorf("%q should fall back to the built-in page, got %q", bad, got)
 		}
 	}
-	// Pointing back at this server would be a redirect loop.
+	// A DIFFERENT host, with a base set, is the normal production shape and
+	// must be accepted — a sameHost that always said true would otherwise
+	// fall back to the built-in page everywhere and pass every other case.
 	t.Setenv("CHANNEL_SETUP_BASE_URL", "https://api.example.test")
+	t.Setenv("CHANNEL_SETUP_WEB_URL", "https://core.example.test/channel/setup")
+	if got := channelSetupWebURL(); got != "https://core.example.test/channel/setup" {
+		t.Fatalf("a web URL on another host must be used: %q", got)
+	}
+	// The same host written with its default port is still the same host.
+	t.Setenv("CHANNEL_SETUP_WEB_URL", "https://api.example.test:443/channel/setup")
+	if got := channelSetupWebURL(); got != "" {
+		t.Errorf("default-port spelling of this server's host should be ignored, got %q", got)
+	}
+	// Pointing back at this server would be a redirect loop.
 	t.Setenv("CHANNEL_SETUP_WEB_URL", "https://api.example.test/channel/setup")
 	if got := channelSetupWebURL(); got != "" {
 		t.Errorf("a web URL on this server's own host should be ignored, got %q", got)

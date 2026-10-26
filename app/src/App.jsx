@@ -35,12 +35,12 @@ export default function App() {
           if it is installed, offers the web task page if it isn't. Public on
           purpose — being signed out is what it exists to solve.
           See app/src/pages/OpenInApp.jsx and server/internal/notify/links.go. */}
+      <Route path="/open/task/:id" element={<OpenInApp />} />
+      <Route path="/open/task/:id/review" element={<OpenInApp />} />
       {/* Where the link HO:RA texts a first-time chat booker lands. PUBLIC by
           design: nobody has an account yet when they arrive — making one is
           half of what this page does (server/channel_setup.go, D-16 R-4). */}
       <Route path="/channel/setup" element={<ChannelSetup />} />
-      <Route path="/open/task/:id" element={<OpenInApp />} />
-      <Route path="/open/task/:id/review" element={<OpenInApp />} />
       {/* Sign in with Apple lands here (Supabase redirectTo) with a PKCE
           code; the page trades it for a session and the hora_session cookie.
           Public: nobody is signed in yet when they arrive. */}

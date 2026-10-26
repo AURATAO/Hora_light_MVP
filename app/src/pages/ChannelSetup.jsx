@@ -52,6 +52,7 @@
 // which account the phone number binds to, while this page said otherwise
 // (api/channelSetup.js).
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js'
 import { supabase } from '../lib/supabaseClient'
 import {
@@ -128,6 +129,15 @@ function forgetToken() {
 // sends them round a loop that fails identically.
 function linkIsBad(res) {
   return res.status === 410 || res.status === 400
+}
+
+// The access token minted at the code step is not refreshed by this page, and
+// Supabase's default lifetime is an hour — long enough that somebody who
+// walks away mid-card comes back to a 401. It is its own screen, because
+// "sign in again" is the only thing that fixes it and no amount of retrying
+// does (review r3).
+function isUnauthorized(res) {
+  return res.status === 401 || res.status === 403
 }
 
 function otpMessage(err) {
@@ -254,6 +264,14 @@ export default function ChannelSetup() {
   // What the 'retry' screen retries: 'card' (the card step never opened) or
   // 'book' (it did, or was skipped, and the booking failed).
   const [retryKind, setRetryKind] = useState('book')
+  // The number is attached. Two things depend on it: a fresh sign-in after an
+  // expired token skips the linking and goes straight to the card, and a 410
+  // stops meaning "ask for a new link".
+  const linkedRef = useRef(false)
+  // We have sent at least one link request this visit, so a 410 may mean "the
+  // first one landed and we lost the answer" rather than "stale link".
+  const attemptedLinkRef = useRef(false)
+  const navigate = useNavigate()
   const emailRef = useRef(null)
   const codeRef = useRef(null)
 
@@ -263,10 +281,9 @@ export default function ChannelSetup() {
     const token = tokenRef.current
     if (!token) { setView('expired'); return }
     setView('loading')
-    const [config, check, session] = await Promise.all([
-      getSetupConfig().catch(() => ({ ok: false, status: 0, data: {} })),
-      checkSetupToken(token).catch(() => ({ ok: false, status: 0, data: {} })),
-      supabase.auth.getSession().then((r) => r?.data?.session || null).catch(() => null),
+    const [config, check] = await Promise.all([
+      getSetupConfig(),
+      checkSetupToken(token),
     ])
     if (linkIsBad(check)) { setView('expired'); return }
     // A 2xx is not enough either: a captive portal or an SPA rewrite answers
@@ -275,13 +292,28 @@ export default function ChannelSetup() {
     setCfg(config.data || {})
     setPhoneHint(check.data.phone_hint || 'your phone')
     setBooking(check.data.booking || null)
-    // A session only ever prefills the field. The code is still typed: see the
-    // note at the top of this file.
-    if (session?.user?.email) setEmail(session.user.email)
     setView('email')
+    // Prefill, separately and after: a session only ever fills the email in,
+    // and getSession can block on the auth lock and a token refresh — which
+    // must not hold the whole page on "checking your link" while a 30-minute
+    // link runs down.
+    supabase.auth.getSession()
+      .then((r) => {
+        const who = r?.data?.session?.user?.email
+        if (who) setEmail((cur) => cur || who)
+      })
+      .catch((err) => console.error('[channel-setup] prefill from session failed:', err))
   }
 
   useEffect(() => { load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // history.replaceState does not reach react-router's cached location, which
+  // would keep #t=… in memory for the life of the page. Done in an effect
+  // because navigate() cannot be called during a render.
+  useEffect(() => {
+    if (window.location.hash || window.location.search) return
+    navigate({ pathname: '/channel/setup', search: '', hash: '' }, { replace: true })
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (view === 'email') emailRef.current?.focus()
@@ -296,10 +328,21 @@ export default function ChannelSetup() {
     if (!EMAIL_RE.test(addr)) { setError('Enter a valid email address.'); return }
     setError('')
     setBusy(true)
-    const { error: err } = await supabase.auth.signInWithOtp({
-      email: addr,
-      options: { shouldCreateUser: true },
-    })
+    let err = null
+    try {
+      // Wrapped because supabase-js awaits every onAuthStateChange subscriber
+      // inside these calls: a listener that throws would otherwise leave this
+      // button disabled for good, with no way off the screen.
+      ;({ error: err } = await supabase.auth.signInWithOtp({
+        email: addr,
+        options: { shouldCreateUser: true },
+      }))
+    } catch (thrown) {
+      console.error('[channel-setup] signInWithOtp threw:', thrown)
+      setBusy(false)
+      setError("We couldn't send the code. Please try again.")
+      return
+    }
     setBusy(false)
     if (err) { setError(otpMessage(err)); return }
     setEmail(addr)
@@ -313,7 +356,16 @@ export default function ChannelSetup() {
     if (digits.length < 6) { setError('Enter the 6-digit code from the email.'); return }
     setError('')
     setBusy(true)
-    const { data, error: err } = await supabase.auth.verifyOtp({ email, token: digits, type: 'email' })
+    let data = null
+    let err = null
+    try {
+      ;({ data, error: err } = await supabase.auth.verifyOtp({ email, token: digits, type: 'email' }))
+    } catch (thrown) {
+      console.error('[channel-setup] verifyOtp threw:', thrown)
+      setBusy(false)
+      setError("We couldn't check that code. Please try again.")
+      return
+    }
     if (err || !data?.session?.access_token) {
       setBusy(false)
       setError("That code didn't work. Check the latest email, or go back and resend.")
@@ -323,8 +375,31 @@ export default function ChannelSetup() {
     // its button would re-submit a used code and send the person to ask for
     // an email they do not need.
     accessRef.current = data.session.access_token
+    // Signing in again after an expired token: the number is already attached
+    // and the setup token is gone, so the linking is behind us.
+    if (linkedRef.current) {
+      setView('retry')
+      await openCard()
+      return
+    }
     setView('linking')
     await linkThenCard()
+  }
+
+  // The token this page is holding is no longer accepted. Proving the mailbox
+  // again is the only fix; the email is known, so it is one code away. Where
+  // that lands afterwards depends on whether the number is already attached
+  // (verifyCode decides), so nothing else is reset here.
+  function signInAgain() {
+    accessRef.current = ''
+    setCode('')
+    setBusy(false)
+    setError(
+      linkedRef.current
+        ? 'Your sign-in expired before we could finish. Your number is connected — confirm your email once more and we will place the booking.'
+        : 'Your sign-in expired. Send yourself a new code and we will carry on.',
+    )
+    setView('email')
   }
 
   // Spend the setup token: attach the number to the account whose mailbox was
@@ -335,12 +410,18 @@ export default function ChannelSetup() {
   async function linkThenCard() {
     setError('')
     setBusy(true)
+    const retrying = attemptedLinkRef.current
+    attemptedLinkRef.current = true
     const res = await linkSetupNumber(tokenRef.current, accessRef.current)
+    if (isUnauthorized(res)) { signInAgain(); return }
     if (res.status === 410) {
       setBusy(false)
       forgetToken()
       tokenRef.current = ''
-      setView('expired')
+      // A 410 on a RETRY can also mean the first request landed and we lost
+      // the answer: the number would then be connected, and "ask for a fresh
+      // link" would be the wrong instruction.
+      setView(retrying ? 'maybe_linked' : 'expired')
       return
     }
     if (res.status === 409) {
@@ -362,6 +443,7 @@ export default function ChannelSetup() {
       setError("We couldn't connect your number. Check your connection and try again.")
       return
     }
+    linkedRef.current = true
     forgetToken()
     tokenRef.current = ''
     if (res.data.phone_hint) setPhoneHint(res.data.phone_hint)
@@ -376,6 +458,7 @@ export default function ChannelSetup() {
     setError('')
     setBusy(true)
     const si = await createSetupIntent(accessRef.current)
+    if (isUnauthorized(si)) { signInAgain(); return }
     if (si.status === 503) { await book(); return }
     if (!si.ok || !si.data.client_secret || !si.data.publishable_key) {
       setBusy(false)
@@ -407,6 +490,7 @@ export default function ChannelSetup() {
     setError('')
     setBusy(true)
     const res = await finishSetup(accessRef.current)
+    if (isUnauthorized(res)) { signInAgain(); return }
     setBusy(false)
     if (!res.ok || typeof res.data.outcome !== 'string') {
       setError("We couldn't finish booking. Please try again.")
@@ -454,7 +538,7 @@ export default function ChannelSetup() {
           HO<b className="text-[#E1B145]">:</b>RA
         </div>
 
-        {view !== 'expired' && view !== 'offline' && view !== 'loading' && <Steps step={step} />}
+        {view !== 'expired' && view !== 'offline' && view !== 'maybe_linked' && view !== 'loading' && <Steps step={step} />}
         <ErrorNote>{error}</ErrorNote>
 
         {view === 'loading' && <p className="text-[#5F6670]">Checking your link…</p>}
@@ -463,9 +547,13 @@ export default function ChannelSetup() {
           <>
             <h1 className="mb-2 text-2xl font-semibold leading-tight">We couldn't reach HO:RA</h1>
             <p className="mb-6 text-[#5F6670]">
-              Your link is fine — we just couldn't get through. Check your connection and try again.
+              Your link has not been used — we just couldn't get an answer. Check your connection and
+              try again.
             </p>
             <button className={BTN} onClick={load}>Try again</button>
+            <p className="mt-4 text-[13px] text-[#5F6670]">
+              If it keeps failing, text HO:RA and we'll sort the booking out there.
+            </p>
           </>
         )}
 
@@ -584,6 +672,18 @@ export default function ChannelSetup() {
                 {busy ? 'One moment…' : 'Try again'}
               </button>
             )}
+          </>
+        )}
+
+        {view === 'maybe_linked' && (
+          <>
+            <h1 className="mb-2 text-2xl font-semibold leading-tight">Check Messages</h1>
+            <p className="text-[#5F6670]">
+              This link has been used — most likely by the attempt we just made, which means texts
+              from {phoneHint} already reach your HO:RA account. Go back to Messages and text HO:RA:
+              it will tell you where the booking stands, and asking for a new link is not what you
+              need.
+            </p>
           </>
         )}
 
