@@ -471,6 +471,19 @@ func main() {
 	initStripe()
 	log.Printf("[payments] enabled: %v (test mode: %v) | webhook secret set: %v",
 		paymentsEnabled(), stripeIsTestMode(), os.Getenv("STRIPE_WEBHOOK_SECRET") != "")
+	// The rest of the Stripe wiring, by presence only — never a value (S-12).
+	// A live platform needs all of these and the deploy log is where that is
+	// checked: the connect endpoint signs account.updated and payout.*, the v2
+	// destination signs the Connect capability event, and the two sandbox
+	// secrets sign the review account's test-mode endpoints, without which the
+	// App Store reviewer cannot post a task at all (D-15). Learned on the
+	// 2026-10-26 live switch, where four of these were set by hand.
+	log.Printf("[payments] secrets set — connect webhook: %v | v2 webhook: %v | sandbox key: %v | sandbox webhook: %v | sandbox connect webhook: %v",
+		os.Getenv("STRIPE_CONNECT_WEBHOOK_SECRET") != "",
+		os.Getenv("STRIPE_V2_WEBHOOK_SECRET") != "",
+		os.Getenv("STRIPE_SANDBOX_SECRET_KEY") != "",
+		os.Getenv("STRIPE_SANDBOX_WEBHOOK_SECRET") != "",
+		os.Getenv("STRIPE_SANDBOX_CONNECT_WEBHOOK_SECRET") != "")
 
 	// --- Google OAuth 初始化 & 注入 DB（只做一次！）---
 	if err := auth.InitGoogleOAuth(); err != nil {
