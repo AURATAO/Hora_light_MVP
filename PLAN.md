@@ -227,6 +227,28 @@ reasoning on by default — measure latency with it on and off.
 first inbound → draft confirmed → setup completed (card) → first task completed.
 The setup step is the one to watch.
 
+## 12b. Deferred after the privacy/terms audit (2026-10-26)
+
+Both raised by the policy audit, both ruled **not urgent** (Aura) and both are
+CODE, not wording — so until they exist, neither document may promise them.
+
+- [ ] **STOP / START / HELP.** The three words a US text service is expected
+  to honour. Today `stop` is read as a NO (approval answers) or as "cancel"
+  (the budget step), so a person genuinely trying to unsubscribe has their
+  word taken as an answer to whatever question is open — a real bug
+  independent of the documents. Proposed behaviour when built: STOP silences
+  every outbound message to that number (task updates still go by email and
+  push, the account is untouched), START restores, HELP replies with one line
+  and info@my-hora.com. Needs a column on `channel_identities` and a check at
+  the top of `HandleInbound`, ahead of every other rule. ~half a day.
+  **Until then: no STOP promise in Terms or Privacy**, and Privacy §7(a)'s
+  existing "promotional SMS … STOP" line describes something that does not
+  exist (we send no promotional messages at all) — reworded in this round.
+- [ ] **A real retention period for chat data.** Today the honest statement is
+  "kept until the account is deleted"; `PurgeUserTx` makes that true (numbers,
+  messages, conversations and setup links all go, in the deletion
+  transaction). Any shorter promise — "24 months" — needs a sweep job first.
+
 ## 13. Open questions
 
 - Dani: confirm approval timeouts and copy for budget/time requests by text.
