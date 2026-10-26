@@ -91,6 +91,12 @@ CREATE TABLE public.tasks (
 	completion_note text,
 	travel_time_minutes integer,
 	total_estimate_minutes integer,
+	-- The live-tracking columns. Nullable in production too (a task whose
+	-- address could not be geocoded has none), and present here because the
+	-- chat's "where is he?" reads them (channel_live_test.go).
+	job_lat double precision,
+	job_lng double precision,
+	enroute_at timestamptz,
 	CONSTRAINT tasks_status_check CHECK ((status = ANY (ARRAY['open'::text, 'completed'::text, 'cancelled'::text])))
 );
 

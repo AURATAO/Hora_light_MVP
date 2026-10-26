@@ -1202,3 +1202,32 @@ never clocked in. A silent-phone relay is not repeated within 2 minutes
 days. The status-hook retry skips permanent errors (no row, context) and
 its waits are injectable (the test no longer sleeps 8 s). Still untested:
 `chatLive.LiveStatus` itself against the DB (follow-up).
+
+## Addendum 2026-10-26 — the owed `chatLive.LiveStatus` DB test
+
+Declared owed when "where is he?" shipped (2026-10-25): the WORDS had unit
+coverage (`internal/channel/where.go`), the QUERY had none. Now
+`server/channel_live_test.go`, seven cases against a real database through the
+same seam the handler uses:
+
+- **The boundary.** Only the requester of an open, assigned task is answered.
+  A supporter asking, a stranger's id, an unknown task and a completed task
+  all get an error, and the chat then says nothing rather than something — a
+  supporter's live position is not a fact to hand out by text to whoever asked
+  (S-12).
+- **The two silences, which the copy depends on.** No enroute_at, no ping,
+  never clocked in → "hasn't set off yet". enroute_at set, still no ping →
+  "set off, no fix" (the ordinary shape for a web-app supporter, who sends no
+  GPS at all). A CLOSED session with no ping is neither — they were there.
+  That last derivation is the one review r1 got wrong.
+- **Staleness.** A fix older than `livePingStaleAfter` carries no distance (the
+  chat must not turn a 10-minute-old position into "3 blocks away") but still
+  reports `LastSeen`, so the copy can say how old it is.
+- **Working** beats distance, and the minutes come from the same
+  logged-minutes function the bill uses.
+- **No task coordinates** (a chat-booked task whose address did not geocode):
+  no distance, and no invented one.
+
+The ops fixture gained `job_lat`, `job_lng` and `enroute_at` — nullable in
+production too, and absent here only because nothing in that fixture had read
+them before. Full suite green, `-race` included.
