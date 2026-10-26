@@ -184,7 +184,15 @@ In this order:
 2. **Render:** `CHANNEL_WEBHOOKS_ENABLED=1`. The service redeploys.
 3. Confirm the startup log now lists the channel routes, and that
    `CHANNEL_SETUP_WEB_URL` is the webapp (phase 6 checks it end to end).
-4. **C-4:** delete `server/channel_setup.html`, `server/channel_setup.js`, the
+4. **Staging: delete `SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET`,
+   `SENDBLUE_WEBHOOK_SECRET` and `CHANNEL_WEBHOOKS_ENABLED`.** Sendblue issues
+   one credential pair per account, so until now staging and production shared
+   it (declared residual, PLAN §11). After step 1 staging receives no inbound
+   at all, so the shared pair bought nothing there except the ability to text a
+   real person from the live line by accident. Removing them leaves the
+   credential in exactly one place. Keep `LLM_API_KEY` and the rest of
+   staging's variables — the server and the app still run there.
+5. **C-4:** delete `server/channel_setup.html`, `server/channel_setup.js`, the
    `/channel/setup.js` route and the redirect branch in `channel_setup.go`;
    commit. The S-02/S-30 exception for those two files expires here. Do it
    after step 3 proves the webapp page works, not before.

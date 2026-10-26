@@ -171,6 +171,26 @@ reasoning on by default — measure latency with it on and off.
     unset `CHANNEL_WEBHOOKS_ENABLED` there rather than leaving it looking live.
   - The way back, if a staging channel is wanted later: a second Sendblue
     account for the sandbox line, with its own key and its own webhook.
+- [ ] **RESIDUAL DECLARED (2026-10-27): staging and production share one
+  Sendblue credential pair.** Sendblue appears to issue **one API key + secret
+  per account** — the docs say only "In order to use the API you will need your
+  API key and secret" and describe no way to create a second pair or rotate one
+  (docs.sendblue.com/getting-started/credentials). So the standing rule
+  "staging never reuses a production secret" cannot be kept here by
+  configuration, and nothing in our code can work around it: the credential is
+  the account's, not the environment's.
+  **Ruled 2026-10-27 (Aura): accept it, and shrink the exposure instead** —
+  at runbook phase 5, once production is live, DELETE `SENDBLUE_API_KEY`,
+  `SENDBLUE_API_SECRET` and `SENDBLUE_WEBHOOK_SECRET` from the **staging**
+  service, together with `CHANNEL_WEBHOOKS_ENABLED`. Staging has no inbound
+  after that step anyway (account-level webhook, above), so the only thing the
+  shared pair still bought there was the ability to send a real message from
+  the live line by accident. Removing them leaves the pair in exactly one
+  place. Written into phase 5 as a step so it cannot be forgotten.
+  Two alternatives, both open if this ever stops being enough: check the
+  dashboard for a second key pair (undocumented, may exist), or move the
+  sandbox line to a second Sendblue account — its own key, its own webhook,
+  its own bill.
 - [x] Meta Business portfolio created, verification submitted (2026-10-18)
 - [x] Meta developer app + WhatsApp test number on staging (2026-10-20)
 - [ ] WhatsApp System User permanent token (temp token dies every 24 h)
