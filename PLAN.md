@@ -192,7 +192,11 @@ reasoning on by default — measure latency with it on and off.
   has to enumerate Stripe, TalkJS, Google Maps, Google Fonts and Supabase, and
   one omission is a blank page — its own task after go-live, with every page
   clicked through afterwards. `geolocation` and `payment` are left permitted
-  (task tracking; Apple/Google Pay inside Stripe's iframe).
+  (task tracking; Apple/Google Pay inside Stripe's iframe). **`vercel.json`
+  takes no comments:** Vercel validates it against a strict schema and an
+  explanatory `"//"` key fails the deploy ("should NOT have additional
+  property"), which is how the first attempt broke. The reasoning for each
+  header lives here instead.
 - [ ] **Merge condition C-4 (from the setup-page review, 2026-10-26):** the
   S-02/S-30 exception for `server/channel_setup.html` + `.js` expires at
   go-live. They are kept now ONLY because staging has no webapp build pointed
