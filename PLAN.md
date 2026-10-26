@@ -145,7 +145,32 @@ reasoning on by default — measure latency with it on and off.
 
 ## 11. External dependencies (owner: Aura)
 
-- [ ] Sendblue: plan allows outbound to users who texted first + price; webhook carries reply-to / reacted-message id; dedicated line
+- [x] **Sendblue: paid plan + dedicated line DONE (2026-10-26, Aura).** A NYC
+  (917) line. The number itself is not committed — it lives only in
+  `SENDBLUE_FROM_NUMBER` on the production service, like every other value in
+  the runbook's env table. Still to confirm in the dashboard: that the plan
+  allows outbound to people who texted us first, and that the inbound webhook
+  payload carries reply-to / reacted-message ids.
+- [ ] **Sendblue webhooks are ACCOUNT-level, not per number** (checked
+  2026-10-26, docs.sendblue.com/getting-started/webhooks: "Webhook URLs are
+  configured at the account level… All lines on a single account share the same
+  webhook endpoints. You cannot set a different webhook per phone number."). The
+  payload's `sendblue_number` says which line received the message, but routing
+  on it would need ONE entry point, and staging and production are two servers.
+  So the moment the receive webhook is pointed at production (runbook phase 5),
+  **staging stops receiving inbound iMessage** — if the sandbox line is on the
+  same Sendblue account, which it is if the plan was an upgrade of that account.
+  Consequences, all deliberate rather than discovered later:
+  - Do every channel change that needs a real inbound message in staging
+    **before** phase 5. After it, the only place a real conversation happens is
+    production.
+  - Staging keeps `SENDBLUE_FROM_NUMBER` = the **sandbox** number, never the
+    dedicated line: the API key is account-wide, so a staging test with the live
+    line in that variable would text a real person from the live number.
+  - After phase 5, treat staging's channel as off (no inbound can arrive) and
+    unset `CHANNEL_WEBHOOKS_ENABLED` there rather than leaving it looking live.
+  - The way back, if a staging channel is wanted later: a second Sendblue
+    account for the sandbox line, with its own key and its own webhook.
 - [x] Meta Business portfolio created, verification submitted (2026-10-18)
 - [x] Meta developer app + WhatsApp test number on staging (2026-10-20)
 - [ ] WhatsApp System User permanent token (temp token dies every 24 h)
