@@ -161,6 +161,12 @@ reasoning on by default — measure latency with it on and off.
   putting an `sk_live_`-shaped literal in a copy of that same file, which the
   scanner still flags. Nothing to decide; the earlier red runs predate the
   allowlist entry.
+- [ ] **The merge itself: `skills/channel-go-live-runbook.md`** (2026-10-26) —
+  the ordered steps, the production env table, the schema list, the verify
+  pass and the rollback, in one place. Phase 0 is the part worth knowing
+  before planning the day: merging changes nothing in production, because
+  every channel route is gated on `CHANNEL_WEBHOOKS_ENABLED`, which
+  production does not have. The merge and the switch-on are separate sittings.
 - [ ] **D-16 merge conditions (deadline 2026-10-30, before any merge to main):** C-1 I-05 green on a Docker machine with CLI v2.118.0 against the staging branch; ~~C-2~~ done; C-3 ~~review freeze~~ over (app approved 2026-10-24); C-4 delete the two `server/channel_setup.*` files (above).
 - [ ] **C-1 note (2026-10-26):** production's migration ledger CANNOT be
   compared to the repo by filename. 33 versions are recorded there against 41
@@ -607,7 +613,7 @@ needs a new card re-verifies email on the page; status updates to the chat
   `task-completions` (private) were created by hand on this one.
 - Tear down after Oct 31 if unused: delete the Render service and the branch.
 
-## 13b. Dispatch automation (raised 2026-10-25 00:00, Aura) — not yet ruled
+## 13b. Dispatch automation (raised 2026-10-25 00:00, Aura) — DEFERRED 2026-10-26, one parameter ruled
 
 Today a new task tells only ops ("New task posted" email); supporters see
 it only by opening Earn, so Aura dispatches by hand and "immediate" rests
@@ -621,9 +627,11 @@ on her reacting. Proposed, each stage shippable alone:
    auto-off; the broadcast goes only to supporters who have it on.
 3. **Tiers** (~½ day): trusted supporters first, everyone after M minutes.
 
-Open for the Arbiter: SMS needs supporters' numbers linked (a setup
-link each) or push only; N (minutes before ops are pinged). Sequenced
-after the agent work.
+**Ruled 2026-10-26 (Aura):** deferred — not built before go-live, the manual
+dispatch stands for now. **N = 5 minutes** before ops are pinged, settled, so
+whoever builds stage 1 does not have to ask again. Still open when it is
+picked up: push-only versus push + SMS (SMS needs each supporter's number
+linked, a setup link each, and the Sendblue dedicated line).
 
 ## 14. Paused
 
