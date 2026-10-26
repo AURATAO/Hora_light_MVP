@@ -264,7 +264,12 @@ CODE, not wording — so until they exist, neither document may promise them.
   messages, conversations and setup links all go, in the deletion
   transaction). Any shorter promise — "24 months" — needs a sweep job first.
 
-**Privacy & Terms (2026-10-26): audited and rewritten.** Six material fixes
+**Privacy & Terms (2026-10-26): audited, rewritten, merged and live.** Both
+documents are published with `_Last updated: October 26, 2026_`, and
+`https://www.my-hora.com/terms` and `/privacy` both serve them — checked,
+because the already-approved iOS build hardcodes those two `www.` URLs
+(`mobile/src/lib/constants.ts`) and cannot be changed, so a www host that
+dropped the path would have shipped broken legal links. Six material fixes
 on the landing repo's `privacy.md` / `terms.md`, on a branch off `main` (the
 Oct-21 legal text was never merged, so the live documents did not mention
 Sendblue, Baseten or Meta at all): the photo sentence, which the chat made
