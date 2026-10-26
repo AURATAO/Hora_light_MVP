@@ -156,7 +156,24 @@ func setupBaseURL() string {
 // there; unset, the page this binary serves is used, which is how staging and
 // any deploy without a web app keep working (D-16 R-4).
 func channelSetupWebURL() string {
-	return strings.TrimRight(strings.TrimSpace(os.Getenv("CHANNEL_SETUP_WEB_URL")), "/")
+	v := strings.TrimRight(strings.TrimSpace(os.Getenv("CHANNEL_SETUP_WEB_URL")), "/")
+	if v == "" {
+		return ""
+	}
+	// Refused rather than used wrong, because every failure mode of this value
+	// is silent: a value with no scheme makes an unclickable texted link and a
+	// relative redirect; a value carrying its own fragment swallows the token
+	// on the hop; a value pointing back at this server is a redirect loop. An
+	// empty answer falls back to the page this binary serves, which works.
+	switch {
+	case !strings.HasPrefix(v, "https://") && !strings.HasPrefix(v, "http://"):
+		log.Printf("[channel-setup] CHANNEL_SETUP_WEB_URL has no http(s) scheme — ignoring it and serving the built-in page")
+		return ""
+	case strings.Contains(v, "#"):
+		log.Printf("[channel-setup] CHANNEL_SETUP_WEB_URL contains a fragment — ignoring it and serving the built-in page")
+		return ""
+	}
+	return v
 }
 
 // setupLink puts the token in the URL fragment, not the query: a fragment is

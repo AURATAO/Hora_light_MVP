@@ -30,9 +30,15 @@
 --     live hold when this was written — 15 captured, 9 canceled, 0 authorized
 --     — so nothing in flight can be captured with the wrong key.
 --
--- Deploy order (S-21): apply BEFORE, or as soon as possible after, the deploy
--- carrying the live STRIPE_SECRET_KEY. In between, a person who opens the card
--- sheet sees an error; no data is corrupted either way.
+-- Deploy order (S-21): apply AFTER the deploy carrying the live
+-- STRIPE_SECRET_KEY, and as soon as possible after it. Not before: this runs
+-- once, and anyone who opens the card sheet while the TEST key is still live
+-- mints a fresh test-mode customer that the migration has already been and
+-- gone past — which is the exact breakage it exists to prevent. In the gap
+-- after the switch, a person who opens the card sheet sees an error; no data
+-- is corrupted either way. (What actually happened on 2026-10-26: the deploy
+-- went first and this was applied ~9 minutes later, with no traffic in
+-- between.)
 --
 -- One-off: this is the 2026-10-26 production mode switch. On any database that
 -- is still on test keys it clears test customers that would simply be recreated.

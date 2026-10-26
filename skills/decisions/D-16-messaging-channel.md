@@ -365,3 +365,68 @@ in bytes; `urlRun` also matches `\\u002f`; `a.Send` errors asserted;
 `preview_url: true` asserted for a relay link; `RelayToChat` pinned to
 `MediaExpires == false`; the `.webp` relay change declared in I-R(4); the
 PLAN section named.
+
+## Addendum 2026-10-26 — the setup page moves to `app/` (R-4 done), review r1
+
+Built: `app/src/pages/ChannelSetup.jsx` + `app/src/api/channelSetup.js`.
+Same four endpoints, same proof model. `CHANNEL_SETUP_WEB_URL` (full page URL)
+switches it on per environment; `GET /channel/setup` 302s there so links
+already texted still work; unset, the embedded page is served as before.
+
+**Review r1 (FAIL: 1 BLOCKER, 4 MAJOR) → fixes.**
+
+1. **BLOCKER, and it was mine to begin with.** The first draft added a
+   convenience the Go page never had: a signed-in visitor was offered "you're
+   signed in as X — connect and continue" instead of typing an email and a
+   code. That is a one-tap account takeover. Anyone can text HO:RA, reply YES
+   and get a valid setup link of their own; send that URL to someone who
+   happens to be signed in to the webapp and one tap binds the SENDER's phone
+   number to the RECIPIENT's account — after which every YES the sender texts
+   books a task against the recipient's card (S-11 condition 5), their task
+   updates go to the sender's phone, and the binding cannot be undone short of
+   deleting the account (condition 4). **Removed.** A fresh code is always
+   typed; a session now only prefills the email field. S-11 condition 2 says
+   the number is bound through an email-OTP session, and "fresh" is what makes
+   the person holding the phone and the person holding the mailbox the same
+   person. Recorded here because the lesson is general: a UX shortcut that
+   skips a proof is a change to the proof model, and belongs in a decision
+   record before it is written, not after a reviewer finds it.
+2. (MAJOR) "Use a different email" called `supabase.auth.signOut()`, whose
+   default scope is global — on a shared browser that revokes the other
+   person's sessions everywhere, including their mobile app. Gone with the
+   shortcut; nothing on this page signs anyone out.
+3. (MAJOR) A booking that failed after the number was linked left the person
+   on a view whose button re-spent the already-spent token (410 → false
+   "expired") or re-verified a used OTP. Now: once linked, the token is
+   discarded and the only retry is the BOOKING, on its own screen that says
+   the number is connected.
+4. (MAJOR) Any `/check` failure — network, CORS, 5xx — was shown as "this link
+   has expired", so a misconfigured origin would send every booker to text
+   again for a link that would fail identically. Now separate: 400/410 is
+   "expired", unreachable is "we couldn't reach HO:RA" with a Try again that
+   keeps the token (the old page had this distinction; the port had lost it).
+5. (MAJOR) S-02/S-30: the exception for the two `server/` files expires at
+   go-live. Kept for now because staging has no webapp build pointed at the
+   staging API; deleting them is **merge condition C-4** (PLAN §11).
+6. (MINOR) Stripe.js was imported at module scope, so it loaded while the
+   token could still be in the URL → `@stripe/stripe-js/pure`, loaded at the
+   card step. The token is now read in the first render rather than an effect,
+   so the address bar is clean before paint.
+7. (MINOR) 2xx was trusted without reading the body (`valid`, `linked`,
+   `outcome` are now checked): an SPA rewrite or captive portal answering 200
+   walked the whole flow to "you're all set" with nothing linked.
+8. (MINOR) Only a 503 from `/payments/setup-intent` now skips the card step; a
+   401, a 500 or a network failure used to skip it silently.
+9. (MINOR) The card form's buttons stayed live while the booking ran (double
+   book, or confirming an already-confirmed SetupIntent).
+10. (MINOR) `CHANNEL_SETUP_WEB_URL` is validated: no scheme, or a fragment of
+    its own, is logged and ignored rather than producing unclickable links or
+    a redirect that eats the token.
+11. (NIT) Title and `noindex` restored for the SPA route; progress bar shows 3
+    of 3 on the done screen; unused parameter dropped.
+
+Also corrected from the same review: the live-switch migration
+(`20261026093000`) said "apply BEFORE the deploy"; it must be AFTER, because a
+card added while the test key is still live mints a test customer the one-shot
+migration has already passed. What happened on the day: deploy first, migration
+nine minutes later, no traffic in between.

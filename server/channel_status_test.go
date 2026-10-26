@@ -59,6 +59,24 @@ func TestSetupLinkKeepsTokenOutOfTheQuery(t *testing.T) {
 	}
 }
 
+// A CHANNEL_SETUP_WEB_URL that cannot work is ignored, loudly, rather than
+// producing unclickable links or a redirect that eats the token.
+func TestSetupWebURLRejectsUnusableValues(t *testing.T) {
+	for _, bad := range []string{"core.example.test/channel/setup", "/channel/setup", "https://core.example.test/channel/setup#t=x"} {
+		t.Setenv("CHANNEL_SETUP_WEB_URL", bad)
+		if got := channelSetupWebURL(); got != "" {
+			t.Errorf("%q should be ignored, got %q", bad, got)
+		}
+		if got := setupLink("https://api.example.test", "abc"); got != "https://api.example.test/channel/setup#t=abc" {
+			t.Errorf("%q should fall back to the built-in page, got %q", bad, got)
+		}
+	}
+	t.Setenv("CHANNEL_SETUP_WEB_URL", "http://localhost:5173/channel/setup")
+	if got := channelSetupWebURL(); got != "http://localhost:5173/channel/setup" {
+		t.Errorf("a local dev URL must be usable: %q", got)
+	}
+}
+
 // The texted link points at the web app's copy of the page when one is
 // configured (D-16 R-4), and at this binary's own page when it is not. Either
 // way the token stays in the fragment.

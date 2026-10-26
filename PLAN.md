@@ -165,7 +165,17 @@ reasoning on by default — measure latency with it on and off.
   `https://core.horaapp.co/channel/setup`): new texted links point there, and
   `GET /channel/setup` on the backend 302s to it so links already sent still
   work. Unset, the embedded page is served exactly as before. The webapp
-  origin must be in `CORS_ALLOW_ORIGINS`.
+  origin must be in `CORS_ALLOW_ORIGINS` — if it is not, every texted link
+  opens and every visitor sees "we couldn't reach HO:RA" with nothing in the
+  server log, so check it with one real link per environment.
+- [ ] **Merge condition C-4 (from the setup-page review, 2026-10-26):** the
+  S-02/S-30 exception for `server/channel_setup.html` + `.js` expires at
+  go-live. They are kept now ONLY because staging has no webapp build pointed
+  at the staging API, so the embedded page is the only way to exercise the
+  chat flow there. At the merge to `main`: set `CHANNEL_SETUP_WEB_URL` on
+  production, confirm a real link lands on the webapp page, then DELETE both
+  files, the `/channel/setup.js` route and the redirect branch. Declared, not
+  assumed — Aura to confirm.
 - [ ] **Post-freeze refactor #1 (D-16 R-1):** `createTask` takes the principal as an argument; drop the synthetic context in `chatBooker.Post`.
 - [ ] **TalkJS identity verification (M3.2, R4 MINOR-5):** confirm "Identity verification" is enforced for the HO:RA Staging and production TalkJS apps — the webhook's sender id is a client-chosen email otherwise, and since M3.2 that id decides whose words reach a requester's phone.
 - [ ] Privacy Policy: add Sendblue, Meta (WhatsApp), Baseten to the provider list before launch — and state that chat text (the person's messages and the supporter's relayed lines) is processed by the LLM provider for routing (D-17).
