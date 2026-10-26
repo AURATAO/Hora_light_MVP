@@ -150,9 +150,21 @@ func setupBaseURL() string {
 	return ""
 }
 
+// channelSetupWebURL is the web app's copy of the setup page
+// (app/src/pages/ChannelSetup.jsx), as a full URL — e.g.
+// https://core.horaapp.co/channel/setup. Set it and every new link points
+// there; unset, the page this binary serves is used, which is how staging and
+// any deploy without a web app keep working (D-16 R-4).
+func channelSetupWebURL() string {
+	return strings.TrimRight(strings.TrimSpace(os.Getenv("CHANNEL_SETUP_WEB_URL")), "/")
+}
+
 // setupLink puts the token in the URL fragment, not the query: a fragment is
 // never sent to a server, so the token cannot land in a request log, a proxy
 // or the link-preview fetch iMessage and WhatsApp make (S-12).
 func setupLink(base, token string) string {
+	if web := channelSetupWebURL(); web != "" {
+		return web + "#t=" + url.QueryEscape(token)
+	}
 	return base + "/channel/setup#t=" + url.QueryEscape(token)
 }

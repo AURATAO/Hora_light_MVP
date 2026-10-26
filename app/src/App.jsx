@@ -15,6 +15,7 @@ import ReviewPage from "./pages/ReviewPage.jsx";
 import BecomeSupporter from "./pages/BecomeSupporter.jsx";
 import OpenInApp from "./pages/OpenInApp.jsx";
 import AppleCallback from "./pages/AppleCallback.jsx";
+import ChannelSetup from "./pages/ChannelSetup.jsx";
 
 export default function App() {
   console.log("[App] routes boot");
@@ -34,6 +35,10 @@ export default function App() {
           if it is installed, offers the web task page if it isn't. Public on
           purpose — being signed out is what it exists to solve.
           See app/src/pages/OpenInApp.jsx and server/internal/notify/links.go. */}
+      {/* Where the link HO:RA texts a first-time chat booker lands. PUBLIC by
+          design: nobody has an account yet when they arrive — making one is
+          half of what this page does (server/channel_setup.go, D-16 R-4). */}
+      <Route path="/channel/setup" element={<ChannelSetup />} />
       <Route path="/open/task/:id" element={<OpenInApp />} />
       <Route path="/open/task/:id/review" element={<OpenInApp />} />
       {/* Sign in with Apple lands here (Supabase redirectTo) with a PKCE

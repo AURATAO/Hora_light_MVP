@@ -46,6 +46,20 @@ var channelSetupJS []byte
 
 func registerChannelSetupRoutes(r *gin.Engine, sqlDB *sql.DB, store *channel.PGStore, router *channel.Router) {
 	r.GET("/channel/setup", publicByDesign, func(c *gin.Context) {
+		// Links already texted point here. Once the web app serves this page
+		// (CHANNEL_SETUP_WEB_URL, D-16 R-4) those links are forwarded to it
+		// rather than being served the older copy embedded in this binary.
+		//
+		// The token survives the hop without this handler ever seeing it: it
+		// is in the fragment, and a user agent re-applies the original
+		// fragment to a redirect target that has none of its own. A browser
+		// that did not would land on the page with no token, which is the
+		// "this link has expired" screen and its "text HO:RA again" way out —
+		// wrong-looking but never a silent failure.
+		if web := channelSetupWebURL(); web != "" {
+			c.Redirect(http.StatusFound, web)
+			return
+		}
 		setupPageHeaders(c)
 		c.Data(http.StatusOK, "text/html; charset=utf-8", channelSetupHTML)
 	})

@@ -52,9 +52,28 @@ func TestChatStatusHookOnlyTellsTheRequester(t *testing.T) {
 // Regression (S-12): the setup token must never be in the query string, which
 // request logs record. It travels in the fragment.
 func TestSetupLinkKeepsTokenOutOfTheQuery(t *testing.T) {
+	t.Setenv("CHANNEL_SETUP_WEB_URL", "")
 	got := setupLink("https://x.test", "tok/en+")
 	if strings.Contains(got, "?") || !strings.Contains(got, "/channel/setup#t=") {
 		t.Fatalf("setup link exposes the token to the server: %s", got)
+	}
+}
+
+// The texted link points at the web app's copy of the page when one is
+// configured (D-16 R-4), and at this binary's own page when it is not. Either
+// way the token stays in the fragment.
+func TestSetupLinkPrefersTheWebApp(t *testing.T) {
+	t.Setenv("CHANNEL_SETUP_WEB_URL", "")
+	if got := setupLink("https://api.example.test", "abc"); got != "https://api.example.test/channel/setup#t=abc" {
+		t.Fatalf("no web app configured: %q", got)
+	}
+	t.Setenv("CHANNEL_SETUP_WEB_URL", "https://core.example.test/channel/setup/")
+	got := setupLink("https://api.example.test", "abc")
+	if got != "https://core.example.test/channel/setup#t=abc" {
+		t.Fatalf("with a web app: %q", got)
+	}
+	if strings.Contains(got, "?") {
+		t.Fatal("the token must never reach a query string")
 	}
 }
 

@@ -156,7 +156,16 @@ reasoning on by default — measure latency with it on and off.
 - [ ] TalkJS production: confirm whether prod runs on the app's Test or Live environment; switch to Live before launch if needed
 - [ ] **D-16 merge conditions (deadline 2026-10-30, before any merge to main):** C-1 I-05 green on a Docker machine with CLI v2.118.0 against the staging branch; C-2 gitleaks green on a full clone (resolve inherited `payments_phase3_test.go:1109` placeholder by decision); C-3 review freeze over.
 - [ ] **Env ticket (D-16 R-5):** a verification machine with Docker + supabase CLI v2.118.0 and a `VERIFY_DB_URL` for the staging branch, so I-05 can actually run (today: INCOMPLETE everywhere, base and branch alike). Optional: stop committing `supabase/.temp/`.
-- [ ] **Go-live change (D-16 R-4):** move the setup page from `server/` to `app/` (Tailwind) — declared exception until then.
+- [x] **Go-live change (D-16 R-4):** setup page moved from `server/` to `app/`
+  (`app/src/pages/ChannelSetup.jsx` + `app/src/api/channelSetup.js`, Tailwind,
+  this app's Supabase and Stripe clients; 2026-10-26). Same endpoints, same
+  proof model; adds a "you're signed in as X — connect this number?" step
+  instead of making a signed-in person retype an email and a code. Switch it
+  on per environment with **`CHANNEL_SETUP_WEB_URL`** (full page URL, e.g.
+  `https://core.horaapp.co/channel/setup`): new texted links point there, and
+  `GET /channel/setup` on the backend 302s to it so links already sent still
+  work. Unset, the embedded page is served exactly as before. The webapp
+  origin must be in `CORS_ALLOW_ORIGINS`.
 - [ ] **Post-freeze refactor #1 (D-16 R-1):** `createTask` takes the principal as an argument; drop the synthetic context in `chatBooker.Post`.
 - [ ] **TalkJS identity verification (M3.2, R4 MINOR-5):** confirm "Identity verification" is enforced for the HO:RA Staging and production TalkJS apps — the webhook's sender id is a client-chosen email otherwise, and since M3.2 that id decides whose words reach a requester's phone.
 - [ ] Privacy Policy: add Sendblue, Meta (WhatsApp), Baseten to the provider list before launch — and state that chat text (the person's messages and the supporter's relayed lines) is processed by the LLM provider for routing (D-17).
