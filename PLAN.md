@@ -167,6 +167,16 @@ reasoning on by default — measure latency with it on and off.
   before planning the day: merging changes nothing in production, because
   every channel route is gated on `CHANNEL_WEBHOOKS_ENABLED`, which
   production does not have. The merge and the switch-on are separate sittings.
+- [ ] **Raised by the I-05 run (2026-10-26), for the Arbiter:** this schema's
+  default privileges grant `anon` and `authenticated` full DML on **every new
+  table** (`pg_default_acl`, set by both `supabase_admin` and `postgres`), so
+  every REVOKE in every migration is load-bearing and a forgotten one is a
+  table open to PostgREST but for RLS. The stronger fix is
+  `ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM anon,
+  authenticated` — but `postgres` can only alter the defaults it set itself, so
+  the `supabase_admin` set would survive and the result would read safer than
+  it is. Decide: leave the per-table discipline as the rule (today's answer),
+  or do both halves with Supabase support's help.
 - [ ] **D-16 merge conditions (deadline 2026-10-30, before any merge to main):** C-1 I-05 green on a Docker machine with CLI v2.118.0 against the staging branch; ~~C-2~~ done; C-3 ~~review freeze~~ over (app approved 2026-10-24); C-4 delete the two `server/channel_setup.*` files (above).
 - [ ] **C-1 note (2026-10-26):** production's migration ledger CANNOT be
   compared to the repo by filename. 33 versions are recorded there against 41

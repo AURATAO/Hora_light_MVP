@@ -1,0 +1,58 @@
+-- The three tables the revoke migrations missed: users, notifications, audit_logs.
+--
+-- FOUND BY RUNNING I-05, 2026-10-26 — the first time the schema-drift check was
+-- actually run (C-1). `supabase db diff --schema public` against the staging
+-- branch printed 24 statements, all of this shape:
+--
+--     revoke select on table "public"."users" from "authenticated";
+--
+-- which reads: the real database has these grants revoked, and the migrations
+-- do not revoke them. Both live databases were measured at the same time and
+-- hold ZERO client DML grants (CLAUDE.md Rule 3, query 2: no rows, on the
+-- staging branch and on production). So nothing was open. What was wrong was
+-- the artefact: someone revoked these three by hand and never wrote it down.
+--
+-- WHY IT MATTERS ANYWAY. `pg_default_acl` on this schema grants `anon` and
+-- `authenticated` full DML on every new table, set by both supabase_admin and
+-- postgres:
+--
+--     postgres=arwdDxtm/postgres,anon=arwdDxtm/postgres,authenticated=arwdDxtm/postgres
+--
+-- A table in `public` is therefore client-accessible the moment it is created,
+-- and every REVOKE in these migrations is load-bearing rather than decorative
+-- (20261019120000 says so about the channel tables). Which means a database
+-- REBUILT from these migrations — a new branch, a restore, a second
+-- environment — would hand `anon` and `authenticated` insert/select/update/
+-- delete on `public.users`, `public.notifications` and `public.audit_logs`.
+-- RLS deny-all would still block PostgREST, but that is the lock, not the
+-- authorization layer (CLAUDE.md Rule 3): "no client role holds any DML grant"
+-- is the first line, and on a rebuilt database it was false.
+--
+-- This is D-02's lesson a second time: the live database was fine and the
+-- committed artefact said otherwise, so the claim could only be checked by
+-- asking the database — which is exactly what the Rule 3 queries are for, and
+-- exactly what I-05 is for. The difference this time is that the check was run.
+--
+-- A NO-OP ON BOTH LIVE DATABASES by construction: REVOKE of a grant that is
+-- not held changes nothing. Its whole purpose is to make the migrations
+-- reproduce the posture the live databases already have, so that
+-- `supabase db diff --schema public` comes back empty and stays that way.
+--
+-- NOT changed here: the schema's default privileges themselves. Revoking those
+-- (`ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM anon,
+-- authenticated`) would stop future tables inheriting the grant and is the
+-- stronger fix, but `postgres` can only alter the defaults it set itself — the
+-- supabase_admin set would remain — so it would be a half-measure that reads
+-- like a whole one. The discipline every migration since 20260911120000 already
+-- follows (revoke explicitly, per table) is the one that works. Raised for the
+-- Arbiter in PLAN §11 rather than half-done here.
+--
+-- Verification after applying — CLAUDE.md Rule 3 query 2 returns no rows, and:
+--   supabase db diff --db-url "<branch>" --schema public   → empty
+--
+-- Reversible: GRANT ALL ON TABLE public.users TO anon, authenticated; (and the
+-- other two) — which nothing should ever want.
+
+REVOKE ALL ON TABLE public.users         FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON TABLE public.notifications FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON TABLE public.audit_logs    FROM PUBLIC, anon, authenticated;

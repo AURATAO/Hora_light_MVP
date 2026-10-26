@@ -49,8 +49,12 @@ On the Mac, with Docker Desktop running:
 brew install supabase/tap/supabase     # or: brew upgrade supabase
 supabase --version                     # record this in the merge note
 cd <repo> && git checkout feat/messaging-channel
-supabase db diff --db-url "<STAGING BRANCH connection string>"
+supabase db diff --db-url "<STAGING BRANCH connection string>" --schema public
 ```
+
+`--schema public` matters: without it the diff also reports the `storage`,
+`auth` and `realtime` schemas, which Supabase upgrades on its own and which our
+migrations never contain — pages of noise with any real finding buried in it.
 
 Empty output = green. Use the **staging branch** (`qxohqvkmzxokdyzrysgr`), never
 `--linked` — `supabase/.temp/project-ref` names production, and `verify.sh`
@@ -110,6 +114,11 @@ applied:
 20261022130000_channel_approval_question_pid.sql
 20261024120000_channel_cancel_by_chat.sql
 20261024210000_channel_handoff_timeout.sql
+20261026150000_revoke_client_grants_users_…sql  three REVOKEs; a no-op on a
+                                                database that already holds no
+                                                client grants, which production
+                                                does — it exists so a REBUILT
+                                                database holds none either
 ```
 
 `20261026093000_stripe_live_mode_reset_test_identifiers.sql` is **already
