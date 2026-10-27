@@ -295,3 +295,53 @@ Three things to read off it:
    lands in a `failed` payout and an ops email, and `adminRetryPayout` is the
    way back once onboarding finishes. Nothing about it fails the settlement:
    capture happens first and the task is complete either way.
+
+### The same day, the richer one: reimbursement, overage, two payouts (2026-10-27 14:00)
+
+The second live task settled three branches at once, so it is the better
+reference. $15.50 of time against a $17.00 hold (estimate + a $7.00 shopping
+budget), and the time ran over:
+
+```
+13:35:43  [payments] pre-auth task=e625f732… intent=pi_3UV9bN… amount=1700 status=requires_capture
+14:00:31  [payments][UNDERCAPTURE] task=e625f732… settlement=2250 exceeds hold=1700 — capturing hold, shortfall=550
+14:00:32  [payments] capture task=e625f732… total=1700 (time=1550 receipt=700)
+14:00:35  [payments][balance] task=e625f732… intent=pi_3UV9zR… collected $5.50
+14:00:37  [payments][payout] task=e625f732… payout=8b812ece… transfer=tr_3UV9bN… amount=$17.00
+14:00:40  [payments][payout] task=e625f732… payout=676b6750… transfer=tr_3UV9zR… amount=$2.40
+14:00:41  [payments][settle] task=e625f732… captured=$22.50 (time=$15.50 receipt=$7.00 discount=$0.00)
+```
+
+| | requester paid | supporter received | platform kept |
+|---|---|---|---|
+| | $22.50 | $19.40 | $3.10 |
+
+$3.10 is exactly 20% of the $15.50 of service, and the $7.00 reimbursement
+passed through with no fee on it. That is the half of `supporterPay.NetCents()`
+the 10-27 13:26 task could not show.
+
+**The per-row fee is NOT 20% of that row's service, and a check that assumes
+it will raise a false alarm.** The two `payouts` rows are:
+
+| row | `service_cents` | `fee_cents` | `reimbursement_cents` | `amount_cents` |
+|---|---|---|---|---|
+| funded by the main charge | 1310 | 310 | 700 | 1700 |
+| funded by the balance charge | 240 | 0 | 0 | 240 |
+
+Row one reads as 23.7%. Nothing is overcharged: the fee is computed **once per
+task** on the whole service ($15.50 → $3.10) and then distributed across the
+transfers, precisely so that a per-row rounding cannot take a cent more than
+the rate says (`supporterPayFor`'s comment). `fee_bps` is the rate, not the
+row's ratio. **Verify at the task level:** `sum(fee_cents) = rate ×
+sum(service_cents)` — here 310 + 0 = 310 against 1310 + 240 = 1550.
+
+Two more things this one proves, both first-time-on-live:
+
+- **The overage branch.** Settlement above the hold captures the hold in full
+  and collects the difference as a separate immediate-capture intent. The
+  requester is charged twice for one task, which is why the receipt has to show
+  the $22.50 total and not the $17.00 hold — the one thing to eyeball by hand.
+- **One payout per captured payment.** Two charges, two transfers, each tied by
+  `source_transaction` to the charge that funded it. This is what makes a
+  re-settle idempotent: `payouts.payment_id` is UNIQUE, so the second settle of
+  either payment cannot produce a second transfer.
