@@ -282,9 +282,10 @@ func TestResettleSweepDoesNotFlagARunningSettlement(t *testing.T) {
 	}
 }
 
-// In-process exclusion: session-level advisory locks are re-entrant within
-// one session, so the database alone would let a second goroutine of this
-// process through. The lock's own bookkeeping must not.
+// In-process exclusion: a second settlement of a task this process already
+// holds a lease for is refused by the bookkeeping alone, before any
+// connection is opened — and the database agrees, since each lease is its
+// own session holding its own transaction-level lock.
 func TestSettleCompletedTaskRefusesToOverlapInProcess(t *testing.T) {
 	setupStripeWebhookDB(t)
 	f := stubStripe(t)
@@ -321,8 +322,11 @@ func TestSettleCompletedTaskRefusesToOverlapInProcess(t *testing.T) {
 	}
 }
 
-// A lease from a dropped connection releases nothing on the connection that
-// replaced it: the newer settlement's lock stays.
+// A lease whose connection broke releases nothing that a newer lease of the
+// same task holds: the database dropped the old lock when the connection
+// died, and a late release of the old lease must clear neither the newer
+// settlement's in-process mark nor its database lock, which lives on the
+// newer lease's own connection.
 func TestSettleLockStaleLeaseDoesNotReleaseANewerLock(t *testing.T) {
 	setupStripeWebhookDB(t)
 	ctx := context.Background()
@@ -333,22 +337,22 @@ func TestSettleLockStaleLeaseDoesNotReleaseANewerLock(t *testing.T) {
 		t.Fatalf("lock: %v %v", got, err)
 	}
 	// The connection breaks under the running settlement.
-	settleLock.mu.Lock()
-	settleLockDropConn("test")
-	settleLock.mu.Unlock()
+	if err := stale.conn.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
 	// Its in-process half still excludes a local second attempt…
 	if _, again, _ := tryLockTaskSettlement(ctx, w.taskID); again {
 		t.Fatal("a second local settlement got the task while the first still runs")
 	}
-	// …and once it finishes, a newer settlement locks on the new connection.
+	// …and once it finishes, a newer settlement locks on a connection of its own.
 	unlockTaskSettlement(stale)
 	fresh, got, err := tryLockTaskSettlement(ctx, w.taskID)
 	if err != nil || !got {
 		t.Fatalf("fresh lock: %v %v", got, err)
 	}
 	defer unlockTaskSettlement(fresh)
-	if stale.gen == fresh.gen {
-		t.Fatal("the reconnect did not bump the generation")
+	if stale.conn == fresh.conn {
+		t.Fatal("the fresh lease reused the broken connection")
 	}
 	// A late release of the stale lease must free neither half of the fresh
 	// lock: not the in-process mark…
