@@ -124,6 +124,7 @@ const settleLockAppName = "hora-settle-lock"
 var settleLock struct {
 	mu   sync.Mutex
 	held map[string]settleLease // tasks this process is settling right now → their lease (conn nil while connecting)
+	seq  uint64                 // reservation tokens; see settleLease.token
 	// lastLostMail: a flapping database must not mail ops on every lost lock.
 	lastLostMail time.Time
 }
@@ -131,12 +132,26 @@ var settleLock struct {
 // settleLease is one taken lock: the dedicated connection and the open
 // transaction that holds it. The zero lease (conn == nil) holds nothing and
 // releases nothing. `since` is when the reservation was made.
+//
+// token identifies the reservation this lease grew from, so a promote or a
+// release acts only on its own entry: after resetSettleLockForTests dropped
+// the map mid-connect, a later promote must not plant a lease on the swapped
+// database, and a release must not delete a newer reservation of the same
+// task (review r2, m7). releasing marks an entry whose release is in flight,
+// so a second, concurrent release of the same lease touches nothing and
+// cannot raise a false "lock lost" (review r2, m8).
 type settleLease struct {
-	taskID string
-	conn   *pgx.Conn
-	tx     pgx.Tx
-	since  time.Time
+	taskID    string
+	conn      *pgx.Conn
+	tx        pgx.Tx
+	since     time.Time
+	token     uint64
+	releasing bool
 }
+
+// settleLockMaxLeasesCeiling bounds SETTLE_LOCK_MAX_LEASES: a typo like 80
+// would quietly recreate the pinned-backend problem the cap exists to prevent.
+const settleLockMaxLeasesCeiling = 8
 
 // errSettleLockUnavailable: the lock could not be ASKED for — the
 // connection could not be made or the query failed. Distinct from "held by
@@ -156,18 +171,22 @@ func settleLockMaxLeases() int {
 		log.Printf("[payments][settle] SETTLE_LOCK_MAX_LEASES=%q is not a positive integer; using 2", raw)
 		return 2
 	}
+	if n > settleLockMaxLeasesCeiling {
+		log.Printf("[payments][settle] SETTLE_LOCK_MAX_LEASES=%d is above the ceiling; using %d", n, settleLockMaxLeasesCeiling)
+		return settleLockMaxLeasesCeiling
+	}
 	return n
 }
 
 // reserveTaskSettlement claims the task in `held` for this process without
-// opening anything. true: reserved — the caller must either promote the
-// reservation to a lease or release it. false: already held here, or at
-// the cap.
-func reserveTaskSettlement(taskID string) bool {
+// opening anything. (token, true): reserved — the caller must either promote
+// the reservation to a lease or release it, by token. (_, false): already
+// held here, or at the cap.
+func reserveTaskSettlement(taskID string) (uint64, bool) {
 	settleLock.mu.Lock()
 	defer settleLock.mu.Unlock()
 	if _, busy := settleLock.held[taskID]; busy {
-		return false // this process is already settling it
+		return 0, false // this process is already settling it
 	}
 	if n := len(settleLock.held); n >= settleLockMaxLeases() {
 		ages := make([]string, 0, n)
@@ -177,20 +196,23 @@ func reserveTaskSettlement(taskID string) bool {
 		sort.Strings(ages)
 		log.Printf("[payments][settle] task=%s: %d settlements already hold lock connections (cap %d) — not started, left to the sweep: %s",
 			taskID, n, settleLockMaxLeases(), strings.Join(ages, ", "))
-		return false
+		return 0, false
 	}
 	if settleLock.held == nil {
 		settleLock.held = map[string]settleLease{}
 	}
-	settleLock.held[taskID] = settleLease{taskID: taskID, since: time.Now()}
-	return true
+	settleLock.seq++
+	settleLock.held[taskID] = settleLease{taskID: taskID, since: time.Now(), token: settleLock.seq}
+	return settleLock.seq, true
 }
 
-// releaseReservation drops a reservation that never became a lease.
-func releaseReservation(taskID string) {
+// releaseReservation drops THIS reservation if it never became a lease.
+// Another entry under the same task — a newer reservation after a reset —
+// is not ours to touch.
+func releaseReservation(taskID string, token uint64) {
 	settleLock.mu.Lock()
 	defer settleLock.mu.Unlock()
-	if cur, ok := settleLock.held[taskID]; ok && cur.conn == nil {
+	if cur, ok := settleLock.held[taskID]; ok && cur.conn == nil && cur.token == token {
 		delete(settleLock.held, taskID)
 	}
 }
@@ -204,20 +226,39 @@ func releaseReservation(taskID string) {
 // (_, false, err): the lock could not be asked for — an infrastructure
 // error, reported like any other settlement failure, never swallowed.
 func tryLockTaskSettlement(ctx context.Context, taskID string) (settleLease, bool, error) {
-	if !reserveTaskSettlement(taskID) {
+	token, ok := reserveTaskSettlement(taskID)
+	if !ok {
 		return settleLease{}, false, nil
 	}
+	// The reservation is released on every path that does not promote it —
+	// including a panic inside the I/O (review r2, m6): a slot that leaked
+	// would be "busy" until restart, and two leaks would stop every
+	// settlement in the process.
+	promoted := false
+	defer func() {
+		if !promoted {
+			releaseReservation(taskID, token)
+		}
+	}()
 	l, got, err := openSettlementLease(ctx, taskID)
 	if !got {
-		releaseReservation(taskID)
 		return settleLease{}, false, err
 	}
+	l.token = token
 	settleLock.mu.Lock()
-	if settleLock.held == nil { // resetSettleLockForTests ran meanwhile
-		settleLock.held = map[string]settleLease{}
+	cur, still := settleLock.held[taskID]
+	if still && cur.conn == nil && cur.token == token {
+		settleLock.held[taskID] = l
+		promoted = true
 	}
-	settleLock.held[taskID] = l
 	settleLock.mu.Unlock()
+	if !promoted {
+		// Our reservation is gone (resetSettleLockForTests ran while we were
+		// connecting). The lease we just took belongs to nobody; let it go.
+		_ = l.tx.Rollback(context.Background())
+		_ = l.conn.Close(context.Background())
+		return settleLease{}, false, nil
+	}
 	return l, true, nil
 }
 
@@ -290,13 +331,31 @@ func openSettlementLease(ctx context.Context, taskID string) (settleLease, bool,
 // clear that newer mark — and holds no database lock of its own any more, so
 // there is nothing of the newer settlement's it could release either.
 //
-// The I/O runs outside the mutex. Between the ROLLBACK and the mark's
-// removal a concurrent attempt at the same task is told "busy" by the mark
-// and deferred to the sweep — the safe direction.
+// The release is CLAIMED under the mutex first: only the goroutine that
+// finds the lease current and not yet releasing does the I/O and clears the
+// mark; any other release of the same lease — late, duplicate, or
+// concurrent — returns at once and touches nothing, so it can neither race
+// the owner on a connection that is not goroutine-safe nor raise a false
+// "lock lost" (review r2, m8). The I/O itself runs outside the mutex.
+// Between the ROLLBACK and the mark's removal a concurrent attempt at the
+// same task is told "busy" by the mark and deferred to the sweep — the safe
+// direction.
 func unlockTaskSettlement(l settleLease) {
 	if l.conn == nil {
 		return
 	}
+	settleLock.mu.Lock()
+	cur, ok := settleLock.held[l.taskID]
+	claimed := ok && cur.conn == l.conn && !cur.releasing
+	if claimed {
+		cur.releasing = true
+		settleLock.held[l.taskID] = cur
+	}
+	settleLock.mu.Unlock()
+	if !claimed {
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	lost := ""
@@ -313,15 +372,12 @@ func unlockTaskSettlement(l settleLease) {
 	}
 
 	settleLock.mu.Lock()
-	current := false
 	if cur, ok := settleLock.held[l.taskID]; ok && cur.conn == l.conn {
 		delete(settleLock.held, l.taskID)
-		current = true
 	}
 	mail := false
-	if lost != "" && current {
-		// Reported once, by the release that still owned the mark — a late
-		// duplicate says nothing new. The email is rate-limited; the log is not.
+	if lost != "" {
+		// The email is rate-limited; the log is not.
 		if time.Since(settleLock.lastLostMail) >= 10*time.Minute {
 			settleLock.lastLostMail = time.Now()
 			mail = true
@@ -329,7 +385,7 @@ func unlockTaskSettlement(l settleLease) {
 	}
 	settleLock.mu.Unlock()
 
-	if lost != "" && current {
+	if lost != "" {
 		settleLockLost(l.taskID, lost, mail)
 	}
 }

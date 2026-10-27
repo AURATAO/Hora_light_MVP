@@ -445,11 +445,15 @@ func TestSettleLockSeesAnotherSessionsLock(t *testing.T) {
 	setupStripeWebhookDB(t)
 	ctx := context.Background()
 	w := seedOpsWorld(t, "open")
+	if !leaseConnsGone(t) {
+		t.Fatalf("%d lease connection(s) open before the test began", leaseConnCount(t))
+	}
 
 	other, err := db.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = other.Rollback(context.Background()) })
 	if _, err := other.Exec(ctx, `select pg_advisory_xact_lock($1, hashtext($2))`, advisoryLockTaskSettle, w.taskID); err != nil {
 		t.Fatal(err)
 	}
@@ -500,12 +504,18 @@ func TestSettleLockCapLeavesTheTaskToTheSweep(t *testing.T) {
 	setupStripeWebhookDB(t)
 	t.Setenv("SETTLE_LOCK_MAX_LEASES", "1")
 	ctx := context.Background()
+	if !leaseConnsGone(t) {
+		t.Fatalf("%d lease connection(s) open before the test began", leaseConnCount(t))
+	}
 
 	a, got, err := tryLockTaskSettlement(ctx, "cap-task-a")
 	if err != nil || !got {
 		t.Fatalf("first lease: got=%v err=%v", got, err)
 	}
 	before := leaseConnCount(t)
+	if before != 1 {
+		t.Fatalf("%d lease connections while one lease is held, want 1", before)
+	}
 	_, got, err = tryLockTaskSettlement(ctx, "cap-task-b")
 	if err != nil || got {
 		t.Fatalf("second lease at cap 1: got=%v err=%v, want false, nil", got, err)
@@ -516,7 +526,7 @@ func TestSettleLockCapLeavesTheTaskToTheSweep(t *testing.T) {
 	if marked {
 		t.Fatal("a cap-refused task was left reserved")
 	}
-	if n := leaseConnCount(t); n != before {
+	if n := leaseConnCount(t); n > before {
 		t.Fatalf("a cap-refused attempt opened a connection: %d → %d", before, n)
 	}
 	// The probe still answers truthfully for the refused task: nobody holds it.
