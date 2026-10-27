@@ -244,3 +244,54 @@ and `payouts` for the task with Stripe (the PaymentIntent, any
 `completion_balance` intent, the transfers) and finish by hand: create the
 missing transfer in the dashboard, send the receipt from the task page, and
 set `settled_total_cents` so the task reads as settled.
+
+---
+
+## What a correct LIVE settlement looks like (first one: 2026-10-27)
+
+The reference point. Before this, every number in this runbook had only ever
+been seen in test mode; the live keys went in on 2026-10-26 and the two steps
+nobody had watched with real money were the capture and the transfer.
+
+One task, $12.00 of time, no shopping receipt:
+
+```
+13:15:44  [payments] pre-auth task=4e82d3de… intent=pi_3UV9I2… amount=1200 status=requires_capture
+13:26:40  [payments] capture task=4e82d3de… total=1200 (time=1200 receipt=0)
+13:26:41  [payments][payout] task=4e82d3de… payout=1df4f206… transfer=tr_3UV9I2… amount=$9.60
+13:26:42  [payments][settle] task=4e82d3de… captured=$12.00 (time=$12.00 receipt=$0.00 discount=$0.00)
+```
+
+and the `payouts` row:
+
+| column | value |
+|---|---|
+| `status` | `paid` |
+| `service_cents` | 1200 |
+| `fee_cents` | 240 |
+| `fee_bps` | 2000 |
+| `reimbursement_cents` | 0 |
+| `amount_cents` | 960 |
+| `funding` | `charge` |
+| `stripe_bank_payout_id` | NULL |
+| `bank_paid_at` | NULL |
+
+Three things to read off it:
+
+1. **The fee comes off the service, not the reimbursement.** $12.00 service →
+   $2.40 fee (2000 bps) → $9.60 transferred. A task with a shopping receipt
+   adds `reimbursement_cents` to the transfer untouched by the fee; that is
+   what `supporterPay.NetCents()` means and it is the arithmetic to check on
+   the first live task that has one.
+2. **`bank_paid_at` NULL is normal here, not a failure.** The transfer moves
+   money to the supporter's Connect account; Stripe then pays it out to the
+   bank on its own schedule and `payout.paid` fills these two columns in days
+   later — 2026-10-12's payout filled on 10-19. An arrival that never fills is
+   `onConnectedPayoutFailed`'s job to report, not something to chase by hand.
+3. **A Connect account can read as payable and not be.** 16 minutes before this
+   settlement the same account logged
+   `v1 says transfers=active but v2 recipient stripe_transfers="restricted" — NOT payable`.
+   That check is the one that matters; a transfer attempted in that window
+   lands in a `failed` payout and an ops email, and `adminRetryPayout` is the
+   way back once onboarding finishes. Nothing about it fails the settlement:
+   capture happens first and the task is complete either way.
