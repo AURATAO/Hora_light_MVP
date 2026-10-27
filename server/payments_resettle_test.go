@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 )
 
 func seedLiveHold(t *testing.T, taskID, requesterID, status string, cents int) string {
@@ -282,9 +283,10 @@ func TestResettleSweepDoesNotFlagARunningSettlement(t *testing.T) {
 	}
 }
 
-// In-process exclusion: session-level advisory locks are re-entrant within
-// one session, so the database alone would let a second goroutine of this
-// process through. The lock's own bookkeeping must not.
+// In-process exclusion: a second settlement of a task this process already
+// holds a lease for is refused by the bookkeeping alone, before any
+// connection is opened — and the database agrees, since each lease is its
+// own session holding its own transaction-level lock.
 func TestSettleCompletedTaskRefusesToOverlapInProcess(t *testing.T) {
 	setupStripeWebhookDB(t)
 	f := stubStripe(t)
@@ -321,8 +323,11 @@ func TestSettleCompletedTaskRefusesToOverlapInProcess(t *testing.T) {
 	}
 }
 
-// A lease from a dropped connection releases nothing on the connection that
-// replaced it: the newer settlement's lock stays.
+// A lease whose connection broke releases nothing that a newer lease of the
+// same task holds: the database dropped the old lock when the connection
+// died, and a late release of the old lease must clear neither the newer
+// settlement's in-process mark nor its database lock, which lives on the
+// newer lease's own connection.
 func TestSettleLockStaleLeaseDoesNotReleaseANewerLock(t *testing.T) {
 	setupStripeWebhookDB(t)
 	ctx := context.Background()
@@ -333,22 +338,22 @@ func TestSettleLockStaleLeaseDoesNotReleaseANewerLock(t *testing.T) {
 		t.Fatalf("lock: %v %v", got, err)
 	}
 	// The connection breaks under the running settlement.
-	settleLock.mu.Lock()
-	settleLockDropConn("test")
-	settleLock.mu.Unlock()
+	if err := stale.conn.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
 	// Its in-process half still excludes a local second attempt…
 	if _, again, _ := tryLockTaskSettlement(ctx, w.taskID); again {
 		t.Fatal("a second local settlement got the task while the first still runs")
 	}
-	// …and once it finishes, a newer settlement locks on the new connection.
+	// …and once it finishes, a newer settlement locks on a connection of its own.
 	unlockTaskSettlement(stale)
 	fresh, got, err := tryLockTaskSettlement(ctx, w.taskID)
 	if err != nil || !got {
 		t.Fatalf("fresh lock: %v %v", got, err)
 	}
 	defer unlockTaskSettlement(fresh)
-	if stale.gen == fresh.gen {
-		t.Fatal("the reconnect did not bump the generation")
+	if stale.conn == fresh.conn {
+		t.Fatal("the fresh lease reused the broken connection")
 	}
 	// A late release of the stale lease must free neither half of the fresh
 	// lock: not the in-process mark…
@@ -406,5 +411,137 @@ func TestSettleCompletedTaskWithoutAHoldTakesNoLock(t *testing.T) {
 	settleLock.mu.Unlock()
 	if marked {
 		t.Fatal("a hold-less settlement left an in-process lock mark")
+	}
+}
+
+// leaseConnCount is how many dedicated lease connections are open right now,
+// as the server sees them. Closed connections can linger in pg_stat_activity
+// for a moment, so a caller waiting for zero polls (leaseConnsGone).
+func leaseConnCount(t *testing.T) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(context.Background(),
+		`select count(*) from pg_stat_activity where application_name = $1`, settleLockAppName).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func leaseConnsGone(t *testing.T) bool {
+	t.Helper()
+	for i := 0; i < 40; i++ {
+		if leaseConnCount(t) == 0 {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
+// The core property through any pooler: a lock held by ANOTHER session — a
+// transaction on a different connection — is seen, with no in-process mark
+// involved, and the attempt leaves nothing behind: no mark, no connection.
+func TestSettleLockSeesAnotherSessionsLock(t *testing.T) {
+	setupStripeWebhookDB(t)
+	ctx := context.Background()
+	w := seedOpsWorld(t, "open")
+	if !leaseConnsGone(t) {
+		t.Fatalf("%d lease connection(s) open before the test began", leaseConnCount(t))
+	}
+
+	other, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = other.Rollback(context.Background()) })
+	if _, err := other.Exec(ctx, `select pg_advisory_xact_lock($1, hashtext($2))`, advisoryLockTaskSettle, w.taskID); err != nil {
+		t.Fatal(err)
+	}
+	lease, got, err := tryLockTaskSettlement(ctx, w.taskID)
+	if err != nil || got {
+		t.Fatalf("lock held elsewhere: got=%v err=%v, want false, nil", got, err)
+	}
+	if lease.conn != nil {
+		t.Fatal("a refused lock returned a connection")
+	}
+	settleLock.mu.Lock()
+	_, marked := settleLock.held[w.taskID]
+	settleLock.mu.Unlock()
+	if marked {
+		t.Fatal("a refused lock left a reservation behind")
+	}
+	if !leaseConnsGone(t) {
+		t.Fatalf("a refused lock left %d lease connection(s) open", leaseConnCount(t))
+	}
+	if running, err := isTaskSettlementRunning(ctx, w.taskID); err != nil || !running {
+		t.Fatalf("probe while another session holds it: %v %v, want true", running, err)
+	}
+
+	// Released elsewhere → taken here, on a connection of its own, which the
+	// release closes.
+	if err := other.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	lease, got, err = tryLockTaskSettlement(ctx, w.taskID)
+	if err != nil || !got {
+		t.Fatalf("lock after release elsewhere: got=%v err=%v", got, err)
+	}
+	if n := leaseConnCount(t); n != 1 {
+		t.Fatalf("%d lease connections while one lease is held, want 1", n)
+	}
+	unlockTaskSettlement(lease)
+	if !leaseConnsGone(t) {
+		t.Fatalf("release left %d lease connection(s) open", leaseConnCount(t))
+	}
+	if running, err := isTaskSettlementRunning(ctx, w.taskID); err != nil || running {
+		t.Fatalf("probe after release: %v %v, want false", running, err)
+	}
+}
+
+// Past the cap a settlement is not started — no connection, no error, no
+// capture-failed report — and the task is free again once a slot is.
+func TestSettleLockCapLeavesTheTaskToTheSweep(t *testing.T) {
+	setupStripeWebhookDB(t)
+	t.Setenv("SETTLE_LOCK_MAX_LEASES", "1")
+	ctx := context.Background()
+	if !leaseConnsGone(t) {
+		t.Fatalf("%d lease connection(s) open before the test began", leaseConnCount(t))
+	}
+
+	a, got, err := tryLockTaskSettlement(ctx, "cap-task-a")
+	if err != nil || !got {
+		t.Fatalf("first lease: got=%v err=%v", got, err)
+	}
+	t.Cleanup(func() { unlockTaskSettlement(a) }) // a no-op once released below
+	before := leaseConnCount(t)
+	if before != 1 {
+		t.Fatalf("%d lease connections while one lease is held, want 1", before)
+	}
+	_, got, err = tryLockTaskSettlement(ctx, "cap-task-b")
+	if err != nil || got {
+		t.Fatalf("second lease at cap 1: got=%v err=%v, want false, nil", got, err)
+	}
+	settleLock.mu.Lock()
+	_, marked := settleLock.held["cap-task-b"]
+	settleLock.mu.Unlock()
+	if marked {
+		t.Fatal("a cap-refused task was left reserved")
+	}
+	if n := leaseConnCount(t); n > before {
+		t.Fatalf("a cap-refused attempt opened a connection: %d → %d", before, n)
+	}
+	// The probe still answers truthfully for the refused task: nobody holds it.
+	if running, err := isTaskSettlementRunning(ctx, "cap-task-b"); err != nil || running {
+		t.Fatalf("probe of a cap-refused task: %v %v, want false", running, err)
+	}
+
+	unlockTaskSettlement(a)
+	b, got, err := tryLockTaskSettlement(ctx, "cap-task-b")
+	if err != nil || !got {
+		t.Fatalf("lease once a slot is free: got=%v err=%v", got, err)
+	}
+	unlockTaskSettlement(b)
+	if !leaseConnsGone(t) {
+		t.Fatalf("%d lease connection(s) left open", leaseConnCount(t))
 	}
 }

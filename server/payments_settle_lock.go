@@ -1,54 +1,114 @@
 package main
 
-// The per-task settlement lock, and the one connection it lives on.
+// The per-task settlement lock: one connection, one transaction, one
+// transaction-level advisory lock, per settlement.
 //
-// Why not a pool connection: settleCompletedTask runs ~15 s of Stripe calls
-// and pool writes. A lock held on a pool connection for that long is a
-// connection the chain's own writes cannot use; with DB_MAX_CONNS=3
-// (staging) three overlapping settlements would each hold one and each wait
-// for one, forever, with every HTTP handler behind them. (Review r3.)
+// WHY A TRANSACTION-LEVEL LOCK (2026-10-27). The first version of this file
+// held SESSION-level advisory locks (pg_try_advisory_lock / pg_advisory_unlock)
+// on one dedicated connection shared by every settlement in the process. Its
+// first live settlement on production printed
 //
-// So the lock lives on ONE dedicated connection, outside the pool, opened
-// lazily from the pool's own config and shared by every settlement in the
-// process. Session-level advisory locks (pg_try_advisory_lock /
-// pg_advisory_unlock) are per connection, so all of them ride this one; the
-// Go mutex serialises the lock/unlock round-trips only, never the
-// settlement itself. If the process dies the connection dies and Postgres
-// drops every lock it held — which is exactly when the sweep is meant to
-// take over.
+//	[payments][settle][ERROR] unlock found no lock held on the live connection
 //
-// Two halves, because the database alone is not enough (review r4):
+// because production's SUPABASE_DB_URL is Supabase's TRANSACTION pooler
+// (port 6543): each statement outside a transaction may be served by a
+// different backend session, so the session that took the lock was not the
+// session asked to release it — and, worse, was not the session any later
+// settlement would be checked against. Session-level locks are simply not a
+// thing through a transaction pooler; Supabase's docs say so. The in-process
+// half (the `held` map) kept the money right, but the cross-process half the
+// design promised did not exist. See D-06, addendum 2026-10-27.
 //
-//	in-process    session-level advisory locks are RE-ENTRANT within one
-//	              session — a second pg_try_advisory_lock for the same key on
-//	              the same connection returns true and stacks — so two
-//	              goroutines of this process asking the database would both
-//	              be told "yours". `held` is the in-process half: a task in
-//	              it is being settled here, whatever the database says.
-//	cross-process the database lock. Another process (a deploy overlap, a
-//	              second instance) has its own connection and is told false.
+// A transaction pins ONE backend for its whole life in every pooler mode. So
+// a lock that lives inside an open transaction means the same thing on 6543,
+// on 5432 and on a direct connection, and it needs no assumption about the
+// environment to be true. That is the whole design:
 //
-// A lease, not a boolean: every (re)connection has a generation, and a lock
-// carries the generation it was taken under. If the connection broke and was
-// remade while a settlement ran, that settlement's lock went with the old
-// connection — the database no longer excludes anyone from its task — and
-// its release must not touch a lock some newer settlement took on the new
-// connection. unlock checks the generation: a stale lease is reported, loudly
-// (log + ops email naming the task), and released from `held` only.
+//	tryLock   reserve the task in `held`, then (outside the mutex) open a
+//	          dedicated connection, BEGIN, and
+//	          `select pg_try_advisory_xact_lock(k, hashtext(task))`. true →
+//	          the lease is that connection and its open transaction, held for
+//	          the settlement. false → ROLLBACK, close, "busy".
+//	unlock    ROLLBACK (releases the lock; nothing was written on this
+//	          transaction) and close the connection; then clear the mark.
+//	probe     isTaskSettlementRunning: a pool transaction tries the same lock
+//	          and rolls back at once. Sub-second, so the pool is fine for it —
+//	          the reason settlements do NOT use the pool (review r3) is the
+//	          15 s they would hold a pool connection, not the lock itself.
 //
-// Budget against DB_MAX_CONNS: one connection, in addition to the pgx pool
-// and the stdlib `sqldb` handle.
+// Why not a pool connection for the settlement: settleCompletedTask runs
+// ~15 s of Stripe calls and pool writes. A lock held on a pool connection
+// for that long is a connection the chain's own writes cannot use; with
+// DB_MAX_CONNS=3 (staging) three overlapping settlements would each hold one
+// and each wait for one, forever, with every HTTP handler behind them.
 //
-// Lock space is shared with transaction-level advisory locks, so a test (or
-// any caller) holding pg_advisory_xact_lock(advisoryLockTaskSettle, hashtext(task))
-// on another connection blocks this just the same.
+// One connection PER settlement rather than one shared: a transaction is per
+// connection, and transaction-level locks release only when their
+// transaction ends, so two settlements cannot share a transaction without
+// sharing a lifetime.
+//
+// THE BUDGET (review r1 of this rewrite, MAJOR). Through the transaction
+// pooler an open transaction pins a BACKEND, not just a client socket, so
+// every lease is one of the pooler's ~15 backends for ~15 s — the same
+// resource the settlement's own writes and every HTTP handler need. A cap
+// sized to DB_MAX_CONNS (8 on production) would let two overlapping
+// processes pin 16 and recreate, in the pooler, exactly the circular wait
+// review r3 kept out of the Go pool. So the cap is SMALL and INDEPENDENT of
+// the pool size: settleLockMaxLeases, default 2, SETTLE_LOCK_MAX_LEASES to
+// change it. A process therefore holds at most pgx pool + sqldb + 2
+// connections, and at most 2 pinned backends. A settlement past the cap is
+// not started and is left to the five-minute sweep (payments_resettle.go),
+// never reported as a capture failure about money that was not attempted;
+// the log line names the leases in the way and how long each has run, so a
+// chain that hung (the chain has no deadline, by D-06) is visible as the
+// slot it is holding.
+//
+// `held` remains, for two reasons that are not the old one. It is the
+// reservation: the in-process check, the cap, and the "already settling
+// here" answer all come from it without a round-trip. And it is what a late
+// or duplicate unlock is checked against, so releasing a lease twice, or
+// after a newer settlement of the same task has its own lease, touches
+// nothing that is not that lease's own. (The old reason — session locks
+// being re-entrant within one connection — no longer applies: every
+// settlement is its own session.)
+//
+// The mutex covers bookkeeping only. Connect, BEGIN, the lock query, the
+// release and the ops email all run OUTSIDE it (review r1, m2): a database
+// brown-out that hangs one connect to its 10 s timeout must not queue every
+// other settlement's lock step, nor a finished settlement's release, behind
+// it. The reservation in `held` is what keeps two local attempts at one task
+// apart while the first is still connecting.
+//
+// A lost lock is detected LATE. If a lease's connection breaks mid-settlement
+// (or the server ends its transaction — an idle_in_transaction timeout, a
+// failover), the database released the lock at that moment and the
+// settlement runs on without the cross-process exclusion; nothing here
+// notices until the release, where ROLLBACK fails or the connection is found
+// closed. Then it is logged at ERROR and ops are emailed naming the task
+// (rate-limited), so its payment and payout rows get checked against Stripe
+// for duplicates. The database rules that actually hold the money — one
+// completion (`WHERE status='open'`), one transfer per charge
+// (`payouts.payment_id UNIQUE`) — do not depend on this lock; it is the
+// layer above them.
+//
+// Known, accepted: the probe takes the lock for one round-trip, so a
+// settlement that tries the same task in that instant is told "busy" and
+// deferred to the sweep (review r1, m3). The probe runs only from the sweep,
+// on captured-but-unsettled tasks older than ten minutes.
+//
+// Lock space is shared with any other transaction-level advisory lock on the
+// same key, so a test (or any caller) holding pg_advisory_xact_lock(
+// advisoryLockTaskSettle, hashtext(task)) on another connection blocks this
+// just the same.
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -56,193 +116,352 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// settleLockAppName is the application_name of every lease connection, so
+// `pg_stat_activity` tells a lease from a pool connection — and a leak from
+// a lease (a test counts them).
+const settleLockAppName = "hora-settle-lock"
+
 var settleLock struct {
 	mu   sync.Mutex
-	conn *pgx.Conn
-	gen  uint64            // bumped on every (re)connect
-	held map[string]uint64 // tasks this process is settling right now → lease generation
-	// lastDropMail: a flapping connection must not mail ops on every flap.
-	lastDropMail time.Time
+	held map[string]settleLease // tasks this process is settling right now → their lease (conn nil while connecting)
+	seq  uint64                 // reservation tokens; see settleLease.token
+	// lastLostMail: a flapping database must not mail ops on every lost lock.
+	lastLostMail time.Time
 }
 
-// settleLease is one taken lock: which task, under which connection.
+// settleLease is one taken lock: the dedicated connection and the open
+// transaction that holds it. The zero lease (conn == nil) holds nothing and
+// releases nothing. `since` is when the reservation was made.
+//
+// token identifies the reservation this lease grew from, so a promote or a
+// release acts only on its own entry: after resetSettleLockForTests dropped
+// the map mid-connect, a later promote must not plant a lease on the swapped
+// database, and a release must not delete a newer reservation of the same
+// task (review r2, m7). releasing marks an entry whose release is in flight,
+// so a second, concurrent release of the same lease touches nothing and
+// cannot raise a false "lock lost" (review r2, m8).
 type settleLease struct {
-	taskID string
-	gen    uint64
+	taskID    string
+	conn      *pgx.Conn
+	tx        pgx.Tx
+	since     time.Time
+	token     uint64
+	releasing bool
 }
+
+// settleLockMaxLeasesCeiling bounds SETTLE_LOCK_MAX_LEASES: a typo like 80
+// would quietly recreate the pinned-backend problem the cap exists to prevent.
+const settleLockMaxLeasesCeiling = 8
 
 // errSettleLockUnavailable: the lock could not be ASKED for — the
-// connection could not be made or the query failed twice. Distinct from
-// "held by someone else", which is not an error (settlementOutcome.Busy).
+// connection could not be made or the query failed. Distinct from "held by
+// someone else", which is not an error (settlementOutcome.Busy).
 var errSettleLockUnavailable = errors.New("payments: settlement lock unavailable")
 
-// settleLockDropConn closes the shared connection after an error on it and
-// says, loudly, which in-flight settlements just lost their database lock.
-// Caller holds settleLock.mu.
-func settleLockDropConn(reason string) {
-	if settleLock.conn != nil {
-		_ = settleLock.conn.Close(context.Background())
+// settleLockMaxLeases caps the dedicated lock connections — pinned pooler
+// backends — a process holds at once. See THE BUDGET above. Default 2;
+// SETTLE_LOCK_MAX_LEASES overrides.
+func settleLockMaxLeases() int {
+	raw := strings.TrimSpace(os.Getenv("SETTLE_LOCK_MAX_LEASES"))
+	if raw == "" {
+		return 2
 	}
-	settleLock.conn = nil
-	if len(settleLock.held) > 0 {
-		ids := make([]string, 0, len(settleLock.held))
-		for id := range settleLock.held {
-			ids = append(ids, id)
-		}
-		sort.Strings(ids)
-		log.Printf("[payments][settle][ERROR] lock connection dropped (%s) while %d settlement(s) were running: %s — "+
-			"their cross-process exclusion is gone until they finish", reason, len(ids), strings.Join(ids, ", "))
-		if time.Since(settleLock.lastDropMail) < 10*time.Minute {
-			return
-		}
-		settleLock.lastDropMail = time.Now()
-		emailOpsAdmins("[HO:RA] Settlement lock connection dropped mid-settlement",
-			fmt.Sprintf("<p>The database connection that holds per-task settlement locks dropped while %d settlement(s) were running. "+
-				"They continue, but another process could now settle the same task(s) at the same time. "+
-				"Once they finish, check these tasks' payment and payout rows against Stripe for duplicates:</p><p><code>%s</code></p>",
-				len(ids), strings.Join(ids, "<br>")))
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		log.Printf("[payments][settle] SETTLE_LOCK_MAX_LEASES=%q is not a positive integer; using 2", raw)
+		return 2
 	}
-	// `held` is kept: those settlements are still running here, and the
-	// in-process half must go on excluding a second local attempt.
+	if n > settleLockMaxLeasesCeiling {
+		log.Printf("[payments][settle] SETTLE_LOCK_MAX_LEASES=%d is above the ceiling; using %d", n, settleLockMaxLeasesCeiling)
+		return settleLockMaxLeasesCeiling
+	}
+	return n
 }
 
-// settleLockConn returns the shared lock connection, opening it on first
-// use or after a break (bumping the generation). Caller holds settleLock.mu.
-func settleLockConn(ctx context.Context) (*pgx.Conn, error) {
-	if settleLock.conn != nil && !settleLock.conn.IsClosed() {
-		return settleLock.conn, nil
+// reserveTaskSettlement claims the task in `held` for this process without
+// opening anything. (token, true): reserved — the caller must either promote
+// the reservation to a lease or release it, by token. (_, false): already
+// held here, or at the cap.
+func reserveTaskSettlement(taskID string) (uint64, bool) {
+	settleLock.mu.Lock()
+	defer settleLock.mu.Unlock()
+	if _, busy := settleLock.held[taskID]; busy {
+		return 0, false // this process is already settling it
 	}
-	settleLock.conn = nil
-	if db == nil {
-		return nil, fmt.Errorf("%w: no database", errSettleLockUnavailable)
+	if n := len(settleLock.held); n >= settleLockMaxLeases() {
+		ages := make([]string, 0, n)
+		for id, l := range settleLock.held {
+			ages = append(ages, fmt.Sprintf("%s (%s)", id, time.Since(l.since).Round(time.Second)))
+		}
+		sort.Strings(ages)
+		log.Printf("[payments][settle] task=%s: %d settlements already hold lock connections (cap %d) — not started, left to the sweep: %s",
+			taskID, n, settleLockMaxLeases(), strings.Join(ages, ", "))
+		return 0, false
 	}
-	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	conn, err := pgx.ConnectConfig(cctx, db.Config().ConnConfig.Copy())
-	if err != nil {
-		// The pgx error names host, user and database; that belongs in the
-		// log, not in an audit row or an ops email (reportCaptureFailure
-		// writes out.Err into both).
-		log.Printf("[payments][settle] lock connection: connect: %v", err)
-		return nil, fmt.Errorf("%w: connect failed", errSettleLockUnavailable)
+	if settleLock.held == nil {
+		settleLock.held = map[string]settleLease{}
 	}
-	settleLock.conn = conn
-	settleLock.gen++
-	return conn, nil
+	settleLock.seq++
+	settleLock.held[taskID] = settleLease{taskID: taskID, since: time.Now(), token: settleLock.seq}
+	return settleLock.seq, true
+}
+
+// releaseReservation drops THIS reservation if it never became a lease.
+// Another entry under the same task — a newer reservation after a reset —
+// is not ours to touch.
+func releaseReservation(taskID string, token uint64) {
+	settleLock.mu.Lock()
+	defer settleLock.mu.Unlock()
+	if cur, ok := settleLock.held[taskID]; ok && cur.conn == nil && cur.token == token {
+		delete(settleLock.held, taskID)
+	}
 }
 
 // tryLockTaskSettlement takes the per-task settlement lock without waiting.
 // (lease, true, nil): taken — the caller must unlockTaskSettlement(lease).
-// (_, false, nil): held by another settlement of this task; do nothing.
+// (_, false, nil): held by another settlement of this task, here or in
+// another process — or this process is at its lease cap, or the caller's
+// context ended before the lock could be asked for; do nothing, the sweep
+// will come back to the task.
 // (_, false, err): the lock could not be asked for — an infrastructure
 // error, reported like any other settlement failure, never swallowed.
 func tryLockTaskSettlement(ctx context.Context, taskID string) (settleLease, bool, error) {
+	token, ok := reserveTaskSettlement(taskID)
+	if !ok {
+		return settleLease{}, false, nil
+	}
+	// The reservation is released on every path that does not promote it —
+	// including a panic inside the I/O (review r2, m6): a slot that leaked
+	// would be "busy" until restart, and two leaks would stop every
+	// settlement in the process.
+	promoted := false
+	defer func() {
+		if !promoted {
+			releaseReservation(taskID, token)
+		}
+	}()
+	l, got, err := openSettlementLease(ctx, taskID)
+	if !got {
+		return settleLease{}, false, err
+	}
+	l.token = token
 	settleLock.mu.Lock()
-	defer settleLock.mu.Unlock()
-	if _, busy := settleLock.held[taskID]; busy {
-		return settleLease{}, false, nil // this process is already settling it
+	cur, still := settleLock.held[taskID]
+	if still && cur.conn == nil && cur.token == token {
+		settleLock.held[taskID] = l
+		promoted = true
 	}
-	// Two attempts: an idle connection the server dropped shows up only as
-	// an error on its next use, and that must not become a reported
-	// settlement failure when a fresh connection answers fine.
-	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
-		conn, err := settleLockConn(ctx)
-		if err != nil {
-			return settleLease{}, false, err
-		}
-		qctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		var got bool
-		err = conn.QueryRow(qctx, `select pg_try_advisory_lock($1, hashtext($2))`,
-			advisoryLockTaskSettle, taskID).Scan(&got)
-		cancel()
-		if err != nil {
-			lastErr = err
-			if ctx.Err() != nil && !conn.IsClosed() {
-				// The CALLER's context ended (a client went away, a shutdown)
-				// and the connection survived it. It is not at fault; dropping
-				// it would cost every other in-flight settlement its lock for
-				// nothing. (pgx closes a connection whose query was cancelled
-				// mid-flight — then IsClosed is true, and the drop below
-				// records that the locks went with it.)
-				return settleLease{}, false, fmt.Errorf("%w: %v", errSettleLockUnavailable, ctx.Err())
-			}
-			settleLockDropConn("lock query failed")
-			continue
-		}
-		if !got {
-			return settleLease{}, false, nil
-		}
-		if settleLock.held == nil {
-			settleLock.held = map[string]uint64{}
-		}
-		settleLock.held[taskID] = settleLock.gen
-		return settleLease{taskID: taskID, gen: settleLock.gen}, true, nil
+	settleLock.mu.Unlock()
+	if !promoted {
+		// Our reservation is gone (resetSettleLockForTests ran while we were
+		// connecting). The lease we just took belongs to nobody; let it go.
+		_ = l.tx.Rollback(context.Background())
+		_ = l.conn.Close(context.Background())
+		return settleLease{}, false, nil
 	}
-	log.Printf("[payments][settle] task=%s: lock query: %v", taskID, lastErr)
-	return settleLease{}, false, fmt.Errorf("%w: lock query failed", errSettleLockUnavailable)
+	return l, true, nil
 }
 
-// unlockTaskSettlement releases a lease taken by tryLockTaskSettlement.
-// On context.Background(): the caller's context may be the one that just
-// expired, and a lock that stays held because its release was cancelled is
-// a task nobody can settle until the process restarts.
-func unlockTaskSettlement(l settleLease) {
-	settleLock.mu.Lock()
-	defer settleLock.mu.Unlock()
-	// Only this lease's own mark: a stale lease released twice, or late,
-	// must not clear the mark a newer settlement of the same task holds.
-	if g, ok := settleLock.held[l.taskID]; ok && g == l.gen {
-		delete(settleLock.held, l.taskID)
+// openSettlementLease does the I/O half of tryLockTaskSettlement, outside
+// the mutex: connect, BEGIN, try the lock. Every failure path closes what it
+// opened. A caller whose context ended is not an infrastructure failure
+// (review r1, m4): it is reported as "not now", never as a capture failure.
+func openSettlementLease(ctx context.Context, taskID string) (settleLease, bool, error) {
+	if db == nil {
+		return settleLease{}, false, fmt.Errorf("%w: no database", errSettleLockUnavailable)
 	}
-	if l.gen != settleLock.gen || settleLock.conn == nil || settleLock.conn.IsClosed() {
-		// The connection this lock lived on is gone (and, if a newer one
-		// exists, any lock on it belongs to someone else). The database
-		// released ours when the connection died; settleLockDropConn said
-		// so. Nothing to release here.
-		if l.gen != settleLock.gen {
-			log.Printf("[payments][settle] task=%s: lock lease from a dropped connection — not touching the current one", l.taskID)
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cfg := db.Config().ConnConfig.Copy()
+	if cfg.RuntimeParams == nil {
+		cfg.RuntimeParams = map[string]string{}
+	}
+	cfg.RuntimeParams["application_name"] = settleLockAppName
+	conn, err := pgx.ConnectConfig(cctx, cfg)
+	if err != nil {
+		if ctx.Err() != nil {
+			log.Printf("[payments][settle] task=%s: caller's context ended before the lock was taken — not started, left to the sweep", taskID)
+			return settleLease{}, false, nil
 		}
+		// The pgx error names host, user and database; that belongs in the
+		// log, not in an audit row or an ops email (reportCaptureFailure
+		// writes out.Err into both).
+		log.Printf("[payments][settle] task=%s: lock connection: connect: %v", taskID, err)
+		return settleLease{}, false, fmt.Errorf("%w: connect failed", errSettleLockUnavailable)
+	}
+	tx, err := conn.Begin(cctx)
+	if err != nil {
+		_ = conn.Close(context.Background())
+		if ctx.Err() != nil {
+			log.Printf("[payments][settle] task=%s: caller's context ended before the lock was taken — not started, left to the sweep", taskID)
+			return settleLease{}, false, nil
+		}
+		log.Printf("[payments][settle] task=%s: lock connection: begin: %v", taskID, err)
+		return settleLease{}, false, fmt.Errorf("%w: begin failed", errSettleLockUnavailable)
+	}
+	var got bool
+	if err := tx.QueryRow(cctx, `select pg_try_advisory_xact_lock($1, hashtext($2))`,
+		advisoryLockTaskSettle, taskID).Scan(&got); err != nil {
+		_ = tx.Rollback(context.Background())
+		_ = conn.Close(context.Background())
+		if ctx.Err() != nil {
+			log.Printf("[payments][settle] task=%s: caller's context ended before the lock was taken — not started, left to the sweep", taskID)
+			return settleLease{}, false, nil
+		}
+		log.Printf("[payments][settle] task=%s: lock query: %v", taskID, err)
+		return settleLease{}, false, fmt.Errorf("%w: lock query failed", errSettleLockUnavailable)
+	}
+	if !got {
+		_ = tx.Rollback(context.Background())
+		_ = conn.Close(context.Background())
+		return settleLease{}, false, nil
+	}
+	return settleLease{taskID: taskID, conn: conn, tx: tx, since: time.Now()}, true, nil
+}
+
+// unlockTaskSettlement releases a lease taken by tryLockTaskSettlement:
+// ROLLBACK ends the transaction, which releases the lock, and the connection
+// is closed; then the mark is cleared. On context.Background(): the caller's
+// context may be the one that just expired, and a lock that stays held
+// because its release was cancelled is a task nobody can settle until the
+// process restarts.
+//
+// Only this lease's own mark is cleared: a lease released twice, or late,
+// after a newer settlement of the same task took its own lease, must not
+// clear that newer mark — and holds no database lock of its own any more, so
+// there is nothing of the newer settlement's it could release either.
+//
+// The release is CLAIMED under the mutex first: only the goroutine that
+// finds the lease current and not yet releasing does the I/O and clears the
+// mark; any other release of the same lease — late, duplicate, or
+// concurrent — returns at once and touches nothing, so it can neither race
+// the owner on a connection that is not goroutine-safe nor raise a false
+// "lock lost" (review r2, m8). The I/O itself runs outside the mutex.
+// Between the ROLLBACK and the mark's removal a concurrent attempt at the
+// same task is told "busy" by the mark and deferred to the sweep — the safe
+// direction.
+func unlockTaskSettlement(l settleLease) {
+	if l.conn == nil {
 		return
 	}
+	settleLock.mu.Lock()
+	cur, ok := settleLock.held[l.taskID]
+	claimed := ok && cur.conn == l.conn && !cur.releasing
+	if claimed {
+		cur.releasing = true
+		settleLock.held[l.taskID] = cur
+	}
+	settleLock.mu.Unlock()
+	if !claimed {
+		return
+	}
+	// The mark is cleared from a defer so that a panic in the release I/O
+	// cannot leave the entry `releasing` forever (the release-side twin of
+	// the reservation defer in tryLockTaskSettlement).
+	defer func() {
+		settleLock.mu.Lock()
+		if cur, ok := settleLock.held[l.taskID]; ok && cur.conn == l.conn {
+			delete(settleLock.held, l.taskID)
+		}
+		settleLock.mu.Unlock()
+	}()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	var released bool
-	if err := settleLock.conn.QueryRow(ctx, `select pg_advisory_unlock($1, hashtext($2))`,
-		advisoryLockTaskSettle, l.taskID).Scan(&released); err != nil {
-		settleLockDropConn("unlock failed")
+	lost := ""
+	switch {
+	case l.conn.IsClosed():
+		// The connection broke under the running settlement; the database
+		// released the lock when it did.
+		lost = "connection closed during the settlement"
+	default:
+		if err := l.tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			lost = fmt.Sprintf("release failed: %v", err)
+		}
+		_ = l.conn.Close(ctx)
+	}
+
+	settleLock.mu.Lock()
+	mail := false
+	if lost != "" {
+		// The email is rate-limited; the log is not.
+		if time.Since(settleLock.lastLostMail) >= 10*time.Minute {
+			settleLock.lastLostMail = time.Now()
+			mail = true
+		}
+	}
+	settleLock.mu.Unlock()
+
+	if lost != "" {
+		settleLockLost(l.taskID, lost, mail)
+	}
+}
+
+// settleLockLost says, loudly, that a settlement ran part of its course
+// without the cross-process lock it was supposed to hold. Called outside
+// the mutex.
+func settleLockLost(taskID, reason string, mail bool) {
+	log.Printf("[payments][settle][ERROR] task=%s: lock lost during the settlement (%s) — "+
+		"another process could have settled it at the same time; check its payment and payout rows against Stripe", taskID, reason)
+	if !mail {
 		return
 	}
-	if !released {
-		log.Printf("[payments][settle][ERROR] task=%s: unlock found no lock held on the live connection", l.taskID)
-	}
+	emailOpsAdmins("[HO:RA] Settlement lock lost mid-settlement",
+		fmt.Sprintf("<p>The database connection holding the per-task settlement lock for task <code>%s</code> broke while its settlement was running (%s). "+
+			"The settlement continued, but another process could have settled the same task at the same time. "+
+			"Check the task's payment and payout rows against Stripe for duplicates.</p>", taskID, reason))
 }
 
 // isTaskSettlementRunning reports whether some settlement of the task holds
-// the lock right now — here (held) or in another process (database) —
-// without taking it for longer than one round-trip. Used by the sweep to
-// tell "the chain died" from "the chain is slow".
+// the lock right now — here (held, or reserved and connecting) or in another
+// process (database) — without taking it for longer than one round-trip.
+// Used by the sweep to tell "the chain died" from "the chain is slow". The
+// probe runs on a POOL transaction: sub-second, rolled back at once, so it
+// never ties a pool connection up the way a settlement would.
 func isTaskSettlementRunning(ctx context.Context, taskID string) (bool, error) {
-	lease, got, err := tryLockTaskSettlement(ctx, taskID)
+	settleLock.mu.Lock()
+	_, local := settleLock.held[taskID]
+	settleLock.mu.Unlock()
+	if local {
+		return true, nil
+	}
+	if db == nil {
+		return false, fmt.Errorf("%w: no database", errSettleLockUnavailable)
+	}
+	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	tx, err := db.Begin(pctx)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("%w: probe begin: %v", errSettleLockUnavailable, err)
 	}
-	if got {
-		unlockTaskSettlement(lease)
-		return false, nil
+	defer func() {
+		rctx, rcancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer rcancel()
+		_ = tx.Rollback(rctx) // the rollback IS the release
+	}()
+	var free bool
+	if err := tx.QueryRow(pctx, `select pg_try_advisory_xact_lock($1, hashtext($2))`,
+		advisoryLockTaskSettle, taskID).Scan(&free); err != nil {
+		return false, fmt.Errorf("%w: probe: %v", errSettleLockUnavailable, err)
 	}
-	return true, nil
+	return !free, nil
 }
 
-// resetSettleLockForTests drops the shared connection and the held set, so
-// a test fixture that swaps databases does not leave a connection to the
-// old one (admin_task_ops_test.go).
+// resetSettleLockForTests releases every lease this process holds and drops
+// the held set, so a test fixture that swaps databases does not leave
+// connections to the old one (admin_task_ops_test.go).
 func resetSettleLockForTests() {
 	settleLock.mu.Lock()
-	defer settleLock.mu.Unlock()
-	if settleLock.conn != nil {
-		_ = settleLock.conn.Close(context.Background())
+	leases := make([]settleLease, 0, len(settleLock.held))
+	for _, l := range settleLock.held {
+		leases = append(leases, l)
 	}
-	settleLock.conn = nil
 	settleLock.held = nil
+	settleLock.mu.Unlock()
+	for _, l := range leases {
+		if l.conn != nil && !l.conn.IsClosed() {
+			_ = l.tx.Rollback(context.Background())
+			_ = l.conn.Close(context.Background())
+		}
+	}
 }

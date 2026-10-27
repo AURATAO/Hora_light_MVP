@@ -69,8 +69,35 @@ Only `db diff` answers this question.
 
 ```bash
 ./verify.sh            # expect: only I-05 pending, nothing red
-cd server && go test ./... -race     # green since 2026-10-26
 ```
+
+And the Go suite **with a database, and told it may not skip**:
+
+```bash
+docker run -d --rm --name hora-test-pg -e POSTGRES_PASSWORD=test \
+  -e POSTGRES_DB=horatest -p 55434:5432 postgres:16
+cd server
+export TEST_DATABASE_URL='postgres://postgres:test@localhost:55434/horatest'
+export CHANNEL_TEST_DATABASE_URL="$TEST_DATABASE_URL"
+REQUIRE_DB_TESTS=1 go test -p 1 ./... -race -count=1
+```
+
+**`-p 1` is load-bearing.** `go test ./...` runs packages in parallel, and
+both `server` and `internal/channel` reset their fixtures with
+`DROP TABLE … users, tasks … CASCADE`. Pointed at one database and run in
+parallel they drop each other's tables mid-test — 21 failures in `server`
+and one in `channel` on 2026-10-27, on code that was green three minutes
+earlier. `-p 1` runs the packages one at a time, and each rebuilds what it
+needs at its start. (A second database for `CHANNEL_TEST_DATABASE_URL` works
+too; `-p 1` needs no extra setup.)
+
+**Why the two variables and the flag (2026-10-27).** Every DB-backed test
+skips itself when its URL is unset, and `go test` prints `ok` for a package
+whose tests all skipped. Three "green" `-race` runs that day proved nothing
+about the settlement lock: `ok hora-auth 3.4s` was the non-DB tests; with
+the database it is ~90 s. `REQUIRE_DB_TESTS=1` turns that skip into a
+failure, so the gate cannot pass quietly. If in doubt, add `-v` and grep for
+`--- SKIP`: there must be none.
 
 ---
 

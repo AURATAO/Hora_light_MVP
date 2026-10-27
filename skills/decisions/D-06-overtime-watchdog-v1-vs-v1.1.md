@@ -282,3 +282,120 @@ a false "capture failed" is possible only on a hold-less task hit by a DB
 blip); the drop email's 10-minute rate limit can omit a later drop's task
 ids (they are in the log). Reviewer's NIT stands: the `Busy` branches in
 cancel and force-complete are belt-and-braces behind status-gated writes.
+
+## Addendum 2026-10-27 — first live run, and a premise r6 did not hold
+
+**The chain works on live money.** Production, 16:14 local, one $12.00 task
+from the iOS app: `POST /complete` answered in 4.2 s (200, the task in the
+body — the old code took ~15 s and risked the edge's 502); capture 1 s after
+the response, in the background; payout $9.60 (`tr_3UVC0B…`); settle
+`captured=$12.00`; completion email. No `[RESETTLE]`, no `[PANIC]`, no
+incomplete-settlement email. The 4.2 s is Render↔Supabase round trips inside
+`getTask`, not the chain.
+
+**One ERROR, every settlement from now on:**
+
+```
+[payments][settle][ERROR] task=…: unlock found no lock held on the live connection
+```
+
+Same connection, same generation, not closed — and Postgres says this session
+holds no such lock. That has one explanation, and Aura confirmed it: production's
+`SUPABASE_DB_URL` is the **transaction pooler, port 6543**. In that mode every
+statement may land on a different backend session, so a session-level advisory
+lock taken by one statement is simply not there for the next; Supabase's own
+docs list advisory locks among the things transaction mode does not support.
+The clue was in our code the whole time — `QueryExecModeSimpleProtocol` is the
+accommodation one makes for exactly this pooler — and the review never
+connected it. r6's PASS rested on "one dedicated connection is one session".
+On production it is not.
+
+**What it costs, precisely.** Within one process the Go mutex and the `held`
+map still serialise settlements of a task, which is why the money was right
+today and will stay right in normal operation. What is lost is the
+cross-process guarantee — the deploy minute when two instances overlap, or
+any future second instance. Even there the money is held by database rules
+this lock was only a third layer over: `complete`'s `WHERE status='open'`
+(one completion) and `payouts.payment_id UNIQUE` (one transfer per charge).
+The worst case is a second capture attempt on an already-captured intent,
+which Stripe refuses, which becomes one false "capture failed" email. Not a
+double charge. The ERROR line itself only logs, so it will print on every
+settlement until fixed and bury real errors.
+
+**Ruled (Aura, 2026-10-27): not a blocker for anything; fix before B6**, since
+the channel multiplies settlements. Two fixes considered:
+
+1. Point the dedicated lock connection at the session pooler (5432) via its
+   own URL. Minimal code, but the guarantee then depends on an env var being
+   set correctly per environment — the same shape of assumption that just
+   failed.
+2. Switch to **transaction-level** locks: `BEGIN; select
+   pg_try_advisory_xact_lock(...)` on the dedicated connection, held open for
+   the settlement, `COMMIT` to release. A transaction pins one backend for its
+   whole life in every pooler mode, so the lock means the same thing on 6543,
+   5432 and a direct connection. `isTaskSettlementRunning` becomes a short
+   transaction with the same try-lock. No new variable, no environment
+   assumption.
+
+Taking 2. It is Tier 3 (money path) and gets its own adversarial review.
+Staging has never printed this line because no settlement has run there since
+the lock landed on 10-26 — so staging silence was not evidence, and the first
+live settlement was the first real test of the lock. That is the lesson to
+keep: a review of concurrency code has to name the pooler mode it assumes.
+
+### The fix, and its review (2026-10-27, same evening)
+
+`payments_settle_lock.go` rewritten: one dedicated connection, one open
+transaction and one `pg_try_advisory_xact_lock` **per settlement**; ROLLBACK
+releases. A transaction pins one backend in every pooler mode, so the lock
+means the same thing on 6543, 5432 and a direct connection, with no
+environment assumption. The sweep's probe is a pool transaction that tries
+the same lock and rolls back at once. Gone: the shared connection, the
+generation/lease machinery, the re-entrancy caveat. Kept: `held`, now as the
+reservation and the thing a late release is checked against.
+
+**Review r1: FAIL (1 MAJOR, 5 MINOR).** The MAJOR was mine to miss: the cap
+was `DB_MAX_CONNS` (8), and through the transaction pooler every lease pins
+a *backend* for ~15 s — the pooler has ~15 for everything — so two
+overlapping processes could pin 16 and recreate, in the pooler, exactly the
+circular wait r3 kept out of the Go pool. Fixed: cap independent of the pool
+size, default **2**, `SETTLE_LOCK_MAX_LEASES` to change it, clamped at 8;
+budget written down as pool + sqldb + 2. Minors fixed: no I/O under the
+mutex (reservation placeholder, then connect outside it); a caller whose
+context ended is "not now, left to the sweep", not a capture-failed report;
+probe rollback has a timeout; lease connections carry
+`application_name=hora-settle-lock`; two tests added (another session's lock
+is seen with no in-process mark; the cap opens nothing and reports nothing).
+
+**Review r2: PASS (4 MINOR, 4 NIT).** Fixed anyway, because they are cheap
+and this is the money path: a panic between reserve and promote could leak a
+cap slot until restart → the reservation is released from a defer;
+`resetSettleLockForTests` mid-connect could let a promote plant a lease on
+the swapped database → reservations carry a token and promote/release act
+only on their own entry; two concurrent releases of one lease could race a
+non-goroutine-safe connection and raise a false "lock lost" → the release is
+claimed under the mutex first, only the claimant does I/O; the tests wait
+for lingering connections to leave `pg_stat_activity` before counting.
+
+**Review r3: PASS (3 NIT).** Two taken after the verdict, two lines each:
+the release clears its mark from a defer (symmetry with the reservation),
+the cap test cleans its lease up on failure.
+
+**Residuals, declared:**
+- The probe takes the lock for one round-trip; a settlement trying the same
+  task in that instant is told "busy" and deferred to the sweep. The probe
+  runs only from the sweep, on captured-but-unsettled tasks ≥10 min old.
+- A chain that hangs (no deadline, by design) holds a cap slot; the cap log
+  line names held leases with their age, so it is visible, not fixed.
+- A cap- or ctx-deferred settlement is retried by the sweep's shape-one
+  query, which selects `completed` tasks. A deferral on the
+  cancel-with-settlement path would not be retried by it. Cap 2 and ~one
+  settlement at a time make this rare; it is written here, not solved.
+- A lost lock is detected at the release, not when it happens.
+- `application_name` reaches `pg_stat_activity` only on direct connections;
+  through the pooler the backend shows the pooler's name. The leak counter is
+  a test tool, not an ops one.
+
+Verified on Aura's Mac: r1 and r2 green under `-race -count=3`; r3 pending
+the same run, plus `-v` on the lock tests to confirm they ran rather than
+skipped.

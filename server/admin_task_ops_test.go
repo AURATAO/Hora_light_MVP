@@ -185,7 +185,7 @@ func setupAdminOpsDB(t *testing.T) {
 	t.Helper()
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set — skipping DB-backed ops action tests")
+		requireOrSkipDB(t, "TEST_DATABASE_URL not set — skipping DB-backed ops action tests")
 	}
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, url)

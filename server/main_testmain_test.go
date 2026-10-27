@@ -21,3 +21,17 @@ func TestMain(m *testing.M) {
 	gin.SetMode(gin.TestMode)
 	os.Exit(m.Run())
 }
+
+// requireOrSkipDB is the one way a DB-backed test steps aside when
+// TEST_DATABASE_URL is unset. By default it skips, as before — and `go test`
+// prints `ok` for a package whose DB tests all skipped, which is how three
+// "green" runs on 2026-10-27 proved nothing about the settlement lock. With
+// REQUIRE_DB_TESTS=1 it FAILS instead, so a merge gate that forgot the
+// database cannot pass quietly (runbook phase 1).
+func requireOrSkipDB(t *testing.T, msg string) {
+	t.Helper()
+	if os.Getenv("REQUIRE_DB_TESTS") == "1" {
+		t.Fatalf("%s (REQUIRE_DB_TESTS=1: a DB-backed test may not skip)", msg)
+	}
+	t.Skip(msg)
+}
