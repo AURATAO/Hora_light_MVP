@@ -355,6 +355,16 @@ func unlockTaskSettlement(l settleLease) {
 	if !claimed {
 		return
 	}
+	// The mark is cleared from a defer so that a panic in the release I/O
+	// cannot leave the entry `releasing` forever (the release-side twin of
+	// the reservation defer in tryLockTaskSettlement).
+	defer func() {
+		settleLock.mu.Lock()
+		if cur, ok := settleLock.held[l.taskID]; ok && cur.conn == l.conn {
+			delete(settleLock.held, l.taskID)
+		}
+		settleLock.mu.Unlock()
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -372,9 +382,6 @@ func unlockTaskSettlement(l settleLease) {
 	}
 
 	settleLock.mu.Lock()
-	if cur, ok := settleLock.held[l.taskID]; ok && cur.conn == l.conn {
-		delete(settleLock.held, l.taskID)
-	}
 	mail := false
 	if lost != "" {
 		// The email is rate-limited; the log is not.

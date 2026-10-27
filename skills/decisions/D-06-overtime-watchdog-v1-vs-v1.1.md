@@ -342,3 +342,60 @@ Staging has never printed this line because no settlement has run there since
 the lock landed on 10-26 — so staging silence was not evidence, and the first
 live settlement was the first real test of the lock. That is the lesson to
 keep: a review of concurrency code has to name the pooler mode it assumes.
+
+### The fix, and its review (2026-10-27, same evening)
+
+`payments_settle_lock.go` rewritten: one dedicated connection, one open
+transaction and one `pg_try_advisory_xact_lock` **per settlement**; ROLLBACK
+releases. A transaction pins one backend in every pooler mode, so the lock
+means the same thing on 6543, 5432 and a direct connection, with no
+environment assumption. The sweep's probe is a pool transaction that tries
+the same lock and rolls back at once. Gone: the shared connection, the
+generation/lease machinery, the re-entrancy caveat. Kept: `held`, now as the
+reservation and the thing a late release is checked against.
+
+**Review r1: FAIL (1 MAJOR, 5 MINOR).** The MAJOR was mine to miss: the cap
+was `DB_MAX_CONNS` (8), and through the transaction pooler every lease pins
+a *backend* for ~15 s — the pooler has ~15 for everything — so two
+overlapping processes could pin 16 and recreate, in the pooler, exactly the
+circular wait r3 kept out of the Go pool. Fixed: cap independent of the pool
+size, default **2**, `SETTLE_LOCK_MAX_LEASES` to change it, clamped at 8;
+budget written down as pool + sqldb + 2. Minors fixed: no I/O under the
+mutex (reservation placeholder, then connect outside it); a caller whose
+context ended is "not now, left to the sweep", not a capture-failed report;
+probe rollback has a timeout; lease connections carry
+`application_name=hora-settle-lock`; two tests added (another session's lock
+is seen with no in-process mark; the cap opens nothing and reports nothing).
+
+**Review r2: PASS (4 MINOR, 4 NIT).** Fixed anyway, because they are cheap
+and this is the money path: a panic between reserve and promote could leak a
+cap slot until restart → the reservation is released from a defer;
+`resetSettleLockForTests` mid-connect could let a promote plant a lease on
+the swapped database → reservations carry a token and promote/release act
+only on their own entry; two concurrent releases of one lease could race a
+non-goroutine-safe connection and raise a false "lock lost" → the release is
+claimed under the mutex first, only the claimant does I/O; the tests wait
+for lingering connections to leave `pg_stat_activity` before counting.
+
+**Review r3: PASS (3 NIT).** Two taken after the verdict, two lines each:
+the release clears its mark from a defer (symmetry with the reservation),
+the cap test cleans its lease up on failure.
+
+**Residuals, declared:**
+- The probe takes the lock for one round-trip; a settlement trying the same
+  task in that instant is told "busy" and deferred to the sweep. The probe
+  runs only from the sweep, on captured-but-unsettled tasks ≥10 min old.
+- A chain that hangs (no deadline, by design) holds a cap slot; the cap log
+  line names held leases with their age, so it is visible, not fixed.
+- A cap- or ctx-deferred settlement is retried by the sweep's shape-one
+  query, which selects `completed` tasks. A deferral on the
+  cancel-with-settlement path would not be retried by it. Cap 2 and ~one
+  settlement at a time make this rare; it is written here, not solved.
+- A lost lock is detected at the release, not when it happens.
+- `application_name` reaches `pg_stat_activity` only on direct connections;
+  through the pooler the backend shows the pooler's name. The leak counter is
+  a test tool, not an ops one.
+
+Verified on Aura's Mac: r1 and r2 green under `-race -count=3`; r3 pending
+the same run, plus `-v` on the lock tests to confirm they ran rather than
+skipped.

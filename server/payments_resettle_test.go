@@ -512,6 +512,7 @@ func TestSettleLockCapLeavesTheTaskToTheSweep(t *testing.T) {
 	if err != nil || !got {
 		t.Fatalf("first lease: got=%v err=%v", got, err)
 	}
+	t.Cleanup(func() { unlockTaskSettlement(a) }) // a no-op once released below
 	before := leaseConnCount(t)
 	if before != 1 {
 		t.Fatalf("%d lease connections while one lease is held, want 1", before)
