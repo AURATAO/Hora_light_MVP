@@ -178,6 +178,32 @@ reasoning on by default — measure latency with it on and off.
   - The way back, if a staging channel is ever wanted again: a second Sendblue
     account with its own number, key and webhook. The sandbox line cannot be
     recovered.
+- [ ] **CORRECTION (2026-10-27): the dashboard cannot route per number, but the
+  API can — and a stale per-number binding is what broke staging for two days.**
+  The receive webhook had stayed bound to the retired sandbox line, so messages
+  to the new line matched no webhook and Sendblue never called us. The shape of
+  the evidence is worth keeping, because it pointed away from our side at every
+  step: the Sendblue account's message history showed every inbound, our server
+  logged not a single POST — not even a 401, which a wrong signing secret would
+  have produced — and an external GET to the same URL was logged normally, so
+  the endpoint was reachable the whole time. Rebinding it to the new line fixed
+  it; a full chat booking ran on staging at 2026-10-27 11:45Z (inbound → split
+  → parse → quote → YES → task → $47.00 hold `requires_capture` → ops emails →
+  confirmation, 38 seconds).
+  What the docs actually allow: `receive` takes an ARRAY, and each entry may
+  carry `sendblue_numbers` limiting it to specific lines
+  (docs.sendblue.com/api/resources/webhooks/methods/update). So the claim above
+  — "you cannot set a different webhook per phone number" — is true of the
+  dashboard only. Two consequences:
+  - A second NUMBER on this account, plus two `receive` entries with different
+    `url` and `sendblue_numbers`, would let staging and production run side by
+    side. Cheaper than the second Sendblue account written above, and it is the
+    thing to buy if a staging channel is ever wanted again.
+  - A binding to a line that no longer exists is INVISIBLE in the dashboard,
+    which shows only the URL. `GET /api/account/webhooks` (headers
+    `sb-api-key-id`, `sb-api-secret-key`) is the only way to see it, so that
+    call is the first step of any future "no inbound arrives" diagnosis —
+    ahead of the server, the keys and the secret.
 - [ ] **RESIDUAL DECLARED (2026-10-27): staging and production share one
   Sendblue credential pair.** Sendblue appears to issue **one API key + secret
   per account** — the docs say only "In order to use the API you will need your

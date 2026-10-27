@@ -172,6 +172,21 @@ In this order:
 1. **Sendblue dashboard:** point the receive webhook at
    `https://<production API>/webhooks/channel/sendblue`.
 
+   **Check the number binding, not just the URL.** A `receive` webhook can be
+   limited to specific lines (`sendblue_numbers`), the dashboard shows only the
+   URL, and a binding to a line that no longer exists looks exactly like a
+   correct configuration while delivering nothing — that cost two days on
+   staging, 2026-10-25 to 10-27. Verify with the API, which is the only place
+   the binding is visible:
+
+   ```bash
+   curl -s https://api.sendblue.co/api/account/webhooks \
+     -H "sb-api-key-id: $SB_KEY" -H "sb-api-secret-key: $SB_SECRET"
+   ```
+
+   `receive` must name the production URL, and either carry no
+   `sendblue_numbers` or list the production line.
+
    **This step takes staging's inbound away.** Sendblue webhook URLs are
    configured per *account*, not per number — every line on the account shares
    one endpoint, and it cannot be set per phone number. So staging stops
