@@ -261,8 +261,25 @@ settlement whose chain died).
 ## Known not included in this go-live
 
 - **WhatsApp** — permanent token, production number, rotated verify token.
-- **Mobile** — the `time_cap_reached` message on clock-in and laundry's "Ask
-  for a budget" at $0. Both wait for the next App Store submission.
+- **Mobile** — the `time_cap_reached` message on clock-in, laundry's "Ask
+  for a budget" at $0, and the unguarded JSON parse below. All wait for the
+  next App Store submission.
+
+  **`mobile/src/lib/api.ts:52` parses every response body as JSON without
+  checking.** `const data = text ? JSON.parse(text) : null` throws
+  `SyntaxError: JSON Parse error: Unexpected character: <` on any non-JSON
+  body — an edge error page, a proxy or captive-portal interception — and the
+  app shows the user that sentence. Seen on a live receipt upload,
+  2026-10-27 ~14:00 (build HORA/17): a red JSON error, and the upload then
+  succeeded on a retry. Render logged **zero** 4xx/5xx in the surrounding 40
+  minutes and both uploads as 200, so the body that failed to parse was
+  produced in front of our server, not by it.
+
+  The fix is not a bare try/catch. Check `content-type` before parsing, as
+  `app/src/api/client.js` already does; on a non-JSON body raise the status
+  instead ("Upload failed (502) — please try again"); and for an upload apply
+  the `completeTask` lesson — a response that never arrived says nothing about
+  whether the work landed, so ask the server before reporting a failure.
 - **Dispatch automation** (PLAN §13b) — deferred 2026-10-26; the ops alert
   threshold is settled at **N = 5 minutes** for when it is built.
 - **A full CSP on the webapp** — the other response headers shipped
