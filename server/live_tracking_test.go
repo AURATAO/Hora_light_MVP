@@ -160,6 +160,9 @@ CREATE TABLE public.tasks (
 	assigned_to text NOT NULL DEFAULT '',
 	assigned_to_id uuid REFERENCES public.users(id),
 	status text NOT NULL DEFAULT 'open',
+	completion_photo_url text,
+	receipt_photo_url text,
+	receipt_amount_cents integer,
 	job_lat double precision,
 	job_lng double precision,
 	created_at timestamptz NOT NULL DEFAULT now()
@@ -363,7 +366,6 @@ func seedPing(t *testing.T, taskID, uid string, lat, lng float64, age time.Durat
 
 func getLiveAs(t *testing.T, taskID, uid string) (int, map[string]any) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodGet, "/tasks/"+taskID+"/live", nil)
@@ -379,7 +381,6 @@ func getLiveAs(t *testing.T, taskID, uid string) (int, map[string]any) {
 
 func postEnrouteAs(t *testing.T, taskID, uid string) (int, map[string]any) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/tasks/"+taskID+"/enroute", nil)

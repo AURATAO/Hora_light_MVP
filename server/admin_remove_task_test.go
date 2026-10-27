@@ -246,7 +246,6 @@ func nullableEmail(s string) string {
 // the endpoint depends on.
 func callRemove(t *testing.T, taskID, uid, email, body string) (int, map[string]any) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/admin/tasks/"+taskID+"/remove", strings.NewReader(body))
@@ -267,7 +266,6 @@ func callRemove(t *testing.T, taskID, uid, email, body string) (int, map[string]
 
 func getTaskAs(t *testing.T, taskID, uid, email string) (int, map[string]any) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodGet, "/tasks/"+taskID, nil)
@@ -284,7 +282,6 @@ func getTaskAs(t *testing.T, taskID, uid, email string) (int, map[string]any) {
 
 func postTaskAction(t *testing.T, handler gin.HandlerFunc, path, taskID, uid, email, body string) (int, map[string]any) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
@@ -412,7 +409,6 @@ func TestAdminRemoveHidesTaskFromFeed(t *testing.T) {
 	}
 
 	feed := func() []any {
-		gin.SetMode(gin.TestMode)
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest(http.MethodGet, "/tasks/available", nil)
@@ -587,7 +583,6 @@ func TestAdminRemoveKeepsTaskInRequesterList(t *testing.T) {
 	}
 
 	list := func(handler gin.HandlerFunc, path string) []map[string]any {
-		gin.SetMode(gin.TestMode)
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest(http.MethodGet, path, nil)

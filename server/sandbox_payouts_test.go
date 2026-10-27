@@ -33,7 +33,6 @@ func markSandbox(t *testing.T, uids ...string) {
 
 func callEarnings(t *testing.T, uid string) (int, map[string]any) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodGet, "/payments/earnings", nil)
@@ -46,7 +45,6 @@ func callEarnings(t *testing.T, uid string) (int, map[string]any) {
 
 func callConnectRoute(t *testing.T, h gin.HandlerFunc, path, uid, email string) (int, map[string]any) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, path, strings.NewReader("{}"))

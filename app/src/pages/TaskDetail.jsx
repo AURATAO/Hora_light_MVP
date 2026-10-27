@@ -1045,10 +1045,26 @@ export default function TaskDetail() {
           if (receiptPhotoURL) completeBody.receipt_photo_url = receiptPhotoURL
         }
         console.log('[completeTask] body:', completeBody)
-        await api(`/tasks/${id}/complete`, {
-          method: 'POST',
-          body: completeBody,
-        })
+        try {
+          await api(`/tasks/${id}/complete`, {
+            method: 'POST',
+            body: completeBody,
+          })
+        } catch (e) {
+          // A 4xx is the server declining — over-budget receipt, clock-out
+          // missing — and is shown below. Anything else (a 502 from the edge,
+          // a dropped connection) says nothing about whether the task
+          // completed: the status write happens first on the server, and on
+          // staging the browser was told 502 twice on tasks that had in fact
+          // completed. So before reporting a failure, ask the server what the
+          // task is now; a completed task is a success that arrived late.
+          // "already closed" is the other shape of the same story: a retry
+          // whose first attempt did land. It too is settled by looking.
+          const alreadyClosed = e?.status === 400 && e?.body?.error === 'already closed'
+          if (!alreadyClosed && e?.status && e.status >= 400 && e.status < 500) throw e
+          const now = await api(`/tasks/${id}`).catch(() => null)
+          if (now?.status !== 'completed') throw e
+        }
         setShowCompleteModal(false)
         // During the round, completing is the moment the supporter answers:
         // nothing else on web prompts them. Outside it, unchanged.
@@ -1283,8 +1299,13 @@ export default function TaskDetail() {
   // denied budget request says nothing about whether the job needs more time,
   // so the option stays reachable — it simply is not the answer to what was
   // just asked.
+  // Who may ask for (more) money to spend: a task with a budget, and a
+  // laundry task even at $0 — laundromat and dry-cleaning fees are paid up
+  // front by the supporter (Aura, 2026-10-24; mobile: same change after the
+  // review freeze, PLAN §13).
+  const canAskBudget = approvedBudgetCents > 0 || task?.category === 'laundry'
   const otherKindAvailable = latestAsk?.kind === 'time'
-    ? approvedBudgetCents > 0
+    ? canAskBudget
     : Boolean((capState?.warning || capState?.reached) && (extensions?.time_choices || []).length > 0)
   const isTaskActive = task?.status === 'open' && Boolean(task?.assigned_to_id)
   // Whether the itemized settlement card below is going to render. The cost
@@ -1691,7 +1712,7 @@ export default function TaskDetail() {
                 to ask for more of it. The approved budget is shown at all times
                 on a shopping task, not only when something is outstanding — it
                 is the number they are about to be held to at the till. */}
-            {isAssignee && isTaskActive && (approvedBudgetCents > 0 || capState?.cap?.cap_minutes > 0) && (
+            {isAssignee && isTaskActive && (canAskBudget || capState?.cap?.cap_minutes > 0) && (
               <div className="border border-white/20 rounded-md p-3 space-y-2 text-sm">
                 <div className="text-xs text-white/60">What you&apos;re covered for</div>
 
@@ -1791,7 +1812,7 @@ export default function TaskDetail() {
                               onClick={() => setAskReopened(true)}
                               className="w-full rounded-lg border border-white/20 px-3 py-2.5 text-sm hover:border-white/40 disabled:opacity-40"
                             >
-                              Ask for more budget
+                              {approvedBudgetCents > 0 ? 'Ask for more budget' : 'Ask for a budget'}
                             </button>
                           ) : (
                             <div className="grid grid-cols-2 gap-2">
@@ -1816,7 +1837,7 @@ export default function TaskDetail() {
 
                 {!pendingAsk && (!askResolved || askReopened) && (
                   <div className="border-t border-white/10 pt-4 space-y-4">
-                    {approvedBudgetCents > 0 && (
+                    {canAskBudget && (
                       <div className="space-y-4">
                         {/* Stacked, always. This card is used one-handed, mid
                             errand, on a phone — the amount and the reason sat
@@ -1825,7 +1846,7 @@ export default function TaskDetail() {
                             worth the overflow. */}
                         <div className="space-y-1.5">
                           <label className="block text-xs text-white/60" htmlFor="ask-amount">
-                            How much more?
+                            {approvedBudgetCents > 0 ? 'How much more?' : 'How much do you need to pay (e.g. the laundromat fee)?'}
                           </label>
                           <input
                             id="ask-amount"
@@ -1942,7 +1963,7 @@ export default function TaskDetail() {
                           onClick={sendBudgetAsk}
                           className="w-full rounded-lg bg-white text-black font-medium px-4 py-3 text-sm hover:bg-white/90 disabled:opacity-40"
                         >
-                          {extBusy ? 'Sending…' : 'Ask for more budget'}
+                          {extBusy ? 'Sending…' : approvedBudgetCents > 0 ? 'Ask for more budget' : 'Ask for a budget'}
                         </button>
                       </div>
                     )}

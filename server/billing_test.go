@@ -223,7 +223,6 @@ func TestBillingPreAuthCoversTheHappyPath(t *testing.T) {
 
 func callEstimate(t *testing.T, body string) (int, map[string]any) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/tasks/estimate", strings.NewReader(body))
@@ -324,7 +323,6 @@ func TestBillingEstimateCarriesTheHighBudgetWarningThreshold(t *testing.T) {
 }
 
 func TestBillingEstimateRequiresAuth(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/tasks/estimate",

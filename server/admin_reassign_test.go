@@ -314,7 +314,6 @@ func seedWorld(t *testing.T) world {
 // authorization the endpoint depends on.
 func callReassign(t *testing.T, taskID, uid, email, body string) (int, map[string]any) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/admin/tasks/"+taskID+"/reassign", strings.NewReader(body))
@@ -780,7 +779,6 @@ func TestAdminListSupportersReturnsOnlyApproved(t *testing.T) {
 	seedUser(t, "pending@example.com", "Pat Pending", false)
 	seedUser(t, "also.approved@example.com", "Alma Approved", true)
 
-	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodGet, "/admin/supporters", nil)

@@ -1201,7 +1201,6 @@ func num(v any) int {
 // auth middleware would have set.
 func callTaskHandler(t *testing.T, h gin.HandlerFunc, method, path, taskID, uid, email, body string, extra gin.Params) (int, *httptest.ResponseRecorder) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	var reader *strings.Reader
@@ -1460,5 +1459,150 @@ func seedDisplayCard(t *testing.T, paymentID, brand, last4 string) {
 		`update public.payments set card_brand=$2, card_last4=$3 where id=$1::uuid`,
 		paymentID, brand, last4); err != nil {
 		t.Fatalf("seed display card: %v", err)
+	}
+}
+
+// Staging 2026-10-24 (Aura): a web-app supporter sends no GPS pings, so a
+// 60-minute cap was announced at minute 73 — whenever a screen was opened.
+// The live sweeper evaluates every task with a session RUNNING, each minute,
+// without any ping; a task whose session is closed is left to the 6h
+// backstop.
+func TestLiveTimeCapSweepNeedsNoPing(t *testing.T) {
+	setupStripeWebhookDB(t)
+	w := seedOpsWorld(t, "open")
+	seedWorklog(t, w.taskID, 60, true) // open session, past the 45-minute ceiling
+
+	sweepLiveTimeCaps(context.Background())
+	if n := countNotifications(t, w.requesterID, "TIME_CAP_REACHED"); n != 1 {
+		t.Fatalf("%d requester TIME_CAP_REACHED after the live sweep, want 1", n)
+	}
+	if got := taskStatus(t, w.taskID); got != "open" {
+		t.Fatalf("task status = %q — the sweep must never cancel", got)
+	}
+
+}
+
+// A closed session is not the live sweep's business (the 6h backstop's).
+func TestLiveTimeCapSweepSkipsClosedSessions(t *testing.T) {
+	setupStripeWebhookDB(t)
+	w := seedOpsWorld(t, "open")
+	seedWorklog(t, w.taskID, 60, false)
+	sweepLiveTimeCaps(context.Background())
+	if n := countNotifications(t, w.requesterID, "TIME_CAP_REACHED"); n != 0 {
+		t.Fatalf("%d TIME_CAP_REACHED for a closed session from the live sweep", n)
+	}
+}
+
+// Arbiter 2026-10-24 23:34: reaching the cap clocks the running session out
+// AT the cap minute — the task stays open, the supporter can ask for more
+// time and clock in again. Staging: a 60-minute cap, an 80-minute session.
+func TestTimeCapClocksOutAtTheCap(t *testing.T) {
+	setupStripeWebhookDB(t)
+	w := seedOpsWorld(t, "open")
+	seedWorklog(t, w.taskID, 70, true) // running, 25 minutes past the 45-minute ceiling
+
+	evaluateTimeCap(context.Background(), w.taskID)
+
+	var open int
+	var minutes float64
+	if err := db.QueryRow(context.Background(), `
+		select count(*) filter (where end_at is null),
+		       coalesce(max(extract(epoch from (end_at - start_at))/60.0), 0)
+		  from public.worklogs where task_id = $1::uuid`, w.taskID).Scan(&open, &minutes); err != nil {
+		t.Fatal(err)
+	}
+	if open != 0 {
+		t.Fatal("the session is still running past the cap")
+	}
+	if minutes < 44.9 || minutes > 45.1 {
+		t.Fatalf("session closed at %.1f minutes, want the 45-minute cap", minutes)
+	}
+	if got := taskStatus(t, w.taskID); got != "open" {
+		t.Fatalf("task status = %q — the cap must not cancel", got)
+	}
+	// Clocking in again (after an approval) is still possible: the task is
+	// open and the supporter has no running session — nothing to assert
+	// beyond the two facts above.
+	if n := countNotifications(t, w.supporterID, "TIME_CAP_REACHED"); n != 1 {
+		t.Fatalf("%d TIME_CAP_REACHED, want 1", n)
+	}
+}
+
+// Review (time cap r1): the cut is not behind the once-per-task latch — a
+// session clocked in again past the cap with no approval is cut too, and
+// an approval that raises the cap lets the next session run to the new one.
+func TestTimeCapCutsEverySessionPastTheCap(t *testing.T) {
+	setupStripeWebhookDB(t)
+	w := seedOpsWorld(t, "open")
+	seedWorklog(t, w.taskID, 50, true)
+	evaluateTimeCap(context.Background(), w.taskID) // latch + cut at 45
+
+	// Clocks in again without asking: cut at once (0 minutes left).
+	seedWorklog(t, w.taskID, 3, true)
+	evaluateTimeCap(context.Background(), w.taskID)
+	var open int
+	if err := db.QueryRow(context.Background(), `select count(*) from public.worklogs where task_id=$1::uuid and end_at is null`, w.taskID).Scan(&open); err != nil {
+		t.Fatal(err)
+	}
+	if open != 0 {
+		t.Fatal("a second session past the cap was left running")
+	}
+	if n := countNotifications(t, w.supporterID, "TIME_CAP_REACHED"); n != 1 {
+		t.Fatalf("the notification fires once: %d", n)
+	}
+
+	// +15 approved: cap 60, 46 logged → a new session has 14 minutes.
+	if _, err := db.Exec(context.Background(), `
+		insert into public.extension_requests (task_id, supporter_id, kind, requested_minutes, status, resolved_at)
+		values ($1::uuid, $2::uuid, 'time', 15, 'approved', now())`, w.taskID, w.supporterID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(context.Background(), `update public.tasks set time_cap_warned_at=null, time_cap_reached_at=null, time_cap_ops_alerted_at=null where id=$1::uuid`, w.taskID); err != nil {
+		t.Fatal(err)
+	}
+	seedWorklog(t, w.taskID, 5, true) // 5 minutes in: under the new cap
+	evaluateTimeCap(context.Background(), w.taskID)
+	if err := db.QueryRow(context.Background(), `select count(*) from public.worklogs where task_id=$1::uuid and end_at is null`, w.taskID).Scan(&open); err != nil {
+		t.Fatal(err)
+	}
+	if open != 1 {
+		t.Fatal("a session under the raised cap was cut")
+	}
+}
+
+// Review (time cap r2): a session clocked in again at the cap without an
+// approval is closed at zero minutes — it never eats into the next
+// approval — and the endpoint refuses such a clock-in outright; a stalled
+// task at the cap tells ops with the "clock stopped" wording, never
+// "working unpaid".
+func TestTimeCapReclockInIsRefusedAndNeverBilled(t *testing.T) {
+	setupStripeWebhookDB(t)
+	w := seedOpsWorld(t, "open")
+	seedWorklog(t, w.taskID, 50, true)
+	evaluateTimeCap(context.Background(), w.taskID) // cut at 45
+
+	// Slipped in anyway (a race with the endpoint): closed at zero.
+	seedWorklog(t, w.taskID, 3, true)
+	evaluateTimeCap(context.Background(), w.taskID)
+	var closedMin int
+	if err := db.QueryRow(context.Background(), `
+		with x as (select ceil(extract(epoch from (end_at - start_at))/60.0)::int as m from public.worklogs where task_id=$1::uuid and end_at is not null and end_at > start_at)
+		select coalesce(sum(greatest(m,1)),0) from x`, w.taskID).Scan(&closedMin); err != nil {
+		t.Fatal(err)
+	}
+	if closedMin != 45 {
+		t.Fatalf("closed minutes %d, want exactly the 45-minute cap (the re-clock-in must count zero)", closedMin)
+	}
+
+}
+
+// The endpoint refuses a clock-in with the cap used up.
+func TestClockInRefusedAtTheCap(t *testing.T) {
+	setupStripeWebhookDB(t)
+	w2 := seedOpsWorld(t, "open")
+	seedWorklog(t, w2.taskID, 45, false)
+	code, out := postTaskAction(t, clockIn, "/tasks/"+w2.taskID+"/clock-in", w2.taskID, w2.supporterID, oldSupporterEmail, "")
+	if code != http.StatusForbidden || out["error"] != "time_cap_reached" {
+		t.Fatalf("clock-in at the cap: %d %v", code, out)
 	}
 }

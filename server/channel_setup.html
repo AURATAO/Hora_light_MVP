@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Book with HO:RA</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --ink: #222831; --muted: #5f6670; --line: #e5e7eb; --bg: #fafaf7;
+    --card: #ffffff; --green: #3A5A2D; --gold: #E1B145; --sage: #A3C585;
+    --danger: #a3332a; --danger-bg: #fbeceb;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.5 Inter, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 440px; margin: 0 auto;
+    padding: max(28px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) 40px max(20px, env(safe-area-inset-left)); }
+  .logo { font-weight: 600; font-size: 22px; letter-spacing: .02em; color: var(--green); margin-bottom: 28px; }
+  .logo b { color: var(--gold); }
+  h1 { font-size: 24px; line-height: 1.25; margin: 0 0 8px; font-weight: 600; text-wrap: balance; }
+  p.lead { color: var(--muted); margin: 0 0 24px; }
+  .steps { display: flex; gap: 6px; margin-bottom: 24px; }
+  .steps span { flex: 1; height: 3px; border-radius: 2px; background: var(--line); }
+  .steps span.on { background: var(--green); }
+  label { display: block; font-size: 14px; font-weight: 500; margin: 0 0 6px; }
+  input[type=email], input[type=text], input[inputmode=numeric] {
+    width: 100%; font: inherit; padding: 13px 14px; border: 1px solid var(--line);
+    border-radius: 10px; background: var(--card); color: var(--ink); }
+  input:focus-visible, button:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+  .field { margin-bottom: 16px; }
+  .check { display: flex; gap: 10px; align-items: flex-start; font-size: 14px; color: var(--muted); margin: 4px 0 20px; }
+  .check input { margin-top: 3px; width: 18px; height: 18px; accent-color: var(--green); flex: none; }
+  .check a { color: var(--ink); }
+  button { width: 100%; font: inherit; font-weight: 600; padding: 14px; border: 0; border-radius: 10px;
+    background: var(--ink); color: #fff; cursor: pointer; }
+  button[disabled] { opacity: .45; cursor: default; }
+  button.link { background: none; color: var(--muted); font-weight: 500; padding: 10px; margin-top: 6px; }
+  .card-box { padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); margin-bottom: 16px; }
+  .err { display: none; background: var(--danger-bg); color: var(--danger); font-size: 14px;
+    padding: 10px 12px; border-radius: 8px; margin-bottom: 16px; }
+  .err.show { display: block; }
+  .note { font-size: 13px; color: var(--muted); margin-top: 14px; }
+  .booking { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin: 0 0 22px; }
+  .booking b { display: block; font-weight: 600; }
+  .booking span { color: var(--muted); font-size: 14px; }
+  .done-mark { width: 52px; height: 52px; border-radius: 50%; background: var(--green); display: grid;
+    place-items: center; color: #fff; font-size: 26px; margin-bottom: 18px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div class="logo">HO<b>:</b>RA</div>
+  <div class="steps" aria-hidden="true"><span id="s1"></span><span id="s2"></span><span id="s3"></span></div>
+  <div class="err" id="err" role="alert"></div>
+
+  <section id="v-loading"><p class="lead">Checking your link…</p></section>
+
+  <section id="v-expired" hidden>
+    <h1>This link has expired</h1>
+    <p class="lead">Booking links work once, for 30 minutes. Text HO:RA again and we'll send you a fresh one.</p>
+  </section>
+
+  <section id="v-email" hidden>
+    <h1>One step to book</h1>
+    <div class="booking" id="booking" hidden><b id="booking-title"></b><span id="booking-estimate"></span></div>
+    <p class="lead">For texts from <span id="phone-hint"></span>. Your email first: we'll send a 6-digit code to confirm it's yours.</p>
+    <form id="f-email" novalidate>
+      <div class="field"><label for="email">Email</label>
+        <input id="email" type="email" autocomplete="email" autocapitalize="off" required></div>
+      <button type="submit" id="b-email">Send code</button>
+    </form>
+  </section>
+
+  <section id="v-code" hidden>
+    <h1>Enter the code</h1>
+    <p class="lead">We sent a 6-digit code to <b id="email-echo"></b>.</p>
+    <form id="f-code" novalidate>
+      <div class="field"><label for="code">Code</label>
+        <input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="10" required></div>
+      <button type="submit" id="b-code">Confirm</button>
+      <button type="button" class="link" id="b-back">Use a different email</button>
+    </form>
+  </section>
+
+  <section id="v-card" hidden>
+    <h1>Add a card</h1>
+    <p class="lead">Nothing is charged now. We reserve the estimate when you book, and you pay for the time actually used.</p>
+    <form id="f-card" novalidate>
+      <div class="card-box" id="card-element"></div>
+      <button type="submit" id="b-card">Save card and book</button>
+      <button type="button" class="link" id="b-skip">Skip for now</button>
+    </form>
+  </section>
+
+  <section id="v-done" hidden>
+    <div class="done-mark" aria-hidden="true" id="done-mark">✓</div>
+    <h1 id="done-title">Booked</h1>
+    <p class="lead" id="done-lead">Go back to Messages. We'll text you when a supporter accepts.</p>
+    <p class="note" id="done-note" hidden></p>
+  </section>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.76.1/dist/umd/supabase.js"
+        integrity="sha384-I0S+WEYpKLUT/t1llPKT4+JS+TvKhTBZW6gswQLnxORTICHRt89vwx5dtLl+EfeE"
+        crossorigin="anonymous"></script>
+<script src="/channel/setup.js"></script>
+</body>
+</html>

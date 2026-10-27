@@ -1,0 +1,815 @@
+package channel
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"hora-auth/internal/channel/llm"
+)
+
+// Review 10/24 round 1 — the fixes, one test each.
+
+// askCancel reaches the charge question: "cancel it" then a reason.
+func askCancel(t *testing.T, g *rig) string {
+	t.Helper()
+	g.say(t, "cancel it")
+	return g.say(t, "1")
+}
+
+func cancelRig(t *testing.T) *rig {
+	t.Helper()
+	g := newRig(llm.IntentOther)
+	g.ids.link(me, "user-1")
+	g.booker.open = []TaskRef{{ID: "task-9", Title: "Laundry pickup"}}
+	g.booker.quote = CancelQuote{Title: "Laundry pickup", ChargeCents: 1200, BaseFeeCents: 1200, Committed: true}
+	g.booker.cancelRes = CancelResult{OK: true, BillCents: 1200}
+	return g
+}
+
+// #1: a cancel question lapses after CancelTTL — a later "YES" (meant for
+// anything else) never cancels and charges.
+func TestCancelQuestionLapses(t *testing.T) {
+	g := cancelRig(t)
+	askCancel(t, g)
+	if g.state() != StateAwaitingCancel {
+		t.Fatalf("state %s", g.state())
+	}
+	later := time.Now().Add(CancelTTL + time.Minute)
+	g.r.Now = func() time.Time { return later }
+	g.say(t, "YES")
+	if len(g.booker.cancelled) != 0 || g.state() == StateAwaitingCancel {
+		t.Fatalf("a lapsed question was answered: cancelled %v state %s", g.booker.cancelled, g.state())
+	}
+}
+
+// #1: the still-waiting line names the cancel; "cancel" again inside the
+// question re-asks instead of reading as NO.
+func TestCancelStillWaitingAndRepeat(t *testing.T) {
+	g := cancelRig(t)
+	askCancel(t, g)
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if w := stillWaiting(c); !strings.Contains(w, "cancel “Laundry pickup”") {
+		t.Fatalf("still waiting: %q", w)
+	}
+	got := g.say(t, "cancel")
+	if g.state() != StateAwaitingCancel || !strings.Contains(got, "reply YES on its own") {
+		t.Fatalf("repeat: state %s reply %q", g.state(), got)
+	}
+}
+
+// #1: a supporter's question is not held behind a cancel question — it is
+// asked, the cancel is set aside (and said so), and the YES approves.
+func TestApprovalInterruptsCancel(t *testing.T) {
+	g := cancelRig(t)
+	askCancel(t, g)
+	g.arm(t, "ext-b1")
+	if last := g.ad.last(); !strings.Contains(last, "set aside cancelling “Laundry pickup”") {
+		t.Fatalf("the question must say the cancel was set aside: %q", last)
+	}
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.PendingCancel != nil {
+		t.Fatal("arming must drop the cancel question")
+	}
+	g.say(t, "YES")
+	if len(g.booker.cancelled) != 0 || len(g.booker.resolved) != 1 {
+		t.Fatalf("cancelled %v resolved %v", g.booker.cancelled, g.booker.resolved)
+	}
+}
+
+// #2: a second YES that claimed the question first wins; this one does
+// not cancel again.
+func TestCancelClaimedOnce(t *testing.T) {
+	g := cancelRig(t)
+	askCancel(t, g)
+	calls := 0
+	g.booker.onQuote = func() {
+		calls++
+		if calls == 1 { // the re-quote at this YES: a parallel YES claims meanwhile
+			if ok, err := g.convs.ClaimCancel(context.Background(), "id-"+me, "task-9"); err != nil || !ok {
+				t.Errorf("claim: %v %v", ok, err)
+			}
+		}
+	}
+	g.say(t, "YES")
+	if len(g.booker.cancelled) != 0 {
+		t.Fatalf("cancelled although another YES held the claim: %v", g.booker.cancelled)
+	}
+	if ok, _ := g.convs.ClaimCancel(context.Background(), "id-"+me, "task-9"); ok {
+		t.Fatal("a claimed question must not be claimable again")
+	}
+}
+
+// Arbiter 2026-10-25 21:58: a moving charge (a session running) is quoted
+// as its ceiling — "up to $X" — and a YES to that cancels; the real amount
+// billed is never above it. A ceiling that rose since the question (an
+// extension approved) is asked again. A YES to the plain charge given
+// while the charge started moving afterwards is asked again at the ceiling.
+func TestCancelWhileWorkingQuotesTheCeiling(t *testing.T) {
+	g := cancelRig(t)
+	g.booker.quote.Moving, g.booker.quote.SessionOpen, g.booker.quote.CeilingCents = true, true, 3450
+	g.booker.cancelRes = CancelResult{OK: true, BillCents: 1950}
+	got := askCancel(t, g)
+	if !strings.Contains(got, "working on it right now") || !strings.Contains(got, "up to $34.50") || g.state() != StateAwaitingCancel {
+		t.Fatalf("question: %q state %s", got, g.state())
+	}
+	got = g.say(t, "YES")
+	if len(g.booker.cancelled) != 1 || !strings.Contains(got, "$19.50") || g.state() != StateIdle {
+		t.Fatalf("YES: cancelled %v reply %q state %s", g.booker.cancelled, got, g.state())
+	}
+
+	// The ceiling rose between the question and the YES: asked again.
+	g = cancelRig(t)
+	g.booker.quote.Moving, g.booker.quote.SessionOpen, g.booker.quote.CeilingCents = true, true, 3450
+	askCancel(t, g)
+	g.booker.quote.CeilingCents = 4200
+	got = g.say(t, "YES")
+	if len(g.booker.cancelled) != 0 || !strings.Contains(got, "up to $42") {
+		t.Fatalf("rose: cancelled %v reply %q", g.booker.cancelled, got)
+	}
+
+	// Quoted $12 flat; the supporter clocked in before the YES: the ceiling
+	// is higher, so it is asked again — never cancelled on the old number.
+	g = cancelRig(t)
+	askCancel(t, g)
+	g.booker.quote.Moving, g.booker.quote.SessionOpen, g.booker.quote.CeilingCents = true, true, 3450
+	got = g.say(t, "YES")
+	if len(g.booker.cancelled) != 0 || !strings.Contains(got, "up to $34.50") {
+		t.Fatalf("started moving: cancelled %v reply %q", g.booker.cancelled, got)
+	}
+
+	// Only the free window closing (no session): its own words, the
+	// committed charge as the amount.
+	g = cancelRig(t)
+	g.booker.quote = CancelQuote{Title: "Laundry pickup", ChargeCents: 0, BaseFeeCents: 1200, Committed: true, WithinGrace: true, Moving: true, CeilingCents: 1200}
+	got = askCancel(t, g)
+	if strings.Contains(got, "working on it") || !strings.Contains(got, "window is about to end") || !strings.Contains(got, "$12") {
+		t.Fatalf("closing only: %q", got)
+	}
+
+	// Moving with no ceiling (no time cap): still the app.
+	g = cancelRig(t)
+	g.booker.quote = CancelQuote{Title: "Laundry pickup", ChargeCents: 1200, BaseFeeCents: 1200, Committed: true, Moving: true, SessionOpen: true}
+	got = askCancel(t, g)
+	if !strings.Contains(got, "cancel it in the app") || g.state() != StateIdle {
+		t.Fatalf("no ceiling: %q state %s", got, g.state())
+	}
+}
+
+// Review 10/25: a "reply" proposal is HO:RA's to answer only for a short
+// acknowledgement of our own last line; a longer message, or one after
+// the supporter spoke, still reaches the supporter (P7). With a question
+// of ours open, the ack repeats it. On the held-relay list, it drops the
+// hold instead of delivering it.
+func TestAgentReplyIsSafeByDefault(t *testing.T) {
+	// Long message wrongly proposed as a reply: relayed.
+	g, chat, _, _ := agentRig(llm.Proposal{Action: llm.ActionReply, Task: -1}, bagelT)
+	g.r.Thread = fixedThread{{Direction: "outbound", Text: "Please cancel it in the app.", At: time.Now().Add(-time.Minute)}}
+	g.say(t, "the door code is 1234, tell him to leave it inside")
+	if len(chat.posted) != 1 {
+		t.Fatalf("a long message must reach the supporter: posted %v", chat.posted)
+	}
+	// Supporter spoke after us: relayed.
+	g, chat, tasks, _ := agentRig(llm.Proposal{Action: llm.ActionReply, Task: -1}, bagelT)
+	g.r.Thread = fixedThread{{Direction: "outbound", Text: "Got it.", At: time.Now().Add(-5 * time.Minute)}}
+	tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: which one?", "task-2", time.Now().Add(-time.Minute)
+	g.say(t, "ok")
+	if len(chat.posted) != 1 {
+		t.Fatalf("after the supporter spoke: posted %v", chat.posted)
+	}
+	// With our summary open: the ack repeats the question.
+	g, chat, _, _ = agentRig(llm.Proposal{Action: llm.ActionReply, Task: -1}, bagelT)
+	g.r.Agent = nil
+	g.say(t, "new task: pick up my laundry at 12 Bedford Ave tomorrow at 3")
+	g.r.Agent = &fakeAgent{p: llm.Proposal{Action: llm.ActionReply, Task: -1}}
+	g.r.Thread = fixedThread{{Direction: "outbound", Text: "Here's the summary… Reply YES to book", At: time.Now()}}
+	got := g.say(t, "oh ok")
+	if len(chat.posted) != 0 || !strings.Contains(got, "Still waiting") || g.state() != StateAwaitingConfirm {
+		t.Fatalf("ack with a question open: posted %v reply %q state %s", chat.posted, got, g.state())
+	}
+	// Our booking summary is ours, not a relayed line.
+	if relayedLineRE.MatchString("Laundry pickup · about 30 min at 12 Bedford Ave\n\nBy booking you agree to our Terms: https://x") {
+		t.Fatal("the summary read as a relayed line")
+	}
+	if !relayedLineRE.MatchString("Sam · Bagel run: which one?") {
+		t.Fatal("a relayed line not recognised")
+	}
+}
+
+// #9: a cancel whose bill could not be read never says "No charge".
+func TestCancelUnknownBill(t *testing.T) {
+	g := cancelRig(t)
+	g.booker.cancelRes = CancelResult{OK: true, BillUnknown: true}
+	askCancel(t, g)
+	got := g.say(t, "YES")
+	if strings.Contains(got, "No charge") || !strings.Contains(got, "will show in the app") {
+		t.Fatalf("%q", got)
+	}
+}
+
+// Arbiter 2026-10-24 23:03: anything that mentions cancelling is checked
+// with us (the reason question is the check) — never relayed. Staging: "I
+// think I need to cancel the task thanks" went to the supporter. Only an
+// explicit negation is not a mention.
+func TestIsCancelRequestIsBroad(t *testing.T) {
+	for _, s := range []string{"cancel", "cancel it", "Can you cancel the task?", "please cancel my laundry pickup",
+		"I think I need to cancel the task thanks", "I want to cancel", "ok cancel", "取消", "幫我取消", "我要取消任務",
+		"call off the bagel run", "cancelling", "I had to cancel my meeting, can you come at 5"} {
+		if !IsCancelRequest(s) {
+			t.Errorf("%q should be a cancel request", s)
+		}
+	}
+	for _, s := range []string{"don't cancel it", "no need to cancel", "不要取消", "not cancel", "do not cancel the task"} {
+		if IsCancelRequest(s) {
+			t.Errorf("%q is not a cancel request", s)
+		}
+	}
+	for _, tc := range []struct{ in, code string }{
+		{"1", "plans_changed"}, {"7.", "other"}, {"I changed my mind", "plans_changed"}, {"don't need it anymore", "no_longer_needed"},
+		{"my friend can do it, found another way", "found_another_way"}, {"wrong address", "wrong_details"}, {"by mistake", "posted_by_mistake"},
+		{"it's taking too long", "timing_no_longer_works"}, {"不需要了", "no_longer_needed"}, {"hmm", ""}, {"9", ""},
+	} {
+		if got := pickCancelReason(tc.in); got != tc.code {
+			t.Errorf("%q → %q, want %q", tc.in, got, tc.code)
+		}
+	}
+}
+
+// The reason question: NO keeps the task; a message that picks nothing is
+// asked once more, then read fresh; the whole sentence never reaches the
+// supporter.
+func TestCancelReasonQuestion(t *testing.T) {
+	g, chat, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.booker.open = []TaskRef{{ID: "task-2", Title: "Bagel run"}}
+	g.booker.quote = CancelQuote{Title: "Bagel run", ChargeCents: 1200, BaseFeeCents: 1200, Committed: true}
+	got := g.say(t, "I think I need to cancel the task thanks")
+	if len(chat.posted) != 0 || !strings.Contains(got, "what's the reason?") {
+		t.Fatalf("posted %v reply %q", chat.posted, got)
+	}
+	got = g.say(t, "NO")
+	if !strings.Contains(got, "stays booked") || g.state() != StateIdle {
+		t.Fatalf("NO: %q %s", got, g.state())
+	}
+	g.say(t, "cancel")
+	got = g.say(t, "hmm")
+	if !strings.Contains(got, "Just the number") || g.state() != StateAwaitingCancel {
+		t.Fatalf("first miss re-asks: %q", got)
+	}
+	g.say(t, "what time is it")
+	if g.state() == StateAwaitingCancel {
+		t.Fatal("second miss leaves the cancel")
+	}
+}
+
+// #3: strictness is judged on the words as sent. "oh yes" with the
+// supporter writing goes to the supporter (I-P); without, it approves.
+func TestFillerYesIsNotStrict(t *testing.T) {
+	if !approvalCasual("oh yes") || !approvalCasual("well ok") || approvalCasual("YES") {
+		t.Fatal("approvalCasual")
+	}
+	if v := DecideApproval(ApprovalFacts{Text: "oh yes", SupporterLive: true, QuestionIsLast: true}); v != VerdictToSupporter {
+		t.Fatalf("supporter live: %v", v)
+	}
+	if v := DecideApproval(ApprovalFacts{Text: "oh yes", QuestionIsLast: true}); v != VerdictApprove {
+		t.Fatalf("no supporter: %v", v)
+	}
+}
+
+// #6: the details question is never answered by a summary, and does not
+// loop: after MaxDetailsTries answers that still name no place, a person.
+func TestDetailsGateEndsInAPerson(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	ops := &memOps{}
+	g.r.Ops = ops
+	g.parser.draft = llm.TaskDraft{Title: "Something", Category: "other", DurationMinutes: 30}
+	g.say(t, "book another task")
+	if g.state() != StateAwaitingConfirm {
+		t.Fatalf("state %s", g.state())
+	}
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if err := g.r.showSummary(context.Background(), Inbound{Channel: IMessage, From: me}, c); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(g.ad.last(), "YES") {
+		t.Fatalf("a summary was shown for a draft with no place: %q", g.ad.last())
+	}
+	g.say(t, "something nice")
+	if g.state() != StateAwaitingConfirm || len(ops.notices) != 0 {
+		t.Fatalf("first answer: state %s notices %d", g.state(), len(ops.notices))
+	}
+	g.say(t, "you know, the usual")
+	if g.state() != StateHandoff || len(ops.notices) != 1 {
+		t.Fatalf("second answer: state %s notices %d", g.state(), len(ops.notices))
+	}
+}
+
+// #5: a weak errand reading ("pick up …") with a supporter in the
+// conversation is not decided by rule — the usual routing (the model)
+// decides. "book another task" still is.
+func TestWeakErrandDefersToTheModel(t *testing.T) {
+	g, chat, tasks, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.say(t, "new task: pick up my laundry tomorrow at 3")
+	tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: on my way", "task-2", time.Now().Add(-30*time.Minute)
+	g.say(t, "pick up the kids' bagels too")
+	if len(chat.posted) != 1 {
+		t.Fatalf("weak errand with a supporter talking: the model routes it: posted %v", chat.posted)
+	}
+	in := Inbound{Channel: IMessage, From: me, ReceivedAt: time.Now()}
+	id := Identity{ID: "id-" + me, Channel: IMessage, Address: me, UserID: "user-1"}
+	if !g.r.errandForDraft(context.Background(), in, id, "book another task: coffee at 5th ave") {
+		t.Fatal("a new errand said outright is still ours")
+	}
+}
+
+// Review 10/24 r2 MAJOR: a supporter's question armed while the cancel was
+// being quoted is the open question — the cancel question is not sent on
+// top of it, and the YES that follows answers the supporter's, knowingly.
+func TestCancelQuestionNotSentOverAnArmedApproval(t *testing.T) {
+	g := cancelRig(t)
+	g.booker.onQuote = func() {
+		g.booker.onQuote = nil
+		g.arm(t, "ext-b1")
+	}
+	g.say(t, "cancel it")
+	got := g.say(t, "1") // the quote: the approval arms meanwhile
+	if g.state() != StateAwaitingApproval || !strings.Contains(got, "answer that first") {
+		t.Fatalf("state %s reply %q", g.state(), got)
+	}
+	for _, o := range g.ad.sent {
+		if strings.Contains(o.Text, "Reply YES to cancel") {
+			t.Fatalf("a cancel question went out over the armed approval: %q", o.Text)
+		}
+	}
+}
+
+// The same for a draft: a summary is not sent over an approval armed
+// while the draft was priced; the draft waits and is told so.
+func TestSummaryNotSentOverAnArmedApproval(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.booker.onPrice = func() {
+		g.booker.onPrice = nil
+		g.arm(t, "ext-b1")
+	}
+	got := g.say(t, "pick up my laundry at 12 Bedford Ave")
+	if g.state() != StateAwaitingApproval || !strings.Contains(got, "right after you answer") {
+		t.Fatalf("state %s reply %q", g.state(), got)
+	}
+	for _, o := range g.ad.sent {
+		if strings.Contains(o.Text, "Reply YES to book") {
+			t.Fatalf("a summary went out over the armed approval: %q", o.Text)
+		}
+	}
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.Pending == nil {
+		t.Fatal("the draft must be kept for after the answer")
+	}
+}
+
+// Review 10/24 r2 MINOR: a supporter's question delivered after the cancel
+// question makes a YES ambiguous — asked again, not cancelled.
+func TestCancelYesAfterASupporterQuestionIsReasked(t *testing.T) {
+	g, _, tasks, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.booker.open = []TaskRef{{ID: "task-9", Title: "Laundry pickup"}}
+	g.booker.quote = CancelQuote{Title: "Laundry pickup", ChargeCents: 1200, BaseFeeCents: 1200, Committed: true}
+	g.booker.cancelRes = CancelResult{OK: true, BillCents: 1200}
+	askCancel(t, g)
+	tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: are you home?", "task-2", time.Now().Add(time.Second)
+	got := g.say(t, "YES")
+	if len(g.booker.cancelled) != 0 || !strings.Contains(got, "Cancel “Laundry pickup”") {
+		t.Fatalf("cancelled %v reply %q", g.booker.cancelled, got)
+	}
+}
+
+// A swiped WhatsApp "YES" (on some message — the cancel question's own id
+// is not kept) is asked again; the fee needs it typed on its own.
+func TestCancelSwipedYesOnWhatsAppIsReasked(t *testing.T) {
+	g := cancelRig(t)
+	g.r.Adapters[WhatsApp] = g.ad
+	askCancel(t, g)
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	id := Identity{ID: "id-" + me, Channel: WhatsApp, Address: me, UserID: "user-1"}
+	in := Inbound{Channel: WhatsApp, From: me, Text: "YES", ReceivedAt: time.Now().Add(time.Second), ReplyToProviderID: "wamid.other"}
+	if err := g.r.onAwaitingCancel(context.Background(), in, id, c, "YES"); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.booker.cancelled) != 0 || !strings.Contains(g.ad.last(), "reply YES on its own") {
+		t.Fatalf("cancelled %v reply %q", g.booker.cancelled, g.ad.last())
+	}
+}
+
+// A task already past cancelling is said as such (not "try again").
+func TestCancelNotOpenIsGone(t *testing.T) {
+	g := cancelRig(t)
+	askCancel(t, g)
+	g.booker.quoteErr = ErrTaskNotOpen
+	got := g.say(t, "YES")
+	if !strings.Contains(got, "can't be cancelled any more") || len(g.booker.cancelled) != 0 {
+		t.Fatalf("%q", got)
+	}
+}
+
+// r3: the choice list is not sent over an approval armed while the open
+// tasks were looked up either.
+func TestCancelListNotSentOverAnArmedApproval(t *testing.T) {
+	g := cancelRig(t)
+	g.booker.open = []TaskRef{{ID: "a", Title: "Bagel run"}, {ID: "b", Title: "Laundry pickup"}}
+	g.booker.onOpen = func() {
+		g.booker.onOpen = nil
+		g.arm(t, "ext-b1")
+	}
+	got := g.say(t, "cancel")
+	if g.state() != StateAwaitingApproval || !strings.Contains(got, "answer that first") {
+		t.Fatalf("state %s reply %q", g.state(), got)
+	}
+	for _, o := range g.ad.sent {
+		if strings.Contains(o.Text, "Reply with the number") {
+			t.Fatalf("the list went out over the armed approval: %q", o.Text)
+		}
+	}
+}
+
+// Arbiter 2026-10-24 22:39: a hand-off ops never pick up goes back to the
+// bot after HandoffTimeout, and the person is told; an ops message restarts
+// the clock; the person's next message after the timeout is the bot's.
+func TestHandoffTimesOut(t *testing.T) {
+	g := newRig(llm.IntentOther)
+	g.ids.link(me, "user-1")
+	g.r.Ops = &memOps{}
+	g.say(t, "real person")
+	if g.state() != StateHandoff {
+		t.Fatalf("state %s", g.state())
+	}
+	id := Identity{ID: "id-" + me, Channel: IMessage, Address: me, UserID: "user-1"}
+	if ok, err := g.r.AutoRelease(context.Background(), id, false); err != nil || ok {
+		t.Fatalf("fresh hand-off released: %v %v", ok, err)
+	}
+	// Handed off 20 minutes ago; ops write now: not stale.
+	g.convs.mu.Lock()
+	c := g.convs.convs["id-"+me]
+	old := time.Now().Add(-2 * HandoffTimeout)
+	c.HandoffActivityAt = &old
+	g.convs.convs["id-"+me] = c
+	g.convs.mu.Unlock()
+	if err := g.r.OpsSend(context.Background(), id, "Hi, Aura here"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := g.r.AutoRelease(context.Background(), id, false); ok {
+		t.Fatal("an ops message must restart the clock")
+	}
+	g.r.Now = func() time.Time { return time.Now().Add(2*HandoffTimeout + time.Minute) }
+	if ok, err := g.r.AutoRelease(context.Background(), id, false); err != nil || !ok {
+		t.Fatalf("stale hand-off kept: %v %v", ok, err)
+	}
+	if g.state() != StateIdle || !strings.Contains(g.ad.last(), "no one from the HO:RA team has replied") {
+		t.Fatalf("state %s reply %q", g.state(), g.ad.last())
+	}
+
+	// Lazily, on the person's next message: released, then the message is
+	// the bot's (here: drafted).
+	g = newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.r.Ops = &memOps{}
+	g.say(t, "real person")
+	g.r.Now = func() time.Time { return time.Now().Add(HandoffTimeout + time.Minute) }
+	got := g.say(t, "pick up my laundry at 12 Bedford Ave")
+	if g.state() == StateHandoff || !strings.Contains(got, "Laundry pickup") {
+		t.Fatalf("state %s reply %q", g.state(), got)
+	}
+}
+
+// Hand-off review r1: a thread with no clock is never released at once; a
+// release with a live supporter question does not also put our summary
+// (two YES-able questions); ops are told; the lazy path re-reads after a
+// lost race; "real person" after the timeout re-notifies instead of
+// "I'm back" + "teammate coming".
+func TestHandoffTimeoutEdges(t *testing.T) {
+	id := Identity{ID: "id-" + me, Channel: IMessage, Address: me, UserID: "user-1"}
+	// No clock: not stale.
+	g := newRig(llm.IntentOther)
+	g.ids.link(me, "user-1")
+	g.r.Ops = &memOps{}
+	g.say(t, "real person")
+	g.convs.mu.Lock()
+	c := g.convs.convs["id-"+me]
+	c.HandoffActivityAt = nil
+	g.convs.convs["id-"+me] = c
+	g.convs.mu.Unlock()
+	g.r.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
+	if ok, _ := g.r.AutoRelease(context.Background(), id, false); ok {
+		t.Fatal("a thread with no clock was released")
+	}
+
+	// Ops told on auto-release.
+	g = newRig(llm.IntentOther)
+	g.ids.link(me, "user-1")
+	ops := &memOps{}
+	g.r.Ops = ops
+	g.say(t, "real person")
+	g.r.Now = func() time.Time { return time.Now().Add(HandoffTimeout + time.Minute) }
+	if ok, err := g.r.AutoRelease(context.Background(), id, false); err != nil || !ok {
+		t.Fatalf("%v %v", ok, err)
+	}
+	if n := ops.notices[len(ops.notices)-1]; !n.AutoReleased {
+		t.Fatalf("ops not told: %+v", n)
+	}
+
+	// "real person" after the timeout: ops told again, clock restarts.
+	g = newRig(llm.IntentOther)
+	g.ids.link(me, "user-1")
+	ops = &memOps{}
+	g.r.Ops = ops
+	g.say(t, "real person")
+	g.r.Now = func() time.Time { return time.Now().Add(HandoffTimeout + time.Minute) }
+	got := g.say(t, "real person please")
+	if g.state() != StateHandoff || len(ops.notices) != 2 || strings.Contains(got, "back to help") {
+		t.Fatalf("state %s notices %d reply %q", g.state(), len(ops.notices), got)
+	}
+
+	// Ops released it a moment ago (the lazy path loses the race): the
+	// message is the bot's, not "a teammate will get back to you".
+	g = newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.r.Ops = &memOps{}
+	g.say(t, "real person")
+	if err := g.r.Release(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	got = g.say(t, "pick up my laundry at 12 Bedford Ave")
+	if strings.Contains(got, "will get back to you") || !strings.Contains(got, "Laundry pickup") {
+		t.Fatalf("reply %q", got)
+	}
+}
+
+// A supporter's question held during the hand-off is asked on release; our
+// own pending summary is NOT put in the same burst.
+func TestReleaseDoesNotStackQuestions(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.r.Ops = &memOps{}
+	g.say(t, "pick up my laundry at 12 Bedford Ave") // a summary waits
+	g.say(t, "real person")
+	if g.state() != StateHandoff {
+		t.Fatalf("state %s", g.state())
+	}
+	// A supporter's question arrives during the hand-off: held.
+	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
+	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: evBudgetRequested, TaskID: "task-2", TaskTitle: "Bagel run", SupporterName: "Sam",
+		ExtensionID: "ext-b1", ApprovalMinutes: 5, Approval: &PendingApproval{ID: "ext-b1", Kind: "budget", Cents: 1000}}); err != nil {
+		t.Fatal(err)
+	}
+	if g.state() != StateHandoff {
+		t.Fatalf("held during hand-off: %s", g.state())
+	}
+	if err := g.r.Release(context.Background(), Identity{ID: "id-" + me, Channel: IMessage, Address: me, UserID: "user-1"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range g.ad.sent {
+		if strings.Contains(o.Text, "back with me") && strings.Contains(o.Text, "Reply YES to book") {
+			t.Fatalf("the summary was put together with the supporter's question: %q", o.Text)
+		}
+	}
+	if g.state() != StateAwaitingApproval {
+		t.Fatalf("the supporter's question was not asked: %s", g.state())
+	}
+}
+
+// Hand-off review r2: a release that holds our question back for the
+// supporter's still marks the thread's question in flight (R-1) — a YES
+// right after cannot book the old draft; a budget carries only when the
+// kind is unambiguous; spelled-out durations count.
+func TestReleaseMarksQuestionInFlight(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.r.Ops = &memOps{}
+	g.say(t, "pick up my laundry at 12 Bedford Ave")
+	g.say(t, "real person")
+	g.r.Status = &memStatus{found: true, target: StatusTarget{Identity: Identity{ID: "id-" + me, Channel: IMessage, Address: me}}}
+	if err := g.r.NotifyStatus(context.Background(), "user-1", StatusEvent{Type: evBudgetRequested, TaskID: "task-2", TaskTitle: "Bagel run", SupporterName: "Sam",
+		ExtensionID: "ext-b1", ApprovalMinutes: 5, Approval: &PendingApproval{ID: "ext-b1", Kind: "budget", Cents: 1000}}); err != nil {
+		t.Fatal(err)
+	}
+	// The hold is live at the release's check but gone when resumeDeferred
+	// runs (it expired): no question is put, yet the draft's question is
+	// in flight.
+	id := Identity{ID: "id-" + me, Channel: IMessage, Address: me, UserID: "user-1"}
+	if err := g.r.Release(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.State == StateAwaitingConfirm && (c.QuestionShownAt == nil || !c.QuestionShownAt.Equal(ShownUnconfirmed)) {
+		t.Fatalf("question not marked in flight: %+v", c.QuestionShownAt)
+	}
+	if err := g.r.Release(context.Background(), id); !errors.Is(err, ErrNotInHandoff) {
+		t.Fatalf("a second release must say the bot has it: %v", err)
+	}
+	for _, s := range []string{"two hours", "a couple of hours", "1h", "an hour"} {
+		if !namesDuration(s) {
+			t.Errorf("%q names a duration", s)
+		}
+	}
+}
+
+// With a draft waiting, a sentence about cancelling drops the draft and is
+// never relayed to the supporter on the other task.
+func TestCancelSentenceDuringADraftDropsIt(t *testing.T) {
+	g, chat, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.say(t, "new task: pick up my laundry tomorrow at 3")
+	got := g.say(t, "actually I think I need to cancel this one, sorry")
+	if len(chat.posted) != 0 || got != CopyDroppedCancelHint || g.state() != StateIdle {
+		t.Fatalf("posted %v reply %q state %s", chat.posted, got, g.state())
+	}
+}
+
+// Review r1 (reason step): NO forms win over reason words; "found a
+// mistake" is not "found another way"; a message sent before the reason
+// question re-asks instead of picking; the two-miss exit says the task was
+// not cancelled; the quote echoes the reason; negation counting.
+func TestCancelReasonStepEdges(t *testing.T) {
+	for _, tc := range []struct{ in, code string }{
+		{"I found a mistake in the address", "wrong_details"}, {"my brother will do it", ""}, {"another person", ""},
+		{"no need", ""}, {"something else", "other"},
+	} {
+		if got := pickCancelReason(tc.in); got != tc.code {
+			t.Errorf("%q → %q, want %q", tc.in, got, tc.code)
+		}
+	}
+	if IsCancelRequest("I don't want to cancel it") || IsCancelRequest("I can't cancel now") || !IsCancelRequest("cancel the laundry one, don't cancel the bagel one") {
+		t.Fatal("negation")
+	}
+	// Review r2: a negator a few words before "cancel" is not a negation.
+	for _, s := range []string{"I don't need it so cancel it", "I can't make it so cancel", "never mind, cancel it", "I'm not home so cancel the task"} {
+		if !IsCancelRequest(s) || isNegatedCancel(s) {
+			t.Errorf("%q is a cancel", s)
+		}
+	}
+	// Every label typed as listed picks its own reason; smart apostrophes too.
+	for _, c := range CancelReasonChoices {
+		if got := pickCancelReason(c.Label); got != c.Code {
+			t.Errorf("label %q → %q", c.Label, got)
+		}
+	}
+	for _, tc := range []struct{ in, code string }{{"wrong details", "wrong_details"}, {"it's no longer needed", "no_longer_needed"}, {"I don’t need it anymore", "no_longer_needed"}, {"it was a mistake", "posted_by_mistake"}, {"Other.", "other"}, {"7. Other", "other"}, {"(2)", "no_longer_needed"}, {"I made a mistake with the address", "wrong_details"}, {"I accidentally posted it", "posted_by_mistake"}} {
+		if got := pickCancelReason(tc.in); got != tc.code {
+			t.Errorf("%q → %q, want %q", tc.in, got, tc.code)
+		}
+	}
+	g := cancelRig(t)
+	g.say(t, "cancel it")
+	got := g.say(t, "no, I don't need to cancel it")
+	if !strings.Contains(got, "stays booked") || g.state() != StateIdle {
+		t.Fatalf("a NO with a reason word: %q %s", got, g.state())
+	}
+	g = cancelRig(t)
+	g.say(t, "cancel it")
+	got = g.say(t, "1")
+	if !strings.Contains(got, "(reason: Plans changed)") {
+		t.Fatalf("the quote must echo the reason: %q", got)
+	}
+	// Sent before the reason question: not a pick.
+	g = cancelRig(t)
+	g.say(t, "cancel it")
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	id := Identity{ID: "id-" + me, Channel: IMessage, Address: me, UserID: "user-1"}
+	early := Inbound{Channel: IMessage, From: me, Text: "2", ReceivedAt: time.Now().Add(-time.Hour)}
+	if err := g.r.onAwaitingCancel(context.Background(), early, id, c, "2"); err != nil {
+		t.Fatal(err)
+	}
+	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.PendingCancel == nil || c.PendingCancel.ReasonCode != "" {
+		t.Fatalf("an early number picked a reason: %+v", c.PendingCancel)
+	}
+	// Two misses: told it was not cancelled.
+	g = cancelRig(t)
+	g.say(t, "cancel it")
+	g.say(t, "hmm")
+	got = g.say(t, "what's the weather")
+	if !strings.Contains(g.ad.sent[len(g.ad.sent)-2].Text, "haven't cancelled") && !strings.Contains(got, "haven't cancelled") {
+		t.Fatalf("not told: %q", got)
+	}
+	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
+	if w := stillWaiting(Conversation{State: StateAwaitingCancel, PendingCancel: &PendingCancel{TaskID: "x", Title: "Laundry pickup"}}); !strings.Contains(w, "reason") {
+		t.Fatalf("still-waiting at the reason step: %q", w)
+	}
+	_ = c
+}
+
+// Review 10/25 r2: the short-ack gate bounds characters too (Chinese has
+// no spaces), our line must be recent, and on the held-relay list a short
+// reply drops the hold instead of delivering it.
+func TestAgentReplyGateEdges(t *testing.T) {
+	// A long Chinese instruction mislabelled "reply": relayed.
+	g, chat, _, _ := agentRig(llm.Proposal{Action: llm.ActionReply, Task: -1}, bagelT)
+	g.r.Thread = fixedThread{{Direction: "outbound", Text: "Got it.", At: time.Now().Add(-time.Minute)}}
+	got := g.say(t, "請告訴他把包裹放在門口然後按鈴，我下午三點回到家")
+	if len(chat.posted) != 1 {
+		t.Fatalf("a long Chinese message must reach the supporter: posted %v reply %q state %s", chat.posted, got, g.state())
+	}
+	// Our line an hour old: "he can leave it" is not an ack of it.
+	g, chat, _, _ = agentRig(llm.Proposal{Action: llm.ActionReply, Task: -1}, bagelT)
+	g.r.Thread = fixedThread{{Direction: "outbound", Text: "Your supporter has clocked in.", At: time.Now().Add(-time.Hour)}}
+	g.say(t, "he can leave it")
+	if len(chat.posted) != 1 {
+		t.Fatalf("an old line of ours must not claim the message: posted %v", chat.posted)
+	}
+	// A relayed line (the store's flag) is not ours even without the shape.
+	g, chat, _, _ = agentRig(llm.Proposal{Action: llm.ActionReply, Task: -1}, bagelT)
+	g.r.Thread = fixedThread{{Direction: "outbound", Text: "which one?", At: time.Now(), Relay: true}}
+	g.say(t, "the sesame one")
+	if len(chat.posted) != 1 {
+		t.Fatalf("a relayed line is not ours: posted %v", chat.posted)
+	}
+	// Held-relay list: "ok never mind" drops the hold, nothing is delivered.
+	g, chat, _, _ = agentRig(llm.Proposal{Action: llm.ActionReply, Task: -1}, bagelT, ActiveTask{ID: "task-3", Title: "Laundry pickup", SupporterName: "Bea"})
+	g.r.Thread = fixedThread{{Direction: "outbound", Text: "Which supporter is that for?", At: time.Now()}}
+	g.r.Agent = &fakeAgent{p: llm.Proposal{Action: llm.ActionAsk, Task: -1}}
+	g.say(t, "leave it at the door")
+	if g.state() != StateAwaitingTaskChoice {
+		t.Fatalf("expected the which-supporter list: %s", g.state())
+	}
+	g.r.Agent = &fakeAgent{p: llm.Proposal{Action: llm.ActionReply, Task: -1}}
+	got = g.say(t, "ok never mind")
+	if len(chat.posted) != 0 || g.state() != StateIdle || got != CopyHoldDropped {
+		t.Fatalf("held relay: posted %v state %s reply %q", chat.posted, g.state(), got)
+	}
+}
+
+type fakeLive struct {
+	st  LiveStatus
+	err error
+}
+
+func (f *fakeLive) LiveStatus(context.Context, string, string) (LiveStatus, error) {
+	return f.st, f.err
+}
+
+// Arbiter 2026-10-25 22:27: "where is he?" is answered from the live
+// tracking, not relayed — unless the phone has stopped reporting, when the
+// question goes to the supporter and the person is told so.
+func TestWhereIsHeAnsweredFromLiveTracking(t *testing.T) {
+	m := 1300.0
+	for _, tc := range []struct {
+		st     LiveStatus
+		msg    string
+		want   string
+		posted int
+	}{
+		{LiveStatus{State: LiveOnTheWay, DistanceMeters: &m, LastSeen: time.Now().Add(-2 * time.Minute)}, "Where is he now?", "Sam is on the way — about 0.8 mi away, last seen 2 min ago.", 0},
+		{LiveStatus{State: LiveAlmostThere, DistanceMeters: func() *float64 { v := 240.0; return &v }(), LastSeen: time.Now()}, "how far is she", "Sam is almost there — about 3 blocks away, last seen just now.", 0},
+		{LiveStatus{State: LiveAtDoor}, "has he arrived?", "Sam is at the door.", 0},
+		{LiveStatus{State: LiveWorking, WorkedMinutes: 12}, "他到了嗎", "Sam is there and clocked in on “Bagel run” — 12 min so far.", 0},
+		{LiveStatus{State: LiveUnavailable, LastSeen: time.Now().Add(-7 * time.Minute)}, "where's Sam?", "Sam's phone hasn't reported a location for a bit, last seen 7 min ago — I've asked them where they are.", 1},
+		{LiveStatus{State: LiveUnavailable, NotYetOnTheWay: true}, "eta?", "Sam hasn't set off yet, so there's no location to show — I've asked them where they are.", 1},
+		{LiveStatus{State: LiveUnavailable, SetOffNoFix: true}, "where is he", "Sam has just set off — no position yet, give it a minute.", 0},
+	} {
+		g, chat, _, fc := contextRig(llm.IntentToSupporter, bagelT)
+		g.r.Live = &fakeLive{st: tc.st}
+		got := g.say(t, tc.msg)
+		if got != tc.want || len(chat.posted) != tc.posted || len(fc.calls) != 0 {
+			t.Errorf("%q: got %q posted %v model calls %d", tc.msg, got, chat.posted, len(fc.calls))
+		}
+	}
+	// A name that is no supporter's: not about the supporter (relayed as any question).
+	g0, chat0, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g0.r.Live = &fakeLive{st: LiveStatus{State: LiveAtDoor}}
+	if got := g0.say(t, "Where is Starbucks?"); len(chat0.posted) != 1 || strings.Contains(got, "at the door") {
+		t.Fatalf("Starbucks: posted %v reply %q", chat0.posted, got)
+	}
+	// Cooldown: a second ask within two minutes is not relayed again.
+	g1, chat1, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g1.r.Live = &fakeLive{st: LiveStatus{State: LiveUnavailable}}
+	g1.say(t, "where is he?")
+	got := g1.say(t, "where is he??")
+	if len(chat1.posted) != 1 || !strings.Contains(got, "I asked them 0 min ago") {
+		t.Fatalf("cooldown: posted %v reply %q", chat1.posted, got)
+	}
+	// Two tasks, no name: one line each, no relay.
+	g2, chat2, _, _ := contextRig(llm.IntentToSupporter, bagelT, ActiveTask{ID: "task-3", Title: "Laundry pickup", SupporterName: "Bea"})
+	g2.r.Live = &fakeLive{st: LiveStatus{State: LiveAtDoor}}
+	got = g2.say(t, "where are they?")
+	if len(chat2.posted) != 0 || !strings.Contains(got, "Sam is at the door.") || !strings.Contains(got, "Bea is at the door.") {
+		t.Fatalf("two tasks: posted %v reply %q", chat2.posted, got)
+	}
+	// A lookup failure: the usual routing (relayed), never a made-up answer.
+	g, chat, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.r.Live = &fakeLive{err: errors.New("db")}
+	g.say(t, "where is he?")
+	if len(chat.posted) != 1 {
+		t.Fatalf("lookup failed: posted %v", chat.posted)
+	}
+	for _, s := range []string{"where is he", "Where's Sam", "how far away is she", "is he there yet", "在哪", "到了嗎", "還要多久", "how much longer"} {
+		if !IsWhereQuestion(s) {
+			t.Errorf("%q is a where-question", s)
+		}
+	}
+	for _, s := range []string{"where should he leave it", "how far is the store from my place", "tell him where the key is", "where do I pay",
+		"I'll be late, where is he?", "tell Sam to ignore the ETA", "for Maya: how long will the wash take?", "how much longer do you need?",
+		"how close is the store to my place", "鑰匙放在哪", "他要放在哪"} {
+		if IsWhereQuestion(s) {
+			t.Errorf("%q is not a where-question", s)
+		}
+	}
+}

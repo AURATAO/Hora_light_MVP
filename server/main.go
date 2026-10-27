@@ -400,7 +400,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("pgx ParseConfig error: %v", err)
 	}
-	cfg.MaxConns = 8
+	cfg.MaxConns = int32(dbMaxConns())
 	cfg.MinConns = 1
 	cfg.MaxConnLifetime = time.Hour
 	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
@@ -427,6 +427,15 @@ func main() {
 	// costs nobody who is actually waiting on an answer anything. See
 	// server/extensions.go and server/timecap.go.
 	go watchPhase2bBacklog(context.Background(), 6*time.Hour)
+	// Completed tasks whose hold is still live: the detached completion
+	// chain died before the capture (payments_resettle.go). Every five
+	// minutes, against a ten-minute age — the only cost of a pass is one
+	// query when there is nothing to do.
+	go watchUnsettledCompletions(context.Background(), 5*time.Minute)
+	// Tasks with a session running: the cap's warning and ceiling are
+	// announced within a minute of being reached, GPS heartbeat or not
+	// (web-app supporters send none).
+	go watchLiveTimeCaps(context.Background(), time.Minute)
 
 	pgxCfg, err := pgx.ParseConfig(dbURL)
 	if err != nil {
@@ -443,8 +452,8 @@ func main() {
 	if err := sqldb.Ping(); err != nil {
 		log.Fatalf("sqldb ping failed: %v", err)
 	}
-	sqldb.SetMaxOpenConns(8)
-	sqldb.SetMaxIdleConns(8)
+	sqldb.SetMaxOpenConns(dbMaxConns())
+	sqldb.SetMaxIdleConns(dbMaxConns())
 	sqldb.SetConnMaxLifetime(time.Hour)
 	log.Println("[sqldb] connected (simple protocol)")
 
@@ -462,6 +471,19 @@ func main() {
 	initStripe()
 	log.Printf("[payments] enabled: %v (test mode: %v) | webhook secret set: %v",
 		paymentsEnabled(), stripeIsTestMode(), os.Getenv("STRIPE_WEBHOOK_SECRET") != "")
+	// The rest of the Stripe wiring, by presence only — never a value (S-12).
+	// A live platform needs all of these and the deploy log is where that is
+	// checked: the connect endpoint signs account.updated and payout.*, the v2
+	// destination signs the Connect capability event, and the two sandbox
+	// secrets sign the review account's test-mode endpoints, without which the
+	// App Store reviewer cannot post a task at all (D-15). Learned on the
+	// 2026-10-26 live switch, where four of these were set by hand.
+	log.Printf("[payments] secrets set — connect webhook: %v | v2 webhook: %v | sandbox key: %v | sandbox webhook: %v | sandbox connect webhook: %v",
+		os.Getenv("STRIPE_CONNECT_WEBHOOK_SECRET") != "",
+		os.Getenv("STRIPE_V2_WEBHOOK_SECRET") != "",
+		os.Getenv("STRIPE_SANDBOX_SECRET_KEY") != "",
+		os.Getenv("STRIPE_SANDBOX_WEBHOOK_SECRET") != "",
+		os.Getenv("STRIPE_SANDBOX_CONNECT_WEBHOOK_SECRET") != "")
 
 	// --- Google OAuth 初始化 & 注入 DB（只做一次！）---
 	if err := auth.InitGoogleOAuth(); err != nil {
@@ -471,7 +493,12 @@ func main() {
 	log.Println("[auth] DB injected")
 
 	// --- Gin & CORS ---
-	r := gin.Default()
+	// gin.Default() = Logger + Recovery. Built by hand so the request log can
+	// skip paths whose query string carries a secret (S-12): Meta's webhook
+	// handshake sends hub.verify_token in the query. Every other path is
+	// logged exactly as before.
+	r := gin.New()
+	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{SkipPaths: []string{"/webhooks/channel/whatsapp", "/webhooks/whatsapp", "/channel/setup"}}), gin.Recovery())
 	r.SetTrustedProxies(nil)
 	origins := os.Getenv("CORS_ALLOW_ORIGINS") // comma-separated exact origins
 	exactOrigins := strings.Split(origins, ",")
@@ -502,6 +529,9 @@ func main() {
 	// TalkJS message.sent → Expo push. Unauthenticated but HMAC-signed; see
 	// talkjs_webhook.go.
 	RegisterTalkJSWebhooks(r, sqldb)
+	// Messaging entry point (iMessage / WhatsApp). Mounts nothing unless
+	// CHANNEL_WEBHOOKS_ENABLED=1; see channel_webhooks.go and PLAN.md.
+	RegisterChannelWebhooks(r, sqldb)
 	// Stripe payment lifecycle → payments table + ops alerting. Unauthenticated
 	// but signature-verified against the raw body; see stripe_webhook.go.
 	// Registered and proven since Phase 1; since Phase 2a its events land on
@@ -3222,6 +3252,14 @@ func clockIn(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "already clocked in"})
 		return
 	}
+	// The clock stops at the ceiling (D-06, Arbiter 2026-10-24 23:34): with
+	// the agreed time used up, a new session needs more time approved first
+	// — refused here rather than created and cut a minute later.
+	if capMinutes, _ := taskTimeCapMinutes(ctx, taskID); capMinutes > 0 && liveLoggedMinutes(ctx, taskID) >= capMinutes {
+		c.JSON(http.StatusForbidden, gin.H{"error": "time_cap_reached",
+			"message": fmt.Sprintf("The %d minutes agreed for this task are used up. Ask for more time and clock in again once it's approved.", capMinutes)})
+		return
+	}
 
 	var id string
 	var createdAt, startAt time.Time
@@ -3278,11 +3316,27 @@ func clockOut(c *gin.Context) {
 	err = db.QueryRow(ctx, `
       update public.worklogs
       set end_at=now(), updated_at=now()
-      WHERE id = $1::uuid
+      WHERE id = $1::uuid and end_at is null
       returning start_at, end_at, created_at, updated_at
     `, wlID).Scan(&startAt, &endAt, &createdAt, &updatedAt)
+	closedByCap := false
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Closed meanwhile — the time cap stopped the clock (timecap.go)
+		// between the read above and this write. Its end_at stands, and
+		// the cap's own notification already said so.
+		closedByCap = true
+		err = db.QueryRow(ctx, `select start_at, end_at, created_at, updated_at from public.worklogs where id = $1::uuid`,
+			wlID).Scan(&startAt, &endAt, &createdAt, &updatedAt)
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+	if closedByCap {
+		c.JSON(http.StatusOK, WorkLog{
+			ID: wlID, TaskID: taskID, User: meEmail,
+			Start: startAt, End: &endAt, CreatedAt: createdAt, UpdatedAt: updatedAt,
+		})
 		return
 	}
 
@@ -3745,6 +3799,9 @@ func getWorklogs(c *gin.Context) {
 //	not_charged     no hold was ever placed (PAYMENTS_ENFORCED off, or a task
 //	                that predates it). The figures are what WOULD be charged.
 //	estimated       the task is still running; this is the bill so far.
+//	settling        the task is complete and the hold is being captured —
+//	                the seconds between completeTask's status write and its
+//	                detached settlement. Rendered like estimated.
 //	captured        the money moved.
 //	capture_failed  the task is finished and the charge did not go through.
 //	                Ops have been emailed; nobody needs to do anything in-app.
@@ -3768,6 +3825,14 @@ func settlementState(ctx context.Context, taskID, taskStatus string) string {
 		return "capture_failed"
 	case paymentStatusCanceled:
 		return "not_charged"
+	}
+	// A live hold on a task that is over: the detached completion chain is
+	// between the status write and the capture (completeTask), or died
+	// there and the sweep has not reached it yet (payments_resettle.go).
+	// Not "estimated" — the task is not running — and not yet a charge.
+	// Clients fall through to their neutral "Settlement" rendering on it.
+	if taskStatus == "completed" {
+		return "settling"
 	}
 	return "estimated"
 }
@@ -4146,62 +4211,142 @@ func completeTask(c *gin.Context) {
 	_, promoDiscount := promoDiscountForTask(ctx, taskID)
 	requesterCostStr := formatCentsUSD(afterPromo(totalCents, promoDiscount))
 
-	if _, err := db.Exec(ctx, `
+	// Conditional on the task still being open: two completes racing (a
+	// double-tap, a retry after a dropped response) must produce ONE
+	// completion and ONE settlement chain. The loser sees "already closed",
+	// the same answer a late complete gets above.
+	completeTaskBeforeWrite(taskID)
+	tag, err := db.Exec(ctx, `
 		UPDATE public.tasks
 		SET status='completed', completion_photo_url=$2, completion_note=$3, completed_at=now(),
 		    receipt_amount_cents=$4, receipt_photo_url=nullif($5,'')
-		WHERE id = $1::uuid`,
+		WHERE id = $1::uuid AND status = 'open'`,
 		taskID, completionPhotoURL, body.CompletionNote,
-		body.ReceiptAmountCents, receiptPhotoURL); err != nil {
+		body.ReceiptAmountCents, receiptPhotoURL)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
 	}
+	if tag.RowsAffected() == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "already closed"})
+		return
+	}
 
-	// ── The money ──────────────────────────────────────────────────────────
+	// ── The money, then the word ───────────────────────────────────────────
 	//
 	// AFTER the status write, and unable to undo it. A capture that fails —
 	// an expired hold, an unreachable Stripe — leaves a completed task, a
 	// payments row in 'capture_failed', an audit row and an email to ops. It
 	// does not leave a supporter unable to finish a task they have finished.
-	settleCompletedTask(ctx, taskID, meUID, timeCostCents, reimbursedCents)
+	//
+	// DETACHED from the request. The status write above is the commit;
+	// everything below is its consequence — a capture, a balance charge, the
+	// payouts, five emails and a chat line — and on staging the chain took
+	// 15 s end to end, long enough that the edge in front of the server
+	// answered the browser with a 502 both times a task was completed from
+	// the web app. The supporter then saw "Complete failed" on a task that
+	// had completed, with the requester's confirmation already in their
+	// inbox. So the browser is answered now, with the task as it stands, and
+	// the chain runs on its own clock: context.Background() with NO deadline,
+	// because a browser that gives up or a proxy that drops the connection
+	// must not cancel a Stripe capture halfway through, and a deadline of our
+	// own would do the same thing from the inside — expire mid-capture and
+	// then expire the `capture_failed` write that records it. Stripe, the
+	// mailer and pgx each bound their own calls. A recover, so a panic in an
+	// email template cannot take the process down — and the panic is mailed
+	// to ops, because a settlement that vanished quietly is the one failure
+	// this file promises never happens. Tests run it inline
+	// (completionDetach) so that what they assert after completeAs has
+	// happened.
+	//
+	// What if the process dies mid-chain (a deploy lands in those seconds)?
+	// The task is `completed` and its hold still `authorized`, and nobody
+	// is waiting on the request to notice. sweepUnsettledCompletions
+	// (payments_resettle.go) finds exactly that shape and settles it; a hold
+	// Stripe already captured fails the re-capture into `capture_failed`
+	// plus the ops email, which is the honest outcome.
+	//
+	// What the client sees differently: the task comes back `completed` with
+	// payment still `authorized` for a few seconds — settlement.state says
+	// `settling` for that window. Clients already render the payment block
+	// from the server's numbers and nothing else (S-05), and the requester's
+	// page re-reads the task on load, so the settled figures arrive on the
+	// next fetch rather than this one.
+	//
+	// Inputs are computed above, on the request context, and captured by
+	// value: none of the reads are repeated on the detached side.
+	supporterName := resolveDisplayName(ctx, assigneeEmail)
+	completionPhotoLink := signTaskPhotoURL(completionPhotoURL, taskPhotoEmailTTL)
+	completionNote := body.CompletionNote
+	completionDetach(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// The value, not the inputs: a panic message can quote what
+				// it was formatting, and the completion note is the
+				// person's (S-12). Type and location are enough to find it.
+				log.Printf("[completeTask][PANIC] task=%s finishing after completion: %T", taskID, r)
+				emailOpsAdmins("[HO:RA] Settlement crashed — check task "+taskID,
+					fmt.Sprintf("<p>The post-completion chain (capture, balance, payouts, receipt, emails) panicked for task <code>%s</code>. "+
+						"Check its payment and payout rows against Stripe. If the hold was never captured, the unsettled-completion "+
+						"sweep captures it within %d minutes; if it was captured and the chain stopped after that, the sweep flags it "+
+						"as incomplete and the rest is by hand (payments runbook). The completion emails for this task were not sent.</p>",
+						taskID, int(resettleAfter.Minutes())))
+			}
+		}()
+		bg := context.Background()
 
-	log.Printf("[completeTask] sending completion email for task %s", taskID)
+		settleCompletedTask(bg, taskID, meUID, timeCostCents, reimbursedCents)
 
-	// Email requester: summary with time logged + final cost
-	notifyRequesterRich(c, notify.CreateNotificationInput{
-		TaskID:        taskID,
-		Type:          "COMPLETED",
-		Title:         "Your task has been completed",
-		Body:          "Everything is done. Please leave a rating when you have a moment.",
-		SupporterName: resolveDisplayName(ctx, assigneeEmail),
-		TaskTitle:     completeTaskTitle,
-		TotalLogged:   completeTotalStr,
-		FinalCost:     requesterCostStr,
-		// A long-lived signed link: the email may be opened days later, and
-		// it is bounded either way (task_photos.go).
-		CompletionPhotoURL: signTaskPhotoURL(completionPhotoURL, taskPhotoEmailTTL),
-		CompletionNote:     body.CompletionNote,
+		log.Printf("[completeTask] sending completion email for task %s", taskID)
+
+		// Email requester: summary with time logged + final cost
+		notifyRequesterRichCtx(bg, notify.CreateNotificationInput{
+			TaskID:        taskID,
+			Type:          "COMPLETED",
+			Title:         "Your task has been completed",
+			Body:          "Everything is done. Please leave a rating when you have a moment.",
+			SupporterName: supporterName,
+			TaskTitle:     completeTaskTitle,
+			TotalLogged:   completeTotalStr,
+			FinalCost:     requesterCostStr,
+			// A long-lived signed link: the email may be opened days later, and
+			// it is bounded either way (task_photos.go).
+			CompletionPhotoURL: completionPhotoLink,
+			CompletionNote:     completionNote,
+		})
+
+		// Email supporter: confirmation with time logged + earnings
+		supporterBody := fmt.Sprintf("The task has been marked complete. Time logged: %s.", completeTotalStr)
+		if line := payoutBreakdownLine(supporterPay.ServiceCents, supporterPay.FeeCents, supporterPay.ReimbursementCents); line != "" {
+			supporterBody += fmt.Sprintf(" You earned %s — %s.", completeCostStr, line)
+		}
+		notifyAssigneeCtx(bg, notify.CreateNotificationInput{
+			TaskID:      taskID,
+			Type:        "COMPLETED_SUPPORTER",
+			Title:       "Task marked complete — great work!",
+			Body:        supporterBody,
+			TaskTitle:   completeTaskTitle,
+			TotalLogged: completeTotalStr,
+			FinalCost:   completeCostStr,
+		})
 	})
-	// TODO: WhatsApp notification here
-
-	// Email supporter: confirmation with time logged + earnings
-	supporterBody := fmt.Sprintf("The task has been marked complete. Time logged: %s.", completeTotalStr)
-	if line := payoutBreakdownLine(supporterPay.ServiceCents, supporterPay.FeeCents, supporterPay.ReimbursementCents); line != "" {
-		supporterBody += fmt.Sprintf(" You earned %s — %s.", completeCostStr, line)
-	}
-	notifyAssignee(c, notify.CreateNotificationInput{
-		TaskID:      taskID,
-		Type:        "COMPLETED_SUPPORTER",
-		Title:       "Task marked complete — great work!",
-		Body:        supporterBody,
-		TaskTitle:   completeTaskTitle,
-		TotalLogged: completeTotalStr,
-		FinalCost:   completeCostStr,
-	})
-	// TODO: WhatsApp notification here
 
 	getTask(c)
 }
+
+// completionDetach runs the post-completion chain (settlement, receipts,
+// notifications) off the request. Production: a goroutine. Tests swap in an
+// inline runner so that assertions made right after completeAs see the
+// settled state (setupAdminOpsDB).
+var completionDetach = func(fn func()) { go fn() }
+
+// completeTaskBeforeWrite is a test seam between completeTask's status check
+// and its status write — the window a racing complete or cancel lands in.
+// A no-op in production.
+var completeTaskBeforeWrite = func(taskID string) {}
+
+// cancelTaskBeforeWrite: the same seam in cancelTask.
+var cancelTaskBeforeWrite = func(taskID string) {}
 
 // POST /tasks/:id/cancel
 //
@@ -4391,7 +4536,12 @@ func cancelTask(c *gin.Context) {
 	// from the supporter's world completely — including, under the rule above,
 	// a task they were just PAID for and never clocked into, where no worklog
 	// exists to reach it through either.
-	_, err = db.Exec(ctx, `
+	// Conditional on the task still being open: a cancel racing a complete
+	// (or a second cancel) must not turn a completed task into a cancelled
+	// one and settle it twice. The loser gets the same "already closed" the
+	// status check above gives a late cancel.
+	cancelTaskBeforeWrite(taskID)
+	cancelTag, err := db.Exec(ctx, `
 		update public.tasks
 		set status='cancelled',
 		    cancel_reason = $2,
@@ -4399,10 +4549,14 @@ func cancelTask(c *gin.Context) {
 		    cancelled_assignee_id = $4::uuid,
 		    cancel_bill_cents = $5,
 		    cancelled_at = now()
-		where id=$1
+		where id=$1 and status='open'
 	`, taskID, in.Reason, reasonCode, assignedToID, billCents)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+	if cancelTag.RowsAffected() == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "task already closed"})
 		return
 	}
 
@@ -4429,6 +4583,20 @@ func cancelTask(c *gin.Context) {
 	settled := settlementOutcome{}
 	if billCents > 0 {
 		settled = settleCompletedTask(ctx, taskID, meUID, billCents, 0)
+		if settled.Busy {
+			// Another settlement of this task holds the lock — which, for a
+			// task that was open a moment ago, means a force-complete racing
+			// this cancel. The status write above already made this a
+			// cancelled task, which the sweep never revisits, so nobody but
+			// a person can check what the other settlement did with the
+			// hold. Say so where a person reads.
+			log.Printf("[cancelTask][ERROR] task=%s: settlement in progress elsewhere; cancel bill %d not settled here", taskID, billCents)
+			emailOpsAdmins("[HO:RA] Cancel found a settlement in progress — check task "+taskID,
+				fmt.Sprintf("<p>Task <code>%s</code> was cancelled with %s owed to the supporter, but another settlement of the "+
+					"same task was running at that moment and this one stood aside. Check the payment and payout rows against "+
+					"Stripe and settle the cancel fee by hand if the other run did not (payments runbook, entry 7).</p>",
+					taskID, formatCentsUSD(billCents)))
+		}
 	} else {
 		released = releaseTaskHold(ctx, taskID, meUID, "requester_cancelled") != nil
 		// Nobody was charged, so the promo code — if there was one — was not
@@ -4862,6 +5030,24 @@ func listProfileReviews(c *gin.Context) {
 	})
 }
 
+// dbMaxConns is the size of EACH of the two pools (pgx + database/sql), so a
+// process holds up to twice this. Default 8 (production, unchanged). A
+// Supabase branch's session-mode pooler allows 15 clients in total, and a
+// zero-downtime deploy runs two processes at once — staging sets
+// DB_MAX_CONNS=3 so both fit.
+func dbMaxConns() int {
+	raw := strings.TrimSpace(os.Getenv("DB_MAX_CONNS"))
+	if raw == "" {
+		return 8
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v <= 0 {
+		log.Printf("[db] DB_MAX_CONNS=%q is not a positive integer (%v); using 8", raw, err)
+		return 8
+	}
+	return v
+}
+
 // -------- Notifications --------
 func OnOrderAccepted(ctx context.Context, db *sql.DB, taskID, requesterID, supporterID, requesterEmail string) {
 	notify.Create(ctx, notify.CreateNotificationInput{
@@ -5066,7 +5252,13 @@ func requesterUIDAndEmail(ctx context.Context, taskID string) (uid string, email
 // calls notify.Create with all extra template fields pre-filled in `in`.
 // Callers must set: TaskID, Type, Title, Body, and any SupporterName/TaskTitle/etc.
 func notifyRequesterRich(c *gin.Context, in notify.CreateNotificationInput) {
-	ctx := c.Request.Context()
+	notifyRequesterRichCtx(c.Request.Context(), in)
+}
+
+// notifyRequesterRichCtx is notifyRequesterRich for callers that have no
+// request — the detached completion chain, which must outlive the browser's
+// connection (completeTask).
+func notifyRequesterRichCtx(ctx context.Context, in notify.CreateNotificationInput) {
 	uid, email, err := requesterUIDAndEmail(ctx, in.TaskID)
 	if err != nil {
 		log.Printf("[notify][skip] lookup requester uid/email task=%s: %v", in.TaskID, err)
@@ -5086,7 +5278,11 @@ func notifyRequesterRich(c *gin.Context, in notify.CreateNotificationInput) {
 // notifyAssignee looks up the assignee uid+email for the given task and calls
 // notify.Create. No-op if the task has no assignee.
 func notifyAssignee(c *gin.Context, in notify.CreateNotificationInput) {
-	ctx := c.Request.Context()
+	notifyAssigneeCtx(c.Request.Context(), in)
+}
+
+// notifyAssigneeCtx: notifyAssignee without a request (see notifyRequesterRichCtx).
+func notifyAssigneeCtx(ctx context.Context, in notify.CreateNotificationInput) {
 	var uid, email string
 	if err := sqldb.QueryRowContext(ctx, `
 		SELECT COALESCE(assigned_to_id::text,''), COALESCE(assigned_to,'')

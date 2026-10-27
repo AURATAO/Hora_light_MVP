@@ -90,6 +90,13 @@ const (
 	// each one against Stripe, write the result back. Two overlapping passes
 	// read the same set (payments_settlement.go).
 	advisoryLockBalanceSettle = 0x484f5243
+	// "this task's completion is being settled right now". Taken by
+	// settleCompletedTask — the completion handler's detached chain, a
+	// cancel, a force-complete and the unsettled-completion sweep all go
+	// through it — so two of them on one task never overlap: Stripe's
+	// idempotency key would replay the first capture into the second caller
+	// and both would then charge the balance (payments_resettle.go).
+	advisoryLockTaskSettle = 0x484f5244
 )
 
 // lockPerUser takes the per-user advisory lock for one of the namespaces

@@ -20,6 +20,7 @@ All reads/writes to Hora tables (`users`, `profiles`, `tasks`, `worklogs`, `noti
 ### S-02: Directory layout is settled: web → `app/`, Go backend → `server/`, schema artifacts → `supabase/`, mobile → `mobile/` (Expo/React Native, EAS Build). No new deployable services.
 **Rationale:** Solo technical maintainer; minimal operational surface.
 **Verification:** New code lands in its designated directory; reviewer flags any new top-level service or deploy target.
+**Time-boxed exception — D-16 R-4 (Arbiter, 2026-10-20):** exactly two files, `server/channel_setup.html` and `server/channel_setup.js` (the chat-booking setup page), may live in `server/`, embedded and served by the Go backend, **only on `feat/messaging-channel` and only until the D-16 go-live change**, which moves the page to `app/`. Reason: `app/` deploys from `main`, which is frozen during the App Store review, and the page must be reachable from staging. No other web UI may use this exception; it expires at go-live, not later.
 
 ### S-03: This repo touches exactly ONE Supabase project: Hora MVP (`akxsdkerudurzcemurrb`). The birthday-card project (`aemwljralqsegrwivbub`) is out of scope for all Hora code.
 **Rationale:** Two live projects with separate auth/storage/DB exist under the same account; cross-wiring credentials or tables would corrupt both. (BACKEND_REFERENCE §0.)
@@ -42,6 +43,13 @@ All reads/writes to Hora tables (`users`, `profiles`, `tasks`, `worklogs`, `noti
 ### S-11: No endpoint trusts a client-supplied user ID as the acting principal. Identity comes from `dualAuth`/`tryAuth` middleware (cookie or validated Bearer), always.
 **Rationale:** Acting-as-someone-else is the worst bug class in a two-sided marketplace. **Permission checks use UUID columns (`requester_id`, `assigned_to_id`), never the legacy email columns.**
 **Verification:** Reviewer checklist on every diff touching `server/` handlers; grep new handlers for authorization comparisons against email columns → nothing.
+**Amended by D-16 (2026-10-20) — the chat-booking principal.** A message that arrives over iMessage/WhatsApp acts as a user only when ALL FIVE hold, and the code that acts on it must not weaken any of them:
+1. **Provider signature on every message** — Sendblue shared secret / Meta HMAC, verified by `providerSignatureAuth` before anything is parsed; fail-closed when unconfigured.
+2. **The number was bound through `dualAuth`** — `channel_identities.user_id` is written only by `POST /channel/setup/link`, which runs `dualAuth` (email OTP session) and takes the uid from the session, never the body.
+3. **Binding needed proof of the number** — a single-use, 30-minute, SHA-256-hashed setup token delivered to that number (`setupTokenAuth` + `ConsumeSetupTokenAndLink` in one transaction).
+4. **One number, one account** — `(channel, address)` is unique; re-binding a number linked to another account is refused (`ErrIdentityTaken`). Unlinking is account deletion (`PurgeUserTx`).
+5. **Money moves only on a rule-matched YES** — never on a model's reading; booking runs the production handler for that uid, so every payment gate applies.
+The synthetic request context in `chatBooker.Post` — and in `chatBooker.Cancel` (D-17, cancel by chat, 2026-10-24: a strict YES to a quoted charge, claimed once, re-quoted before it runs) — is permitted only under these five. **Post-freeze refactor #1:** `createTask` and `cancelTask` take the principal as an argument and both the HTTP handler and the chat call them (removes the synthetic context).
 
 ### S-12: Sensitive personal data — credentials, phone numbers, precise GPS coordinates, background-check/identity data (future Checkr), payment details — never appears in logs, error messages, or analytics events.
 **Rationale:** `task_gps_pings` is live user location; `profiles.phone` is PII. One leaked log line outlasts the company.
@@ -60,6 +68,7 @@ All reads/writes to Hora tables (`users`, `profiles`, `tasks`, `worklogs`, `noti
 ### S-20: New tables/columns: snake_case; store identity as internal-UUID columns named `*_id` with FKs to `users.id`. **Never add email-as-identity columns** — that pattern is retired legacy (S-60.1/60.2).
 **Rationale:** New schema converges on the reformed convention; the email-column era is closed.
 **Verification:** Reviewer checks every new identifier in schema changes; any new `text` column semantically holding an identity is a FAIL.
+**Amended by D-16 (2026-10-20) — channel endpoints are not HO:RA identity.** A phone number used as a messaging address (`channel_identities.address`, `channel_messages.address`) is an external endpoint, like an email address handed to Postmark; the HO:RA identity is `user_id` → `users.id`. Permitted only with all three: (1) **E.164 only**, enforced by a CHECK on every such column; (2) **unique per active binding** — `(channel, address)` unique, one account per number; (3) **personal data** — never in logs, errors or analytics (S-12), purged with the account (`PurgeUserTx`), listed in the Privacy Policy before launch.
 
 ### S-21: Schema changes require committed migration files. Since no migration files currently exist (schema was built via dashboard and is only inferred from Go queries), the first schema task is a **baseline pull** (`supabase db pull` → committed baseline migration). After the baseline: forward-only migration files, dry-run against a branch/staging DB, no production dashboard SQL. Ever.
 **Rationale:** An un-versioned schema means every AI session and every new engineer works from inference, and drift is undetectable. The baseline converts the schema from folklore to fact.
@@ -70,6 +79,7 @@ All reads/writes to Hora tables (`users`, `profiles`, `tasks`, `worklogs`, `noti
 ### S-30: Styling — web (`app/`) uses Tailwind utilities exclusively; mobile (`mobile/`) uses NativeWind with shared design tokens. No new CSS/SCSS files, no styled-components; inline StyleSheet only where NativeWind cannot express it (declare in self-report). `TODO(confirm: shared token location)`
 **Rationale:** One styling system per platform, shared tokens, solo maintainer (D-01).
 **Verification:** diff adds no `.css`/`.scss`/styled-components imports.
+**Time-boxed exception — D-16 R-4:** the `<style>` block in `server/channel_setup.html` (the S-02 exception page above) is permitted under the same terms and expires with it; the page is rebuilt with Tailwind when it moves to `app/`.
 
 ### S-31: TypeScript strict; `any` requires an inline justification comment. Go errors wrapped with context (`fmt.Errorf("...: %w", err)`), never discarded with `_`.
 **Rationale:** Discarded errors are the top source of silent marketplace-state corruption.

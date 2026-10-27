@@ -91,6 +91,12 @@ CREATE TABLE public.tasks (
 	completion_note text,
 	travel_time_minutes integer,
 	total_estimate_minutes integer,
+	-- The live-tracking columns. Nullable in production too (a task whose
+	-- address could not be geocoded has none), and present here because the
+	-- chat's "where is he?" reads them (channel_live_test.go).
+	job_lat double precision,
+	job_lng double precision,
+	enroute_at timestamptz,
 	CONSTRAINT tasks_status_check CHECK ((status = ANY (ARRAY['open'::text, 'completed'::text, 'cancelled'::text])))
 );
 
@@ -210,7 +216,14 @@ func setupAdminOpsDB(t *testing.T) {
 
 	prevPool, prevSQL := db, sqldb
 	db, sqldb = pool, stdDB
+	// completeTask settles and notifies off the request in production; here
+	// it runs inline so that what a test asserts after completeAs — the
+	// capture, the payout, the receipt — has happened by the time it looks.
+	prevDetach := completionDetach
+	completionDetach = func(fn func()) { fn() }
 	t.Cleanup(func() {
+		completionDetach = prevDetach
+		resetSettleLockForTests()
 		_ = stdDB.Close()
 		pool.Close()
 		db, sqldb = prevPool, prevSQL
@@ -260,7 +273,6 @@ func seedWorklog(t *testing.T, taskID string, minutesAgo int, openEnded bool) st
 // handler, with the session identity gin's auth middleware would have set.
 func callAdminOps(t *testing.T, h gin.HandlerFunc, action, taskID, uid, email, body string) (int, map[string]any) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/admin/tasks/"+taskID+"/"+action, strings.NewReader(body))

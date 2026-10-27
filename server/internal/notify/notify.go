@@ -68,9 +68,12 @@ func SendEmail(p EmailPayload) error {
 }
 
 type CreateNotificationInput struct {
-	DB                 *sql.DB
-	UserID             string
-	TaskID             string
+	DB     *sql.DB
+	UserID string
+	TaskID string
+	// ExtensionID names the request an EXTENSION_RESOLVED notification is
+	// about, so the chat clears the right armed question and no other.
+	ExtensionID        string
 	Type               string
 	Title              string
 	Body               string
@@ -162,8 +165,20 @@ func Create(ctx context.Context, in CreateNotificationInput) error {
 		go SendPush(context.Background(), in.DB, in.UserID, in.TaskID, in.Type, in.Title, in.Body)
 	}
 
+	// Fourth channel: the person's iMessage / WhatsApp thread, for people who
+	// book by text (server/channel_status.go). Same rules as push: alongside,
+	// best-effort, off the request path. Nil unless messaging is switched on.
+	if h := ChatHook; h != nil && in.UserID != "" {
+		go h(in)
+	}
+
 	return err
 }
+
+// ChatHook, when set, also delivers a notification to the recipient's
+// messaging thread. Set once at startup, before the server takes requests, by
+// RegisterChannelWebhooks; nil whenever CHANNEL_WEBHOOKS_ENABLED is off.
+var ChatHook func(in CreateNotificationInput)
 
 func buildEmail(in CreateNotificationInput, taskURL string) string {
 	switch in.Type {

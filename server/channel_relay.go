@@ -1,0 +1,302 @@
+package main
+
+import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"hora-auth/internal/channel"
+)
+
+// Chat relay, server side (PLAN §6 steps 5–7; M3.2). The channel package
+// decides *whether* a requester's text is for a supporter (relay.go); this
+// file is the TalkJS end of it, both directions:
+//
+//   - requester → supporter: talkjsRelay posts into the task's conversation
+//     as the requester (TalkJS REST, server-signed — the requester has no
+//     client session). The conversation is created on the way if nobody has
+//     opened it yet, with the same id, subject and custom.taskId both
+//     clients build (TaskChatBox.jsx, mobile chat.tsx), so a supporter who
+//     opens the chat afterwards lands in the same room.
+//   - supporter → requester: the TalkJS webhook (talkjs_webhook.go) hands
+//     every message.sent to chatRelayHook, which sends it to the requester's
+//     number when they book by text (Router.RelayToChat). Nil in production
+//     until the messaging channel is enabled: the webhook then does what it
+//     did before.
+//
+// Safety: a blocked pair relays nothing either way (user_blocks, the same
+// check the pushes use). Relaying moves no money and changes no task state.
+
+// chatRelayFn sends one supporter message to the requester's phone.
+type chatRelayFn func(ctx context.Context, requesterID, taskID, supporterName, taskTitle, text, mediaURL string)
+
+// chatRelayHook is set by RegisterChannelWebhooks (channel_webhooks.go),
+// once, at startup, before the server listens — and never written again in
+// production. Tests write it between requests.
+//
+// READ IT ONCE PER REQUEST, ON THE REQUEST PATH, AND PASS THE VALUE DOWN.
+// The TalkJS webhook consults it twice: to decide whether a replayed webhook
+// is rejected (talkjs_webhook.go) and, in a detached goroutine, whether to
+// relay at all (relayChatMessageToRequester). Reading the variable in the
+// goroutine meant those two reads could disagree, and it was a data race
+// under test — a goroutine left behind by one test still reading while the
+// next test assigned (`go test -race`, 2026-10-27, intermittent: green the
+// day before on the same code). The webhook now reads it once and hands the
+// value to the goroutine, so the goroutine never touches package state.
+var chatRelayHook chatRelayFn
+
+// talkjsRelay implements channel.TaskChat.
+type talkjsRelay struct {
+	sqlDB *sql.DB
+}
+
+// ActiveTasks: the requester's open tasks that have a supporter, newest
+// first — the ones a message could be for.
+func (t *talkjsRelay) ActiveTasks(ctx context.Context, userID string) ([]channel.ActiveTask, error) {
+	rows, err := t.sqlDB.QueryContext(ctx, `
+		SELECT t.id::text, COALESCE(t.title, ''), COALESCE(p.name, '')
+		  FROM public.tasks t
+		  LEFT JOIN public.profiles p ON p.id = t.assigned_to_id
+		 WHERE t.requester_id = $1::uuid
+		   AND t.status = 'open'
+		   AND t.assigned_to_id IS NOT NULL
+		   AND NOT `+usersBlockedSQL("t.requester_id", "t.assigned_to_id")+`
+		 ORDER BY t.created_at DESC
+		 LIMIT 9`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("active tasks: %w", err)
+	}
+	defer rows.Close()
+	var out []channel.ActiveTask
+	for rows.Next() {
+		var a channel.ActiveTask
+		if err := rows.Scan(&a.ID, &a.Title, &a.SupporterName); err != nil {
+			return nil, fmt.Errorf("active tasks: %w", err)
+		}
+		a.SupporterName = firstNameOf(a.SupporterName)
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// PostAsRequester puts text into the task's chat as the requester.
+func (t *talkjsRelay) PostAsRequester(ctx context.Context, taskID, userID, text, key string) error {
+	pair, err := relayPair(ctx, t.sqlDB, taskID)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("post as requester: task %s: %w", taskID, channel.ErrTaskNotActive)
+	}
+	if err != nil {
+		return fmt.Errorf("post as requester: %w", err)
+	}
+	// The task must be the caller's and still open with a supporter: the id
+	// came from ActiveTasks or from a channel_messages row, but the sender
+	// is re-checked here, not trusted.
+	if pair.requesterID == "" || pair.requesterID != userID {
+		return fmt.Errorf("post as requester: task %s is not the sender's: %w", taskID, channel.ErrTaskNotActive)
+	}
+	if pair.status != "open" || pair.supporterID == "" || pair.supporterEmail == "" || pair.requesterEmail == "" {
+		return fmt.Errorf("post as requester: task %s has no open chat pair: %w", taskID, channel.ErrTaskNotActive)
+	}
+	if blocked, err := pairBlocked(ctx, t.sqlDB, pair.requesterID, pair.supporterID); err != nil {
+		return fmt.Errorf("post as requester: block check: %w", err)
+	} else if blocked {
+		return fmt.Errorf("post as requester: pair blocked: %w", channel.ErrTaskNotActive)
+	}
+	if _, _, ok := talkjsConfigured(); !ok {
+		return fmt.Errorf("post as requester: talkjs not configured")
+	}
+
+	// Neither side may exist in TalkJS yet: a requester who books by text
+	// never opened a chat client; a supporter may not have opened this
+	// task's chat. PUT /users is create-or-update (fields not sent are
+	// left as they are).
+	if err := talkjsUpsertUser(ctx, pair.requesterEmail, pair.requesterName); err != nil {
+		return fmt.Errorf("post as requester: %w", err)
+	}
+	if err := talkjsUpsertUser(ctx, pair.supporterEmail, pair.supporterName); err != nil {
+		return fmt.Errorf("post as requester: %w", err)
+	}
+	convPath := "/conversations/" + url.PathEscape(talkjsConversationID(taskID))
+	// PUT is create-or-update; participants given here are added with
+	// ReadWrite. Subject/custom mirror what the clients set.
+	status, _, err := talkjsRequest(ctx, http.MethodPut, convPath, map[string]any{
+		"participants": []string{pair.requesterEmail, pair.supporterEmail},
+		"subject":      relayOr(strings.TrimSpace(pair.title), "Task"),
+		"custom":       map[string]string{"taskId": taskID},
+	})
+	if err != nil {
+		return fmt.Errorf("post as requester: ensure conversation: %w", scrubURLErr(err))
+	}
+	if status != http.StatusOK {
+		// Status only: TalkJS error bodies echo user ids, which are emails
+		// here (S-12).
+		return fmt.Errorf("post as requester: talkjs PUT conversation returned %d", status)
+	}
+	msg := map[string]any{
+		"text":   text,
+		"sender": pair.requesterEmail,
+		"type":   "UserMessage",
+	}
+	if key != "" {
+		// At most once across webhook retries and the recovery sweep. Hashed:
+		// provider ids (a WhatsApp wamid) are long and of no fixed shape.
+		sum := sha256.Sum256([]byte(key))
+		msg["idempotencyKey"] = hex.EncodeToString(sum[:16])
+	}
+	status, _, err = talkjsRequest(ctx, http.MethodPost, convPath+"/messages", []map[string]any{msg})
+	if err != nil {
+		return fmt.Errorf("post as requester: send: %w", scrubURLErr(err))
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("post as requester: talkjs POST message returned %d", status)
+	}
+	return nil
+}
+
+// relayPairRow is what both directions check before anything crosses.
+type relayPairRow struct {
+	status                         string
+	requesterID, supporterID       string
+	requesterEmail, supporterEmail string
+	requesterName, supporterName   string
+	title                          string
+}
+
+func relayPair(ctx context.Context, db *sql.DB, taskID string) (relayPairRow, error) {
+	var p relayPairRow
+	var rid, sid, re, se, rn, sn, title sql.NullString
+	err := db.QueryRowContext(ctx, `
+		SELECT t.status, t.requester_id::text, t.assigned_to_id::text, t.title,
+		       ru.email, su.email, rp.name, sp.name
+		  FROM public.tasks t
+		  LEFT JOIN public.users ru ON ru.id = t.requester_id
+		  LEFT JOIN public.users su ON su.id = t.assigned_to_id
+		  LEFT JOIN public.profiles rp ON rp.id = t.requester_id
+		  LEFT JOIN public.profiles sp ON sp.id = t.assigned_to_id
+		 WHERE t.id = $1::uuid`, taskID).Scan(&p.status, &rid, &sid, &title, &re, &se, &rn, &sn)
+	if err != nil {
+		return p, err
+	}
+	p.requesterID, p.supporterID, p.title = rid.String, sid.String, title.String
+	p.requesterEmail, p.supporterEmail = re.String, se.String
+	p.requesterName, p.supporterName = rn.String, sn.String
+	return p, nil
+}
+
+// talkjsUpsertUser makes sure the user exists in TalkJS (id = email, as
+// everywhere in this codebase). An existing user is left exactly as the
+// clients set it; only a missing one is created.
+func talkjsUpsertUser(ctx context.Context, email, name string) error {
+	status, _, err := talkjsRequest(ctx, http.MethodGet, "/users/"+url.PathEscape(email), nil)
+	if err != nil {
+		return fmt.Errorf("ensure talkjs user: %w", scrubURLErr(err))
+	}
+	if status == http.StatusOK {
+		return nil
+	}
+	if status != http.StatusNotFound {
+		return fmt.Errorf("ensure talkjs user: talkjs GET user returned %d", status)
+	}
+	status, _, err = talkjsRequest(ctx, http.MethodPut, "/users/"+url.PathEscape(email), map[string]any{
+		"name":  relayOr(strings.TrimSpace(name), "HO:RA user"),
+		"email": []string{email},
+	})
+	if err != nil {
+		return fmt.Errorf("ensure talkjs user: %w", scrubURLErr(err))
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("ensure talkjs user: talkjs PUT user returned %d", status)
+	}
+	return nil
+}
+
+// relayChatMessageToRequester is the webhook's side: a message.sent from the
+// supporter goes to the requester's number, when they book by text. The
+// requester's own messages (posted by PostAsRequester, or from the app)
+// are not echoed back. Runs on a background context — never on the webhook
+// request path (S-32).
+//
+// hook is the value of chatRelayHook the CALLER read on the request path —
+// see the note on that variable. This function reads no package state.
+func relayChatMessageToRequester(hook chatRelayFn, db *sql.DB, conversationID, taskID, senderUID string, msg talkjsMessage) {
+	defer func() {
+		if p := recover(); p != nil {
+			log.Printf("[talkjs][relay] task=%q panic: %v", taskID, p)
+		}
+	}()
+	if hook == nil || db == nil || taskID == "" {
+		return
+	}
+	// custom.taskId is client-settable; the room itself must be the task's.
+	if conversationID != talkjsConversationID(taskID) {
+		log.Printf("[talkjs][relay] task=%q conversation mismatch — not relayed", taskID)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pair, ok := relayAllowedToRequester(ctx, db, taskID, senderUID)
+	if !ok {
+		return
+	}
+	mediaURL := ""
+	if msg.Attachment != nil {
+		mediaURL = msg.Attachment.URL
+	}
+	// The name shown in HO:RA's voice is the profile's, never the TalkJS
+	// payload's (a client-set field).
+	hook(ctx, pair.requesterID, taskID, firstNameOf(pair.supporterName), pair.title, msg.Text, mediaURL)
+}
+
+// relayAllowedToRequester: only the assigned supporter's words, on an open
+// task, with no block between the pair, reach the requester's phone — not
+// the requester's own, not a former supporter who still has read access.
+// Fails closed on any error.
+func relayAllowedToRequester(ctx context.Context, db *sql.DB, taskID, senderUID string) (relayPairRow, bool) {
+	pair, err := relayPair(ctx, db, taskID)
+	if err != nil {
+		log.Printf("[talkjs][relay] task=%q lookup: %v", taskID, err)
+		return pair, false
+	}
+	if pair.status != "open" || senderUID == "" || senderUID != pair.supporterID || senderUID == pair.requesterID || pair.requesterID == "" {
+		return pair, false
+	}
+	blocked, err := pairBlocked(ctx, db, senderUID, pair.requesterID)
+	if err != nil {
+		log.Printf("[talkjs][relay] task=%q block check: %v", taskID, err)
+		return pair, false
+	}
+	return pair, !blocked
+}
+
+// scrubURLErr drops the URL from a transport error: TalkJS paths carry user
+// ids, which are emails (S-12).
+func scrubURLErr(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return fmt.Errorf("%s talkjs: %w", ue.Op, ue.Err)
+	}
+	return err
+}
+
+func relayOr(v, def string) string {
+	if v != "" {
+		return v
+	}
+	return def
+}
+
+func firstNameOf(name string) string {
+	name = strings.TrimSpace(name)
+	if i := strings.IndexByte(name, ' '); i > 0 {
+		return name[:i]
+	}
+	return name
+}

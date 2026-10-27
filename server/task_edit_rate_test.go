@@ -35,7 +35,6 @@ func nyTomorrowAt(t *testing.T, hour int) string {
 
 func patchTaskJSON(t *testing.T, id, body string) (int, map[string]any) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPatch, "/tasks/"+id, strings.NewReader(body))
@@ -240,7 +239,6 @@ func TestTaskEditUnderAPromoHoldComparesLikeWithLike(t *testing.T) {
 		id, w.requesterID, paymentKindTaskPayment, held)
 
 	edit := func(minutes int) (int, map[string]any) {
-		gin.SetMode(gin.TestMode)
 		rec := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(rec)
 		c.Request = httptest.NewRequest(http.MethodPatch, "/tasks/"+id, strings.NewReader(

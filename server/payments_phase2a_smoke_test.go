@@ -104,7 +104,6 @@ func seedRequesterWithCard(t *testing.T, email, pmID string) (uid, customerID st
 // have set, and nothing else — the same shape as callAdminOps.
 func callWithSession(t *testing.T, h gin.HandlerFunc, method, path, uid, email, body string, params gin.Params) (int, map[string]any) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	var reader *strings.Reader
@@ -516,7 +515,6 @@ func TestPhase2aSmokeAdminRemoveReleasesTheHold(t *testing.T) {
 // only ever needed one.
 func postTaskJSONAs(t *testing.T, email, body string) (int, map[string]any) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(body))

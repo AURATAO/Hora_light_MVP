@@ -279,6 +279,10 @@ type settlementOutcome struct {
 	// Err is set when the CAPTURE itself failed — nothing was collected at
 	// all. The task is still completed; the payment row is in capture_failed.
 	Err error
+	// Busy: another settlement of this task holds the per-task lock, so this
+	// call did nothing. Not a failure and not a result — the other caller's
+	// outcome is the task's.
+	Busy bool
 	// Who was paid, when anybody was. Empty on a task nobody accepted, and on
 	// every task settled before Phase 3. Reported so the completion response
 	// can tell the supporter what they earned without a second lookup.
@@ -495,10 +499,10 @@ func reportCaptureFailure(ctx context.Context, taskID string, out settlementOutc
 	owed := formatCentsUSD(out.TimeCostCents + out.ReceiptCents)
 	emailOpsAdmins(
 		fmt.Sprintf("[HO:RA] Capture failed — %s uncollected", owed),
-		fmt.Sprintf(`<p><strong>A completed task could not be charged.</strong></p>
-<p>The task is completed and the supporter has been told it is done — that is deliberate, a payment
-problem never blocks a completion. Nobody has been charged, and this needs settling by hand in the
-Stripe dashboard.</p>
+		fmt.Sprintf(`<p><strong>A closed task could not be charged.</strong></p>
+<p>The task is closed (completed, or cancelled with work owed) and both sides have been told — that is
+deliberate, a payment problem never blocks a completion or a cancel. Nobody has been charged, and this
+needs settling by hand in the Stripe dashboard.</p>
 <ul>
   <li>Task: %s</li>
   <li>Owed: %s (time %s + receipt %s)</li>
@@ -565,6 +569,34 @@ func alreadyCaptured(ctx context.Context, taskID string) (bool, time.Time) {
 // is over either way and the supporter is not the person who should discover
 // a card problem.
 func settleCompletedTask(ctx context.Context, taskID, actorUID string, timeCostCents, receiptCents int) settlementOutcome {
+	// ONE settlement per task at a time (payments_settle_lock.go). Try,
+	// never wait: a second caller finding the lock taken means the first is
+	// mid-flight, and the right thing is to do nothing — the sweep's next
+	// pass sees whatever the first left. Not being ABLE to ask is different:
+	// that is a failure, and it goes down the same path as a failed capture
+	// (audit row, ops email), never a quiet zero.
+	//
+	// Only when there is something to settle. With PAYMENTS_ENFORCED off, or
+	// on a task that never had a hold, settleTaskPayment is a no-op — and a
+	// lock outage on such a task must not become a "capture failed" audit
+	// row and an ops email about money that was never owed (review r5).
+	if !paymentsEnabled() {
+		return settleTaskPayment(ctx, taskID, timeCostCents, receiptCents)
+	}
+	if _, err := livePaymentForTask(ctx, taskID); errors.Is(err, pgx.ErrNoRows) {
+		return settleTaskPayment(ctx, taskID, timeCostCents, receiptCents)
+	}
+	lease, got, lockErr := tryLockTaskSettlement(ctx, taskID)
+	if lockErr != nil {
+		out := settlementOutcome{Attempted: true, TimeCostCents: timeCostCents, ReceiptCents: receiptCents, Err: lockErr}
+		reportCaptureFailure(ctx, taskID, out, actorUID)
+		return out
+	}
+	if !got {
+		log.Printf("[payments][settle] task=%s: settlement already in progress elsewhere — not started", taskID)
+		return settlementOutcome{Busy: true}
+	}
+	defer unlockTaskSettlement(lease)
 	out := settleTaskPayment(ctx, taskID, timeCostCents, receiptCents)
 	switch {
 	case out.Err != nil:

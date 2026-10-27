@@ -11,7 +11,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -129,6 +131,22 @@ func handleTalkJSWebhook(c *gin.Context, db *sql.DB) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
+	// The relay hook, read ONCE for this request. The same value decides the
+	// replay rule here and the relay below; the goroutine never reads the
+	// package variable itself (see chatRelayHook in channel_relay.go).
+	relay := chatRelayHook
+	// A valid signature from long ago is a replay. Enforced only where it
+	// matters — when the message can reach a phone (chat relay on); on a
+	// push-only deploy it is logged, so production pushes cannot be cut off
+	// by a wrong assumption about the header's unit (staging proves it).
+	if !talkjsTimestampFresh(c.GetHeader(talkjsTimestampHeader), time.Now()) {
+		if relay != nil {
+			log.Printf("[talkjs][webhook] stale timestamp — rejecting")
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+		log.Printf("[talkjs][webhook] stale timestamp (relay off: accepted, logged)")
+	}
 
 	var ev talkjsWebhookEvent
 	if err := json.Unmarshal(raw, &ev); err != nil {
@@ -161,7 +179,12 @@ func handleTalkJSWebhook(c *gin.Context, db *sql.DB) {
 	if senderTalkJSID == "" {
 		senderTalkJSID = ev.Data.Message.SenderID
 	}
-	senderUID, _ := userIDForTalkJSID(c.Request.Context(), db, senderTalkJSID)
+	senderUID, senderErr := userIDForTalkJSID(c.Request.Context(), db, senderTalkJSID)
+	if senderErr != nil {
+		// The pushes below still go out (as before); the relay to a phone
+		// does not, because it is gated on who the sender is (S-31: logged).
+		log.Printf("[talkjs][webhook] sender lookup failed talkjs_id=%s err=%v", senderTalkJSID, senderErr)
+	}
 
 	for _, talkjsID := range recipients {
 		userID, err := userIDForTalkJSID(c.Request.Context(), db, talkjsID)
@@ -185,11 +208,34 @@ func handleTalkJSWebhook(c *gin.Context, db *sql.DB) {
 		// hold up the webhook response (S-32).
 		go notify.SendPush(context.Background(), db, userID, taskID, "NEW_MESSAGE", title, body)
 	}
+	// Requesters who book by text get the supporter's words on their phone
+	// (channel_relay.go). Off the request path like the pushes.
+	if senderErr == nil {
+		go relayChatMessageToRequester(relay, db, ev.Data.Conversation.ID, taskID, senderUID, ev.Data.Message)
+	}
 
 	c.Status(http.StatusOK)
 }
 
 // ── Signature ──────────────────────────────────────────────────────────────
+
+// talkjsReplayWindow bounds how old (or how far ahead) a signed webhook may
+// be. TalkJS retries for a while; five minutes covers that with clock skew.
+const talkjsReplayWindow = 5 * time.Minute
+
+// talkjsTimestampFresh: the X-TalkJS-Timestamp (milliseconds since the
+// epoch) is within the replay window of now.
+func talkjsTimestampFresh(ts string, now time.Time) bool {
+	ms, err := strconv.ParseInt(strings.TrimSpace(ts), 10, 64)
+	if err != nil {
+		return false
+	}
+	d := now.Sub(time.UnixMilli(ms))
+	if d < 0 {
+		d = -d
+	}
+	return d <= talkjsReplayWindow
+}
 
 // verifyTalkJSSignature checks the X-TalkJS-Signature header per
 // talkjs.com/docs/Features/Security: HMAC-SHA256 over `timestamp + "." + raw

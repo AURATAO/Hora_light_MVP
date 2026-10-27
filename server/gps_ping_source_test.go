@@ -136,7 +136,6 @@ func seedClockedInTask(t *testing.T) (string, string, string) {
 
 func postGpsPing(t *testing.T, taskID, uid, email, body string) (int, map[string]any) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/tasks/"+taskID+"/gps-ping", strings.NewReader(body))

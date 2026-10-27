@@ -222,3 +222,126 @@ requested card features") and **every post 402s**. Verified in test mode
 2026-09-14. Before flipping it: enable it in the dashboard, then re-run
 `STRIPE_SMOKE=1 go test ./ -run Phase2bSmoke -v` and check the logged
 `INCREMENTAL AUTHORIZATION RESULT` line says `method="incremental_authorization"`.
+
+### 6. Log-only: `[payments][RESETTLE]`
+
+A task was completed and its hold was still live ten minutes later: the
+detached completion chain (capture → balance → payouts → receipt) died
+before the capture, usually because a deploy landed in those seconds. The
+sweep (`payments_resettle.go`, every 5 min) ran the same settlement again.
+Nothing to do unless it is followed by a **Capture failed** email — that is
+the hold Stripe had already captured, refused a second time: reconcile the
+row by hand as in entry 1.
+
+### 7. `[HO:RA] Settlement incomplete — check task …`
+
+The task is completed and its hold **was** captured, but the chain stopped
+before recording the settlement (`settled_total_cents` is NULL): a payout,
+a balance charge or the requester's receipt may be missing. The sweep does
+not redo this — it cannot know which steps ran — so it writes one
+`SETTLEMENT_INCOMPLETE` audit row and sends this once. Compare `payments`
+and `payouts` for the task with Stripe (the PaymentIntent, any
+`completion_balance` intent, the transfers) and finish by hand: create the
+missing transfer in the dashboard, send the receipt from the task page, and
+set `settled_total_cents` so the task reads as settled.
+
+---
+
+## What a correct LIVE settlement looks like (first one: 2026-10-27)
+
+The reference point. Before this, every number in this runbook had only ever
+been seen in test mode; the live keys went in on 2026-10-26 and the two steps
+nobody had watched with real money were the capture and the transfer.
+
+One task, $12.00 of time, no shopping receipt:
+
+```
+13:15:44  [payments] pre-auth task=4e82d3de… intent=pi_3UV9I2… amount=1200 status=requires_capture
+13:26:40  [payments] capture task=4e82d3de… total=1200 (time=1200 receipt=0)
+13:26:41  [payments][payout] task=4e82d3de… payout=1df4f206… transfer=tr_3UV9I2… amount=$9.60
+13:26:42  [payments][settle] task=4e82d3de… captured=$12.00 (time=$12.00 receipt=$0.00 discount=$0.00)
+```
+
+and the `payouts` row:
+
+| column | value |
+|---|---|
+| `status` | `paid` |
+| `service_cents` | 1200 |
+| `fee_cents` | 240 |
+| `fee_bps` | 2000 |
+| `reimbursement_cents` | 0 |
+| `amount_cents` | 960 |
+| `funding` | `charge` |
+| `stripe_bank_payout_id` | NULL |
+| `bank_paid_at` | NULL |
+
+Three things to read off it:
+
+1. **The fee comes off the service, not the reimbursement.** $12.00 service →
+   $2.40 fee (2000 bps) → $9.60 transferred. A task with a shopping receipt
+   adds `reimbursement_cents` to the transfer untouched by the fee; that is
+   what `supporterPay.NetCents()` means and it is the arithmetic to check on
+   the first live task that has one.
+2. **`bank_paid_at` NULL is normal here, not a failure.** The transfer moves
+   money to the supporter's Connect account; Stripe then pays it out to the
+   bank on its own schedule and `payout.paid` fills these two columns in days
+   later — 2026-10-12's payout filled on 10-19. An arrival that never fills is
+   `onConnectedPayoutFailed`'s job to report, not something to chase by hand.
+3. **A Connect account can read as payable and not be.** 16 minutes before this
+   settlement the same account logged
+   `v1 says transfers=active but v2 recipient stripe_transfers="restricted" — NOT payable`.
+   That check is the one that matters; a transfer attempted in that window
+   lands in a `failed` payout and an ops email, and `adminRetryPayout` is the
+   way back once onboarding finishes. Nothing about it fails the settlement:
+   capture happens first and the task is complete either way.
+
+### The same day, the richer one: reimbursement, overage, two payouts (2026-10-27 14:00)
+
+The second live task settled three branches at once, so it is the better
+reference. $15.50 of time against a $17.00 hold (estimate + a $7.00 shopping
+budget), and the time ran over:
+
+```
+13:35:43  [payments] pre-auth task=e625f732… intent=pi_3UV9bN… amount=1700 status=requires_capture
+14:00:31  [payments][UNDERCAPTURE] task=e625f732… settlement=2250 exceeds hold=1700 — capturing hold, shortfall=550
+14:00:32  [payments] capture task=e625f732… total=1700 (time=1550 receipt=700)
+14:00:35  [payments][balance] task=e625f732… intent=pi_3UV9zR… collected $5.50
+14:00:37  [payments][payout] task=e625f732… payout=8b812ece… transfer=tr_3UV9bN… amount=$17.00
+14:00:40  [payments][payout] task=e625f732… payout=676b6750… transfer=tr_3UV9zR… amount=$2.40
+14:00:41  [payments][settle] task=e625f732… captured=$22.50 (time=$15.50 receipt=$7.00 discount=$0.00)
+```
+
+| | requester paid | supporter received | platform kept |
+|---|---|---|---|
+| | $22.50 | $19.40 | $3.10 |
+
+$3.10 is exactly 20% of the $15.50 of service, and the $7.00 reimbursement
+passed through with no fee on it. That is the half of `supporterPay.NetCents()`
+the 10-27 13:26 task could not show.
+
+**The per-row fee is NOT 20% of that row's service, and a check that assumes
+it will raise a false alarm.** The two `payouts` rows are:
+
+| row | `service_cents` | `fee_cents` | `reimbursement_cents` | `amount_cents` |
+|---|---|---|---|---|
+| funded by the main charge | 1310 | 310 | 700 | 1700 |
+| funded by the balance charge | 240 | 0 | 0 | 240 |
+
+Row one reads as 23.7%. Nothing is overcharged: the fee is computed **once per
+task** on the whole service ($15.50 → $3.10) and then distributed across the
+transfers, precisely so that a per-row rounding cannot take a cent more than
+the rate says (`supporterPayFor`'s comment). `fee_bps` is the rate, not the
+row's ratio. **Verify at the task level:** `sum(fee_cents) = rate ×
+sum(service_cents)` — here 310 + 0 = 310 against 1310 + 240 = 1550.
+
+Two more things this one proves, both first-time-on-live:
+
+- **The overage branch.** Settlement above the hold captures the hold in full
+  and collects the difference as a separate immediate-capture intent. The
+  requester is charged twice for one task, which is why the receipt has to show
+  the $22.50 total and not the $17.00 hold — the one thing to eyeball by hand.
+- **One payout per captured payment.** Two charges, two transfers, each tied by
+  `source_transaction` to the charge that funded it. This is what makes a
+  re-settle idempotent: `payouts.payment_id` is UNIQUE, so the second settle of
+  either payment cannot produce a second transfer.
