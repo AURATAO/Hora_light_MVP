@@ -94,9 +94,22 @@ export default function AvatarUploader({ value, onChange, size = 96, className =
         (import.meta?.env?.VITE_API_BASE || import.meta?.env?.VITE_API_BASE_URL)?.replace(/\/+$/, '') ||
         (location.hostname === 'localhost' ? 'http://localhost:8080' : 'https://core.horaapp.co')
 
+      // Both proofs of login, like api() in client.js and the completion-photo
+      // uploader: the hora_session cookie (Google sign-in) AND the Supabase
+      // access token as Bearer (email-code sign-in). This request used to send
+      // only the cookie, so everyone who signed in with an email code got 401
+      // on every avatar upload, whatever the image — reported 2026-10-27 as
+      // "no size works"; the production log shows the same person retrying
+      // six times in five minutes, 401 each, while Google sign-ins got 200.
+      const { supabase } = await import('../lib/supabaseClient')
+      const { data: { session } } = await supabase.auth.getSession()
+      const headers = {}
+      if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`
+
       const res = await fetch(`${API_BASE}/profile/avatar`, {
         method: 'POST',
         credentials: 'include',
+        headers,
         body: fd,
       })
 
