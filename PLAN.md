@@ -164,13 +164,20 @@ reasoning on by default — measure latency with it on and off.
   - Do every channel change that needs a real inbound message in staging
     **before** phase 5. After it, the only place a real conversation happens is
     production.
-  - Staging keeps `SENDBLUE_FROM_NUMBER` = the **sandbox** number, never the
-    dedicated line: the API key is account-wide, so a staging test with the live
-    line in that variable would text a real person from the live number.
+  - **The sandbox line is GONE (observed 2026-10-27).** Upgrading the account
+    retired it: the account now holds exactly ONE number, the new dedicated 917
+    line. Staging's last inbound was 2026-10-25 21:37Z and nothing has arrived
+    since — the webhook URL still pointed at staging and no request reached it
+    at all, not even a 401, because the messages were going to a number that no
+    longer exists. So staging and production share not just the credential but
+    the single line: until phase 5 it serves STAGING, at phase 5 it moves to
+    production and staging's channel is finished. While staging holds it, every
+    outbound test goes out from the real number and is billed on the paid plan.
   - After phase 5, treat staging's channel as off (no inbound can arrive) and
     unset `CHANNEL_WEBHOOKS_ENABLED` there rather than leaving it looking live.
-  - The way back, if a staging channel is wanted later: a second Sendblue
-    account for the sandbox line, with its own key and its own webhook.
+  - The way back, if a staging channel is ever wanted again: a second Sendblue
+    account with its own number, key and webhook. The sandbox line cannot be
+    recovered.
 - [ ] **RESIDUAL DECLARED (2026-10-27): staging and production share one
   Sendblue credential pair.** Sendblue appears to issue **one API key + secret
   per account** — the docs say only "In order to use the API you will need your

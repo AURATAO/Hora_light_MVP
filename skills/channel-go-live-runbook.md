@@ -175,12 +175,12 @@ In this order:
    **This step takes staging's inbound away.** Sendblue webhook URLs are
    configured per *account*, not per number — every line on the account shares
    one endpoint, and it cannot be set per phone number. So staging stops
-   receiving iMessage here, for good, unless the sandbox line is moved to a
-   second Sendblue account with its own key. Do anything that needs a real
-   inbound message in staging before this step. And leave staging's
-   `SENDBLUE_FROM_NUMBER` on the sandbox number: the API key is account-wide,
-   so staging holding the dedicated line in that variable can text a real
-   person from the live number.
+   receiving iMessage here, for good. There is no fallback line: upgrading the
+   account retired the sandbox number (2026-10-27), so the account holds
+   exactly one number and this step is where it changes hands — staging until
+   now, production afterwards. Do anything that needs a real inbound message in
+   staging BEFORE this step; a staging channel after it would need a whole
+   second Sendblue account.
 2. **Render:** `CHANNEL_WEBHOOKS_ENABLED=1`. The service redeploys.
 3. Confirm the startup log now lists the channel routes, and that
    `CHANNEL_SETUP_WEB_URL` is the webapp (phase 6 checks it end to end).
