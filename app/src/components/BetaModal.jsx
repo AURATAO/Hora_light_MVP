@@ -112,8 +112,23 @@ export default function BetaModal() {
               {BETA_NOTICE_COPY.finePrint}
             </p>
           </div>
+        </div>
 
-          <label className="flex items-start gap-3 cursor-pointer group">
+        {/* Pinned footer — the CTA never scrolls away, and its top hairline
+            doubles as the "content continues above" edge cue.
+
+            THE ACKNOWLEDGEMENT LIVES HERE, beside the button it enables, and
+            not at the end of the scrolling body. Mobile moved it for exactly
+            this reason on 2026-09-27 (BetaNoticeSheet.tsx: "a checkbox below
+            it was invisible and the disabled CTA read as broken"); the web
+            notice never followed. On 2026-10-27 a supporter wrote in: "'Enter
+            HO:RA' can't be clicked, I get a red circle with a line" — that is
+            `disabled:cursor-not-allowed` on a button whose only precondition
+            sat below the fold, on the first screen after signup, with nothing
+            on screen to explain it. He emailed; nobody else would have.
+            Beside the button, the unticked box IS the explanation. */}
+        <div className="p-6 sm:p-8 pt-4 border-t border-white/10">
+          <label className="mb-4 flex items-start gap-3 cursor-pointer group">
             <input
               type="checkbox"
               checked={checked}
@@ -124,10 +139,6 @@ export default function BetaModal() {
               {BETA_NOTICE_COPY.acknowledgement}
             </span>
           </label>
-        </div>
-
-        {/* Sticky footer with CTA */}
-        <div className="p-6 sm:p-8 pt-4 border-t border-white/10">
           <button
             onClick={accept}
             disabled={!checked || saving}
