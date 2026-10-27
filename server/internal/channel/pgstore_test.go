@@ -27,6 +27,9 @@ func testDB(t *testing.T) *sql.DB {
 	t.Helper()
 	dsn := os.Getenv("CHANNEL_TEST_DATABASE_URL")
 	if dsn == "" {
+		if os.Getenv("REQUIRE_DB_TESTS") == "1" {
+			t.Fatal("CHANNEL_TEST_DATABASE_URL not set (REQUIRE_DB_TESTS=1: a DB-backed test may not skip)")
+		}
 		t.Skip("CHANNEL_TEST_DATABASE_URL not set")
 	}
 	db, err := sql.Open("pgx", dsn)

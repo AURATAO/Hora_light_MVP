@@ -201,7 +201,7 @@ func setupReassignDB(t *testing.T) {
 	t.Helper()
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set — skipping DB-backed reassignment tests")
+		requireOrSkipDB(t, "TEST_DATABASE_URL not set — skipping DB-backed reassignment tests")
 	}
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, url)
