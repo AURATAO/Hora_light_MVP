@@ -131,12 +131,16 @@ func handleTalkJSWebhook(c *gin.Context, db *sql.DB) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
+	// The relay hook, read ONCE for this request. The same value decides the
+	// replay rule here and the relay below; the goroutine never reads the
+	// package variable itself (see chatRelayHook in channel_relay.go).
+	relay := chatRelayHook
 	// A valid signature from long ago is a replay. Enforced only where it
 	// matters — when the message can reach a phone (chat relay on); on a
 	// push-only deploy it is logged, so production pushes cannot be cut off
 	// by a wrong assumption about the header's unit (staging proves it).
 	if !talkjsTimestampFresh(c.GetHeader(talkjsTimestampHeader), time.Now()) {
-		if chatRelayHook != nil {
+		if relay != nil {
 			log.Printf("[talkjs][webhook] stale timestamp — rejecting")
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return
@@ -207,7 +211,7 @@ func handleTalkJSWebhook(c *gin.Context, db *sql.DB) {
 	// Requesters who book by text get the supporter's words on their phone
 	// (channel_relay.go). Off the request path like the pushes.
 	if senderErr == nil {
-		go relayChatMessageToRequester(db, ev.Data.Conversation.ID, taskID, senderUID, ev.Data.Message)
+		go relayChatMessageToRequester(relay, db, ev.Data.Conversation.ID, taskID, senderUID, ev.Data.Message)
 	}
 
 	c.Status(http.StatusOK)

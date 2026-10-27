@@ -164,27 +164,27 @@ func TestRelayToRequesterGate(t *testing.T) {
 func TestRelayChatMessageToRequesterUsesRoomAndSender(t *testing.T) {
 	setupLiveDB(t)
 	w := seedLiveWorld(t)
+	// The hook is passed in, as the webhook passes it; this test touches no
+	// package state (the race that cost a red -race run on 2026-10-27 was a
+	// test assigning chatRelayHook while an earlier test's goroutine read it).
 	var calls []string
-	prev := chatRelayHook
-	chatRelayHook = func(_ context.Context, requesterID, taskID, supporterName, taskTitle, text, mediaURL string) {
+	hook := chatRelayFn(func(_ context.Context, requesterID, taskID, supporterName, taskTitle, text, mediaURL string) {
 		calls = append(calls, requesterID+"|"+taskID+"|"+supporterName+"|"+taskTitle+"|"+text+"|"+mediaURL)
-	}
-	t.Cleanup(func() { chatRelayHook = prev })
+	})
 
 	msg := talkjsMessage{Text: "On my way!", Attachment: &talkjsFile{URL: "https://cdn.example.test/p.jpg"}}
-	relayChatMessageToRequester(sqldb, "task_"+w.taskID, w.taskID, w.supporterID, msg)
+	relayChatMessageToRequester(hook, sqldb, "task_"+w.taskID, w.taskID, w.supporterID, msg)
 	// The name is the profile's first name ("Sam Supporter"), never the TalkJS payload's.
 	if len(calls) != 1 || calls[0] != w.requesterID+"|"+w.taskID+"|Sam|Grocery run|On my way!|https://cdn.example.test/p.jpg" {
 		t.Fatalf("calls %v", calls)
 	}
-	relayChatMessageToRequester(sqldb, "task_"+w.taskID, w.taskID, w.requesterID, msg) // own message
-	relayChatMessageToRequester(sqldb, "task_other", w.taskID, w.supporterID, msg)     // wrong room, custom.taskId forged
-	relayChatMessageToRequester(sqldb, "task_"+w.taskID, "", w.supporterID, msg)       // no task
+	relayChatMessageToRequester(hook, sqldb, "task_"+w.taskID, w.taskID, w.requesterID, msg) // own message
+	relayChatMessageToRequester(hook, sqldb, "task_other", w.taskID, w.supporterID, msg)     // wrong room, custom.taskId forged
+	relayChatMessageToRequester(hook, sqldb, "task_"+w.taskID, "", w.supporterID, msg)       // no task
 	if len(calls) != 1 {
 		t.Fatalf("calls %v", calls)
 	}
-	chatRelayHook = nil
-	relayChatMessageToRequester(sqldb, "task_"+w.taskID, w.taskID, w.supporterID, msg) // hook off: no panic
+	relayChatMessageToRequester(nil, sqldb, "task_"+w.taskID, w.taskID, w.supporterID, msg) // hook off: no panic
 }
 
 var _ channel.TaskChat = (*talkjsRelay)(nil)

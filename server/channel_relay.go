@@ -35,9 +35,23 @@ import (
 // Safety: a blocked pair relays nothing either way (user_blocks, the same
 // check the pushes use). Relaying moves no money and changes no task state.
 
-// chatRelayHook is set by RegisterChannelWebhooks (channel_webhooks.go).
-// Called from the TalkJS webhook off the request path.
-var chatRelayHook func(ctx context.Context, requesterID, taskID, supporterName, taskTitle, text, mediaURL string)
+// chatRelayFn sends one supporter message to the requester's phone.
+type chatRelayFn func(ctx context.Context, requesterID, taskID, supporterName, taskTitle, text, mediaURL string)
+
+// chatRelayHook is set by RegisterChannelWebhooks (channel_webhooks.go),
+// once, at startup, before the server listens — and never written again in
+// production. Tests write it between requests.
+//
+// READ IT ONCE PER REQUEST, ON THE REQUEST PATH, AND PASS THE VALUE DOWN.
+// The TalkJS webhook consults it twice: to decide whether a replayed webhook
+// is rejected (talkjs_webhook.go) and, in a detached goroutine, whether to
+// relay at all (relayChatMessageToRequester). Reading the variable in the
+// goroutine meant those two reads could disagree, and it was a data race
+// under test — a goroutine left behind by one test still reading while the
+// next test assigned (`go test -race`, 2026-10-27, intermittent: green the
+// day before on the same code). The webhook now reads it once and hands the
+// value to the goroutine, so the goroutine never touches package state.
+var chatRelayHook chatRelayFn
 
 // talkjsRelay implements channel.TaskChat.
 type talkjsRelay struct {
@@ -209,13 +223,15 @@ func talkjsUpsertUser(ctx context.Context, email, name string) error {
 // requester's own messages (posted by PostAsRequester, or from the app)
 // are not echoed back. Runs on a background context — never on the webhook
 // request path (S-32).
-func relayChatMessageToRequester(db *sql.DB, conversationID, taskID, senderUID string, msg talkjsMessage) {
+//
+// hook is the value of chatRelayHook the CALLER read on the request path —
+// see the note on that variable. This function reads no package state.
+func relayChatMessageToRequester(hook chatRelayFn, db *sql.DB, conversationID, taskID, senderUID string, msg talkjsMessage) {
 	defer func() {
 		if p := recover(); p != nil {
 			log.Printf("[talkjs][relay] task=%q panic: %v", taskID, p)
 		}
 	}()
-	hook := chatRelayHook
 	if hook == nil || db == nil || taskID == "" {
 		return
 	}
