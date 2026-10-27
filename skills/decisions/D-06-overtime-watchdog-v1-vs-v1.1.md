@@ -282,3 +282,63 @@ a false "capture failed" is possible only on a hold-less task hit by a DB
 blip); the drop email's 10-minute rate limit can omit a later drop's task
 ids (they are in the log). Reviewer's NIT stands: the `Busy` branches in
 cancel and force-complete are belt-and-braces behind status-gated writes.
+
+## Addendum 2026-10-27 — first live run, and a premise r6 did not hold
+
+**The chain works on live money.** Production, 16:14 local, one $12.00 task
+from the iOS app: `POST /complete` answered in 4.2 s (200, the task in the
+body — the old code took ~15 s and risked the edge's 502); capture 1 s after
+the response, in the background; payout $9.60 (`tr_3UVC0B…`); settle
+`captured=$12.00`; completion email. No `[RESETTLE]`, no `[PANIC]`, no
+incomplete-settlement email. The 4.2 s is Render↔Supabase round trips inside
+`getTask`, not the chain.
+
+**One ERROR, every settlement from now on:**
+
+```
+[payments][settle][ERROR] task=…: unlock found no lock held on the live connection
+```
+
+Same connection, same generation, not closed — and Postgres says this session
+holds no such lock. That has one explanation, and Aura confirmed it: production's
+`SUPABASE_DB_URL` is the **transaction pooler, port 6543**. In that mode every
+statement may land on a different backend session, so a session-level advisory
+lock taken by one statement is simply not there for the next; Supabase's own
+docs list advisory locks among the things transaction mode does not support.
+The clue was in our code the whole time — `QueryExecModeSimpleProtocol` is the
+accommodation one makes for exactly this pooler — and the review never
+connected it. r6's PASS rested on "one dedicated connection is one session".
+On production it is not.
+
+**What it costs, precisely.** Within one process the Go mutex and the `held`
+map still serialise settlements of a task, which is why the money was right
+today and will stay right in normal operation. What is lost is the
+cross-process guarantee — the deploy minute when two instances overlap, or
+any future second instance. Even there the money is held by database rules
+this lock was only a third layer over: `complete`'s `WHERE status='open'`
+(one completion) and `payouts.payment_id UNIQUE` (one transfer per charge).
+The worst case is a second capture attempt on an already-captured intent,
+which Stripe refuses, which becomes one false "capture failed" email. Not a
+double charge. The ERROR line itself only logs, so it will print on every
+settlement until fixed and bury real errors.
+
+**Ruled (Aura, 2026-10-27): not a blocker for anything; fix before B6**, since
+the channel multiplies settlements. Two fixes considered:
+
+1. Point the dedicated lock connection at the session pooler (5432) via its
+   own URL. Minimal code, but the guarantee then depends on an env var being
+   set correctly per environment — the same shape of assumption that just
+   failed.
+2. Switch to **transaction-level** locks: `BEGIN; select
+   pg_try_advisory_xact_lock(...)` on the dedicated connection, held open for
+   the settlement, `COMMIT` to release. A transaction pins one backend for its
+   whole life in every pooler mode, so the lock means the same thing on 6543,
+   5432 and a direct connection. `isTaskSettlementRunning` becomes a short
+   transaction with the same try-lock. No new variable, no environment
+   assumption.
+
+Taking 2. It is Tier 3 (money path) and gets its own adversarial review.
+Staging has never printed this line because no settlement has run there since
+the lock landed on 10-26 — so staging silence was not evidence, and the first
+live settlement was the first real test of the lock. That is the lesson to
+keep: a review of concurrency code has to name the pooler mode it assumes.
