@@ -700,30 +700,10 @@ func main() {
 			return
 		}
 
-		// Upsert user in public.users — with email-based account linking.
-		// Priority: supabase_sub match → email match (link accounts) → new row.
-		var internalID string
-		err = sqldb.QueryRowContext(c.Request.Context(),
-			`select id from public.users where supabase_sub = $1::uuid`, extSub,
-		).Scan(&internalID)
-		if errors.Is(err, sql.ErrNoRows) && email != "" {
-			// Try to find existing account by email (e.g. user already signed in via Google)
-			err = sqldb.QueryRowContext(c.Request.Context(),
-				`update public.users set supabase_sub = $1::uuid where email = $2 returning id`,
-				extSub, email,
-			).Scan(&internalID)
-		}
-		if errors.Is(err, sql.ErrNoRows) {
-			// Truly new user — create a fresh row. No name: the person has not
-			// been asked yet, and an email prefix stored here would read as an
-			// answer (names.go).
-			err = sqldb.QueryRowContext(c.Request.Context(), `
-				insert into public.users (supabase_sub, email, name)
-				values ($1::uuid, $2, '')
-				returning id
-			`, extSub, email).Scan(&internalID)
-		}
-		if err != nil || internalID == "" {
+		// Upsert user in public.users — with email-based account linking
+		// (supabase_user.go: sub match → email match → new row, race-safe).
+		internalID, err := resolveSupabaseUser(c.Request.Context(), sqldb, extSub, email)
+		if err != nil {
 			log.Printf("[exchange] upsert user err=%v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "user upsert failed"})
 			return
@@ -5368,25 +5348,10 @@ func dualAuth(db *sql.DB) gin.HandlerFunc {
 					if extSub, _ := claims["sub"].(string); extSub != "" {
 						email, _ := claims["email"].(string)
 
-						// Map supabase_sub → internal id, with email-based account linking
-						var internalID string
-						err := db.QueryRowContext(c.Request.Context(),
-							`select id from public.users where supabase_sub = $1::uuid`, extSub,
-						).Scan(&internalID)
-						if errors.Is(err, sql.ErrNoRows) && email != "" {
-							err = db.QueryRowContext(c.Request.Context(),
-								`update public.users set supabase_sub = $1::uuid where email = $2 returning id`,
-								extSub, email,
-							).Scan(&internalID)
-						}
-						if errors.Is(err, sql.ErrNoRows) {
-							err = db.QueryRowContext(c.Request.Context(), `
-                insert into public.users (supabase_sub, email, name)
-                values ($1::uuid, $2, '')
-                returning id
-              `, extSub, email).Scan(&internalID)
-						}
-						if err == nil && internalID != "" {
+						// Map supabase_sub → internal id, with email-based account
+						// linking (supabase_user.go).
+						internalID, err := resolveSupabaseUser(c.Request.Context(), db, extSub, email)
+						if err == nil {
 							c.Set("uid", internalID)
 							if email != "" {
 								c.Set("email", email)
@@ -5432,25 +5397,10 @@ func tryAuth(db *sql.DB) gin.HandlerFunc {
 						if extSub, _ := claims["sub"].(string); extSub != "" {
 							email, _ := claims["email"].(string)
 
-							// Map supabase_sub → internal id, with email-based account linking
-							var internalID string
-							err := db.QueryRowContext(c.Request.Context(),
-								`select id from public.users where supabase_sub = $1::uuid`, extSub,
-							).Scan(&internalID)
-							if errors.Is(err, sql.ErrNoRows) && email != "" {
-								err = db.QueryRowContext(c.Request.Context(),
-									`update public.users set supabase_sub = $1::uuid where email = $2 returning id`,
-									extSub, email,
-								).Scan(&internalID)
-							}
-							if errors.Is(err, sql.ErrNoRows) {
-								err = db.QueryRowContext(c.Request.Context(), `
-                  insert into public.users (supabase_sub, email, name)
-                  values ($1::uuid, $2, '')
-                  returning id
-                `, extSub, email).Scan(&internalID)
-							}
-							if err == nil && internalID != "" {
+							// Map supabase_sub → internal id, with email-based account
+							// linking (supabase_user.go).
+							internalID, err := resolveSupabaseUser(c.Request.Context(), db, extSub, email)
+							if err == nil {
 								c.Set("uid", internalID)
 								if email != "" {
 									c.Set("email", email)
