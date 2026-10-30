@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -90,14 +91,62 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 
-	run := h.async
-	if run == nil {
-		run = func(f func()) { go f() }
-	}
 	for _, m := range fresh {
 		m := m
-		run(func() { h.route(m) })
+		if h.async != nil {
+			h.async(func() { h.route(m) })
+			continue
+		}
+		// One person's messages are routed one at a time, in arrival
+		// order (production 2026-10-30: "15 mins" and "No extra" sent
+		// five seconds apart were routed in parallel; the slower re-draft
+		// saved over the opt-out and the summary briefly offered the
+		// auto-extension again). Different people still run in parallel.
+		inboundQueue.do(string(m.Channel)+"|"+m.From, func() { h.route(m) })
 	}
+}
+
+// inboundQueue serializes routing per sender within this process. One
+// Render instance serves the channel; during a deploy's overlap two may
+// briefly run, which this does not cover (declared residual).
+var inboundQueue = &keyedSerial{queues: map[string][]func(){}}
+
+// keyedSerial runs the functions given for one key one after another, in
+// the order given, on one goroutine per busy key.
+type keyedSerial struct {
+	mu     sync.Mutex
+	queues map[string][]func()
+}
+
+func (k *keyedSerial) do(key string, f func()) {
+	k.mu.Lock()
+	if q, busy := k.queues[key]; busy {
+		k.queues[key] = append(q, f)
+		k.mu.Unlock()
+		return
+	}
+	k.queues[key] = []func(){}
+	k.mu.Unlock()
+	go func() {
+		for next := f; next != nil; {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("[channel] route panic: %v", r)
+					}
+				}()
+				next()
+			}()
+			k.mu.Lock()
+			if q := k.queues[key]; len(q) > 0 {
+				next, k.queues[key] = q[0], q[1:]
+			} else {
+				delete(k.queues, key)
+				next = nil
+			}
+			k.mu.Unlock()
+		}
+	}()
 }
 
 func (h *WebhookHandler) route(m Inbound) {

@@ -68,6 +68,41 @@ func TestActiveTasksListsOnlyOpenAssignedUnblocked(t *testing.T) {
 	}
 }
 
+// Production 2026-10-30: a test task open and assigned since 2025-12 made
+// every booking ask "or was it for Vivienne?" and a "never mind" went to
+// her. An old open task with nothing recent is not active; a worklog or a
+// schedule inside the window brings it back.
+func TestActiveTasksIgnoresStaleOpenTasks(t *testing.T) {
+	setupLiveDB(t)
+	w := seedLiveWorld(t)
+	ctx := context.Background()
+	relay := &talkjsRelay{sqlDB: sqldb}
+	if _, err := sqldb.ExecContext(ctx, `DELETE FROM public.worklogs WHERE task_id = $1::uuid`, w.taskID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqldb.ExecContext(ctx, `UPDATE public.tasks SET created_at = now() - interval '300 days' WHERE id = $1::uuid`, w.taskID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := relay.ActiveTasks(ctx, w.requesterID); len(got) != 0 {
+		t.Fatalf("a stale open task was listed: %+v", got)
+	}
+	if _, err := sqldb.ExecContext(ctx, `UPDATE public.tasks SET scheduled_at = now() + interval '1 day' WHERE id = $1::uuid`, w.taskID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := relay.ActiveTasks(ctx, w.requesterID); len(got) != 1 {
+		t.Fatalf("an old task scheduled for tomorrow must be listed: %+v", got)
+	}
+	if _, err := sqldb.ExecContext(ctx, `UPDATE public.tasks SET scheduled_at = NULL WHERE id = $1::uuid`, w.taskID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqldb.ExecContext(ctx, `INSERT INTO public.worklogs (task_id, "user", start_at) VALUES ($1::uuid, 'sam@example.com', now() - interval '10 minutes')`, w.taskID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := relay.ActiveTasks(ctx, w.requesterID); len(got) != 1 {
+		t.Fatalf("an old task being worked on now must be listed: %+v", got)
+	}
+}
+
 func TestScrubURLErrDropsTheEmail(t *testing.T) {
 	err := &url.Error{Op: "Put", URL: "https://api.talkjs.com/v1/app/users/aura@example.test", Err: errors.New("dial tcp: timeout")}
 	got := scrubURLErr(fmt.Errorf("wrap: %w", err))

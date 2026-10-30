@@ -82,6 +82,10 @@ func LatestAmountCents(source string) (int, bool) {
 	return 0, false
 }
 
+// budgetNoThanksRE: short noes that, to "how much should I set aside?",
+// mean nothing to buy rather than drop the errand.
+var budgetNoThanksRE = regexp.MustCompile(`(?i)^\s*(?:no|nope|nah)?[\s,.]*(?:no thanks|no thank you|not needed|don'?t need (?:to buy )?anything|nothing needed)[\s.!]*$`)
+
 // IsNoBudget reports "nothing to buy" as an answer to the budget question.
 func IsNoBudget(text string) bool { return noBudgetRE.MatchString(text) }
 
@@ -158,13 +162,20 @@ func (r *Router) onAwaitingBudget(ctx context.Context, in Inbound, id Identity, 
 	if t := strings.ToLower(strings.TrimSpace(text)); t == "cancel" || t == "stop" {
 		return r.dropDraft(ctx, in, conv)
 	}
+	// "Oh sorry I changed my mind, never mind I don't need it" drops the
+	// draft (production 2026-10-30: it was relayed to the supporter of an
+	// old task). "no thanks" / "not needed" stay answers to the question:
+	// nothing to buy.
+	if IsDraftDecline(text) && !IsNoBudget(text) && !budgetNoThanksRE.MatchString(text) {
+		return r.dropDraft(ctx, in, conv)
+	}
 	items := conv.Pending.Items()
 	i := conv.Pending.BudgetAskIndex
 	if i < 0 || i >= len(items) {
 		i = 0
 	}
 	switch {
-	case IsNoBudget(text):
+	case IsNoBudget(text) || budgetNoThanksRE.MatchString(text):
 		items[i].BudgetCents = 0
 	default:
 		cents, ok := AmountCents(text)

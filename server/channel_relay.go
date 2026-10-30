@@ -53,6 +53,10 @@ type chatRelayFn func(ctx context.Context, requesterID, taskID, supporterName, t
 // value to the goroutine, so the goroutine never touches package state.
 var chatRelayHook chatRelayFn
 
+// activeTaskWindow: how recent an open, assigned task must be (posted,
+// scheduled for, or with a worklog) to count as one a message may be for.
+const activeTaskWindow = "3 days"
+
 // talkjsRelay implements channel.TaskChat.
 type talkjsRelay struct {
 	sqlDB *sql.DB
@@ -60,6 +64,13 @@ type talkjsRelay struct {
 
 // ActiveTasks: the requester's open tasks that have a supporter, newest
 // first — the ones a message could be for.
+//
+// "Active" also means recent: posted, scheduled for, or worked on within
+// activeTaskWindow (production 2026-10-30: a test task left open and
+// assigned since 2025-12 made every new booking ask "or was it for
+// Vivienne?", and a "never mind" was relayed to her). An old task still
+// open is a data problem for ops, never a reason to send someone's words
+// to that supporter.
 func (t *talkjsRelay) ActiveTasks(ctx context.Context, userID string) ([]channel.ActiveTask, error) {
 	rows, err := t.sqlDB.QueryContext(ctx, `
 		SELECT t.id::text, COALESCE(t.title, ''), COALESCE(p.name, '')
@@ -68,9 +79,14 @@ func (t *talkjsRelay) ActiveTasks(ctx context.Context, userID string) ([]channel
 		 WHERE t.requester_id = $1::uuid
 		   AND t.status = 'open'
 		   AND t.assigned_to_id IS NOT NULL
+		   AND (t.created_at > now() - $2::interval
+		        OR t.scheduled_at > now() - $2::interval
+		        OR EXISTS (SELECT 1 FROM public.worklogs w
+		                    WHERE w.task_id = t.id
+		                      AND COALESCE(w.end_at, now()) > now() - $2::interval))
 		   AND NOT `+usersBlockedSQL("t.requester_id", "t.assigned_to_id")+`
 		 ORDER BY t.created_at DESC
-		 LIMIT 9`, userID)
+		 LIMIT 9`, userID, activeTaskWindow)
 	if err != nil {
 		return nil, fmt.Errorf("active tasks: %w", err)
 	}

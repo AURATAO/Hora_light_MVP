@@ -919,7 +919,7 @@ var (
 	// affirmatives in yesRE go to the supporter (D-17 I-P, version B).
 	strictYesRE = regexp.MustCompile(`(?i)^\s*(yes|y|是|確認|sí|si|confirm|confirmed)[\s!.]*$`)
 	strictNoRE  = regexp.MustCompile(`(?i)^\s*(no|n|不要|取消|cancel|stop)[\s!.]*$`)
-	yesRE       = regexp.MustCompile(`(?i)^\s*(yes|y|yep|yeah|yup|yes please|ok|okay|confirm|confirmed|book it|book|do it|go ahead|sure|👍|✅|是|好|好的|確認|sí|si)[\s!.]*$`)
+	yesRE       = regexp.MustCompile(`(?i)^\s*(yes|y|yep|yeah|yup|yes please|ok|okay|confirm|confirmed|book it|book|do it|go ahead|sure|👍|✅|是|好|好的|確認|sí|si)(?:[\s,!.]*(?:please|pls|thanks|thank you|thx|ty|謝謝|谢谢))?[\s!.]*$`)
 	noRE        = regexp.MustCompile(`(?i)^\s*(no|n|nope|nah|cancel|stop|never ?mind|don'?t|不要|取消|不用)[\s!.]*$`)
 	nameBadR    = regexp.MustCompile(`[0-9@/:]`)
 )

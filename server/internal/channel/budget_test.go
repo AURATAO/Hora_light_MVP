@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -421,5 +422,61 @@ func TestDurationLineSurvivesALaterCorrection(t *testing.T) {
 	}
 	if c, ok := LatestAmountCents("buy bagels $20\n$0"); !ok || c != 0 {
 		t.Fatalf("$0 after $20 = %d,%v want 0,true", c, ok)
+	}
+}
+
+// Production 2026-10-30: "Oh sorry I change my mind never mind I don't need
+// it" to the budget question was relayed to an old task's supporter. It
+// drops the draft; "no thanks" still answers the question.
+func TestDeclineAtTheBudgetQuestionDropsTheDraft(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.parser.draft = bagelD
+	g.say(t, "bring me a bagel from Russ & Daughters")
+	if g.state() != StateAwaitingBudget {
+		t.Fatalf("state %s", g.state())
+	}
+	if got := g.say(t, "Oh sorry I change my mind never mind I don’t need it"); got != CopyDropped || g.state() != StateIdle {
+		t.Fatalf("reply %q state %s", got, g.state())
+	}
+	g.say(t, "bring me a bagel from Russ & Daughters")
+	g.say(t, "no thanks")
+	if g.state() != StateAwaitingConfirm {
+		t.Fatalf("\"no thanks\" must answer the budget (nothing to buy): state %s", g.state())
+	}
+}
+
+func TestYesWithThanksIsYes(t *testing.T) {
+	for _, s := range []string{"Yes thanks", "yes, thank you!", "ok thx", "YES please"} {
+		if !IsYes(s) {
+			t.Errorf("%q should be a YES", s)
+		}
+	}
+	for _, s := range []string{"yes but max $5", "yesterday", "yes if it's organic"} {
+		if IsYes(s) {
+			t.Errorf("%q must not be a plain YES", s)
+		}
+	}
+}
+
+// One sender's messages are routed one at a time, in order; another
+// sender's are not held up.
+func TestKeyedSerialRunsInOrderPerKey(t *testing.T) {
+	k := &keyedSerial{queues: map[string][]func(){}}
+	var mu sync.Mutex
+	var got []string
+	release := make(chan struct{})
+	done := make(chan struct{}, 4)
+	k.do("a", func() { <-release; mu.Lock(); got = append(got, "a1"); mu.Unlock(); done <- struct{}{} })
+	k.do("a", func() { mu.Lock(); got = append(got, "a2"); mu.Unlock(); done <- struct{}{} })
+	k.do("b", func() { mu.Lock(); got = append(got, "b1"); mu.Unlock(); done <- struct{}{} })
+	<-done // b1 runs while a1 is still blocked
+	close(release)
+	<-done
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 3 || got[0] != "b1" || got[1] != "a1" || got[2] != "a2" {
+		t.Fatalf("order %v, want [b1 a1 a2]", got)
 	}
 }
