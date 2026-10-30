@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -493,6 +494,14 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 			// the person then had to correct it). The Booker's default.
 			draft.DurationMinutes = 0
 		}
+		if len(errands) == 1 {
+			// The newest line that is only a duration ("15 mins", "ASAP 15
+			// mins", "make it 45 minutes") sets it, whatever the model read
+			// from older lines (review 2026-10-30).
+			if m, ok := DurationOnly(latestLine(source)); ok {
+				draft.DurationMinutes = m
+			}
+		}
 		it := DraftItem{Draft: draft}
 		if r.needsPurchase(ctx, text, draft) {
 			it.NeedsBudget = true
@@ -505,7 +514,7 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 			case len(prev) > 0 && len(errands) == 1 && latestNamed:
 				it.BudgetCents, it.BudgetAsked = latestCents, true
 			default:
-				if cents, ok := AmountCents(text); ok {
+				if cents, ok := LatestAmountCents(text); ok {
 					it.BudgetCents, it.BudgetAsked = cents, true
 				}
 			}
@@ -1095,6 +1104,42 @@ var durationRE = regexp.MustCompile(`(?i)\b(?:\d+|one|two|three|four|five|six|se
 
 // namesDuration reports whether the errand text says how long it takes.
 func namesDuration(text string) bool { return durationRE.MatchString(text) }
+
+// durationOnlyRE: a message that is nothing but a duration, with the usual
+// filler around it. "I'll be there in 10 min" is not one (it says when, not
+// how long) and is left to the parser.
+var durationOnlyRE = regexp.MustCompile(`(?i)^\s*(?:(?:asap|about|around|approx(?:imately)?|roughly|maybe|just|only|make it|can you do|could you do|let'?s do|it'?s|it will take|takes?|for|~|,)\s*)*` +
+	`(?:(\d{1,3})\s*(?:m|mins?|minutes?)|(\d{1,2})\s*(?:h|hrs?|hours?)|(half an? hour|30分鐘|半小時|半個小時)|(an? hour|one hour|1 hour|一個小時|一小時)|(\d{1,3})\s*分鐘|(\d{1,2})\s*個?小時)` +
+	`(?:\s*(?:is fine|is ok|please|max|maximum|tops|or so|ok\??))*[\s?.!。？！~]*$`)
+
+// DurationOnly: the minutes a duration-only message names, within 5..480.
+func DurationOnly(text string) (int, bool) {
+	m := durationOnlyRE.FindStringSubmatch(text)
+	if m == nil {
+		return 0, false
+	}
+	n := 0
+	switch {
+	case m[1] != "":
+		n, _ = strconv.Atoi(m[1])
+	case m[2] != "":
+		n, _ = strconv.Atoi(m[2])
+		n *= 60
+	case m[3] != "":
+		n = 30
+	case m[4] != "":
+		n = 60
+	case m[5] != "":
+		n, _ = strconv.Atoi(m[5])
+	case m[6] != "":
+		n, _ = strconv.Atoi(m[6])
+		n *= 60
+	}
+	if n < 5 || n > 480 {
+		return 0, false
+	}
+	return n, true
+}
 
 func latestLine(source string) string {
 	if i := strings.LastIndex(source, "\n"); i >= 0 {

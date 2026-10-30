@@ -348,3 +348,55 @@ func TestNoExtraAloneTurnsOffAutoExtend(t *testing.T) {
 		}
 	}
 }
+
+// Review 2026-10-30 (c189ef8): the newest duration-only line wins over the
+// model's reading of older lines.
+func TestNewestDurationLineWins(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.r.Splitter = firstLineSplitter{}
+	old := laundry
+	old.DurationMinutes = 120 // the model anchored on the first line
+	g.parser.draft = old
+	g.say(t, "pick up my laundry at 12 Bedford Ave, 2 hours")
+	g.say(t, "ASAP 15 mins")
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if got := c.Pending.Items()[0].Draft.DurationMinutes; got != 15 {
+		t.Fatalf("minutes = %d, want 15 (the newest line)", got)
+	}
+}
+
+func TestDurationOnly(t *testing.T) {
+	want := map[string]int{"15 mins": 15, "About 15 mins": 15, "ASAP 15 mins": 15, "make it 45 minutes": 45,
+		"Can you do 15 mins?": 15, "an hour": 60, "2 hours please": 120, "20分鐘": 20, "半小時": 30}
+	for s, n := range want {
+		if got, ok := DurationOnly(s); !ok || got != n {
+			t.Errorf("%q = %d,%v want %d", s, got, ok, n)
+		}
+	}
+	for _, s := range []string{"I'll be there in 10 min", "store closes in 20 minutes", "15", "1 min", "pick up 15 mins"} {
+		if got, ok := DurationOnly(s); ok {
+			t.Errorf("%q must not be a duration-only line (got %d)", s, got)
+		}
+	}
+}
+
+func TestAmountSkipsDurations(t *testing.T) {
+	if c, ok := AmountCents("up to 15 mins?"); ok {
+		t.Errorf("up to 15 mins read as %d cents", c)
+	}
+	if c, ok := AmountCents("up to 20 mins, max $30"); !ok || c != 3000 {
+		t.Errorf("got %d,%v want 3000", c, ok)
+	}
+	if c, ok := LatestAmountCents("buy bagels $20\nactually budget $35"); !ok || c != 3500 {
+		t.Errorf("latest amount %d,%v want 3500", c, ok)
+	}
+}
+
+func TestNoExtraVariants(t *testing.T) {
+	for _, s := range []string{"no extras please", "no, no extra", "No extra please", "no overtime"} {
+		if !IsNoAutoExtend(s) {
+			t.Errorf("%q should turn off the auto-extension", s)
+		}
+	}
+}
