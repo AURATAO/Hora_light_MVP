@@ -141,7 +141,7 @@ func geocodeNotPlaceable(taskID string) {
 
 const geocodeNotPlaceableFor = time.Hour
 
-var geocodeNoKeyOnce, geocodeDeniedOnce sync.Once
+var geocodeNoKeyOnce sync.Once
 
 // geocodeTask writes the coordinates of the task's first stop, if the task
 // still has the location text they were computed from and no coordinates
@@ -176,9 +176,10 @@ func geocodeTaskWith(ctx context.Context, fn func(context.Context, string) (floa
 		geocodeNotPlaceable(taskID)
 		return nil // nothing to write; distances stay unknown for this task
 	case err != nil && strings.Contains(err.Error(), "REQUEST_DENIED"):
-		geocodeDeniedOnce.Do(func() {
-			log.Printf("[geocode] REQUEST_DENIED — enable the Geocoding API for GOOGLE_MAPS_API_KEY's project")
-		})
+		// Every time, not once per process (2026-10-30: the one line was
+		// logged at 17:34 and every later denial was silent, so a fix to
+		// the key could not be told from no fix). One line per new task.
+		log.Printf("[geocode] task=%s: REQUEST_DENIED — enable the Geocoding API for GOOGLE_MAPS_API_KEY's project (and allow it in the key's API restrictions)", taskID)
 		return nil
 	case err != nil:
 		return err
