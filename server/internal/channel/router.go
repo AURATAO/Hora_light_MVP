@@ -456,9 +456,14 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 			// The whole message is one errand (SplitErrands' own fallback).
 			log.Printf("[channel] split fell back to one errand model=%s: %v", usage.Model, err)
 		}
-		if len(got) > 0 {
+		if len(got) > 1 {
 			errands = got
 		}
+		// One errand: parse everything said, not the splitter's copy of it.
+		// The splitter keeps only the errand's words and drops follow-ups
+		// that are not errands ("15 mins", "ASAP"), so a correction never
+		// reached the parser or namesDuration (staging 2026-10-30: "15 mins"
+		// said three times, the draft stayed at 30).
 		log.Printf("[channel] split model=%s latency=%s errands=%d", usage.Model, usage.Latency.Round(time.Millisecond), len(errands))
 	}
 	if len(errands) > llm.MaxErrands {

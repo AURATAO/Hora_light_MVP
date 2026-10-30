@@ -64,7 +64,13 @@ func AmountCents(text string) (int, bool) {
 func IsNoBudget(text string) bool { return noBudgetRE.MatchString(text) }
 
 // IsNoAutoExtend reports an explicit opt-out of the auto-extension.
-func IsNoAutoExtend(text string) bool { return noAutoRE.MatchString(text) }
+func IsNoAutoExtend(text string) bool {
+	return noAutoRE.MatchString(text) || noExtraRE.MatchString(text)
+}
+
+// noExtraRE: "no extra" as the whole message, the summary's own words cut
+// short (staging 2026-10-30). Whole-message only: "no extra stops" is not it.
+var noExtraRE = regexp.MustCompile(`(?i)^\s*(no extra|no extras|no extension|no overtime please)[\s.!。！]*$`)
 
 // needsPurchase decides for one errand: an amount already given settles it;
 // the rule says yes; the model is asked only when the rule says no.

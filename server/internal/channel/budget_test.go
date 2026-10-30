@@ -306,3 +306,45 @@ func TestDetailsBeforeASummary(t *testing.T) {
 		t.Fatalf("re-draft source: %q", last)
 	}
 }
+
+// firstLineSplitter is the real splitter's behaviour on a correction: it
+// keeps the errand's words and drops the follow-up lines.
+type firstLineSplitter struct{}
+
+func (firstLineSplitter) SplitErrands(_ context.Context, text string) ([]string, llm.Usage, error) {
+	return []string{strings.SplitN(text, "\n", 2)[0]}, llm.Usage{Model: "fake"}, nil
+}
+
+// Staging 2026-10-30: "15 mins" said three times after the summary; the
+// splitter dropped it, so the parser never saw it and the draft stayed 30.
+func TestCorrectionDurationReachesTheParser(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.r.Splitter = firstLineSplitter{}
+	named := laundry
+	named.DurationMinutes = 15
+	g.parser.draft = named
+	g.say(t, "pick up my laundry at 12 Bedford Ave")
+	g.say(t, "15 mins")
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.Pending == nil || c.Pending.Items()[0].Draft.DurationMinutes != 15 {
+		t.Fatalf("the named duration was dropped: %+v", c.Pending)
+	}
+	last := g.parser.sources[len(g.parser.sources)-1]
+	if !strings.Contains(last, "15 mins") {
+		t.Fatalf("the parser did not see the correction: %q", last)
+	}
+}
+
+func TestNoExtraAloneTurnsOffAutoExtend(t *testing.T) {
+	for _, s := range []string{"No extra", "no extra.", "No extras", "no extra time"} {
+		if !IsNoAutoExtend(s) {
+			t.Errorf("%q should turn off the auto-extension", s)
+		}
+	}
+	for _, s := range []string{"no extra stops", "no extra charge for the bag", "no"} {
+		if IsNoAutoExtend(s) {
+			t.Errorf("%q must not turn it off", s)
+		}
+	}
+}
