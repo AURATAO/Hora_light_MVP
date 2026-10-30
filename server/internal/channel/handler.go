@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -102,7 +103,7 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// five seconds apart were routed in parallel; the slower re-draft
 		// saved over the opt-out and the summary briefly offered the
 		// auto-extension again). Different people still run in parallel.
-		inboundQueue.do(string(m.Channel)+"|"+m.From, func() { h.route(m) })
+		inboundQueue.do(string(m.Channel)+"|"+strings.ToLower(strings.TrimSpace(m.From)), func() { h.route(m) })
 	}
 }
 

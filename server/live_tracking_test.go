@@ -167,6 +167,7 @@ CREATE TABLE public.tasks (
 	job_lng double precision,
 	location_text text,
 	scheduled_at timestamptz,
+	accepted_at timestamptz,
 	created_at timestamptz NOT NULL DEFAULT now()
 );
 

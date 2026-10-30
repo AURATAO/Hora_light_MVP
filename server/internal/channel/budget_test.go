@@ -452,7 +452,7 @@ func TestYesWithThanksIsYes(t *testing.T) {
 			t.Errorf("%q should be a YES", s)
 		}
 	}
-	for _, s := range []string{"yes but max $5", "yesterday", "yes if it's organic"} {
+	for _, s := range []string{"yes but max $5", "yesterday", "yes if it's organic", "surety", "okthanks"} {
 		if IsYes(s) {
 			t.Errorf("%q must not be a plain YES", s)
 		}

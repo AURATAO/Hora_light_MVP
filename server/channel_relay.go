@@ -65,8 +65,10 @@ type talkjsRelay struct {
 // ActiveTasks: the requester's open tasks that have a supporter, newest
 // first — the ones a message could be for.
 //
-// "Active" also means recent: posted, scheduled for, or worked on within
-// activeTaskWindow (production 2026-10-30: a test task left open and
+// "Active" also means recent: posted, accepted, scheduled for, or worked
+// on (a session ended, or an open one started) within
+// activeTaskWindow — an open session forgotten for months does not keep a
+// task alive (review r1) (production 2026-10-30: a test task left open and
 // assigned since 2025-12 made every new booking ask "or was it for
 // Vivienne?", and a "never mind" was relayed to her). An old task still
 // open is a data problem for ops, never a reason to send someone's words
@@ -80,10 +82,11 @@ func (t *talkjsRelay) ActiveTasks(ctx context.Context, userID string) ([]channel
 		   AND t.status = 'open'
 		   AND t.assigned_to_id IS NOT NULL
 		   AND (t.created_at > now() - $2::interval
+		        OR t.accepted_at > now() - $2::interval
 		        OR t.scheduled_at > now() - $2::interval
 		        OR EXISTS (SELECT 1 FROM public.worklogs w
 		                    WHERE w.task_id = t.id
-		                      AND COALESCE(w.end_at, now()) > now() - $2::interval))
+		                      AND COALESCE(w.end_at, w.start_at) > now() - $2::interval))
 		   AND NOT `+usersBlockedSQL("t.requester_id", "t.assigned_to_id")+`
 		 ORDER BY t.created_at DESC
 		 LIMIT 9`, userID, activeTaskWindow)

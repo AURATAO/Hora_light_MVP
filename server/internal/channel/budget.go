@@ -84,7 +84,7 @@ func LatestAmountCents(source string) (int, bool) {
 
 // budgetNoThanksRE: short noes that, to "how much should I set aside?",
 // mean nothing to buy rather than drop the errand.
-var budgetNoThanksRE = regexp.MustCompile(`(?i)^\s*(?:no|nope|nah)?[\s,.]*(?:no thanks|no thank you|not needed|don'?t need (?:to buy )?anything|nothing needed)[\s.!]*$`)
+var budgetNoThanksRE = regexp.MustCompile(`(?i)^\s*(?:no|nope|nah)?[\s,.]*(?:no,? thanks|no,? thank you|not needed|(?:i )?don'?t need (?:to buy )?anything|nothing needed)(?:[\s,.!]*(?:thanks|thank you))?[\s.!]*$`)
 
 // IsNoBudget reports "nothing to buy" as an answer to the budget question.
 func IsNoBudget(text string) bool { return noBudgetRE.MatchString(text) }

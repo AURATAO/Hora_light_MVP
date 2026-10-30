@@ -101,6 +101,20 @@ func TestActiveTasksIgnoresStaleOpenTasks(t *testing.T) {
 	if got, _ := relay.ActiveTasks(ctx, w.requesterID); len(got) != 1 {
 		t.Fatalf("an old task being worked on now must be listed: %+v", got)
 	}
+	// Review r1: a clock-in left open for months does not keep it alive.
+	if _, err := sqldb.ExecContext(ctx, `UPDATE public.worklogs SET start_at = now() - interval '200 days', end_at = NULL WHERE task_id = $1::uuid`, w.taskID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := relay.ActiveTasks(ctx, w.requesterID); len(got) != 0 {
+		t.Fatalf("a months-old open worklog kept the task active: %+v", got)
+	}
+	// An old ASAP task accepted today is active.
+	if _, err := sqldb.ExecContext(ctx, `UPDATE public.tasks SET accepted_at = now() WHERE id = $1::uuid`, w.taskID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := relay.ActiveTasks(ctx, w.requesterID); len(got) != 1 {
+		t.Fatalf("a task accepted today must be listed: %+v", got)
+	}
 }
 
 func TestScrubURLErrDropsTheEmail(t *testing.T) {
