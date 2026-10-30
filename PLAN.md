@@ -477,6 +477,25 @@ cancellation states the amount but not the time left in the free window.
   from a short persona prompt with the conversation's last few turns, while
   everything that touches money or state stays rule-based copy (YES/NO,
   summary, price, link). Eval the persona on the §9 set before switching.
+- **Reply in the person's language (Aura, 2026-10-30, roadmap):** after a
+  staging run she wrote in Chinese and got every reply in English. Today all
+  ~140 replies are fixed English strings (`internal/channel/copy.go`); the
+  "where is" rule and the agent already *understand* several languages,
+  but they don't reply in them. Proposed shape:
+  - **Templates, not translation.** Each copy string gets per-language
+    versions (zh-TW first, then es), keyed by a `lang` stored on the
+    conversation and detected from the person's own words (script plus a
+    language-ID check, sticky per conversation, overridable by "English
+    please").
+  - **Money and terms stay out of the model.** The summary, price, YES/NO,
+    links and Terms line are never machine-translated at send time. They
+    are reviewed templates, so an amount or a condition can't drift.
+  - **Keywords are bilingual.** 好/確認 as YES, 取消, 不要超時 (some
+    already exist).
+  - Open: whether Terms/Privacy need a translated version first, legally,
+    before a Chinese booking flow.
+  Not before the production go-live: it touches every message, money copy
+  included, so it is a T3 change with review and an eval run.
 
 ## 15. Progress log
 
