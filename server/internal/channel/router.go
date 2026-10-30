@@ -787,9 +787,17 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 			if err != nil {
 				return fmt.Errorf("onConfirm: %w", err)
 			}
-			if fresh.State != StateAwaitingConfirm || fresh.Pending == nil || conv.Pending == nil ||
-				fresh.Pending.CreatedAtUnix != conv.Pending.CreatedAtUnix || fresh.Pending.Source != conv.Pending.Source {
-				return nil
+			switch {
+			case fresh.State == StatePosting:
+				return r.Reply(ctx, in, CopyBookingInFlight, "") // a parallel YES is booking it
+			case fresh.State != StateAwaitingConfirm || fresh.Pending == nil || conv.Pending == nil:
+				// Dropped or booked meanwhile: nothing left to decline or
+				// correct. Read as if idle, so a real errand is not lost.
+				return r.onIdle(ctx, in, id, fresh, text)
+			case fresh.Pending.CreatedAtUnix != conv.Pending.CreatedAtUnix || fresh.Pending.Source != conv.Pending.Source:
+				// Replaced by a newer message: this one is a correction
+				// to the draft as it is now, not lost (review r2).
+				return r.startDraft(ctx, in, id, fresh, fresh.Pending.Source+"\n"+text)
 			}
 			conv = fresh
 			switch {
@@ -1352,4 +1360,4 @@ func IsDraftDecline(text string) bool {
 // changeWordsRE: a message that changes something in the draft — a
 // number, a time, a place or an errand verb. An agent "decline" on one of
 // these is read as the correction it carries.
-var changeWordsRE = regexp.MustCompile(`(?i)\d|\b(?:make it|instead|change|but|rather|tomorrow|tonight|today|later|morning|afternoon|evening|pm|am|o'?clock|at|bring|deliver|drop|pick|buy|get|address|street|ave|min|mins|minutes?|hours?|bags?|budget)\b|[一二三四五六七八九十兩點分時明今晚早午改換]`)
+var changeWordsRE = regexp.MustCompile(`(?i)\d|\b(?:make it|instead|change|but|rather|tomorrow|tonight|today|later|morning|afternoon|evening|pm|am|o'?clock|at|bring|deliver|drop|pick|buy|get|address|street|ave|min|mins|minutes?|hours?|bags?|budget|one|two|three|four|five|other|different|wrong|from|to|for|use|send|put|blue|red|black|white|office|home|store|shop)\b|[一二三四五六七八九十兩點分時明今晚早午改換送拿買到色]|不是`)
