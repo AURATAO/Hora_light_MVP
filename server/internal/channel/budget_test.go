@@ -252,8 +252,10 @@ func TestDefaultThirtyMinutesUnlessNamed(t *testing.T) {
 	}
 	g.say(t, "make it 45 minutes")
 	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
-	if c.Pending.Items()[0].Draft.DurationMinutes != 15 { // the fake parser still says 15: what matters is it is kept when named
-		t.Fatalf("a named duration must be kept: %+v", c.Pending.Items()[0].Draft)
+	// The fake parser still says 15; the newest duration-only line sets it
+	// (review 2026-10-30), so the person's 45 wins.
+	if c.Pending.Items()[0].Draft.DurationMinutes != 45 {
+		t.Fatalf("the named duration must be the one said: %+v", c.Pending.Items()[0].Draft)
 	}
 	for _, s := range []string{"15 mins", "an hour", "half an hour", "2 hours", "20分鐘", "一個小時"} {
 		if !namesDuration(s) {
