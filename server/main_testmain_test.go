@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"os"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+
+	"hora-auth/helpers"
 )
 
 // gin.SetMode writes a package-level variable, and it was being called from
@@ -19,6 +22,11 @@ import (
 // pattern to be copied into the next test.
 func TestMain(m *testing.M) {
 	gin.SetMode(gin.TestMode)
+	// No test reaches Google: createTask and updateTask geocode in the
+	// background, and a developer's shell may have a real key set. Tests
+	// that exercise geocoding install their own fake (task_geocode_test.go).
+	geocodeFn = func(context.Context, string) (float64, float64, error) { return 0, 0, helpers.ErrGeocodeNoKey }
+	os.Unsetenv("GOOGLE_MAPS_API_KEY") // so no background lookup is ever started
 	os.Exit(m.Run())
 }
 

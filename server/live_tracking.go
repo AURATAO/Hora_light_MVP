@@ -417,11 +417,12 @@ func getLiveLocation(c *gin.Context) {
 	var assignedToID, assignedTo *string
 	var jobLat, jobLng *float64
 	var enrouteAt *time.Time
+	var locationText *string
 	if err := db.QueryRow(ctx, `
 		select requester_id::text, status, assigned_to_id::text,
-		       nullif(assigned_to,''), job_lat, job_lng, enroute_at
+		       nullif(assigned_to,''), job_lat, job_lng, enroute_at, location_text
 		from public.tasks where id = $1::uuid
-	`, taskID).Scan(&requesterID, &status, &assignedToID, &assignedTo, &jobLat, &jobLng, &enrouteAt); err != nil {
+	`, taskID).Scan(&requesterID, &status, &assignedToID, &assignedTo, &jobLat, &jobLng, &enrouteAt, &locationText); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
@@ -441,6 +442,11 @@ func getLiveLocation(c *gin.Context) {
 	if status != "open" || assignedToID == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
+	}
+	if jobLat == nil && locationText != nil {
+		// No coordinates yet (posted before geocoding existed, or a failed
+		// lookup): placed in the background for the next poll.
+		geocodeMissing(taskID, *locationText)
 	}
 
 	if ok, retryAfter := liveRateAllow(uid+":"+taskID, time.Now()); !ok {

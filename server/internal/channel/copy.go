@@ -105,7 +105,7 @@ const (
 	CopyWhereWorkingHere          = "%s is at the task's address, clocked in on “%s” — %d min so far."
 	CopyWhereWorkingAt            = "%s is working on “%s” (%d min so far)%s%s."
 	CopyWhereWorkingStale         = "%s is clocked in on “%s” (%d min so far); no fresh location from their phone%s."
-	CopyWhereMap                  = " Map: https://www.google.com/maps?q=%.4f,%.4f"
+	CopyWhereMap                  = " Map: https://www.google.com/maps?q=%.3f,%.3f"
 	CopyWhereAtDoor               = "%s is at the door."
 	CopyWhereAlmost               = "%s is almost there%s%s."
 	CopyWhereOnTheWay             = "%s is on the way%s%s."

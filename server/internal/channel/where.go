@@ -350,7 +350,7 @@ func distanceFromAddress(m *float64) string {
 }
 
 // mapLink: the fresh position as a map link the phone opens — the same
-// dot the requester's live map shows. Four decimals (~10 m).
+// dot the requester's live map shows. Three decimals (~100 m): the link stays in the chat history, and the first fix "on the way" may be their home (Arbiter 2026-10-30).
 func mapLink(lat, lng float64) string {
 	return fmt.Sprintf(CopyWhereMap, lat, lng)
 }

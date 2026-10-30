@@ -22,13 +22,19 @@ func (l *chatLive) LiveStatus(ctx context.Context, userID, taskID string) (chann
 	var assignedToID *string
 	var jobLat, jobLng *float64
 	var enrouteAt *time.Time
+	var locationText *string
 	if err := l.sqlDB.QueryRowContext(ctx, `
-		select requester_id::text, status, assigned_to_id::text, job_lat, job_lng, enroute_at
-		  from public.tasks where id = $1::uuid`, taskID).Scan(&requesterID, &status, &assignedToID, &jobLat, &jobLng, &enrouteAt); err != nil {
+		select requester_id::text, status, assigned_to_id::text, job_lat, job_lng, enroute_at, location_text
+		  from public.tasks where id = $1::uuid`, taskID).Scan(&requesterID, &status, &assignedToID, &jobLat, &jobLng, &enrouteAt, &locationText); err != nil {
 		return channel.LiveStatus{}, fmt.Errorf("live status: %w", err)
 	}
 	if requesterID != userID || status != "open" || assignedToID == nil {
 		return channel.LiveStatus{}, fmt.Errorf("live status: not this person's active task")
+	}
+	if jobLat == nil && locationText != nil {
+		// Posted before task coordinates existed, or the lookup failed:
+		// placed in the background for the next question (task_geocode.go).
+		geocodeMissing(taskID, *locationText)
 	}
 	var clockedIn bool
 	if err := l.sqlDB.QueryRowContext(ctx, `

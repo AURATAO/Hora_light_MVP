@@ -138,3 +138,33 @@ Residuals for the Arbiter: the link persists in the chat history (the
 app's dot does not) — 3 decimals (~100 m) would soften it; the
 staleness threshold (2 min) against background ping cadence; geocoding
 the task address at creation would bring back distances and arrival.
+
+## Addendum 2026-10-30 (2) — task coordinates are geocoded
+
+Arbiter (Aura), 13:23: fill the task coordinates now; map links rounded to
+~100 m (3 decimals: the link stays in the chat history, and the first fix
+"on the way" may be the supporter's home); freshness stays 2 min (small
+tasks — production pings: foreground p90 30 s, enroute p99 115 s).
+
+Built: `helpers.GeocodeAddress` (Google Geocoding API, the existing
+`GOOGLE_MAPS_API_KEY`; NYC bounds bias; an area, a bare street, a
+centroid or a partial area guess is refused — a wrong point is worse than
+none) and `task_geocode.go`: the FIRST stop of `location_text` ("|", "→")
+is geocoded in the background after `createTask` commits and after every
+`updateTask` (the update nulls coordinates when the address changes; the
+write is a compare-and-set on the text; an already-placed text is not
+looked up again). Old tasks and failed lookups are placed lazily when
+chat or the app's `/live` reads a task without coordinates (once per 10
+min; an unplaceable address once per hour). At most 8 lookups in flight.
+No key → no goroutine, logged once; REQUEST_DENIED logged once. Addresses
+and the key are never logged.
+
+Review (isolated, sonnet): r1 FAIL (firstStop on a leading separator;
+no quality filter; no backfill) · r2 PASS conditional on refusing bare
+streets (done: result types route/locality/neighborhood/postal_code/…).
+
+Residual for the Arbiter: on a multi-stop task the point is the first
+stop, so "at the door" fires at the store, not at the requester's door —
+store both stops and name them in the copy, if wanted.
+Setup owed (Aura): enable the Geocoding API on the key's Google project;
+a separate staging key in Render staging `GOOGLE_MAPS_API_KEY`.
