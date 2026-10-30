@@ -97,6 +97,13 @@ export function createSetupIntent(accessToken) {
 
 // POST /channel/setup/finish — book what they said YES to in the chat. The
 // confirmation goes to Messages, not here.
+// The cards already on file (a returning HO:RA account): the page offers to
+// book with one instead of asking for a card again. Same session auth and
+// gate as /payments/setup-intent.
+export function listSavedCards(accessToken) {
+  return call('/payments/payment-methods', { accessToken })
+}
+
 export function finishSetup(accessToken) {
   return call('/channel/setup/finish', { method: 'POST', accessToken })
 }

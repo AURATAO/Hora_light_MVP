@@ -175,6 +175,10 @@ Nothing here is in the repo; Aura sets them in the dashboard.
 | `CHANNEL_OPS_NUMBERS` | Aura's number, E.164 | hand-off SMS |
 | `CHANNEL_AGENT` | `1` | the requester agent (on in staging since 2026-10-25) |
 | `CHANNEL_SETUP_WEB_URL` | `https://<webapp host>/channel/setup` | points texted links at the React page; unset = the embedded Go page |
+| `TALKJS_APP_ID` | the live TalkJS app (= the web's `VITE_TALKJS_APP_ID`) | the chat ↔ iMessage relay, both directions. Missing on production until 2026-10-30: the startup log said `chat relay off (both directions)` |
+| `TALKJS_SECRET_KEY` | TalkJS dashboard → live app → Settings | " |
+| `GOOGLE_MAPS_API_KEY` | a production key with the Geocoding API | task coordinates for "where is he?" (D-12) |
+| `CHANNEL_SETUP_BASE_URL` | optional, `https://core.horaapp.co` | the host in texted links; unset = `RENDER_EXTERNAL_URL` (`*.onrender.com`) |
 | `APP_ENV` | `production` | already set |
 | `POSTMARK_API_TOKEN` | already set | — |
 
