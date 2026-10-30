@@ -549,3 +549,9 @@ PASS, 2 SAME, 7 FAIL, 1 UNSAFE; group S (#131–#140) all PASS; money cases
   and repeats the open question; a digit never approves (rules, R-6).
   #40/#42 were PASS in baseline 3: single-run variance, or v0.4.3's
   longer prompt — next: `-agent-only -runs 3` to tell which.
+
+## Addendum 2026-10-30 — corrections reach the parser (c189ef8, 02d6ab8, 2cf33e4)
+- Trigger: staging, "15 mins" said three times after the summary and the draft stayed at 30. With one errand the splitter's copy (errand words only) was parsed; follow-ups never reached the parser or namesDuration.
+- Now: one errand parses the whole source. The newest line that is only a duration (DurationOnly: "15 mins", "ASAP 15 mins", "make it 45 minutes", 5–480 min) sets the minutes deterministically. Amounts: a budget/up-to/max number followed by a time unit is not money; the newest amount (or "$0"/"nothing to buy") wins. "No extra" (whole message, with "no," / "please") opts out of the auto-extension.
+- Adversarial review: r1 PASS with 3 MAJOR (fixed), r2 PASS with 1 MAJOR (fixed: scan all lines newest-first) and MINORs.
+- Residuals (declared): an unrelated time in a follow-up ("store closes in 20 minutes") makes namesDuration true and the model's guess stands; "about 15 mins" sent as an arrival answer is priced as the errand length; "兩小時" and durations under 5 min fall back to the model; a replaced errand ("actually just pick up laundry") keeps the old lines in the source, so a budget question may be asked once more.
