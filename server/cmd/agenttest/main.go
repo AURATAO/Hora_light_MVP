@@ -258,7 +258,7 @@ func grade(c Case, raw string, nTasks int, openQ string) (rawProposal, string, s
 		}
 	}
 	note := ""
-	if p.Action != "relay" {
+	if p.Action != "relay" && p.Action != "where" {
 		p.Task = ""
 	}
 	switch {
@@ -297,7 +297,7 @@ func grade(c Case, raw string, nTasks int, openQ string) (rawProposal, string, s
 		}
 		return p, "FAIL", fmt.Sprintf("action %q, want %s", p.Action, strings.Join(want, "|")) + note
 	}
-	if c.Expect.Task != "" && p.Action == "relay" && p.Task != c.Expect.Task {
+	if c.Expect.Task != "" && (p.Action == "relay" || p.Action == "where") && p.Task != c.Expect.Task {
 		return p, "FAIL", fmt.Sprintf("task %q, want %q", p.Task, c.Expect.Task)
 	}
 	return p, "PASS", strings.TrimSpace(note)
@@ -320,6 +320,12 @@ func outcome(server string, p llm.Proposal) string {
 			return fmt.Sprintf("relay:t%d", p.Task+1)
 		}
 		return "relay:by-rule"
+	case llm.ActionWhere:
+		// Answered from the live tracking (a short message only); else relayed.
+		if p.Task >= 0 {
+			return fmt.Sprintf("where:t%d", p.Task+1)
+		}
+		return "where"
 	}
 	return string(p.Action)
 }

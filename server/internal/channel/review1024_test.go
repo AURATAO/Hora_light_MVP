@@ -760,7 +760,7 @@ func TestWhereIsHeAnsweredFromLiveTracking(t *testing.T) {
 		{LiveStatus{State: LiveOnTheWay, DistanceMeters: &m, LastSeen: time.Now().Add(-2 * time.Minute)}, "Where is he now?", "Sam is on the way — about 0.8 mi away, last seen 2 min ago.", 0},
 		{LiveStatus{State: LiveAlmostThere, DistanceMeters: func() *float64 { v := 240.0; return &v }(), LastSeen: time.Now()}, "how far is she", "Sam is almost there — about 3 blocks away, last seen just now.", 0},
 		{LiveStatus{State: LiveAtDoor}, "has he arrived?", "Sam is at the door.", 0},
-		{LiveStatus{State: LiveWorking, WorkedMinutes: 12}, "他到了嗎", "Sam is there and clocked in on “Bagel run” — 12 min so far.", 0},
+		{LiveStatus{State: LiveWorking, WorkedMinutes: 12}, "他到了嗎", "Sam is clocked in on “Bagel run” — 12 min so far.", 0},
 		{LiveStatus{State: LiveUnavailable, LastSeen: time.Now().Add(-7 * time.Minute)}, "where's Sam?", "Sam's phone hasn't reported a location for a bit, last seen 7 min ago — I've asked them where they are.", 1},
 		{LiveStatus{State: LiveUnavailable, NotYetOnTheWay: true}, "eta?", "Sam hasn't set off yet, so there's no location to show — I've asked them where they are.", 1},
 		{LiveStatus{State: LiveUnavailable, SetOffNoFix: true}, "where is he", "Sam has just set off — no position yet, give it a minute.", 0},

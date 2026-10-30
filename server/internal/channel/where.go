@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // LiveState is the app's own closed set (live_tracking.go).
@@ -40,6 +42,10 @@ type LiveStatus struct {
 	NotYetOnTheWay bool
 	// SetOffNoFix: "On my way" tapped, no position received yet.
 	SetOffNoFix bool
+	// Lat, Lng: the supporter's latest position, ONLY when it is fresh — the
+	// same dot the requester's live map shows (Arbiter 2026-10-30: "the app
+	// shows it fully"). nil when stale or none.
+	Lat, Lng *float64
 }
 
 // LiveLookup reads the live status of an active task for its requester.
@@ -51,21 +57,63 @@ type LiveLookup interface {
 // the whole message, give or take a greeting and a question mark, so a
 // message that also carries an instruction ("I'll be late, where is he?",
 // "tell Sam to ignore the ETA") is relayed as before (review r1 #2).
-var whereRE = regexp.MustCompile(`(?i)^[\s,.!?]*(?:hi|hey|hello|ok|so|also|and|btw|sorry)?[\s,]*(?:` +
-	`where (?:is|are|'s|s) (?:he|she|they|my supporter|the supporter|(?-i:[A-Z][a-z]+))(?: now| right now| at)?` +
+var whereRE = regexp.MustCompile(`(?i)^[\s,.!?¿¡]*(?:hi|hey|hello|ok|so|also|and|btw|sorry|hola|ciao|salut)?[\s,]*(?:` +
+	`where (?:is|are|'s|s|r) (?:he|she|they|you|u|my supporter|the supporter|(?-i:[A-Z][a-z]+))(?: now| right now| at)?` +
 	`|where'?s (?:he|she|my supporter|the supporter|(?-i:[A-Z][a-z]+))(?: now| at)?` +
-	`|how far(?: away| along| out)?(?: is| are)?(?: (?:he|she|they|my supporter|(?-i:[A-Z][a-z]+)))?(?: now)?` +
-	`|how close(?: is| are) (?:he|she|they|my supporter|(?-i:[A-Z][a-z]+))` +
+	`|how far(?: away| along| out)?(?: is| are)?(?: (?:he|she|they|you|my supporter|(?-i:[A-Z][a-z]+)))?(?: now)?` +
+	`|how close(?: is| are) (?:he|she|they|you|my supporter|(?-i:[A-Z][a-z]+))` +
 	`|(?:is|are|has|have) (?:he|she|they|my supporter|(?-i:[A-Z][a-z]+)) (?:there|here|arrived|close|nearby|on (?:the|their|his|her) way)(?: yet)?` +
+	// "are you there?" asks whether they are answering, not where they
+	// are (review): the second person only with a whereabouts predicate.
+	`|(?:are|have) you (?:arrived|close|nearby|on (?:the|your) way)(?: yet)?` +
 	`|(?:what'?s the |what is the )?eta` +
-	`|how (?:long|much longer) (?:until|till|before) (?:he|she|they|my supporter|(?-i:[A-Z][a-z]+)) (?:get|gets|arrive|arrives|is|are)(?: here| there)?` +
+	`|how (?:long|much longer) (?:until|till|before) (?:he|she|they|you|my supporter|(?-i:[A-Z][a-z]+)) (?:get|gets|arrive|arrives|is|are)(?: here| there)?` +
 	`|any update on (?:where (?:he|she|they) (?:is|are)|his|her|their) (?:location|whereabouts|eta)?` +
 	`|how much longer` +
-	`|(?:他|她|supporter|(?-i:[A-Z][a-z]+))?(?:現在|现在)?(?:在哪|在哪裡|在哪里|到哪|到哪裡|到了嗎|到了没|到了沒|多遠|多远|還要多久|还要多久|快到了嗎|什麼時候到|什么时候到)` +
-	`)[\s?？!。]*$`)
+	`|(?:他|她|你|supporter|(?-i:[A-Z][a-z]+))?(?:現在|现在)?(?:在哪|在哪裡|在哪里|到哪|到哪裡|到了嗎|到了没|到了沒|多遠|多远|還要多久|还要多久|快到了嗎|什麼時候到|什么时候到)` +
+	`)[\s?？!！。~～.]*$`)
+
+// whereAskedRE: Arbiter 2026-10-30 — other languages too (Spanish,
+// French, Italian, Japanese, Korean). Each a whole-message whereabouts
+// question about a PERSON, and only with a question mark (review r1, r2):
+// without one, many are statements ("está cerca"); and a form without a
+// person in it ("¿dónde está?", "어디예요?", "¿llegó?", "quanto manca?")
+// can be about a thing — the parcel, the keys — or how long the task
+// takes. So only second person ("estás", "tu", "sei", honorific Korean),
+// a pronoun for a person (él/ella, lui/lei, 彼/彼女), a supporter's name,
+// or a verb for an animate being (いる). Everything else goes to the
+// model, which answers AND relays.
+var whereAskedRE = regexp.MustCompile(`(?i)^[\s,.!¿¡]*(?:hola|ciao|salut|bonjour|buongiorno)?[\s,]*(?:` +
+	`(?:d[oó]nde|a d[oó]nde) (?:est[aá]s|andas)(?: ahora)?` +
+	`|(?:d[oó]nde|a d[oó]nde) (?:est[aá]|anda) (?:[eé]l|ella|mi supporter|(?-i:[A-Z][a-z]+))(?: ahora)?` +
+	`|(?:ya )?llegaste` +
+	`|cu[aá]nto te falta` +
+	`|est[aá]s (?:cerca|lejos)` +
+	`|o[uù] es[- ]tu(?: maintenant)?|tu es o[uù]` +
+	`|o[uù] est (?:mon supporter|(?-i:[A-Z][a-z]+))(?: maintenant)?` +
+	`|tu arrives quand` +
+	`|dove sei(?: adesso| ora)?` +
+	`|dov'[eè] (?:lui|lei|(?-i:[A-Z][a-z]+))(?: adesso| ora)?` +
+	`|quanto ti manca` +
+	`|sei (?:vicino|vicina|arrivato|arrivata)` +
+	`|(?:彼|彼女)(?:は)?(?:今)?どこ(?:にいる|にいますか|ですか)?(?:の)?|(?:今)?どこにいる(?:の)?|(?:今)?どこにいますか` +
+	`|(?:지금 )?어디(?:세요|쯤이에요|쯤이세요|\s?계세요)|도착하셨(?:어요|나요)` +
+	`)\s*[?？][\s?？!！~～.]*$`)
 
 // IsWhereQuestion reports a question about the supporter's whereabouts.
-func IsWhereQuestion(text string) bool { return whereRE.MatchString(strings.TrimSpace(text)) }
+func IsWhereQuestion(text string) bool {
+	t := whereNorm(text)
+	return whereRE.MatchString(t) || whereAskedRE.MatchString(t)
+}
+
+// whereNorm: NFKC (fullwidth Latin, "Ｋｅｙｓ" → "Keys") and straight
+// apostrophes (iMessage's curly one), trimmed. Every where check reads
+// the text through it FIRST, so a name guard and the grammar see the same
+// letters (review r2 #1).
+func whereNorm(text string) string {
+	t := strings.TrimSpace(norm.NFKC.String(text))
+	return strings.NewReplacer("\u2019", "'", "\u2018", "'").Replace(t)
+}
 
 // whereNameRE: the capitalised name the question used, if any.
 var whereNameRE = regexp.MustCompile(`(?:where (?:is|are|'s|s) |where'?s |how far(?: away| along| out)?(?: is| are)? |how close (?:is|are) |(?:is|are|has|have) |(?:until|till|before) )([A-Z][a-z]+)\b`)
@@ -81,6 +129,14 @@ func (r *Router) answerWhere(ctx context.Context, in Inbound, id Identity, conv 
 	if r.Live == nil || len(active) == 0 {
 		return false, nil
 	}
+	// The rule's name slot takes any capitalised word; only a supporter's
+	// name may fill it — "Keys在哪" is a question about the keys (review
+	// r5 #1). Every other capitalised word lowered, it must still be the
+	// rule's question.
+	text = whereNorm(text)
+	if !IsWhereQuestion(lowerNonSupporterCaps(text, active)) {
+		return false, nil
+	}
 	t, named := supporterNamed(active, text)
 	if !named {
 		if m := whereNameRE.FindStringSubmatch(text); m != nil && !strings.EqualFold(m[1], "he") {
@@ -93,6 +149,26 @@ func (r *Router) answerWhere(ctx context.Context, in Inbound, id Identity, conv 
 		}
 		t = active[0]
 	}
+	return r.answerWhereFor(ctx, in, id, text, t)
+}
+
+// answerWhereIn answers for a scope already decided (the agent's path,
+// whereScope): one task → its supporter, several → one line each. Names
+// are not looked for again — whereScope's rules for names that are also
+// words would be undone by supporterNamed's (review r3 #3).
+func (r *Router) answerWhereIn(ctx context.Context, in Inbound, id Identity, text string, scope []ActiveTask) (bool, error) {
+	if r.Live == nil || len(scope) == 0 {
+		return false, nil
+	}
+	if len(scope) != 1 {
+		return r.answerWhereEach(ctx, in, id, scope)
+	}
+	return r.answerWhereFor(ctx, in, id, text, scope[0])
+}
+
+// answerWhereFor: one supporter's status, or — phone silent — the question
+// relayed to them, once per cooldown, saying so.
+func (r *Router) answerWhereFor(ctx context.Context, in Inbound, id Identity, text string, t ActiveTask) (bool, error) {
 	line, relay, err := r.whereLine(ctx, id, t)
 	if err != nil {
 		log.Printf("[channel] where identity=%s task=%s: %v", id.ID, t.ID, err)
@@ -142,13 +218,34 @@ func (r *Router) whereLine(ctx context.Context, id Identity, t ActiveTask) (line
 	who := firstNonEmpty(DisplayName(FirstName(t.SupporterName)), "Your supporter")
 	switch st.State {
 	case LiveWorking:
+		// Arbiter 2026-10-30 13:04: while working the supporter is
+		// locatable, as on the app's map — a delivery moves after clock-in,
+		// and "is there" was wrong (staging). A fresh fix → where they are;
+		// a stale one → said, with when; none ever → the clock alone, never
+		// "there" (review: a claim the clock cannot make). After clock-out
+		// no fix is accepted (saveGpsPing), so a link cannot follow them
+		// home: the last one goes stale in livePingStaleAfter.
+		switch {
+		case st.Lat != nil && st.Lng != nil:
+			if st.DistanceMeters != nil && *st.DistanceMeters < workingAtAddressMeters {
+				// At the address, GPS jitter aside: not "a block away".
+				return fmt.Sprintf(CopyWhereWorkingHere, who, t.Title, st.WorkedMinutes), false, nil
+			}
+			return fmt.Sprintf(CopyWhereWorkingAt, who, t.Title, st.WorkedMinutes, distanceFromAddress(st.DistanceMeters), agoWords(r.now(), st.LastSeen)) + mapLink(*st.Lat, *st.Lng), false, nil
+		case !st.LastSeen.IsZero():
+			// Not relayed (review r2): a working supporter's phone may send
+			// fixes less often in the background; asking them "where are
+			// you?" mid-job for that would nag the one person who is
+			// demonstrably on the job. Said, with when we last saw them.
+			return fmt.Sprintf(CopyWhereWorkingStale, who, t.Title, st.WorkedMinutes, agoWords(r.now(), st.LastSeen)), false, nil
+		}
 		return fmt.Sprintf(CopyWhereWorking, who, t.Title, st.WorkedMinutes), false, nil
 	case LiveAtDoor:
 		return fmt.Sprintf(CopyWhereAtDoor, who), false, nil
 	case LiveAlmostThere:
-		return fmt.Sprintf(CopyWhereAlmost, who, distanceWords(st.DistanceMeters), agoWords(r.now(), st.LastSeen)), false, nil
+		return fmt.Sprintf(CopyWhereAlmost, who, distanceWords(st.DistanceMeters), agoWords(r.now(), st.LastSeen)) + mapLinkIf(st), false, nil
 	case LiveOnTheWay:
-		return fmt.Sprintf(CopyWhereOnTheWay, who, distanceWords(st.DistanceMeters), agoWords(r.now(), st.LastSeen)), false, nil
+		return fmt.Sprintf(CopyWhereOnTheWay, who, distanceWords(st.DistanceMeters), agoWords(r.now(), st.LastSeen)) + mapLinkIf(st), false, nil
 	}
 	if st.SetOffNoFix {
 		// "On my way" tapped, no position yet (the first seconds): not a
@@ -218,4 +315,49 @@ func agoWords(now, at time.Time) string {
 		return fmt.Sprintf(", last seen %d h ago", int(d.Hours()+0.5))
 	}
 	return fmt.Sprintf(", last seen %d days ago", int(d.Hours()/24+0.5))
+}
+
+// lowerNonSupporterCaps lowers every capitalised ASCII word that is not
+// exactly an active supporter's display name.
+func lowerNonSupporterCaps(text string, active []ActiveTask) string {
+	supporters := map[string]bool{}
+	for _, a := range active {
+		if n := DisplayName(FirstName(a.SupporterName)); n != "" {
+			supporters[n] = true
+		}
+	}
+	return whereCapRE.ReplaceAllStringFunc(text, func(w string) string {
+		if supporters[w] {
+			return w
+		}
+		return strings.ToLower(w)
+	})
+}
+
+// workingAtAddressMeters: clocked in within this of the task's address is
+// "at the address" — GPS jitter on site must not read as "a block away".
+const workingAtAddressMeters = 150.0
+
+// distanceFromAddress: " — about 0.8 mi from the task's address", or "".
+// Most tasks carry no coordinates for the address; then only the map
+// says where.
+func distanceFromAddress(m *float64) string {
+	w := distanceWords(m)
+	if w == "" {
+		return ""
+	}
+	return strings.TrimSuffix(w, " away") + " from the task's address"
+}
+
+// mapLink: the fresh position as a map link the phone opens — the same
+// dot the requester's live map shows. Three decimals (~100 m): the link stays in the chat history, and the first fix "on the way" may be their home (Arbiter 2026-10-30).
+func mapLink(lat, lng float64) string {
+	return fmt.Sprintf(CopyWhereMap, lat, lng)
+}
+
+func mapLinkIf(st LiveStatus) string {
+	if st.Lat == nil || st.Lng == nil {
+		return ""
+	}
+	return mapLink(*st.Lat, *st.Lng)
 }

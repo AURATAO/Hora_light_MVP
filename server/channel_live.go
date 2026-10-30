@@ -22,13 +22,19 @@ func (l *chatLive) LiveStatus(ctx context.Context, userID, taskID string) (chann
 	var assignedToID *string
 	var jobLat, jobLng *float64
 	var enrouteAt *time.Time
+	var locationText *string
 	if err := l.sqlDB.QueryRowContext(ctx, `
-		select requester_id::text, status, assigned_to_id::text, job_lat, job_lng, enroute_at
-		  from public.tasks where id = $1::uuid`, taskID).Scan(&requesterID, &status, &assignedToID, &jobLat, &jobLng, &enrouteAt); err != nil {
+		select requester_id::text, status, assigned_to_id::text, job_lat, job_lng, enroute_at, location_text
+		  from public.tasks where id = $1::uuid`, taskID).Scan(&requesterID, &status, &assignedToID, &jobLat, &jobLng, &enrouteAt, &locationText); err != nil {
 		return channel.LiveStatus{}, fmt.Errorf("live status: %w", err)
 	}
 	if requesterID != userID || status != "open" || assignedToID == nil {
 		return channel.LiveStatus{}, fmt.Errorf("live status: not this person's active task")
+	}
+	if jobLat == nil && locationText != nil {
+		// Posted before task coordinates existed, or the lookup failed:
+		// placed in the background for the next question (task_geocode.go).
+		geocodeMissing(taskID, *locationText)
 	}
 	var clockedIn bool
 	if err := l.sqlDB.QueryRowContext(ctx, `
@@ -39,7 +45,8 @@ func (l *chatLive) LiveStatus(ctx context.Context, userID, taskID string) (chann
 	var seen *time.Time
 	err := l.sqlDB.QueryRowContext(ctx, `
 		select lat, lng, created_at from public.task_gps_pings
-		 where task_id = $1::uuid order by created_at desc limit 1`, taskID).Scan(&lat, &lng, &seen)
+		 where task_id = $1::uuid and user_id = $2::uuid
+		 order by created_at desc limit 1`, taskID, *assignedToID).Scan(&lat, &lng, &seen)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return channel.LiveStatus{}, fmt.Errorf("live status: ping: %w", err)
 	}
@@ -51,11 +58,29 @@ func (l *chatLive) LiveStatus(ctx context.Context, userID, taskID string) (chann
 	}
 	state := liveState(distance, clockedIn, fresh)
 	out := channel.LiveStatus{State: channel.LiveState(state)}
-	if state != liveStateUnavailable {
+	if state != liveStateUnavailable && fresh {
+		// Clocked in, the state is "working" whatever the GPS says; a
+		// distance goes with it only from a fresh fix — a stale one is not
+		// a position (Arbiter 2026-10-30: while working the supporter is
+		// locatable, as on the app's map, but never from an old dot).
 		out.DistanceMeters = distance
 	}
 	if seen != nil {
 		out.LastSeen = *seen
+	}
+	if fresh && lat != nil && lng != nil {
+		// The dot the requester's live map shows; never a stale one — and
+		// never in the minutes after a clock-out, when the last fix is
+		// still "fresh" but the supporter has finished (review r3).
+		clockedOut := false
+		if !clockedIn {
+			if err := l.sqlDB.QueryRowContext(ctx, `select exists (select 1 from public.worklogs where task_id = $1::uuid)`, taskID).Scan(&clockedOut); err != nil {
+				return channel.LiveStatus{}, fmt.Errorf("live status: worklogs: %w", err)
+			}
+		}
+		if !clockedOut {
+			out.Lat, out.Lng = lat, lng
+		}
 	}
 	if clockedIn {
 		out.WorkedMinutes = liveLoggedMinutes(ctx, taskID)

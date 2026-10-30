@@ -43,14 +43,18 @@ var (
 func LooksLikePurchase(text string) bool { return purchaseRE.MatchString(text) }
 
 // AmountCents reads a dollar amount from text; ok=false when there is none.
+// "up to 15 mins" is a time, not $15 (review 2026-10-30): a bare number
+// after budget/up to/max that is followed by a time unit is skipped.
 func AmountCents(text string) (int, bool) {
-	m := amountRE.FindStringSubmatch(text)
-	if m == nil {
-		return 0, false
-	}
-	for _, g := range m[1:] {
-		if g != "" {
-			n, err := strconv.Atoi(g)
+	for _, m := range amountRE.FindAllStringSubmatchIndex(text, -1) {
+		for g := 1; g <= 3; g++ {
+			if m[2*g] < 0 {
+				continue
+			}
+			if g == 3 && timeUnitAfterRE.MatchString(text[m[1]:]) {
+				break // a duration; look at the next match
+			}
+			n, err := strconv.Atoi(text[m[2*g]:m[2*g+1]])
 			if err != nil || n <= 0 {
 				return 0, false
 			}
@@ -60,11 +64,35 @@ func AmountCents(text string) (int, bool) {
 	return 0, false
 }
 
+var timeUnitAfterRE = regexp.MustCompile(`(?i)^\s*(?:h|hr|hrs|hours?|m|mins?|minutes?)\b|^\s*(?:分|小時|個小時|鐘頭)`)
+
+// LatestAmountCents: the newest line that names an amount wins. The draft
+// source is every line said, oldest first (review 2026-10-30: an old "$20"
+// must not outlive the correction after it).
+func LatestAmountCents(source string) (int, bool) {
+	lines := strings.Split(source, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if IsNoBudget(lines[i]) {
+			return 0, true // "$0", "nothing to buy": newer than any amount before it
+		}
+		if c, ok := AmountCents(lines[i]); ok {
+			return c, true
+		}
+	}
+	return 0, false
+}
+
 // IsNoBudget reports "nothing to buy" as an answer to the budget question.
 func IsNoBudget(text string) bool { return noBudgetRE.MatchString(text) }
 
 // IsNoAutoExtend reports an explicit opt-out of the auto-extension.
-func IsNoAutoExtend(text string) bool { return noAutoRE.MatchString(text) }
+func IsNoAutoExtend(text string) bool {
+	return noAutoRE.MatchString(text) || noExtraRE.MatchString(text)
+}
+
+// noExtraRE: "no extra" as the whole message, the summary's own words cut
+// short (staging 2026-10-30). Whole-message only: "no extra stops" is not it.
+var noExtraRE = regexp.MustCompile(`(?i)^\s*(?:no,?\s*)?(no extra|no extras|no extension|no overtime)(?:\s*(?:please|pls|thanks|thank you))?[\s.!。！]*$`)
 
 // needsPurchase decides for one errand: an amount already given settles it;
 // the rule says yes; the model is asked only when the rule says no.

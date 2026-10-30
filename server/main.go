@@ -1586,7 +1586,10 @@ func createTask(c *gin.Context) {
 	in.Description = strings.TrimSpace(in.Description)
 	in.Category = strings.TrimSpace(in.Category)
 	in.LocationText = strings.TrimSpace(in.LocationText)
-	log.Printf("[createTask] body: %+v", in)
+	// No title, description or address: they are the requester's words and
+	// place (no PII in logs). Shape only.
+	log.Printf("[createTask] category=%s minutes=%d immediate=%v via=%s has_location=%v has_promo=%v",
+		in.Category, in.EstimatedMinutes, in.IsImmediate, in.CreatedVia, in.LocationText != "", in.PromoCode != "")
 	if in.Title == "" {
 		c.JSON(400, gin.H{"error": "title required"})
 		return
@@ -1888,6 +1891,8 @@ func createTask(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "db error"})
 		return
 	}
+	// The first stop's coordinates, off the request path (task_geocode.go).
+	geocodeTaskAsync(taskID, in.LocationText)
 
 	// ── The hold ───────────────────────────────────────────────────────────
 	//
@@ -2649,6 +2654,10 @@ func updateTask(c *gin.Context) {
         set title=$1,
             description=$2,
             category=$3,
+            -- An address that changed drops its coordinates (computed from
+            -- the old one); geocodeTaskAsync below writes the new ones.
+            job_lat=case when location_text is distinct from $4 then null else job_lat end,
+            job_lng=case when location_text is distinct from $4 then null else job_lng end,
             location_text=$4,
             estimated_minutes=$5,
             prepay_amount_cents=$6,
@@ -2691,6 +2700,10 @@ func updateTask(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot edit after it has been accepted"})
 		return
 	}
+	// Re-geocoded on every edit: a no-op write when the address did not
+	// change (the CAS matches and writes the same point), the new point
+	// when it did (task_geocode.go).
+	geocodeTaskAsync(id, in.LocationText)
 
 	getTask(c)
 }

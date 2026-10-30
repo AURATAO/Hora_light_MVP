@@ -66,6 +66,8 @@ CREATE TABLE public.tasks (
 	description text NOT NULL,
 	category text NOT NULL,
 	location_text text NOT NULL,
+	job_lat double precision,
+	job_lng double precision,
 	estimated_minutes integer NOT NULL,
 	prepay_amount_cents integer NOT NULL DEFAULT 0,
 	is_immediate boolean NOT NULL DEFAULT false,

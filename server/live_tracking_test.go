@@ -165,6 +165,7 @@ CREATE TABLE public.tasks (
 	receipt_amount_cents integer,
 	job_lat double precision,
 	job_lng double precision,
+	location_text text,
 	created_at timestamptz NOT NULL DEFAULT now()
 );
 

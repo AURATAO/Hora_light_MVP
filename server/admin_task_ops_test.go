@@ -222,6 +222,8 @@ func setupAdminOpsDB(t *testing.T) {
 	prevDetach := completionDetach
 	completionDetach = func(fn func()) { fn() }
 	t.Cleanup(func() {
+		announceWG.Wait() // extension notices still in flight read db
+		geocodeWG.Wait()
 		completionDetach = prevDetach
 		resetSettleLockForTests()
 		_ = stdDB.Close()

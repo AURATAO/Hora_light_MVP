@@ -252,8 +252,10 @@ func TestDefaultThirtyMinutesUnlessNamed(t *testing.T) {
 	}
 	g.say(t, "make it 45 minutes")
 	c, _ = g.convs.GetConversation(context.Background(), "id-"+me)
-	if c.Pending.Items()[0].Draft.DurationMinutes != 15 { // the fake parser still says 15: what matters is it is kept when named
-		t.Fatalf("a named duration must be kept: %+v", c.Pending.Items()[0].Draft)
+	// The fake parser still says 15; the newest duration-only line sets it
+	// (review 2026-10-30), so the person's 45 wins.
+	if c.Pending.Items()[0].Draft.DurationMinutes != 45 {
+		t.Fatalf("the named duration must be the one said: %+v", c.Pending.Items()[0].Draft)
 	}
 	for _, s := range []string{"15 mins", "an hour", "half an hour", "2 hours", "20分鐘", "一個小時"} {
 		if !namesDuration(s) {
@@ -304,5 +306,120 @@ func TestDetailsBeforeASummary(t *testing.T) {
 	g.say(t, "260 Mercer st")
 	if last := g.parser.sources[len(g.parser.sources)-1]; !strings.Contains(last, "hot cheetos") || !strings.Contains(last, "260 Mercer") {
 		t.Fatalf("re-draft source: %q", last)
+	}
+}
+
+// firstLineSplitter is the real splitter's behaviour on a correction: it
+// keeps the errand's words and drops the follow-up lines.
+type firstLineSplitter struct{}
+
+func (firstLineSplitter) SplitErrands(_ context.Context, text string) ([]string, llm.Usage, error) {
+	return []string{strings.SplitN(text, "\n", 2)[0]}, llm.Usage{Model: "fake"}, nil
+}
+
+// Staging 2026-10-30: "15 mins" said three times after the summary; the
+// splitter dropped it, so the parser never saw it and the draft stayed 30.
+func TestCorrectionDurationReachesTheParser(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.r.Splitter = firstLineSplitter{}
+	named := laundry
+	named.DurationMinutes = 15
+	g.parser.draft = named
+	g.say(t, "pick up my laundry at 12 Bedford Ave")
+	g.say(t, "15 mins")
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if c.Pending == nil || c.Pending.Items()[0].Draft.DurationMinutes != 15 {
+		t.Fatalf("the named duration was dropped: %+v", c.Pending)
+	}
+	last := g.parser.sources[len(g.parser.sources)-1]
+	if !strings.Contains(last, "15 mins") {
+		t.Fatalf("the parser did not see the correction: %q", last)
+	}
+}
+
+func TestNoExtraAloneTurnsOffAutoExtend(t *testing.T) {
+	for _, s := range []string{"No extra", "no extra.", "No extras", "no extra time"} {
+		if !IsNoAutoExtend(s) {
+			t.Errorf("%q should turn off the auto-extension", s)
+		}
+	}
+	for _, s := range []string{"no extra stops", "no extra charge for the bag", "no"} {
+		if IsNoAutoExtend(s) {
+			t.Errorf("%q must not turn it off", s)
+		}
+	}
+}
+
+// Review 2026-10-30 (c189ef8): the newest duration-only line wins over the
+// model's reading of older lines.
+func TestNewestDurationLineWins(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.r.Splitter = firstLineSplitter{}
+	old := laundry
+	old.DurationMinutes = 120 // the model anchored on the first line
+	g.parser.draft = old
+	g.say(t, "pick up my laundry at 12 Bedford Ave, 2 hours")
+	g.say(t, "ASAP 15 mins")
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if got := c.Pending.Items()[0].Draft.DurationMinutes; got != 15 {
+		t.Fatalf("minutes = %d, want 15 (the newest line)", got)
+	}
+}
+
+func TestDurationOnly(t *testing.T) {
+	want := map[string]int{"15 mins": 15, "About 15 mins": 15, "ASAP 15 mins": 15, "make it 45 minutes": 45,
+		"Can you do 15 mins?": 15, "an hour": 60, "2 hours please": 120, "20分鐘": 20, "半小時": 30}
+	for s, n := range want {
+		if got, ok := DurationOnly(s); !ok || got != n {
+			t.Errorf("%q = %d,%v want %d", s, got, ok, n)
+		}
+	}
+	for _, s := range []string{"I'll be there in 10 min", "store closes in 20 minutes", "15", "1 min", "pick up 15 mins"} {
+		if got, ok := DurationOnly(s); ok {
+			t.Errorf("%q must not be a duration-only line (got %d)", s, got)
+		}
+	}
+}
+
+func TestAmountSkipsDurations(t *testing.T) {
+	if c, ok := AmountCents("up to 15 mins?"); ok {
+		t.Errorf("up to 15 mins read as %d cents", c)
+	}
+	if c, ok := AmountCents("up to 20 mins, max $30"); !ok || c != 3000 {
+		t.Errorf("got %d,%v want 3000", c, ok)
+	}
+	if c, ok := LatestAmountCents("buy bagels $20\nactually budget $35"); !ok || c != 3500 {
+		t.Errorf("latest amount %d,%v want 3500", c, ok)
+	}
+}
+
+func TestNoExtraVariants(t *testing.T) {
+	for _, s := range []string{"no extras please", "no, no extra", "No extra please", "no overtime"} {
+		if !IsNoAutoExtend(s) {
+			t.Errorf("%q should turn off the auto-extension", s)
+		}
+	}
+}
+
+// Review r2: a later non-duration correction keeps the duration line before
+// it; "$0" after an amount wins.
+func TestDurationLineSurvivesALaterCorrection(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.r.Splitter = firstLineSplitter{}
+	guess := laundry
+	guess.DurationMinutes = 120
+	g.parser.draft = guess
+	g.say(t, "pick up my laundry at 12 Bedford Ave")
+	g.say(t, "15 mins")
+	g.say(t, "make it 4pm")
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if got := c.Pending.Items()[0].Draft.DurationMinutes; got != 15 {
+		t.Fatalf("minutes = %d, want 15", got)
+	}
+	if c, ok := LatestAmountCents("buy bagels $20\n$0"); !ok || c != 0 {
+		t.Fatalf("$0 after $20 = %d,%v want 0,true", c, ok)
 	}
 }
