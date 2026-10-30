@@ -60,6 +60,7 @@ import {
   checkSetupToken,
   linkSetupNumber,
   createSetupIntent,
+  listSavedCards,
   finishSetup,
 } from '../api/channelSetup'
 
@@ -167,6 +168,12 @@ function ErrorNote({ children }) {
   )
 }
 
+// "visa" → "Visa", "amex" → "Amex"; Stripe's brand ids are lower-case.
+function brandName(b) {
+  const s = String(b || 'card')
+  return s === 'card' ? 'card' : s.charAt(0).toUpperCase() + s.slice(1)
+}
+
 const BTN = 'w-full rounded-[10px] bg-[#222831] px-4 py-3.5 font-semibold text-white disabled:opacity-45'
 const LINK_BTN = 'mt-1.5 w-full rounded-[10px] px-4 py-2.5 font-medium text-[#5F6670] disabled:opacity-45'
 const INPUT =
@@ -174,7 +181,7 @@ const INPUT =
 
 // ── the card step ─────────────────────────────────────────────────────────
 
-function CardForm({ email, busy, onDone, onSkip }) {
+function CardForm({ email, busy, onDone, onSkip, skipLabel }) {
   const stripe = useStripe()
   const elements = useElements()
   const [saving, setSaving] = useState(false)
@@ -206,7 +213,7 @@ function CardForm({ email, busy, onDone, onSkip }) {
       }))
     } catch (err) {
       console.error('[channel-setup] confirmSetup threw:', err)
-      setError("That payment method can't be saved here. Try a card, or press Skip for now.")
+      setError("That payment method can't be saved here. Try a card instead.")
       setSaving(false)
       return
     }
@@ -230,9 +237,11 @@ function CardForm({ email, busy, onDone, onSkip }) {
       <button type="submit" className={BTN} disabled={locked}>
         {saving || busy ? 'Saving…' : 'Save card and book'}
       </button>
-      <button type="button" className={LINK_BTN} onClick={onSkip} disabled={locked}>
-        Skip for now
-      </button>
+      {skipLabel && (
+        <button type="button" className={LINK_BTN} onClick={onSkip} disabled={locked}>
+          {skipLabel}
+        </button>
+      )}
     </form>
   )
 }
@@ -253,6 +262,12 @@ export default function ChannelSetup() {
   const [intent, setIntent] = useState(null) // { client_secret, publishable_key }
   const [stripeObj, setStripeObj] = useState(null)
   const [result, setResult] = useState(null) // { ok, title, lead }
+  // A card already on file (a returning account), and whether posting needs
+  // one at all. Unknown → assume it does: offering "skip" to someone with no
+  // card only ends on "we need a card" (Aura 2026-10-30: it read as if the
+  // booking had gone through without one).
+  const [saved, setSaved] = useState(null) // { brand, last4 }
+  const [enforced, setEnforced] = useState(true)
 
   // The token, read before the first paint. A ref, not state: it is not
   // rendered, and it must not change identity across renders.
@@ -275,7 +290,7 @@ export default function ChannelSetup() {
   const emailRef = useRef(null)
   const codeRef = useRef(null)
 
-  const step = view === 'done' || view === 'card' || view === 'retry' ? 3 : view === 'code' || view === 'linking' ? 2 : 1
+  const step = view === 'done' || view === 'card' || view === 'saved' || view === 'retry' ? 3 : view === 'code' || view === 'linking' ? 2 : 1
 
   async function load() {
     const token = tokenRef.current
@@ -454,9 +469,29 @@ export default function ChannelSetup() {
   // book straight away, and if the server does need a card, finish() says so.
   // Any OTHER failure is not a reason to skip a card silently — it is a retry
   // of the card step, which is what the 'retry' screen then offers.
-  async function openCard() {
+  async function openCard(opts) {
     setError('')
     setBusy(true)
+    if (!opts?.fresh) {
+      // A returning account may already have a card: say which one, and
+      // book with it, instead of a card form with a "skip" that silently
+      // uses it. Any failure here falls through to the card form.
+      const pm = await listSavedCards(accessRef.current)
+      if (isUnauthorized(pm)) { signInAgain(); return }
+      if (pm.status === 503) { await book(); return }
+      if (pm.ok) {
+        setEnforced(pm.data.payments_enforced !== false)
+        const cards = Array.isArray(pm.data.cards) ? pm.data.cards : []
+        const card = cards.find((c) => c.is_default) || cards[0]
+        if (card && card.last4) {
+          setSaved({ brand: card.brand || 'card', last4: card.last4 })
+          setBusy(false)
+          setView('saved')
+          return
+        }
+        setSaved(null)
+      }
+    }
     const si = await createSetupIntent(accessRef.current)
     if (isUnauthorized(si)) { signInAgain(); return }
     if (si.status === 503) { await book(); return }
@@ -529,7 +564,7 @@ export default function ChannelSetup() {
     return () => { document.title = prevTitle; meta.remove() }
   }, [])
 
-  const showTerms = view === 'email' || view === 'code' || view === 'linking' || view === 'card'
+  const showTerms = view === 'email' || view === 'code' || view === 'linking' || view === 'card' || view === 'saved'
 
   return (
     <main className="min-h-screen bg-[#FAFAF7] text-[#222831]">
@@ -646,14 +681,36 @@ export default function ChannelSetup() {
 
         {view === 'card' && elementsOptions && stripeObj && (
           <>
-            <h1 className="mb-2 text-2xl font-semibold leading-tight">Add a card</h1>
+            <h1 className="mb-2 text-2xl font-semibold leading-tight">{saved ? 'Use a different card' : 'Add a card'}</h1>
             <p className="mb-6 text-[#5F6670]">
               Nothing is charged now. We reserve the estimate when you book, and you pay for the time
               actually used.
             </p>
             <Elements stripe={stripeObj} options={elementsOptions}>
-              <CardForm email={email} busy={busy} onDone={book} onSkip={book} />
+              <CardForm
+                email={email}
+                busy={busy}
+                onDone={book}
+                onSkip={book}
+                skipLabel={saved ? `Use my ${brandName(saved.brand)} ending in ${saved.last4}` : enforced ? null : 'Skip for now'}
+              />
             </Elements>
+          </>
+        )}
+
+        {view === 'saved' && saved && (
+          <>
+            <h1 className="mb-2 text-2xl font-semibold leading-tight">Book with your card</h1>
+            <p className="mb-6 text-[#5F6670]">
+              {`We'll use your ${brandName(saved.brand)} ending in ${saved.last4}. Nothing is charged now. We reserve the estimate when you book, and you pay for the time actually used.`}
+            </p>
+            <ErrorNote>{error}</ErrorNote>
+            <button className={BTN} disabled={busy} onClick={book}>
+              {busy ? 'Booking…' : `Book with •••• ${saved.last4}`}
+            </button>
+            <button className={LINK_BTN} disabled={busy} onClick={() => openCard({ fresh: true })}>
+              Use a different card
+            </button>
           </>
         )}
 
@@ -703,9 +760,9 @@ export default function ChannelSetup() {
             >
               {busy ? 'One moment…' : 'Try again'}
             </button>
-            {retryKind === 'card' && (
+            {retryKind === 'card' && (saved || !enforced) && (
               <button className={LINK_BTN} disabled={busy} onClick={book}>
-                Book without a card
+                {saved ? `Book with my card ending in ${saved.last4}` : 'Book without a card'}
               </button>
             )}
             <p className="mt-4 text-[13px] text-[#5F6670]">
