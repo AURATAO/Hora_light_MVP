@@ -31,6 +31,10 @@ func TestDecodeProposalMakesSafe(t *testing.T) {
 		{`{"action":"correction","task":"","escalation":""}`, ActionRelay, -1, false}, // no booking question open
 		{`{"action":"ask","task":"t1","escalation":""}`, ActionAsk, -1, false},        // only a relay names an errand
 		{`{"action":"draft_task","task":"t2","escalation":""}`, ActionDraftTask, -1, false},
+		// v0.4.1: a where keeps its label (which supporter), like a relay.
+		{`{"action":"where","task":"t2","escalation":""}`, ActionWhere, 1, false},
+		{`{"action":"where","task":"","escalation":""}`, ActionWhere, -1, false},
+		{`{"action":"where","task":"t9","escalation":""}`, ActionWhere, -1, false}, // not listed
 	} {
 		p, err := DecodeProposal(tc.out, c)
 		if p.Action != tc.action || p.Task != tc.task || (err != nil) != tc.err {

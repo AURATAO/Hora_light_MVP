@@ -81,6 +81,13 @@ func (r *Router) answerWhere(ctx context.Context, in Inbound, id Identity, conv 
 	if r.Live == nil || len(active) == 0 {
 		return false, nil
 	}
+	// The rule's name slot takes any capitalised word; only a supporter's
+	// name may fill it — "Keys在哪" is a question about the keys (review
+	// r5 #1). Every other capitalised word lowered, it must still be the
+	// rule's question.
+	if !IsWhereQuestion(lowerNonSupporterCaps(text, active)) {
+		return false, nil
+	}
 	t, named := supporterNamed(active, text)
 	if !named {
 		if m := whereNameRE.FindStringSubmatch(text); m != nil && !strings.EqualFold(m[1], "he") {
@@ -93,6 +100,26 @@ func (r *Router) answerWhere(ctx context.Context, in Inbound, id Identity, conv 
 		}
 		t = active[0]
 	}
+	return r.answerWhereFor(ctx, in, id, text, t)
+}
+
+// answerWhereIn answers for a scope already decided (the agent's path,
+// whereScope): one task → its supporter, several → one line each. Names
+// are not looked for again — whereScope's rules for names that are also
+// words would be undone by supporterNamed's (review r3 #3).
+func (r *Router) answerWhereIn(ctx context.Context, in Inbound, id Identity, text string, scope []ActiveTask) (bool, error) {
+	if r.Live == nil || len(scope) == 0 {
+		return false, nil
+	}
+	if len(scope) != 1 {
+		return r.answerWhereEach(ctx, in, id, scope)
+	}
+	return r.answerWhereFor(ctx, in, id, text, scope[0])
+}
+
+// answerWhereFor: one supporter's status, or — phone silent — the question
+// relayed to them, once per cooldown, saying so.
+func (r *Router) answerWhereFor(ctx context.Context, in Inbound, id Identity, text string, t ActiveTask) (bool, error) {
 	line, relay, err := r.whereLine(ctx, id, t)
 	if err != nil {
 		log.Printf("[channel] where identity=%s task=%s: %v", id.ID, t.ID, err)
@@ -218,4 +245,21 @@ func agoWords(now, at time.Time) string {
 		return fmt.Sprintf(", last seen %d h ago", int(d.Hours()+0.5))
 	}
 	return fmt.Sprintf(", last seen %d days ago", int(d.Hours()/24+0.5))
+}
+
+// lowerNonSupporterCaps lowers every capitalised ASCII word that is not
+// exactly an active supporter's display name.
+func lowerNonSupporterCaps(text string, active []ActiveTask) string {
+	supporters := map[string]bool{}
+	for _, a := range active {
+		if n := DisplayName(FirstName(a.SupporterName)); n != "" {
+			supporters[n] = true
+		}
+	}
+	return whereCapRE.ReplaceAllStringFunc(text, func(w string) string {
+		if supporters[w] {
+			return w
+		}
+		return strings.ToLower(w)
+	})
 }

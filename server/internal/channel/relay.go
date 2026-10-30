@@ -795,6 +795,7 @@ func (r *Router) routeInContextLabel(ctx context.Context, in Inbound, id Identit
 	// errand or not"; everything else is for the supporter.
 	intent := llm.IntentToSupporter
 	agentTarget, agentAsks := "", false
+	var whereBefore []ActiveTask // a model "where" with more in it: answered, then relayed
 	switch {
 	case r.Agent != nil:
 		// D-18: the agent proposes; the rules above have already run, and
@@ -812,10 +813,33 @@ func (r *Router) routeInContextLabel(ctx context.Context, in Inbound, id Identit
 			// for a person (P7). An open question of ours is said again.
 			return true, llm.IntentOther, r.Reply(ctx, in, r.ackWithQuestion(conv), "")
 		}
+		if p.Action == llm.ActionWhere && !IsCancelRequest(text) {
+			// A whereabouts question the rule (IsWhereQuestion) did not
+			// match — "can you tell me where aura is" was relayed on
+			// staging, 2026-10-30. Answered from the live tracking; the
+			// model only chose the path, never the words. Which supporter:
+			// whereScope (names in the words, then the model's errand,
+			// else all). Nothing but the question (whereAgentPure) → the
+			// answer alone. Anything more, or a message the grammar does
+			// not know → the answer AND the words to the supporter, below:
+			// the person is answered and nothing they wrote is lost (P7).
+			scope := whereScope(active, text, p.Task)
+			if whereAgentPure(text, active) {
+				if handled, err := r.answerWhereIn(ctx, in, id, text, scope); handled {
+					if err == nil && (awaitingAnswer(conv.State) || conv.State == StateAwaitingTaskChoice) {
+						err = r.Reply(ctx, in, stillWaiting(conv), "")
+					}
+					return true, "", err
+				}
+			} else {
+				whereBefore = scope
+			}
+		}
 		intent = llm.ToIntent(p)
 		if p.Task >= 0 && p.Task < len(active) {
 			agentTarget = active[p.Task].ID
 		}
+
 		agentAsks = p.Action == llm.ActionAsk
 	case r.InContext == nil:
 		if r.Classifier != nil {
@@ -852,6 +876,26 @@ func (r *Router) routeInContextLabel(ctx context.Context, in Inbound, id Identit
 		// then the errand the agent named; an agent that cannot tell skips
 		// the "who last wrote" guess.
 		target := ""
+		if len(whereBefore) > 0 {
+			// A model "where" with more in it (review r5 #2, #3): the words
+			// go to the supporter the answer is about — whereScope already
+			// read the names, with its rules for names that are words — and
+			// with several, to one of THEM: the model's errand if it is in
+			// the scope; else the list. The status goes first either way.
+			if len(whereBefore) == 1 {
+				target = whereBefore[0].ID
+			} else if _, ok := taskIn(whereBefore, agentTarget); ok {
+				target = agentTarget
+			}
+			r.whereStatusBefore(ctx, in, id, whereBefore)
+			if target == "" {
+				if conv.State != StateIdle {
+					return true, intent, r.Reply(ctx, in, fmt.Sprintf(CopyWhichSupporterMidQuestion, supporterForms(whereBefore)), "")
+				}
+				return true, intent, r.askWhichTask(ctx, in, conv, whereBefore, text)
+			}
+			return true, intent, r.relayKeepingDraft(ctx, in, id, conv, target, text)
+		}
 		if t, ok := supporterNamed(active, text); ok {
 			target = t.ID
 		} else if agentTarget != "" {
@@ -870,6 +914,140 @@ func (r *Router) routeInContextLabel(ctx context.Context, in Inbound, id Identit
 		return true, intent, r.relayKeepingDraft(ctx, in, id, conv, target, text)
 	}
 }
+
+// whereStatusBefore: the live status for a model "where" that is also
+// relayed — sent first, so the relay's own lines (an open question still
+// waiting, the which-supporter list) stay last. Best effort: a lookup
+// failure adds nothing (the supporter is getting the words anyway), and
+// never stops the relay.
+func (r *Router) whereStatusBefore(ctx context.Context, in Inbound, id Identity, scope []ActiveTask) {
+	if r.Live == nil {
+		return
+	}
+	var lines []string
+	for _, t := range scope {
+		// A silent phone's line too ("hasn't reported a location for a
+		// bit, last seen 7 min ago"): the words are going to them anyway,
+		// so no "I've asked them" (review r5 #4).
+		line, _, err := r.whereLine(ctx, id, t)
+		if err != nil {
+			log.Printf("[channel] where identity=%s task=%s: %v", id.ID, t.ID, err)
+			return
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return
+	}
+	if err := r.Reply(ctx, in, strings.Join(lines, "\n"), ""); err != nil {
+		log.Printf("[channel] where identity=%s: status not sent: %v", id.ID, err)
+	}
+}
+
+// whereScope: which supporters a model "where" is about. The names in the
+// words decide first, case-insensitively — the model was asked only
+// because the rule (case-sensitive) missed, and "aura" is how people type —
+// except a name that is also an ordinary word ("will", "may") when it is
+// not capitalised mid-sentence. One name → that supporter, whatever the
+// model's errand; several → all of them; none → the model's errand, else
+// all. All of them is never wrong: every line is the person's own task
+// (answerWhereEach). The scope is final: answerWhereIn does not look for
+// names again (review r3 #3).
+func whereScope(active []ActiveTask, text string, task int) []ActiveTask {
+	var named []ActiveTask
+	words := strings.FieldsFunc(text, func(c rune) bool { return !unicode.IsLetter(c) && c != '\'' && c != '-' })
+	for _, t := range active {
+		name := DisplayName(FirstName(t.SupporterName))
+		if name == "" {
+			continue
+		}
+		for i, w := range words {
+			if !strings.EqualFold(w, name) {
+				continue
+			}
+			if commonWordNames[strings.ToLower(name)] && (w != name || i == 0) {
+				continue // "will she be here", "Will she be here": the verb
+			}
+			named = append(named, t)
+			break
+		}
+	}
+	switch {
+	case len(named) == 1:
+		return named // the words beat the model's label (review r3 #2)
+	case len(named) > 1:
+		return active
+	case task >= 0 && task < len(active):
+		return active[task : task+1]
+	}
+	return active
+}
+
+// commonWordNames: first names that are also everyday words. Matched only
+// as a capitalised word that does not open the message.
+var commonWordNames = map[string]bool{
+	"will": true, "may": true, "can": true, "mark": true, "grace": true, "hope": true, "art": true, "pat": true,
+	"bill": true, "rob": true, "sue": true, "dean": true, "joy": true, "rose": true, "june": true, "april": true,
+	"faith": true, "summer": true, "sky": true, "ray": true, "jack": true, "frank": true, "max": true, "rich": true,
+	"sunny": true, "star": true, "ivy": true, "dawn": true, "eve": true, "autumn": true, "angel": true, "honey": true,
+	"brook": true, "chase": true, "cash": true, "drew": true, "guy": true, "jay": true, "miles": true, "lane": true,
+	"page": true, "case": true, "hunter": true, "taylor": true, "carter": true, "price": true, "rocky": true,
+}
+
+// whereAgentPure: the model said "where"; is the message NOTHING BUT a
+// whereabouts question? Then it is answered and not relayed. Decided by a
+// closed, whole-message grammar — the rule's own (IsWhereQuestion), after
+// the ways of asking us are taken off the front ("can you tell me", "do
+// you know", "請問"), the polite tail off the end ("please", "thanks"),
+// the indirect word order put back ("where aura is" → "where is Aura"),
+// and the supporters' names written as the rule expects them. Four review
+// rounds showed that a gate built from allowed WORDS always leaves some
+// composition of them that carries an instruction (r4: "is she close get
+// here now", "will be late where is she", "我走了 她到哪了"); a grammar of
+// whole messages does not.
+//
+// Not pure is not refused: the router answers the whereabouts AND relays
+// the words (whereStatusBefore), so nothing is swallowed (P7) and the
+// person still gets the answer the Arbiter asked for (2026-10-30).
+func whereAgentPure(text string, active []ActiveTask) bool {
+	t := strings.TrimSpace(norm.NFKC.String(text))
+	t = whereAskPrefixRE.ReplaceAllString(t, "")
+	t = whereTrailRE.ReplaceAllString(t, "")
+	// The rule's name slot takes any capitalised word ("Keys在哪", "where
+	// is Starbucks"); here only a supporter's name may fill it (review r5
+	// #1). Every other capitalised word is lowered, so it cannot.
+	t = lowerNonSupporterCaps(t, active)
+	for _, a := range active {
+		name := DisplayName(FirstName(a.SupporterName))
+		if name == "" || commonWordNames[strings.ToLower(name)] || !isASCIIWord(name) {
+			continue // as typed: the rule's case-sensitive match decides
+		}
+		t = regexp.MustCompile(`(?i)\b`+regexp.QuoteMeta(name)+`\b`).ReplaceAllString(t, name)
+	}
+	t = whereInvertRE.ReplaceAllString(t, "$1 $3 $2$4")
+	return IsWhereQuestion(t)
+}
+
+// whereCapRE: a capitalised ASCII word.
+var whereCapRE = regexp.MustCompile(`\b[A-Z][a-z]+\b`)
+
+func isASCIIWord(s string) bool {
+	for _, c := range s {
+		if c > unicode.MaxASCII || !unicode.IsLetter(c) {
+			return false
+		}
+	}
+	return s != ""
+}
+
+// whereAskPrefixRE: how people ask US, at the start only.
+var whereAskPrefixRE = regexp.MustCompile(`(?i)^(?:(?:hi|hey|hello|ok|okay|so|sorry)[\s,!.]+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?(?:tell me|let me know|check)|(?:please\s+)?(?:tell me|let me know)|(?:do|does) (?:you|anyone) know|any idea|請問|(?:可以|能不能|麻煩你?)?(?:告訴我|跟我說)(?:一下)?|幫我(?:看|查)(?:一下)?)[\s,]*`)
+
+// whereTrailRE: a polite tail, at the end only.
+var whereTrailRE = regexp.MustCompile(`(?i)[\s,]+(?:please|pls|plz|thanks|thank you|thx)[\s?？!.。]*$`)
+
+// whereInvertRE: the indirect word order of "tell me where she is".
+var whereInvertRE = regexp.MustCompile(`^(where|how far(?: away)?|how close)\s+(he|she|they|my supporter|the supporter|[A-Z][a-z]+)\s+(is|are)((?:\s+now|\s+right now)?[\s?？!.]*)$`)
 
 // supporterQuestionOpen: the supporter asked something recently and the
 // person has not written since.

@@ -31,7 +31,7 @@ func TestServerOutcomesMatchTheRules(t *testing.T) {
 func TestCasesAreWellFormed(t *testing.T) {
 	f := mustLoad(t)
 	known := map[string]bool{}
-	for _, a := range []llm.Action{llm.ActionApprove, llm.ActionDecline, llm.ActionRelay, llm.ActionCorrection, llm.ActionDraftTask, llm.ActionAsk, llm.ActionEscalate, llm.ActionReply} {
+	for _, a := range []llm.Action{llm.ActionApprove, llm.ActionDecline, llm.ActionRelay, llm.ActionCorrection, llm.ActionDraftTask, llm.ActionAsk, llm.ActionEscalate, llm.ActionReply, llm.ActionWhere} {
 		known[string(a)] = true
 	}
 	seen := map[int]bool{}
@@ -221,6 +221,10 @@ func TestGradeDecodesLikeProduction(t *testing.T) {
 		{Case{Expect: Expect{Action: "correction"}}, `{"action":"correction","task":"","escalation":""}`, "booking", "PASS"},
 		{relayT2, `{"action":"relay","task":"t01","escalation":""}`, "", "FAIL"},
 		{relayT2, `{"action":"book_it","task":"","escalation":""}`, "", "FAIL"},
+		// v0.4.1: a "where" keeps its label like a relay, and is graded on it.
+		{Case{Expect: Expect{Action: "where", Task: "t2"}}, `{"action":"where","task":"t2","escalation":""}`, "", "PASS"},
+		{Case{Expect: Expect{Action: "where", Task: "t2"}}, `{"action":"where","task":"t1","escalation":""}`, "", "FAIL"},
+		{Case{Expect: Expect{Action: "relay"}, Forbid: []string{"where"}}, `{"action":"where","task":"","escalation":""}`, "", "FAIL"},
 	} {
 		if _, g, why := grade(tc.c, tc.raw, 2, tc.openQ); g != tc.grade {
 			t.Errorf("%s open=%q: %s (%s)", tc.raw, tc.openQ, g, why)

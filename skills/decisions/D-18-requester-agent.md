@@ -417,3 +417,65 @@ on the held-relay list it drops the hold ("OK, I won't send that"). Any
 other `reply` falls to the supporter as before. A relayed line is known by
 the store's `relay` flag (shape match as fallback). Declared residual: a
 mislabelled ≤5-word instruction inside the window is swallowed (D-17 r3).
+
+## v0.4.2 — "where" in any wording (2026-10-30, reviews r1–r6)
+
+Staging, 2026-10-30 10:32 UTC: "can you tell me where aura is" — an
+indirect question with a lowercase name — missed `IsWhereQuestion` (an
+anchored whole-message regex, case-sensitive names), the agent had no
+whereabouts action and proposed `relay`, and the question went to the
+supporter. Arbiter (Aura), same day: whereabouts questions in ANY wording
+are HO:RA's to answer from the live tracking; let the LLM classify.
+
+Built:
+- Agent action `where` (prompt rule 12 + bullet; precedence: escalate >
+  where; rule 9 "Alex, where are you?" > where; a pure whereabouts
+  question > rule 2). Decoded like `relay`: it keeps its errand label.
+  The model only labels; the reply is the tracking's copy (where.go).
+- Router: a model `where` (not a cancel) is scoped by `whereScope`
+  (names in the words, case-insensitive except everyday-word names like
+  Will/May unless capitalised mid-sentence; one name beats the label;
+  several → all; none → the label; else all). Then:
+  - **pure** (`whereAgentPure`: an ask-us prefix and polite tail removed,
+    names written as the rule expects, indirect order inverted, and the
+    RULE's own whole-message regex matches with only supporters in its
+    name slot) → answered alone (`answerWhereIn`);
+  - **not pure** → `whereStatusBefore` sends the status (silent phones
+    included), THEN the words are relayed whole (one scoped supporter →
+    them; several → the label if in scope, else the which-supporter list).
+- Rule path fix found by r5: the rule's name slot accepted any capitalised
+  word ("Keys在哪" was answered with the supporter's location). Only an
+  active supporter's display name fills it now (`lowerNonSupporterCaps`),
+  in both paths.
+
+Why the design changed mid-review: r1–r4 attacked a gate deciding "is
+there anything else in this message" — a denylist (r1–r2), then a word
+allowlist (r3), then an allowlist with clause shape (r4) — and every
+version had a composition of allowed words that carried an instruction
+("is she close get here now", "will be late where is she", "我走了
+她到哪了"). The fix was to stop needing the gate to be perfect: the only
+path that does not relay is a closed grammar of whole messages; everything
+else is answered AND relayed, so nothing can be swallowed (P7).
+
+Review (isolated, sonnet): r1 FAIL (3 MAJOR) · r2 FAIL (BLOCKER) · r3
+FAIL (BLOCKER) · r4 FAIL (3 BLOCKER) · r5 FAIL (1 MAJOR: the name slot)
+· r6 PASS.
+
+Residuals declared (Arbiter's call):
+1. Wide relay: wordings the rule does not know ("has she made it yet",
+   "is anyone actually coming??", 她到底到哪了) are answered and ALSO
+   reach the supporter, every time (no cooldown outside the silent-phone
+   case).
+2. A question about two supporters is relayed to one (the label if in
+   scope) or the person picks; the other does not see it.
+3. Step 7a: with the supporter's question open and unanswered, a short
+   message is theirs and is relayed before any model
+   (`TestWhereAfterASupporterQuestionIsTheirs`).
+4. "where are you?" (second person) stays `relay`.
+5. Languages other than English/Chinese are answered (if the model labels
+   them) and always relayed.
+6. Production needs `CHANNEL_AGENT=1` (B5) or none of this runs.
+
+Owed: Aura's Mac run (`REQUIRE_DB_TESTS=1 go test -p 1 ./... -race
+-count=1`) and the live baseline (`go run ./cmd/agenttest -group "R "`,
+then the full set) — cases 111–130.
