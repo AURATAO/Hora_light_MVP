@@ -400,3 +400,24 @@ func TestNoExtraVariants(t *testing.T) {
 		}
 	}
 }
+
+// Review r2: a later non-duration correction keeps the duration line before
+// it; "$0" after an amount wins.
+func TestDurationLineSurvivesALaterCorrection(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.r.Splitter = firstLineSplitter{}
+	guess := laundry
+	guess.DurationMinutes = 120
+	g.parser.draft = guess
+	g.say(t, "pick up my laundry at 12 Bedford Ave")
+	g.say(t, "15 mins")
+	g.say(t, "make it 4pm")
+	c, _ := g.convs.GetConversation(context.Background(), "id-"+me)
+	if got := c.Pending.Items()[0].Draft.DurationMinutes; got != 15 {
+		t.Fatalf("minutes = %d, want 15", got)
+	}
+	if c, ok := LatestAmountCents("buy bagels $20\n$0"); !ok || c != 0 {
+		t.Fatalf("$0 after $20 = %d,%v want 0,true", c, ok)
+	}
+}

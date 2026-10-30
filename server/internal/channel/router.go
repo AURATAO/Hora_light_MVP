@@ -498,8 +498,13 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 			// The newest line that is only a duration ("15 mins", "ASAP 15
 			// mins", "make it 45 minutes") sets it, whatever the model read
 			// from older lines (review 2026-10-30).
-			if m, ok := DurationOnly(latestLine(source)); ok {
-				draft.DurationMinutes = m
+			// Newest first, so "15 mins" then "make it 4pm" keeps 15.
+			lines := strings.Split(source, "\n")
+			for j := len(lines) - 1; j >= 0; j-- {
+				if m, ok := DurationOnly(lines[j]); ok {
+					draft.DurationMinutes = m
+					break
+				}
 			}
 		}
 		it := DraftItem{Draft: draft}

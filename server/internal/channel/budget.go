@@ -72,6 +72,9 @@ var timeUnitAfterRE = regexp.MustCompile(`(?i)^\s*(?:h|hr|hrs|hours?|m|mins?|min
 func LatestAmountCents(source string) (int, bool) {
 	lines := strings.Split(source, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
+		if IsNoBudget(lines[i]) {
+			return 0, true // "$0", "nothing to buy": newer than any amount before it
+		}
 		if c, ok := AmountCents(lines[i]); ok {
 			return c, true
 		}
