@@ -42,6 +42,10 @@ type LiveStatus struct {
 	NotYetOnTheWay bool
 	// SetOffNoFix: "On my way" tapped, no position received yet.
 	SetOffNoFix bool
+	// Lat, Lng: the supporter's latest position, ONLY when it is fresh — the
+	// same dot the requester's live map shows (Arbiter 2026-10-30: "the app
+	// shows it fully"). nil when stale or none.
+	Lat, Lng *float64
 }
 
 // LiveLookup reads the live status of an active task for its requester.
@@ -214,13 +218,34 @@ func (r *Router) whereLine(ctx context.Context, id Identity, t ActiveTask) (line
 	who := firstNonEmpty(DisplayName(FirstName(t.SupporterName)), "Your supporter")
 	switch st.State {
 	case LiveWorking:
+		// Arbiter 2026-10-30 13:04: while working the supporter is
+		// locatable, as on the app's map — a delivery moves after clock-in,
+		// and "is there" was wrong (staging). A fresh fix → where they are;
+		// a stale one → said, with when; none ever → the clock alone, never
+		// "there" (review: a claim the clock cannot make). After clock-out
+		// no fix is accepted (saveGpsPing), so a link cannot follow them
+		// home: the last one goes stale in livePingStaleAfter.
+		switch {
+		case st.Lat != nil && st.Lng != nil:
+			if st.DistanceMeters != nil && *st.DistanceMeters < workingAtAddressMeters {
+				// At the address, GPS jitter aside: not "a block away".
+				return fmt.Sprintf(CopyWhereWorkingHere, who, t.Title, st.WorkedMinutes), false, nil
+			}
+			return fmt.Sprintf(CopyWhereWorkingAt, who, t.Title, st.WorkedMinutes, distanceFromAddress(st.DistanceMeters), agoWords(r.now(), st.LastSeen)) + mapLink(*st.Lat, *st.Lng), false, nil
+		case !st.LastSeen.IsZero():
+			// Not relayed (review r2): a working supporter's phone may send
+			// fixes less often in the background; asking them "where are
+			// you?" mid-job for that would nag the one person who is
+			// demonstrably on the job. Said, with when we last saw them.
+			return fmt.Sprintf(CopyWhereWorkingStale, who, t.Title, st.WorkedMinutes, agoWords(r.now(), st.LastSeen)), false, nil
+		}
 		return fmt.Sprintf(CopyWhereWorking, who, t.Title, st.WorkedMinutes), false, nil
 	case LiveAtDoor:
 		return fmt.Sprintf(CopyWhereAtDoor, who), false, nil
 	case LiveAlmostThere:
-		return fmt.Sprintf(CopyWhereAlmost, who, distanceWords(st.DistanceMeters), agoWords(r.now(), st.LastSeen)), false, nil
+		return fmt.Sprintf(CopyWhereAlmost, who, distanceWords(st.DistanceMeters), agoWords(r.now(), st.LastSeen)) + mapLinkIf(st), false, nil
 	case LiveOnTheWay:
-		return fmt.Sprintf(CopyWhereOnTheWay, who, distanceWords(st.DistanceMeters), agoWords(r.now(), st.LastSeen)), false, nil
+		return fmt.Sprintf(CopyWhereOnTheWay, who, distanceWords(st.DistanceMeters), agoWords(r.now(), st.LastSeen)) + mapLinkIf(st), false, nil
 	}
 	if st.SetOffNoFix {
 		// "On my way" tapped, no position yet (the first seconds): not a
@@ -307,4 +332,32 @@ func lowerNonSupporterCaps(text string, active []ActiveTask) string {
 		}
 		return strings.ToLower(w)
 	})
+}
+
+// workingAtAddressMeters: clocked in within this of the task's address is
+// "at the address" — GPS jitter on site must not read as "a block away".
+const workingAtAddressMeters = 150.0
+
+// distanceFromAddress: " — about 0.8 mi from the task's address", or "".
+// Most tasks carry no coordinates for the address; then only the map
+// says where.
+func distanceFromAddress(m *float64) string {
+	w := distanceWords(m)
+	if w == "" {
+		return ""
+	}
+	return strings.TrimSuffix(w, " away") + " from the task's address"
+}
+
+// mapLink: the fresh position as a map link the phone opens — the same
+// dot the requester's live map shows. Four decimals (~10 m).
+func mapLink(lat, lng float64) string {
+	return fmt.Sprintf(CopyWhereMap, lat, lng)
+}
+
+func mapLinkIf(st LiveStatus) string {
+	if st.Lat == nil || st.Lng == nil {
+		return ""
+	}
+	return mapLink(*st.Lat, *st.Lng)
 }

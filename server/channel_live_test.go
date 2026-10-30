@@ -138,6 +138,68 @@ func TestChatLiveStatusWorkingCarriesTheClock(t *testing.T) {
 	if st.WorkedMinutes < 19 || st.WorkedMinutes > 22 {
 		t.Errorf("worked minutes = %d, want about 20", st.WorkedMinutes)
 	}
+	// Arbiter 2026-10-30: while working, a fresh fix travels with it (a
+	// delivery moves after clock-in), as on the app's map.
+	if st.DistanceMeters == nil || *st.DistanceMeters < 10000 {
+		t.Errorf("working with a fresh fix: distance %v, want the ~16 km to the task place", st.DistanceMeters)
+	}
+	if st.Lat == nil || st.Lng == nil || *st.Lat != 40.9000 || *st.Lng != -73.9000 {
+		t.Errorf("working with a fresh fix: position %v,%v, want the ping's", st.Lat, st.Lng)
+	}
+}
+
+// Working with a STALE fix: still "working", but no distance — an old dot is
+// not where they are.
+func TestChatLiveStatusWorkingWithAStaleFixHasNoDistance(t *testing.T) {
+	setupStripeWebhookDB(t)
+	w := seedOpsWorld(t, "open")
+	setTaskPlace(t, w.taskID, 40.7580, -73.9855)
+	seedWorklog(t, w.taskID, 20, true)
+	seedPing(t, w.taskID, w.supporterID, 40.9000, -73.9000, livePingStaleAfter+time.Minute)
+	st, err := liveStatusFor(t, w.requesterID, w.taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.State != channel.LiveState(liveStateWorking) || st.DistanceMeters != nil || st.Lat != nil {
+		t.Fatalf("state %q distance %v lat %v, want working with no distance and no position", st.State, st.DistanceMeters, st.Lat)
+	}
+	if st.LastSeen.IsZero() {
+		t.Fatal("the stale fix's time must still be reported (\"last seen 3 min ago\")")
+	}
+}
+
+// Review r2: production tasks carry no coordinates (job_lat/job_lng are
+// never written), so the real case is a fresh fix with NO distance — the
+// position alone, for the map link.
+func TestChatLiveStatusWorkingWithoutTaskCoordinatesGivesThePosition(t *testing.T) {
+	setupStripeWebhookDB(t)
+	w := seedOpsWorld(t, "open")
+	seedWorklog(t, w.taskID, 10, true)
+	seedPing(t, w.taskID, w.supporterID, 40.9000, -73.9000, 10*time.Second)
+	st, err := liveStatusFor(t, w.requesterID, w.taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.State != channel.LiveState(liveStateWorking) || st.DistanceMeters != nil || st.Lat == nil || *st.Lat != 40.9000 {
+		t.Fatalf("state %q distance %v lat %v, want working, no distance, the ping's position", st.State, st.DistanceMeters, st.Lat)
+	}
+}
+
+// Review: a ping from someone other than the assignee (the supporter before
+// a reassignment) is never shown as the assignee's position.
+func TestChatLiveStatusIgnoresAnotherSupportersPing(t *testing.T) {
+	setupStripeWebhookDB(t)
+	w := seedOpsWorld(t, "open")
+	setTaskPlace(t, w.taskID, 40.7580, -73.9855)
+	seedWorklog(t, w.taskID, 5, true)
+	seedPing(t, w.taskID, w.requesterID, 40.9000, -73.9000, 10*time.Second) // not the assignee
+	st, err := liveStatusFor(t, w.requesterID, w.taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Lat != nil || st.DistanceMeters != nil || !st.LastSeen.IsZero() {
+		t.Fatalf("another user's ping leaked: lat %v distance %v seen %v", st.Lat, st.DistanceMeters, st.LastSeen)
+	}
 }
 
 // A fix older than livePingStaleAfter is not a position any more. Reporting a
@@ -206,5 +268,21 @@ func TestChatLiveStatusWithoutTaskCoordinates(t *testing.T) {
 	}
 	if st.NotYetOnTheWay {
 		t.Errorf("there is a fix, so they have set off: %+v", st)
+	}
+}
+
+// Review r3: the minutes after a clock-out — the last fix is still fresh,
+// but the supporter has finished: no position goes out.
+func TestChatLiveStatusNoPositionAfterClockOut(t *testing.T) {
+	setupStripeWebhookDB(t)
+	w := seedOpsWorld(t, "open")
+	seedWorklog(t, w.taskID, 30, false) // a closed session
+	seedPing(t, w.taskID, w.supporterID, 40.9000, -73.9000, 30*time.Second)
+	st, err := liveStatusFor(t, w.requesterID, w.taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Lat != nil || st.Lng != nil {
+		t.Fatalf("a position after clock-out: %v,%v", st.Lat, st.Lng)
 	}
 }

@@ -791,3 +791,44 @@ func TestWhereRuleNormalisesBeforeTheNameGuard(t *testing.T) {
 		t.Errorf("fullwidth supporter name: posted %v reply %q", chat.posted, got)
 	}
 }
+
+// Arbiter 2026-10-30 13:04: while clocked in the supporter is locatable, as
+// on the app's map — staging: a delivery answered "Aura is there and clocked
+// in" while she was on her way to the drop-off. The store sets Lat/Lng (and
+// a distance) only from a fresh fix.
+func TestWhereWhileWorkingGivesTheFreshPosition(t *testing.T) {
+	lat, lng := 40.75801, -73.98551
+	far, near := 1300.0, 40.0
+	seen := time.Now().Add(-time.Minute)
+	for _, tc := range []struct {
+		name   string
+		st     LiveStatus
+		want   string
+		posted int
+	}{
+		{"fresh fix, no task coordinates", LiveStatus{State: LiveWorking, WorkedMinutes: 13, Lat: &lat, Lng: &lng, LastSeen: seen},
+			"Sam is working on “Bagel run” (13 min so far), last seen 1 min ago. Map: https://www.google.com/maps?q=40.7580,-73.9855", 0},
+		{"fresh fix, away from the address", LiveStatus{State: LiveWorking, WorkedMinutes: 13, Lat: &lat, Lng: &lng, DistanceMeters: &far, LastSeen: seen},
+			"Sam is working on “Bagel run” (13 min so far) — about 0.8 mi from the task's address, last seen 1 min ago. Map: https://www.google.com/maps?q=40.7580,-73.9855", 0},
+		{"fresh fix, at the address (GPS jitter)", LiveStatus{State: LiveWorking, WorkedMinutes: 13, Lat: &lat, Lng: &lng, DistanceMeters: &near, LastSeen: seen},
+			"Sam is at the task's address, clocked in on “Bagel run” — 13 min so far.", 0},
+		{"stale fix: said, not asked of a working supporter", LiveStatus{State: LiveWorking, WorkedMinutes: 13, LastSeen: time.Now().Add(-7 * time.Minute)},
+			"Sam is clocked in on “Bagel run” (13 min so far); no fresh location from their phone, last seen 7 min ago.", 0},
+		{"stale for hours", LiveStatus{State: LiveWorking, WorkedMinutes: 13, LastSeen: time.Now().Add(-3 * time.Hour)},
+			"Sam is clocked in on “Bagel run” (13 min so far); no fresh location from their phone, last seen 3 h ago.", 0},
+		{"never a fix: the clock alone, not \"there\"", LiveStatus{State: LiveWorking, WorkedMinutes: 13},
+			"Sam is clocked in on “Bagel run” — 13 min so far.", 0},
+	} {
+		g, chat, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+		g.r.Live = &fakeLive{st: tc.st}
+		if got := g.say(t, "where is he?"); got != tc.want || len(chat.posted) != tc.posted {
+			t.Errorf("%s: got %q posted %v, want %q", tc.name, got, chat.posted, tc.want)
+		}
+	}
+	// On the way: the same map link while the fix is fresh.
+	g, _, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.r.Live = &fakeLive{st: LiveStatus{State: LiveOnTheWay, Lat: &lat, Lng: &lng, LastSeen: seen}}
+	if got := g.say(t, "where is he?"); !strings.HasSuffix(got, "Map: https://www.google.com/maps?q=40.7580,-73.9855") {
+		t.Errorf("on the way: %q", got)
+	}
+}

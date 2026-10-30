@@ -107,3 +107,34 @@ accepted, because the gap-measuring queries that column was added for
   `GoogleMaps`/`Google-Maps-iOS-Utils` pod; `pod install` clean under the
   existing `useFrameworks: static`.
 - DESIGN.md §8 checks 1–3: OK. `tsc --noEmit`: clean. `vite build`: clean.
+
+## Addendum 2026-10-30 — the chat shares the position while working
+
+Staging: a pickup-and-deliver task answered "Aura is there and clocked in"
+while she was travelling to the drop-off. Arbiter (Aura), 13:04: while
+working the supporter must be locatable — the app's live map already shows
+the position then.
+
+Found on the way: `tasks.job_lat/job_lng` are never written by current
+code, so the chat never had a distance (at_door / almost_there and every
+"0.8 mi away" are unreachable in production). The position itself is
+what the chat can give.
+
+Built (`chatLive` + `whereLine`): the assignee's latest fix, ONLY when
+fresh (≤ `livePingStaleAfter`, server-set `created_at`), as a map link
+(4 decimals) — on the way and while clocked in. Clocked in and within
+150 m of a known address → "at the task's address". Clocked in with a
+stale fix → said with "last seen", not relayed (a working supporter is
+not nagged). Never a fix → the clock alone (no "there"). Never after a
+clock-out (no fix is accepted then; the last one is withheld). Pings are
+read from the assignee only (a reassigned task's old supporter never
+shows).
+
+Review (isolated, sonnet): r1 FAIL ("a block away" for on-site GPS
+jitter; "is there" on a stale fix) · r2 FAIL (stale relay would nag;
+created_at provenance) · r3 PASS.
+
+Residuals for the Arbiter: the link persists in the chat history (the
+app's dot does not) — 3 decimals (~100 m) would soften it; the
+staleness threshold (2 min) against background ping cadence; geocoding
+the task address at creation would bring back distances and arrival.
