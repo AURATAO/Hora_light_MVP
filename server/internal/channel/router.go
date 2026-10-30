@@ -1342,11 +1342,11 @@ func detailsQuestion(p *PendingDraft) string {
 // The object, if any, is the draft itself ("it", "that"), so "no I don't
 // need the extra time" or "no, make it 4pm" is not one.
 var draftDeclineRE = regexp.MustCompile(`(?i)^\s*(?:(?:ok(?:ay)?|sorry|actually|hmm+|oh|wait|no|nah|nope|thanks|thank you)[\s,.!]*)*` +
-	`(?:(?:i|we)\s+)?(?:` +
+	`(?:(?:(?:i|we)\s+)?(?:` +
 	`(?:don'?t|do not|no longer)\s+(?:really\s+)?(?:need|want)(?:\s+(?:it|that|this|them|one|the task|this task|that task|this one|that one))?(?:\s+(?:anymore|any more|after all))?` +
 	`|never ?mind|forget (?:it|that|about it)|no thanks|no thank you|not anymore|not needed|skip it|(?:i )?changed my mind|not now` +
 	`|算了|不用了|不用|不需要了?|不要了|先不用了?|沒事了?)` +
-	`[\s,.!。！~，]*(?:(?:thanks|thank you|sorry|謝謝)[\s,.!。！~，]*)?$`)
+	`[\s,.!。！~，]*)+(?:(?:thanks|thank you|sorry|謝謝)[\s,.!。！~，]*)?$`)
 
 // okNoRE: "ok no", "okay, no" — a no after a filler.
 var okNoRE = regexp.MustCompile(`(?i)^\s*(?:ok(?:ay)?|sorry|hmm+|actually)[\s,.]*(?:no|nope|nah)[\s.!'"‘’“”]*$`)

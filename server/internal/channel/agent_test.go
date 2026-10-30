@@ -836,7 +836,7 @@ func TestWhereWhileWorkingGivesTheFreshPosition(t *testing.T) {
 // Staging 2026-10-30: "Sorry no I don't need that" to a waiting draft was
 // re-drafted as a correction, twice. A no in words now drops the draft.
 func TestNoInWordsDropsTheDraft(t *testing.T) {
-	for _, s := range []string{"Sorry no I don’t need that", "Ok no ‘", "never mind", "forget it", "算了", "不用了謝謝", "actually I don't want it"} {
+	for _, s := range []string{"Sorry no I don’t need that", "Ok no ‘", "never mind", "forget it", "算了", "不用了謝謝", "actually I don't want it", "No never mind I don’t need that", "never mind, forget it"} {
 		g := newRig(llm.IntentNewTask)
 		g.ids.link(me, "user-1")
 		g.say(t, "pick up my laundry at 12 Bedford Ave")
