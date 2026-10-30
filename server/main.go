@@ -1586,7 +1586,10 @@ func createTask(c *gin.Context) {
 	in.Description = strings.TrimSpace(in.Description)
 	in.Category = strings.TrimSpace(in.Category)
 	in.LocationText = strings.TrimSpace(in.LocationText)
-	log.Printf("[createTask] body: %+v", in)
+	// No title, description or address: they are the requester's words and
+	// place (no PII in logs). Shape only.
+	log.Printf("[createTask] category=%s minutes=%d immediate=%v via=%s has_location=%v has_promo=%v",
+		in.Category, in.EstimatedMinutes, in.IsImmediate, in.CreatedVia, in.LocationText != "", in.PromoCode != "")
 	if in.Title == "" {
 		c.JSON(400, gin.H{"error": "title required"})
 		return
