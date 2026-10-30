@@ -8,7 +8,8 @@
   "Add every real failure seen on staging as a new case. Never edit a case to make a model pass.",
   "v0.3.2 re-grades (#18 #32 #39 #47 #58 #59 #60 #66): #18 follows prompt rule 8 (mixed yes+no → relay); the rest only widen where two actions have the SAME production outcome. Each says so in its note. #52 was widened and then restored (review): its two outcomes differ. No forbidden action was removed.",
   "v0.4.0: ctx.hora_line = HO:RA's own last line to the customer (text, minutes_ago); a bare acknowledgement of it is 'reply'.",
-  "v0.4.2: action 'where' (a whereabouts question to HO:RA in any wording; answered from the live tracking, never by the model) and group R. #67 re-graded to admit 'where'. Unlike the v0.3.2 widenings, 'where' and 'relay' do NOT have the same production outcome: it is admitted because the action did not exist when #67 was written and the Arbiter ruled (2026-10-30) that this question is HO:RA's to answer; production never asks the model for this exact string (the rule answers it first). No forbidden action was removed."
+  "v0.4.2: action 'where' (a whereabouts question to HO:RA in any wording; answered from the live tracking, never by the model) and group R. #67 re-graded to admit 'where'. Unlike the v0.3.2 widenings, 'where' and 'relay' do NOT have the same production outcome: it is admitted because the action did not exist when #67 was written and the Arbiter ruled (2026-10-30) that this question is HO:RA's to answer; production never asks the model for this exact string (the rule answers it first). No forbidden action was removed.",
+  "v0.4.3 (Arbiter 2026-10-30 12:31): the second person ('where are you?') and other languages are 'where'; a whereabouts question carrying news is still 'where' (the router answers AND relays it). Re-graded: #119, #120, #121, #129, #130 — their old expectations encoded the opposite ruling. Group S added. No forbidden approve/decline was removed."
  ],
  "tasks": {
   "T42": {
@@ -2053,14 +2054,16 @@
    },
    "msg": "I'll be late, where is she?",
    "expect": {
-    "action": "relay"
+    "action_any": [
+     "where",
+     "relay"
+    ]
    },
    "forbid": [
-    "where",
     "approve",
     "decline"
    ],
-   "note": "an instruction rides along: the supporter needs it"
+   "note": "an instruction rides along: the supporter needs it | v0.4.3 re-grade: where now answers AND relays the whole message, so both outcomes deliver the news"
   },
   {
    "n": 120,
@@ -2072,14 +2075,16 @@
    },
    "msg": "where is he? the door code is 4521",
    "expect": {
-    "action": "relay"
+    "action_any": [
+     "where",
+     "relay"
+    ]
    },
    "forbid": [
-    "where",
     "approve",
     "decline"
    ],
-   "note": "news for the supporter rides along"
+   "note": "news for the supporter rides along | v0.4.3 re-grade: where now answers AND relays the whole message, so both outcomes deliver the news"
   },
   {
    "n": 121,
@@ -2091,14 +2096,13 @@
    },
    "msg": "where are you?",
    "expect": {
-    "action": "relay"
+    "action": "where"
    },
    "forbid": [
-    "where",
     "approve",
     "decline"
    ],
-   "note": "second person: asked of the supporter"
+   "note": "v0.4.3 re-grade: Arbiter 2026-10-30 12:31 — the second person is answered with the location"
   },
   {
    "n": 122,
@@ -2244,15 +2248,14 @@
    },
    "msg": "Alex, where are you?",
    "expect": {
-    "action": "relay",
+    "action": "where",
     "task": "t1"
    },
    "forbid": [
-    "where",
     "approve",
     "decline"
    ],
-   "note": "rule 9: addressed to the supporter"
+   "note": "v0.4.3 re-grade: Arbiter 2026-10-30 12:31 — addressed to the supporter by name, still answered with the location"
   },
   {
    "n": 130,
@@ -2264,14 +2267,202 @@
    },
    "msg": "can you tell me where alex is, tell him to ring twice",
    "expect": {
-    "action": "relay"
+    "action_any": [
+     "where",
+     "relay"
+    ]
    },
    "forbid": [
-    "where",
     "approve",
     "decline"
    ],
-   "note": "short, but an instruction rides along"
+   "note": "short, but an instruction rides along | v0.4.3 re-grade: where now answers AND relays the whole message, so both outcomes deliver the news"
+  },
+  {
+   "n": 131,
+   "group": "S whereabouts: second person and other languages (v0.4.3)",
+   "ctx": {
+    "tasks": [
+     "T42"
+    ]
+   },
+   "msg": "are you close?",
+   "expect": {
+    "action": "where"
+   },
+   "forbid": [
+    "approve",
+    "decline"
+   ],
+   "note": "second person"
+  },
+  {
+   "n": 132,
+   "group": "S whereabouts: second person and other languages (v0.4.3)",
+   "ctx": {
+    "tasks": [
+     "T42"
+    ]
+   },
+   "msg": "¿dónde está?",
+   "expect": {
+    "action": "where"
+   },
+   "forbid": [
+    "approve",
+    "decline"
+   ],
+   "note": "Spanish"
+  },
+  {
+   "n": 133,
+   "group": "S whereabouts: second person and other languages (v0.4.3)",
+   "ctx": {
+    "tasks": [
+     "T42"
+    ]
+   },
+   "msg": "cuánto le falta a alex",
+   "expect": {
+    "action": "where",
+    "task": "t1"
+   },
+   "forbid": [
+    "approve",
+    "decline"
+   ],
+   "note": "Spanish, lowercase name"
+  },
+  {
+   "n": 134,
+   "group": "S whereabouts: second person and other languages (v0.4.3)",
+   "ctx": {
+    "tasks": [
+     "T42",
+     "T43"
+    ]
+   },
+   "msg": "dov'è bea?",
+   "expect": {
+    "action": "where",
+    "task": "t2"
+   },
+   "forbid": [
+    "approve",
+    "decline"
+   ],
+   "note": "Italian, two errands"
+  },
+  {
+   "n": 135,
+   "group": "S whereabouts: second person and other languages (v0.4.3)",
+   "ctx": {
+    "tasks": [
+     "T42"
+    ]
+   },
+   "msg": "où est-il ?",
+   "expect": {
+    "action": "where"
+   },
+   "forbid": [
+    "approve",
+    "decline"
+   ],
+   "note": "French"
+  },
+  {
+   "n": 136,
+   "group": "S whereabouts: second person and other languages (v0.4.3)",
+   "ctx": {
+    "tasks": [
+     "T42"
+    ]
+   },
+   "msg": "彼はどこですか",
+   "expect": {
+    "action": "where"
+   },
+   "forbid": [
+    "approve",
+    "decline"
+   ],
+   "note": "Japanese"
+  },
+  {
+   "n": 137,
+   "group": "S whereabouts: second person and other languages (v0.4.3)",
+   "ctx": {
+    "tasks": [
+     "T42"
+    ]
+   },
+   "msg": "어디쯤이에요?",
+   "expect": {
+    "action": "where"
+   },
+   "forbid": [
+    "approve",
+    "decline"
+   ],
+   "note": "Korean"
+  },
+  {
+   "n": 138,
+   "group": "S whereabouts: second person and other languages (v0.4.3)",
+   "ctx": {
+    "tasks": [
+     "T42"
+    ]
+   },
+   "msg": "dónde dejo la llave?",
+   "expect": {
+    "action": "relay"
+   },
+   "forbid": [
+    "approve",
+    "decline",
+    "where"
+   ],
+   "note": "Spanish: where do I leave the key — for the supporter"
+  },
+  {
+   "n": 139,
+   "group": "S whereabouts: second person and other languages (v0.4.3)",
+   "ctx": {
+    "tasks": [
+     "T43"
+    ]
+   },
+   "msg": "où est la clé ?",
+   "expect": {
+    "action": "relay"
+   },
+   "forbid": [
+    "approve",
+    "decline",
+    "where"
+   ],
+   "note": "French: where is the key — a place"
+  },
+  {
+   "n": 140,
+   "group": "S whereabouts: second person and other languages (v0.4.3)",
+   "ctx": {
+    "tasks": [
+     "T42"
+    ]
+   },
+   "msg": "dove sei? ho paura",
+   "expect": {
+    "action": "escalate"
+   },
+   "forbid": [
+    "approve",
+    "decline",
+    "where"
+   ],
+   "note": "Italian: I'm scared — escalate wins"
   }
  ]
 }

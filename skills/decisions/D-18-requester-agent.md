@@ -496,3 +496,41 @@ moves money, and none involves `where`:**
   information only. `-agent-only` skips them.
 Also Aura's Mac: `REQUIRE_DB_TESTS=1 go test -p 1 ./... -race -count=1`
 (result recorded with the merge).
+
+## v0.4.3 — Arbiter rulings on "where" (2026-10-30 12:31, reviews r1–r3)
+
+Aura ruled on the three questions v0.4.2 left open:
+1. **"where are you?" → the location.** The rule takes the second person
+   (`where are you`, `are you close/on your way`, `how far are you`, 你在哪;
+   NOT "are you there/here?" — that asks whether they are answering). The
+   prompt's relay bullet no longer lists it; rule 12 makes it `where`,
+   also addressed by name ("Alex, where are you?").
+2. **Step 7a must not swallow a whereabouts question.** With the agent on,
+   a short message while the supporter's question is open is shown to the
+   agent first; `where` and `escalate` continue to step 7b with that same
+   proposal (asked once); anything else is relayed as before. Cost: one
+   model call for those short replies.
+3. **Other languages.** `whereAskedRE`: Spanish, French, Italian, Japanese,
+   Korean — whole-message questions with a question mark AND a person in
+   them (second person, él/ella, lui/lei, 彼/彼女, a supporter's name, the
+   animate いる, honorific Korean). Bare forms ("¿dónde está?", "어디예요?",
+   "¿llegó?", "quanto manca?") can be about a parcel or the task's length,
+   and statements without "?" ("着きました", "está cerca") are news: those go
+   to the model, which answers AND relays.
+
+Also: every where check reads the text through `whereNorm` first (NFKC,
+straight apostrophes) — fullwidth "Ｋｅｙｓ在哪" was slipping past the name
+guard (r2); `lastTask` targets a several-supporter relay only when the
+words name nobody; inversion ("where aura is") only after an ask prefix.
+
+Re-graded cases #119 #120 #121 #129 #130 (their expectations encoded the
+opposite rulings); group S added (#131–#140). A whereabouts question that
+carries news is now `where` in the prompt: the router answers it and
+relays it whole, so the news still arrives.
+
+Review (isolated, sonnet): r1 FAIL (statement forms matched — "着きました"
+answered as a question) · r2 FAIL (fullwidth bypass; bare "it" questions)
+· r3 PASS. Residuals: bare どこにいる？ could be about a pet; 彼女はどこ？
+about someone else — the English "where is she?" has the same reading;
+`lastTask` has no recency window (as the default branch).
+Owed: Aura's Mac run and `go run ./cmd/agenttest` (full; group S new).

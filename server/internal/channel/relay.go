@@ -782,8 +782,21 @@ func (r *Router) routeInContextLabel(ctx context.Context, in Inbound, id Identit
 	// and nothing has been said since. Mid-question the model decides, with
 	// the open question in view (a correction to our draft is not an answer
 	// to the supporter).
+	//
+	// Arbiter 2026-10-30: a whereabouts question is HO:RA's even then — so
+	// with the agent on, it is asked first; "where" (and "escalate", a
+	// safety report must not wait on a supporter) go on to step 7b with
+	// that proposal; anything else is the supporter's answer, as before.
+	var pre *llm.Proposal
 	if conv.State == StateIdle && supporterQuestionOpen(last, lastAt, answered, r.now()) && len(strings.Fields(text)) <= 12 {
-		return true, "", r.relayKeepingDraft(ctx, in, id, conv, lastTask, text)
+		if r.Agent == nil {
+			return true, "", r.relayKeepingDraft(ctx, in, id, conv, lastTask, text)
+		}
+		p := r.propose(ctx, id, text, active, conv, last, lastTask, lastAt, answered)
+		if p.Action != llm.ActionWhere && p.Action != llm.ActionEscalate {
+			return true, "", r.relayKeepingDraft(ctx, in, id, conv, lastTask, text)
+		}
+		pre = &p
 	}
 	// The one who last wrote counts only until the person answered — as a
 	// target and as context.
@@ -800,7 +813,12 @@ func (r *Router) routeInContextLabel(ctx context.Context, in Inbound, id Identit
 	case r.Agent != nil:
 		// D-18: the agent proposes; the rules above have already run, and
 		// nothing below moves money or time.
-		p := r.propose(ctx, id, text, active, conv, last, lastTask, lastAt, answered)
+		var p llm.Proposal
+		if pre != nil {
+			p = *pre // asked at step 7a; not asked twice
+		} else {
+			p = r.propose(ctx, id, text, active, conv, last, lastTask, lastAt, answered)
+		}
 		if p.Action == llm.ActionEscalate {
 			return true, "", r.agentHandOff(ctx, in, id, p)
 		}
@@ -886,6 +904,11 @@ func (r *Router) routeInContextLabel(ctx context.Context, in Inbound, id Identit
 				target = whereBefore[0].ID
 			} else if _, ok := taskIn(whereBefore, agentTarget); ok {
 				target = agentTarget
+			} else if _, ok := taskIn(whereBefore, lastTask); ok && len(whereNamed(active, text)) == 0 {
+				// No name in the words: the supporter who wrote last and is
+				// not yet answered (review r2 #3: never narrow a question
+				// that names two of them).
+				target = lastTask
 			}
 			r.whereStatusBefore(ctx, in, id, whereBefore)
 			if target == "" {
@@ -954,8 +977,22 @@ func (r *Router) whereStatusBefore(ctx context.Context, in Inbound, id Identity,
 // (answerWhereEach). The scope is final: answerWhereIn does not look for
 // names again (review r3 #3).
 func whereScope(active []ActiveTask, text string, task int) []ActiveTask {
+	named := whereNamed(active, text)
+	switch {
+	case len(named) == 1:
+		return named // the words beat the model's label (review r3 #2)
+	case len(named) > 1:
+		return active
+	case task >= 0 && task < len(active):
+		return active[task : task+1]
+	}
+	return active
+}
+
+// whereNamed: the active supporters the words name (whereScope's rules).
+func whereNamed(active []ActiveTask, text string) []ActiveTask {
 	var named []ActiveTask
-	words := strings.FieldsFunc(text, func(c rune) bool { return !unicode.IsLetter(c) && c != '\'' && c != '-' })
+	words := strings.FieldsFunc(whereNorm(text), func(c rune) bool { return !unicode.IsLetter(c) && c != '\'' && c != '-' })
 	for _, t := range active {
 		name := DisplayName(FirstName(t.SupporterName))
 		if name == "" {
@@ -972,15 +1009,7 @@ func whereScope(active []ActiveTask, text string, task int) []ActiveTask {
 			break
 		}
 	}
-	switch {
-	case len(named) == 1:
-		return named // the words beat the model's label (review r3 #2)
-	case len(named) > 1:
-		return active
-	case task >= 0 && task < len(active):
-		return active[task : task+1]
-	}
-	return active
+	return named
 }
 
 // commonWordNames: first names that are also everyday words. Matched only
@@ -1010,7 +1039,8 @@ var commonWordNames = map[string]bool{
 // the words (whereStatusBefore), so nothing is swallowed (P7) and the
 // person still gets the answer the Arbiter asked for (2026-10-30).
 func whereAgentPure(text string, active []ActiveTask) bool {
-	t := strings.TrimSpace(norm.NFKC.String(text))
+	t := whereNorm(text)
+	asked := whereAskPrefixRE.MatchString(t)
 	t = whereAskPrefixRE.ReplaceAllString(t, "")
 	t = whereTrailRE.ReplaceAllString(t, "")
 	// The rule's name slot takes any capitalised word ("Keys在哪", "where
@@ -1024,7 +1054,11 @@ func whereAgentPure(text string, active []ActiveTask) bool {
 		}
 		t = regexp.MustCompile(`(?i)\b`+regexp.QuoteMeta(name)+`\b`).ReplaceAllString(t, name)
 	}
-	t = whereInvertRE.ReplaceAllString(t, "$1 $3 $2$4")
+	if asked {
+		// Only after "can you tell me…": a bare "where you are" is as
+		// likely the answer to "where should I wait?" (review r3 #1).
+		t = whereInvertRE.ReplaceAllString(t, "$1 $3 $2$4")
+	}
 	return IsWhereQuestion(t)
 }
 
@@ -1047,7 +1081,7 @@ var whereAskPrefixRE = regexp.MustCompile(`(?i)^(?:(?:hi|hey|hello|ok|okay|so|so
 var whereTrailRE = regexp.MustCompile(`(?i)[\s,]+(?:please|pls|plz|thanks|thank you|thx)[\s?？!.。]*$`)
 
 // whereInvertRE: the indirect word order of "tell me where she is".
-var whereInvertRE = regexp.MustCompile(`^(where|how far(?: away)?|how close)\s+(he|she|they|my supporter|the supporter|[A-Z][a-z]+)\s+(is|are)((?:\s+now|\s+right now)?[\s?？!.]*)$`)
+var whereInvertRE = regexp.MustCompile(`^(where|how far(?: away)?|how close)\s+(he|she|they|you|my supporter|the supporter|[A-Z][a-z]+)\s+(is|are)((?:\s+now|\s+right now)?[\s?？!.]*)$`)
 
 // supporterQuestionOpen: the supporter asked something recently and the
 // person has not written since.

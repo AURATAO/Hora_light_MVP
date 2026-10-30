@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // LiveState is the app's own closed set (live_tracking.go).
@@ -51,21 +53,63 @@ type LiveLookup interface {
 // the whole message, give or take a greeting and a question mark, so a
 // message that also carries an instruction ("I'll be late, where is he?",
 // "tell Sam to ignore the ETA") is relayed as before (review r1 #2).
-var whereRE = regexp.MustCompile(`(?i)^[\s,.!?]*(?:hi|hey|hello|ok|so|also|and|btw|sorry)?[\s,]*(?:` +
-	`where (?:is|are|'s|s) (?:he|she|they|my supporter|the supporter|(?-i:[A-Z][a-z]+))(?: now| right now| at)?` +
+var whereRE = regexp.MustCompile(`(?i)^[\s,.!?¿¡]*(?:hi|hey|hello|ok|so|also|and|btw|sorry|hola|ciao|salut)?[\s,]*(?:` +
+	`where (?:is|are|'s|s|r) (?:he|she|they|you|u|my supporter|the supporter|(?-i:[A-Z][a-z]+))(?: now| right now| at)?` +
 	`|where'?s (?:he|she|my supporter|the supporter|(?-i:[A-Z][a-z]+))(?: now| at)?` +
-	`|how far(?: away| along| out)?(?: is| are)?(?: (?:he|she|they|my supporter|(?-i:[A-Z][a-z]+)))?(?: now)?` +
-	`|how close(?: is| are) (?:he|she|they|my supporter|(?-i:[A-Z][a-z]+))` +
+	`|how far(?: away| along| out)?(?: is| are)?(?: (?:he|she|they|you|my supporter|(?-i:[A-Z][a-z]+)))?(?: now)?` +
+	`|how close(?: is| are) (?:he|she|they|you|my supporter|(?-i:[A-Z][a-z]+))` +
 	`|(?:is|are|has|have) (?:he|she|they|my supporter|(?-i:[A-Z][a-z]+)) (?:there|here|arrived|close|nearby|on (?:the|their|his|her) way)(?: yet)?` +
+	// "are you there?" asks whether they are answering, not where they
+	// are (review): the second person only with a whereabouts predicate.
+	`|(?:are|have) you (?:arrived|close|nearby|on (?:the|your) way)(?: yet)?` +
 	`|(?:what'?s the |what is the )?eta` +
-	`|how (?:long|much longer) (?:until|till|before) (?:he|she|they|my supporter|(?-i:[A-Z][a-z]+)) (?:get|gets|arrive|arrives|is|are)(?: here| there)?` +
+	`|how (?:long|much longer) (?:until|till|before) (?:he|she|they|you|my supporter|(?-i:[A-Z][a-z]+)) (?:get|gets|arrive|arrives|is|are)(?: here| there)?` +
 	`|any update on (?:where (?:he|she|they) (?:is|are)|his|her|their) (?:location|whereabouts|eta)?` +
 	`|how much longer` +
-	`|(?:他|她|supporter|(?-i:[A-Z][a-z]+))?(?:現在|现在)?(?:在哪|在哪裡|在哪里|到哪|到哪裡|到了嗎|到了没|到了沒|多遠|多远|還要多久|还要多久|快到了嗎|什麼時候到|什么时候到)` +
-	`)[\s?？!。]*$`)
+	`|(?:他|她|你|supporter|(?-i:[A-Z][a-z]+))?(?:現在|现在)?(?:在哪|在哪裡|在哪里|到哪|到哪裡|到了嗎|到了没|到了沒|多遠|多远|還要多久|还要多久|快到了嗎|什麼時候到|什么时候到)` +
+	`)[\s?？!！。~～.]*$`)
+
+// whereAskedRE: Arbiter 2026-10-30 — other languages too (Spanish,
+// French, Italian, Japanese, Korean). Each a whole-message whereabouts
+// question about a PERSON, and only with a question mark (review r1, r2):
+// without one, many are statements ("está cerca"); and a form without a
+// person in it ("¿dónde está?", "어디예요?", "¿llegó?", "quanto manca?")
+// can be about a thing — the parcel, the keys — or how long the task
+// takes. So only second person ("estás", "tu", "sei", honorific Korean),
+// a pronoun for a person (él/ella, lui/lei, 彼/彼女), a supporter's name,
+// or a verb for an animate being (いる). Everything else goes to the
+// model, which answers AND relays.
+var whereAskedRE = regexp.MustCompile(`(?i)^[\s,.!¿¡]*(?:hola|ciao|salut|bonjour|buongiorno)?[\s,]*(?:` +
+	`(?:d[oó]nde|a d[oó]nde) (?:est[aá]s|andas)(?: ahora)?` +
+	`|(?:d[oó]nde|a d[oó]nde) (?:est[aá]|anda) (?:[eé]l|ella|mi supporter|(?-i:[A-Z][a-z]+))(?: ahora)?` +
+	`|(?:ya )?llegaste` +
+	`|cu[aá]nto te falta` +
+	`|est[aá]s (?:cerca|lejos)` +
+	`|o[uù] es[- ]tu(?: maintenant)?|tu es o[uù]` +
+	`|o[uù] est (?:mon supporter|(?-i:[A-Z][a-z]+))(?: maintenant)?` +
+	`|tu arrives quand` +
+	`|dove sei(?: adesso| ora)?` +
+	`|dov'[eè] (?:lui|lei|(?-i:[A-Z][a-z]+))(?: adesso| ora)?` +
+	`|quanto ti manca` +
+	`|sei (?:vicino|vicina|arrivato|arrivata)` +
+	`|(?:彼|彼女)(?:は)?(?:今)?どこ(?:にいる|にいますか|ですか)?(?:の)?|(?:今)?どこにいる(?:の)?|(?:今)?どこにいますか` +
+	`|(?:지금 )?어디(?:세요|쯤이에요|쯤이세요|\s?계세요)|도착하셨(?:어요|나요)` +
+	`)\s*[?？][\s?？!！~～.]*$`)
 
 // IsWhereQuestion reports a question about the supporter's whereabouts.
-func IsWhereQuestion(text string) bool { return whereRE.MatchString(strings.TrimSpace(text)) }
+func IsWhereQuestion(text string) bool {
+	t := whereNorm(text)
+	return whereRE.MatchString(t) || whereAskedRE.MatchString(t)
+}
+
+// whereNorm: NFKC (fullwidth Latin, "Ｋｅｙｓ" → "Keys") and straight
+// apostrophes (iMessage's curly one), trimmed. Every where check reads
+// the text through it FIRST, so a name guard and the grammar see the same
+// letters (review r2 #1).
+func whereNorm(text string) string {
+	t := strings.TrimSpace(norm.NFKC.String(text))
+	return strings.NewReplacer("\u2019", "'", "\u2018", "'").Replace(t)
+}
 
 // whereNameRE: the capitalised name the question used, if any.
 var whereNameRE = regexp.MustCompile(`(?:where (?:is|are|'s|s) |where'?s |how far(?: away| along| out)?(?: is| are)? |how close (?:is|are) |(?:is|are|has|have) |(?:until|till|before) )([A-Z][a-z]+)\b`)
@@ -85,6 +129,7 @@ func (r *Router) answerWhere(ctx context.Context, in Inbound, id Identity, conv 
 	// name may fill it — "Keys在哪" is a question about the keys (review
 	// r5 #1). Every other capitalised word lowered, it must still be the
 	// rule's question.
+	text = whereNorm(text)
 	if !IsWhereQuestion(lowerNonSupporterCaps(text, active)) {
 		return false, nil
 	}

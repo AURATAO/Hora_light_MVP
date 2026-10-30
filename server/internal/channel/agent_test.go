@@ -581,18 +581,43 @@ func TestAgentWhereKeepsAnOpenApproval(t *testing.T) {
 	}
 }
 
-// Review r1 #3, accepted and pinned: when the supporter has just asked
-// something and the person has not answered, a short message is taken as
-// the answer and relayed before any model (step 7a) — "can you tell me
-// where aura is" then reaches the supporter, who is the one to answer it.
-func TestWhereAfterASupporterQuestionIsTheirs(t *testing.T) {
+// Arbiter 2026-10-30 (was review r1 #3, pinned the other way): when the
+// supporter has just asked something and the person has not answered, a
+// short message used to be relayed before any model (step 7a). Now the
+// agent is asked first: "where" is answered from the tracking, "escalate"
+// hands off; anything else is still the supporter's answer.
+func TestWhereAfterASupporterQuestionIsHORAs(t *testing.T) {
 	aura := ActiveTask{ID: "task-2", Title: "Bagel run", SupporterName: "Aura"}
-	g, chat, tasks, fa := agentRig(llm.Proposal{Action: llm.ActionWhere, Task: 0}, aura)
-	g.r.Live = &fakeLive{st: LiveStatus{State: LiveAtDoor}}
-	tasks.lastText, tasks.lastTask, tasks.lastAt = "Aura · Bagel run: which entrance?", "task-2", time.Now().Add(-time.Minute)
+	open := func(p llm.Proposal) (*rig, *fakeChat, *fakeAgent) {
+		g, chat, tasks, fa := agentRig(p, aura)
+		g.r.Live = &fakeLive{st: LiveStatus{State: LiveAtDoor}}
+		tasks.lastText, tasks.lastTask, tasks.lastAt = "Aura · Bagel run: which entrance?", "task-2", time.Now().Add(-time.Minute)
+		return g, chat, fa
+	}
+	// The incident's words: answered, not relayed, one model call.
+	g, chat, fa := open(llm.Proposal{Action: llm.ActionWhere, Task: 0})
+	if got := g.say(t, "can you tell me where aura is"); got != "Aura is at the door." || len(chat.posted) != 0 || len(fa.calls) != 1 {
+		t.Fatalf("where: reply %q posted %v calls %d", got, chat.posted, len(fa.calls))
+	}
+	// An answer to the supporter: relayed whole, as before (one call).
+	g, chat, fa = open(llm.Proposal{Action: llm.ActionRelay, Task: 0})
+	g.say(t, "the side one")
+	if len(chat.posted) != 1 || chat.posted[0] != "task-2:the side one" || len(fa.calls) != 1 {
+		t.Fatalf("answer: posted %v calls %d", chat.posted, len(fa.calls))
+	}
+	// A safety report: handed off, not sent to the supporter.
+	g, chat, fa = open(llm.Proposal{Action: llm.ActionEscalate, Task: -1, Escalation: llm.EscalateSafety})
+	g.r.Ops = &memOps{}
+	g.say(t, "he is yelling at me")
+	if len(chat.posted) != 0 || g.state() != StateHandoff || len(fa.calls) != 1 {
+		t.Fatalf("escalate: posted %v state %s calls %d", chat.posted, g.state(), len(fa.calls))
+	}
+	// Without the agent: the old rule, untouched.
+	g, chat, fa = open(llm.Proposal{Action: llm.ActionWhere, Task: 0})
+	g.r.Agent = nil
 	g.say(t, "can you tell me where aura is")
 	if len(chat.posted) != 1 || len(fa.calls) != 0 {
-		t.Fatalf("posted %v model calls %d", chat.posted, len(fa.calls))
+		t.Fatalf("no agent: posted %v calls %d", chat.posted, len(fa.calls))
 	}
 }
 
@@ -607,6 +632,13 @@ func TestWhereAgentPure(t *testing.T) {
 		"can you tell me where aura is", "Can you tell me where Aura is?", "could you please tell me where bea is now",
 		"do you know where my supporter is", "let me know where she is please", "any idea where aura is", "hey, is aura close",
 		"where's bea", "where is bea now?", "how far is aura", "is Will there yet", "where is aura, thanks", "請問她在哪", "告訴我她在哪",
+		// Arbiter 2026-10-30: the second person is answered too
+		"where are you?", "are you close?", "how far are you", "where r u", "你在哪",
+		// Arbiter 2026-10-30: other languages — a question mark AND a person
+		"¿dónde está Aura?", "dónde está aura?", "¿dónde está ella?", "¿donde estas?", "¿ya llegaste?", "¿cuánto te falta?", "¿estás cerca?",
+		"où es-tu ?", "tu es où ?", "où est Aura ?", "tu arrives quand ?", "dov'è Aura?", "dov\u2019è lei?", "dove sei?", "quanto ti manca?", "sei arrivata?",
+		"彼女は今どこにいますか？", "今どこにいるの？", "どこにいますか？", "지금 어디세요?", "어디쯤이에요?", "어디 계세요?", "도착하셨어요?",
+		"where\u2019s bea", // iMessage's curly apostrophe
 	}
 	notPure := []string{
 		// not the rule's shape (answered and relayed)
@@ -621,7 +653,22 @@ func TestWhereAgentPure(t *testing.T) {
 		"can you tell me where aura is, tell her to ring twice", "can you tell me where aura is, the code is 4521",
 		"where is she? the code is 4521", "where is aura i feel unsafe", "where is he i was charged twice",
 		"我走了 她到哪了", "我已經到了 她到哪了", "她到哪了 走吧", "她到哪了 快", "她到哪了 不要了", "她到哪了 請她等一下",
-		"她到哪了 門沒鎖", "跟我朋友說一下她在哪", "dónde está aura", "where is she 🔑",
+		"她到哪了 門沒鎖", "跟我朋友說一下她在哪", "where is she 🔑",
+		// other languages: a place, not the supporter, or more than the question
+		"dónde está la llave", "¿dónde está Starbucks?", "dov'è la chiave", "où est la clé", "どこに置けばいい？", "어디에 둘까요",
+		"dónde está aura? el código es 4521", "dove sei? sono fuori",
+		// review: without a question mark these are statements, or "where" about a thing
+		"着きました", "도착했어요", "llegó", "está cerca", "è arrivato", "e vicino", "il est loin", "dove", "Dove?", "どこ", "어디",
+		"dónde está aura", "cuánto falta",
+		// review r2: no person in it — may be about the parcel, the keys, or the task's length
+		"¿Dónde está?", "dov'è?", "Où est-il ?", "どこ？", "어디?", "어디예요?", "어디야?", "¿Está cerca?", "Il est loin ?",
+		"¿Cuánto tarda?", "quanto ci mette?", "얼마나 걸려요?", "¿Llegó?", "もう着いた？", "도착했어요?", "quanto manca?",
+		// review r2: fullwidth Latin is the same letters
+		"Ｋｅｙｓ在哪", "Where is Ｓｔａｒｂｕｃｋｓ?",
+		// review: "are you there?" asks whether they are answering
+		"are you there?", "are you here?",
+		// review r3: no ask in front — the answer to "where should I wait?"
+		"where you are", "where she is",
 	}
 	for _, s := range pure {
 		if !whereAgentPure(s, active) {
@@ -725,5 +772,22 @@ func TestAgentWhereWithMoreKeepsAnOpenApproval(t *testing.T) {
 	g.say(t, "YES")
 	if len(g.booker.resolved) != 1 || !strings.HasSuffix(g.booker.resolved[0], ":true") {
 		t.Fatalf("a plain YES after the answer must approve: %v", g.booker.resolved)
+	}
+}
+
+// Review r2 #1: fullwidth Latin from an IME ("Ｋｅｙｓ在哪") is read as the
+// same letters as ASCII, so the rule's name guard holds on the rule path too.
+func TestWhereRuleNormalisesBeforeTheNameGuard(t *testing.T) {
+	for _, msg := range []string{"Ｋｅｙｓ在哪", "Where is Ｓｔａｒｂｕｃｋｓ?"} {
+		g, chat, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+		g.r.Live = &fakeLive{st: LiveStatus{State: LiveAtDoor}}
+		if got := g.say(t, msg); len(chat.posted) != 1 || strings.Contains(got, "at the door") {
+			t.Errorf("%q: posted %v reply %q", msg, chat.posted, got)
+		}
+	}
+	g, chat, _, _ := contextRig(llm.IntentToSupporter, bagelT)
+	g.r.Live = &fakeLive{st: LiveStatus{State: LiveAtDoor}}
+	if got := g.say(t, "Ｓａｍ在哪"); len(chat.posted) != 0 || got != "Sam is at the door." {
+		t.Errorf("fullwidth supporter name: posted %v reply %q", chat.posted, got)
 	}
 }
