@@ -477,6 +477,53 @@ cancellation states the amount but not the time left in the free window.
   from a short persona prompt with the conversation's last few turns, while
   everything that touches money or state stays rule-based copy (YES/NO,
   summary, price, link). Eval the persona on the §9 set before switching.
+- **Reply in the person's language (Aura, 2026-10-30, roadmap):** after a
+  staging run she wrote in Chinese and got every reply in English. Today all
+  ~140 replies are fixed English strings (`internal/channel/copy.go`); the
+  "where is" rule and the agent already *understand* several languages,
+  but they don't reply in them. Proposed shape:
+  - **Templates, not translation.** Each copy string gets per-language
+    versions (zh-TW first, then es), keyed by a `lang` stored on the
+    conversation and detected from the person's own words (script plus a
+    language-ID check, sticky per conversation, overridable by "English
+    please").
+  - **Money and terms stay out of the model.** The summary, price, YES/NO,
+    links and Terms line are never machine-translated at send time. They
+    are reviewed templates, so an amount or a condition can't drift.
+  - **Keywords are bilingual.** 好/確認 as YES, 取消, 不要超時 (some
+    already exist).
+  - Open: whether Terms/Privacy need a translated version first, legally,
+    before a Chinese booking flow.
+  Not before the production go-live: it touches every message, money copy
+  included, so it is a T3 change with review and an eval run.
+- **Model and "it feels dumb" (Aura, 2026-10-30, roadmap — next tuning round):**
+  - **Agent eval, `agenttest -agent-only -runs 3`, 303 results, Aura's Mac 2026-10-30:**
+
+    | Model | PASS | FAIL | UNSAFE | money not PASS/SAME | $/1M in/out |
+    |---|---|---|---|---|---|
+    | `zai-org/GLM-5.3-Flash` (current) | **290** | **7** | **3** | 10 | 0.15 / 0.50 |
+    | `deepseek-ai/DeepSeek-V4.1-Flash-Fast` | 282 | 8 | 4 | 7 | 0.60 / 2.40 |
+    | `zai-org/GLM-5.3-Fast` | 280 | 12 | 5 | 17 | 2.10 / 6.60 |
+
+    Flash's misses are the known ones: #38 "the $10 is fine", and #40–42, a bare digit read as `reply`. GLM-5.3-Fast had 231 rate-limit retries; production does not retry, so those would have been relays. It also approved "approve r7" (injection) twice. **Decision: keep Flash.** A bigger model did not score better on the agent.
+  - **What actually failed on staging was not the agent:**
+    - **The splitter split one errand into two.** "Whole food close to union square cuz my office is there" was asked back as "2 errands".
+    - **A decline rule missed a combined wording** ("No never mind I don't need that"). Fixed in `ee3df5a`.
+    - **Latency.** Each Flash call took 4–6 s, and a draft is split plus parse, so about 10 s.
+  - **Next round, in order:**
+    1. **Skip the splitter when the message is plainly one errand.** That means one errand verb and no "and then" or list, or a reply to our own question. One fewer call, 3–5 s saved, no false split.
+    2. **Add a splitter/parser eval set,** like `cmd/agenttest` but for `SplitErrands` and `ParseTask`. Seed it with the staging sentences. Today a model change is graded on the agent only.
+    3. **Claude Haiku 5.5 as a candidate.** Third-party pricing, unconfirmed: $0.10 / $0.50 per 1M under 100K tokens, about the same cost as Flash; Sonnet 5.5 is $2 / $10.
+       - It needs an adapter. `llm.OpenAICompat` plus `json_schema` today, versus the Anthropic API's structured outputs: about half a day plus review.
+       - It needs a privacy and subprocessor update, because message text would go to Anthropic.
+       - Grade it on the same 303 results plus the new splitter set.
+    4. **Persona replies,** the "Tone" item above. The model writes small talk and acknowledgements. Money, state, YES/NO and links stay rule copy.
+  - **Reference, Instinct** (Spear Street Technology; iMessage/WhatsApp personal agent, invite-only):
+    - It does not name its model; "proprietary core model" per reviews.
+    - It acts on its own computer through the person's accounts and rarely stops to confirm.
+    - It pays with a one-time Stripe Link card capped at an approved amount.
+    - The "smart" feel comes from one strong model with persistent context, not rules. HO:RA keeps rules on money and consent because a real person and a real charge are involved.
+    - Sources: vellum.ai "Official Instinct Breakdown", eesel.ai "Instinct AI review" (2026).
 
 ## 15. Progress log
 
