@@ -689,7 +689,7 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 	}
 	if conv.Pending.DetailsAsked {
 		switch {
-		case IsNo(text):
+		case IsNo(text) || IsDraftDecline(text):
 			return r.dropDraft(ctx, in, conv)
 		case IsYes(text):
 			// Nothing to say yes to yet.
@@ -751,6 +751,13 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 			// and the way to a posted task's cancel is named.
 			return r.dropDraftWith(ctx, in, conv, CopyDroppedCancelHint)
 		}
+		// "Sorry no I don't need that", "never mind", "算了": a no in
+		// words to the draft (staging 2026-10-30: it was re-drafted as a
+		// correction, twice). Dropping a draft charges nothing and the
+		// person can text again, so a no in words is enough.
+		if IsDraftDecline(text) {
+			return r.dropDraft(ctx, in, conv)
+		}
 		// A new errand typed while the draft waits joins the draft — it is
 		// not relayed to a supporter (staging 2026-10-24: "buy me a bagel"
 		// went to the bagel supporter; Arbiter: draft-first).
@@ -763,7 +770,28 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 		if handled {
 			return err
 		}
+		if label == "" && r.Agent != nil {
+			// No supporter on the job, so the agent was not asked above:
+			// ask it now, with the booking question open, before reading
+			// this as a correction. A "decline" drops the draft; an
+			// "approve" is re-asked (the YES has to be plain); anything
+			// else is the correction it was read as before.
+			p := r.propose(ctx, id, text, nil, conv, "", "", time.Time{}, false)
+			switch p.Action {
+			case llm.ActionDecline:
+				return r.dropDraft(ctx, in, conv)
+			case llm.ActionApprove:
+				label = llm.IntentAnswer
+			case llm.ActionEscalate:
+				return r.agentHandOff(ctx, in, id, p)
+			}
+		}
 		if label == llm.IntentAnswer {
+			if startsWithNo(text) {
+				// The agent read a yes-or-no in words, and it begins with
+				// a no: a no to the draft, not a YES to put again.
+				return r.dropDraft(ctx, in, conv)
+			}
 			// "book it please": an answer in words — the YES has to be plain.
 			return r.Reply(ctx, in, CopyConfirmReask, "")
 		}
@@ -1290,3 +1318,26 @@ func detailsQuestion(p *PendingDraft) string {
 	}
 	return fmt.Sprintf(CopyAskWhere, p.Headline())
 }
+
+// draftDeclineRE: a no in words to a pending draft, as the whole message.
+// The object, if any, is the draft itself ("it", "that"), so "no I don't
+// need the extra time" or "no, make it 4pm" is not one.
+var draftDeclineRE = regexp.MustCompile(`(?i)^\s*(?:(?:ok(?:ay)?|sorry|actually|hmm+|oh|wait|no|nah|nope|thanks|thank you)[\s,.!]*)*` +
+	`(?:(?:i|we)\s+)?(?:` +
+	`(?:don'?t|do not|no longer)\s+(?:really\s+)?(?:need|want)(?:\s+(?:it|that|this|them|one|the task|this task|that task|this one|that one))?(?:\s+(?:anymore|any more|after all|now|today|for now))?` +
+	`|never ?mind|forget (?:it|that|about it)|no thanks|no thank you|not anymore|not needed|skip it|(?:i )?changed my mind|not now` +
+	`|算了|不用了|不用|不需要了?|不要了|先不用了?|沒事了?)` +
+	`[\s,.!。！~]*(?:(?:thanks|thank you|sorry|謝謝)[\s,.!。！~]*)?$`)
+
+// okNoRE: "ok no", "okay, no" — a no after a filler.
+var okNoRE = regexp.MustCompile(`(?i)^\s*(?:ok(?:ay)?|sorry|hmm+|actually)[\s,.]*(?:no|nope|nah)[\s.!'"‘’“”]*$`)
+
+// IsDraftDecline reports a no in words to the pending draft.
+func IsDraftDecline(text string) bool {
+	t := strings.NewReplacer("’", "'", "‘", "'").Replace(text)
+	return draftDeclineRE.MatchString(t) || okNoRE.MatchString(t)
+}
+
+var startsWithNoRE = regexp.MustCompile(`(?i)^\s*(?:(?:ok(?:ay)?|sorry|actually)[\s,.]*)*(?:(?:no|nope|nah)\b|不要|不用|不需要|算了)`)
+
+func startsWithNo(text string) bool { return startsWithNoRE.MatchString(text) }

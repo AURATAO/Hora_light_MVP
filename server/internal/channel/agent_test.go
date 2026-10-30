@@ -832,3 +832,54 @@ func TestWhereWhileWorkingGivesTheFreshPosition(t *testing.T) {
 		t.Errorf("on the way: %q", got)
 	}
 }
+
+// Staging 2026-10-30: "Sorry no I don't need that" to a waiting draft was
+// re-drafted as a correction, twice. A no in words now drops the draft.
+func TestNoInWordsDropsTheDraft(t *testing.T) {
+	for _, s := range []string{"Sorry no I don’t need that", "Ok no ‘", "never mind", "forget it", "算了", "不用了謝謝", "actually I don't want it"} {
+		g := newRig(llm.IntentNewTask)
+		g.ids.link(me, "user-1")
+		g.say(t, "pick up my laundry at 12 Bedford Ave")
+		if g.state() != StateAwaitingConfirm {
+			t.Fatalf("state %s", g.state())
+		}
+		if got := g.say(t, s); got != CopyDropped || g.state() != StateIdle {
+			t.Errorf("%q: reply %q state %s, want the draft dropped", s, got, g.state())
+		}
+	}
+	for _, s := range []string{"no I don't need the extra time", "no, make it 4pm", "I don't need a car", "not now, tomorrow"} {
+		if IsDraftDecline(s) {
+			t.Errorf("%q must not drop the draft", s)
+		}
+	}
+}
+
+// Anything the rule does not know: with no supporter on the job, the agent
+// is asked with the booking question open; its "decline" drops the draft,
+// its "approve" re-asks for a plain YES, anything else is a correction.
+func TestAgentDeclineDropsTheDraftWithNoActiveTask(t *testing.T) {
+	g, _, _, fa := agentRig(llm.Proposal{Action: llm.ActionDecline, Task: -1})
+	g.ids.link(me, "user-1")
+	g.say(t, "pick up my laundry at 12 Bedford Ave")
+	if got := g.say(t, "honestly I'll just do it myself"); got != CopyDropped || g.state() != StateIdle {
+		t.Fatalf("reply %q state %s", got, g.state())
+	}
+	if n := len(fa.calls); n == 0 || fa.calls[n-1].OpenQuestion != "booking" {
+		t.Fatalf("agent not asked with the booking question open: %+v", fa.calls)
+	}
+
+	g2, _, _, _ := agentRig(llm.Proposal{Action: llm.ActionApprove, Task: -1})
+	g2.ids.link(me, "user-1")
+	g2.say(t, "pick up my laundry at 12 Bedford Ave")
+	if got := g2.say(t, "sounds good go for it"); got != CopyConfirmReask || g2.state() != StateAwaitingConfirm {
+		t.Fatalf("approve: reply %q state %s", got, g2.state())
+	}
+
+	g3, _, _, _ := agentRig(llm.Proposal{Action: llm.ActionCorrection, Task: -1})
+	g3.ids.link(me, "user-1")
+	g3.say(t, "pick up my laundry at 12 Bedford Ave")
+	g3.say(t, "make it 4pm")
+	if g3.state() != StateAwaitingConfirm {
+		t.Fatalf("correction: state %s", g3.state())
+	}
+}
