@@ -847,7 +847,7 @@ func TestNoInWordsDropsTheDraft(t *testing.T) {
 			t.Errorf("%q: reply %q state %s, want the draft dropped", s, got, g.state())
 		}
 	}
-	for _, s := range []string{"no I don't need the extra time", "no, make it 4pm", "I don't need a car", "not now, tomorrow"} {
+	for _, s := range []string{"no I don't need the extra time", "no, make it 4pm", "I don't need a car", "not now, tomorrow", "I don't need it today", "no problem, go ahead"} {
 		if IsDraftDecline(s) {
 			t.Errorf("%q must not drop the draft", s)
 		}
@@ -879,7 +879,20 @@ func TestAgentDeclineDropsTheDraftWithNoActiveTask(t *testing.T) {
 	g3.ids.link(me, "user-1")
 	g3.say(t, "pick up my laundry at 12 Bedford Ave")
 	g3.say(t, "make it 4pm")
-	if g3.state() != StateAwaitingConfirm {
-		t.Fatalf("correction: state %s", g3.state())
+	if c, _ := g3.convs.GetConversation(context.Background(), "id-"+me); g3.state() != StateAwaitingConfirm || c.Pending == nil || !strings.Contains(c.Pending.Source, "make it 4pm") {
+		t.Fatalf("correction: state %s, source kept? %+v", g3.state(), c.Pending)
+	}
+
+	// Review r1: an agent "decline" on a no that carries a change is the
+	// correction, never a dropped draft.
+	for _, s := range []string{"no, I need it at 5", "nope, 2 bags not 1", "forget it, make it laundry instead"} {
+		g4, _, _, _ := agentRig(llm.Proposal{Action: llm.ActionDecline, Task: -1})
+		g4.ids.link(me, "user-1")
+		g4.say(t, "pick up my laundry at 12 Bedford Ave")
+		g4.say(t, s)
+		c, _ := g4.convs.GetConversation(context.Background(), "id-"+me)
+		if g4.state() != StateAwaitingConfirm || c.Pending == nil || !strings.Contains(c.Pending.Source, s) {
+			t.Errorf("%q: state %s — the correction was lost", s, g4.state())
+		}
 	}
 }
