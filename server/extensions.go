@@ -42,6 +42,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -275,7 +276,7 @@ func expireAndAnnounce(ctx context.Context, taskID string) {
 			"fallback":          e.Fallback,
 		})
 		req := e
-		go announceExtensionResolution(context.Background(), req)
+		announceInBackground(req)
 	}
 }
 
@@ -659,7 +660,7 @@ func decideExtension(ctx context.Context, taskID, extID, requesterUID, decision 
 	writeAudit(ctx, taskID, requesterUID, "EXTENSION_"+strings.ToUpper(decision), e.Kind, meta)
 	log.Printf("[extensions] %s id=%s task=%s kind=%s by=%s", decision, e.ID, taskID, e.Kind, requesterUID)
 
-	go announceExtensionResolution(context.Background(), e)
+	announceInBackground(e)
 	return extensionResolution{Resolved: e}, nil
 }
 
@@ -859,6 +860,20 @@ func announceExtensionResolution(ctx context.Context, e ExtensionRequest) {
 		Body:        requesterBody,
 		TaskTitle:   t.Title,
 	})
+}
+
+// announceInBackground sends the resolution notices off the request path.
+// announceWG lets a test wait for them before it swaps the database back:
+// without it a notice still running after a test ends reads the global pool
+// while the cleanup writes it (a -race failure on the Mac, 2026-10-30).
+var announceWG sync.WaitGroup
+
+func announceInBackground(e ExtensionRequest) {
+	announceWG.Add(1)
+	go func() {
+		defer announceWG.Done()
+		announceExtensionResolution(context.Background(), e)
+	}()
 }
 
 func derefInt(p *int) int {
