@@ -15,6 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"hora-auth/helpers"
 	"hora-auth/internal/channel"
 	"hora-auth/internal/channel/llm"
 )
@@ -51,6 +52,24 @@ func (b *chatBooker) Quote(_ context.Context, d llm.TaskDraft, budgetCents int) 
 	q := quoteTask(d.Category, minutes, budgetCents,
 		resolveRateCentsPerMin(estimateStartAt(!d.Scheduled, d.ScheduledTime)))
 	return q.TotalCents, minutes, nil
+}
+
+// CheckArea runs createTask's own service-area check on the draft's stops, so
+// the chat can answer before a summary is ever shown. createTask checks again
+// at the post. The chat has no sandbox exemption: the review account does not
+// book by text.
+func (b *chatBooker) CheckArea(ctx context.Context, d llm.TaskDraft) channel.AreaCheck {
+	res := checkTaskArea(ctx, draftToCreateInput(d, channel.PostOptions{}).LocationText)
+	switch {
+	case res.Err != nil:
+		logAreaFailure(res.Err)
+		return channel.AreaCheck{Outcome: channel.AreaUnavailable}
+	case res.Verdict == helpers.AreaInside:
+		return channel.AreaCheck{Outcome: channel.AreaInside}
+	case res.Verdict == helpers.AreaOutside:
+		return channel.AreaCheck{Outcome: channel.AreaOutside, Stop: res.Stop}
+	}
+	return channel.AreaCheck{Outcome: channel.AreaUnclear, Stop: res.Stop}
 }
 
 // draftToCreateInput maps a chat draft onto the POST /tasks body the app sends.
@@ -120,6 +139,8 @@ func postResultFrom(status int, raw []byte) channel.PostResult {
 		Error   string `json:"error"`
 		Message string `json:"message"`
 		TaskID  string `json:"task_id"`
+		Code    string `json:"code"`
+		Stop    string `json:"stop"`
 	}
 	if err := json.Unmarshal(raw, &r); err != nil {
 		// createTask always answers JSON; anything else is a server fault.
@@ -137,6 +158,10 @@ func postResultFrom(status int, raw []byte) channel.PostResult {
 		return channel.PostResult{Outcome: channel.PostDeclined, Message: r.Message}
 	case status == http.StatusForbidden && r.Error == "outstanding_balance":
 		return channel.PostResult{Outcome: channel.PostOwesBalance, Message: r.Message}
+	case status == http.StatusUnprocessableEntity && r.Code == areaCodeOutside:
+		return channel.PostResult{Outcome: channel.PostOutOfArea}
+	case status == http.StatusUnprocessableEntity && r.Code == areaCodeUnclear:
+		return channel.PostResult{Outcome: channel.PostAddressUnclear, Message: r.Stop}
 	default:
 		return channel.PostResult{Outcome: channel.PostFailed, Message: ""}
 	}

@@ -468,7 +468,7 @@ WhatsApp notifications are stubbed (TODO comments throughout).
 | Supabase Storage | `SUPABASE_PROJECT_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Avatar + photo uploads |
 | Supabase Auth JWKS | `SUPABASE_JWKS_URL` | Validate Bearer tokens |
 | Google OAuth | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Login flow |
-| Google Maps | `GOOGLE_MAPS_API_KEY` | Distance Matrix API for travel estimates |
+| Google Maps | `GOOGLE_MAPS_API_KEY` | Distance Matrix API for travel estimates; Geocoding API for task coordinates and the NYC service-area check. **Required:** without a working Geocoding API every post is refused (503) |
 | Postmark | `POSTMARK_API_TOKEN` | Transactional email |
 | Anthropic | `ANTHROPIC_API_KEY` | AI task parsing |
 | WhatsApp (Meta) | `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_VERIFY_TOKEN` | Future notifications |

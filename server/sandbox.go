@@ -29,10 +29,10 @@ package main
 // sandbox user may accept its OWN task (canSelfAccept), so a single reviewer
 // login can play both sides. No real account can.
 //
-// The NYC service area needs no exemption, because the backend does not have
-// one: nothing in createTask checks where a task is, and the clients only BIAS
-// address autocomplete toward New York. The partition above is what keeps a
-// reviewer's California task off real supporters' boards.
+// The NYC service area (task_service_area.go) is the other exemption: a
+// reviewer posts from wherever they are, as the App Review notes tell them.
+// The partition above is what keeps a reviewer's California task off real
+// supporters' boards.
 //
 // users.is_sandbox is set by the review-login seed and nothing else. It is on
 // the row, not derived from REVIEW_ACCOUNT_EMAIL, because the Stripe objects

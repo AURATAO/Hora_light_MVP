@@ -23,100 +23,133 @@ var ErrGeocodeNoKey = errors.New("GOOGLE_MAPS_API_KEY not set")
 // at a local server. Never set outside tests.
 var GeocodeURL = "https://maps.googleapis.com/maps/api/geocode/json"
 
-// nycBounds biases results toward New York City (HO:RA's service area) —
-// a bias, not a filter: an address elsewhere still resolves.
+// nycBounds biases results toward New York City — a bias, not a filter: an
+// address elsewhere still resolves. The rectangle takes in parts of New
+// Jersey, Westchester and Long Island, so it says nothing about whether an
+// address is in the service area; that is ServiceArea's job.
 const nycBounds = "40.4774,-74.2591|40.9176,-73.7004"
 
-type geocodeResponse struct {
-	Status  string `json:"status"`
-	Results []struct {
-		Types        []string `json:"types"`
-		PartialMatch bool     `json:"partial_match"`
-		Geometry     struct {
-			Location struct {
-				Lat float64 `json:"lat"`
-				Lng float64 `json:"lng"`
-			} `json:"location"`
-			LocationType string `json:"location_type"`
-		} `json:"geometry"`
-	} `json:"results"`
+type geocodeComponent struct {
+	LongName  string   `json:"long_name"`
+	ShortName string   `json:"short_name"`
+	Types     []string `json:"types"`
 }
 
-// GeocodeAddress turns a street address into coordinates with the Google
-// Geocoding API, using the same key as the Distance Matrix call
-// (GOOGLE_MAPS_API_KEY — the key must have the Geocoding API enabled). The
-// address is never logged (it is the requester's), and errors carry the
-// API's status only, never the key or the address.
-func GeocodeAddress(ctx context.Context, address string) (float64, float64, error) {
+type geocodeResult struct {
+	Types             []string           `json:"types"`
+	PartialMatch      bool               `json:"partial_match"`
+	AddressComponents []geocodeComponent `json:"address_components"`
+	Geometry          struct {
+		Location struct {
+			Lat float64 `json:"lat"`
+			Lng float64 `json:"lng"`
+		} `json:"location"`
+		LocationType string `json:"location_type"`
+	} `json:"geometry"`
+}
+
+type geocodeResponse struct {
+	Status  string          `json:"status"`
+	Results []geocodeResult `json:"results"`
+}
+
+// geocodeLookup asks the Google Geocoding API about an address, using the
+// same key as the Distance Matrix call (GOOGLE_MAPS_API_KEY — the key must
+// have the Geocoding API enabled). The address is never logged (it is the
+// requester's), and errors carry the API's status only, never the key or the
+// address. biased: lean toward NYC with nycBounds. At least one result, or an
+// error.
+func geocodeLookup(ctx context.Context, address string, biased bool) ([]geocodeResult, error) {
 	key := strings.TrimSpace(os.Getenv("GOOGLE_MAPS_API_KEY"))
 	if key == "" {
-		return 0, 0, ErrGeocodeNoKey
+		return nil, ErrGeocodeNoKey
 	}
 	address = strings.TrimSpace(address)
 	if address == "" {
-		return 0, 0, ErrNotGeocodable
+		return nil, ErrNotGeocodable
 	}
 	q := url.Values{}
 	q.Set("address", address)
-	q.Set("bounds", nycBounds)
+	if biased {
+		q.Set("bounds", nycBounds)
+	}
 	q.Set("region", "us")
 	q.Set("key", key)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, GeocodeURL+"?"+q.Encode(), nil)
 	if err != nil {
-		return 0, 0, fmt.Errorf("geocode: build request")
+		return nil, fmt.Errorf("geocode: build request")
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return 0, 0, fmt.Errorf("geocode: request failed")
+		return nil, fmt.Errorf("geocode: request failed")
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return 0, 0, fmt.Errorf("geocode: read response")
+		return nil, fmt.Errorf("geocode: read response")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return 0, 0, fmt.Errorf("geocode: http %d", resp.StatusCode)
+		return nil, fmt.Errorf("geocode: http %d", resp.StatusCode)
 	}
 	var r geocodeResponse
 	if err := json.Unmarshal(body, &r); err != nil {
-		return 0, 0, fmt.Errorf("geocode: bad response")
+		return nil, fmt.Errorf("geocode: bad response")
 	}
 	switch r.Status {
 	case "OK":
 	case "ZERO_RESULTS":
-		return 0, 0, ErrNotGeocodable
+		return nil, ErrNotGeocodable
 	default:
 		// REQUEST_DENIED (the Geocoding API not enabled for this key),
 		// OVER_QUERY_LIMIT, INVALID_REQUEST, UNKNOWN_ERROR.
-		return 0, 0, fmt.Errorf("geocode: status %s", r.Status)
+		return nil, fmt.Errorf("geocode: status %s", r.Status)
 	}
 	if len(r.Results) == 0 {
+		return nil, ErrNotGeocodable
+	}
+	return r.Results, nil
+}
+
+// GeocodeAddress turns a street address into coordinates.
+func GeocodeAddress(ctx context.Context, address string) (float64, float64, error) {
+	results, err := geocodeLookup(ctx, address, true)
+	if err != nil {
+		return 0, 0, err
+	}
+	res := results[0]
+	if !placeable(res) {
 		return 0, 0, ErrNotGeocodable
 	}
-	res := r.Results[0]
+	loc := res.Geometry.Location
+	return loc.Lat, loc.Lng, nil
+}
+
+// placeable: the result names a place to stand.
+//
+// A wrong point is worse than none: the chat states distances and "at the
+// door" as facts (review). "Brooklyn" or "home" come back APPROXIMATE (a
+// centroid); a bare street ("Broadway") comes back as a route at its
+// GEOMETRIC_CENTER — the middle of a 13-mile street; a neighbourhood, a ZIP, a
+// park, a city likewise name an area, not a door. A real address with a typo
+// still matches a building (ROOFTOP or RANGE_INTERPOLATED, type street_address
+// / premise) and is kept.
+func placeable(res geocodeResult) bool {
 	loc := res.Geometry.Location
 	if loc.Lat == 0 && loc.Lng == 0 {
-		return 0, 0, ErrNotGeocodable
+		return false
 	}
-	// A wrong point is worse than none: the chat states distances and
-	// "at the door" as facts (review). "Brooklyn" or "home" come back
-	// APPROXIMATE (a centroid); a bare street ("Broadway") comes back as a
-	// route at its GEOMETRIC_CENTER — the middle of a 13-mile street; a
-	// neighbourhood, a ZIP, a park, a city likewise name an area, not a
-	// door. A real address with a typo still matches a building (ROOFTOP
-	// or RANGE_INTERPOLATED, type street_address / premise) and is kept.
 	for _, ty := range res.Types {
 		if areaTypes[ty] {
-			return 0, 0, ErrNotGeocodable
+			return false
 		}
 	}
 	switch {
 	case res.Geometry.LocationType == "APPROXIMATE":
-		return 0, 0, ErrNotGeocodable
+		return false
 	case res.PartialMatch && res.Geometry.LocationType == "GEOMETRIC_CENTER":
-		return 0, 0, ErrNotGeocodable
+		return false
 	}
-	return loc.Lat, loc.Lng, nil
+	return true
 }
 
 // areaTypes: result types that name an area or a line, not a place to stand.

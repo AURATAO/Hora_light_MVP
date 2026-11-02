@@ -1653,6 +1653,12 @@ func createTask(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
+	// Every stop inside the five boroughs, before the payments gate: no hold,
+	// no Stripe call, nothing written for a task that cannot run.
+	if refuseTaskArea(c, ctx, c.GetString("uid"), in.LocationText) {
+		return
+	}
+
 	// Payments gate, resolved BEFORE anything is written. A requester with no
 	// card on file gets a 402 that costs one Stripe round trip and leaves the
 	// database untouched — nothing to clean up, nothing to race.
@@ -2469,11 +2475,13 @@ func updateTask(c *gin.Context) {
 	// from one that does not — see the rate below.
 	var wasImmediate bool
 	var wasScheduledAt *time.Time
+	var wasLocation string
 	if err := db.QueryRow(ctx,
-		`select requester_id, requester, status, assigned_to_id, is_immediate, scheduled_at
+		`select requester_id, requester, status, assigned_to_id, is_immediate, scheduled_at,
+		        coalesce(location_text, '')
 		   from public.tasks where id=$1`,
 		id,
-	).Scan(&requesterID, &requesterEmail, &status, &assignedToID, &wasImmediate, &wasScheduledAt); err != nil {
+	).Scan(&requesterID, &requesterEmail, &status, &assignedToID, &wasImmediate, &wasScheduledAt, &wasLocation); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
@@ -2555,6 +2563,13 @@ func updateTask(c *gin.Context) {
 	// Same cap as createTask — this is a full replace (see the PATCH note on
 	// UpdateTaskPayload), so an edit is every bit as capable of setting an
 	// over-cap budget as a create.
+
+	// An edit must not carry a task out of the area createTask let it into.
+	// Only when the address changes: a task posted before the check existed
+	// can still have its typo fixed.
+	if in.LocationText != wasLocation && refuseTaskArea(c, ctx, meUID, in.LocationText) {
+		return
+	}
 
 	var when *time.Time
 	if in.IsImmediate {

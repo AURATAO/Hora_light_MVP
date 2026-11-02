@@ -75,6 +75,10 @@ type PendingDraft struct {
 	// draft without what it needs. At MaxDetailsTries the thread goes to a
 	// person instead of asking again forever (review 10/24 #6).
 	DetailsTries int `json:"details_tries,omitempty"`
+	// UnclearStop: the address the service-area check could not place. Set
+	// with DetailsAsked, so no YES books the draft until the words that
+	// answer detailsQuestion re-draft it and the check passes.
+	UnclearStop string `json:"unclear_stop,omitempty"`
 	// WhileActive is the supporter's first name when the draft was started
 	// while that supporter was on the job (D-17 P6): the summary says so
 	// and "for <name>" relays the words instead.
