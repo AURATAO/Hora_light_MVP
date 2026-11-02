@@ -82,6 +82,11 @@ type PendingDraft struct {
 	// WhichBorough: UnclearStop exists in more than one borough, so the
 	// question is which one.
 	WhichBorough bool `json:"which_borough,omitempty"`
+	// AreaStops: this draft's stops that passed the area check, by the words
+	// they were checked as (stopKey) with the address found. A re-draft that
+	// keeps a stop uses it, so changing the time geocodes nothing. Lives and
+	// dies with the draft; createTask still checks at the post.
+	AreaStops map[string]string `json:"area_stops,omitempty"`
 	// WhileActive is the supporter's first name when the draft was started
 	// while that supporter was on the job (D-17 P6): the summary says so
 	// and "for <name>" relays the words instead.

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -116,6 +117,8 @@ func TestChatBookerCheckArea(t *testing.T) {
 		{"Yonkers", "12 Bedford Ave", channel.AreaOutside},
 		{"12 Bedford Ave", "the market", channel.AreaUnclear},
 		{"12 Bedford Ave", "down", channel.AreaUnavailable},
+		{"", "Yonkers", channel.AreaOutside}, // the draft's first stop already checked
+		{"", "12 Bedford Ave", channel.AreaInside},
 	} {
 		if got := b.CheckArea(context.Background(), llm.TaskDraft{Location1: c.l1, Location2: c.l2}); got.Outcome != c.want {
 			t.Errorf("%q → %q: %+v", c.l1, c.l2, got)
@@ -159,6 +162,18 @@ func TestCheckStopsResolvesEveryStop(t *testing.T) {
 	if res.Outcome != channel.AreaInside || res.Resolved[0] != "100 Washington St, New York, NY 10006" {
 		t.Fatalf("%+v", res)
 	}
+}
+
+func TestCheckStopsDeadlineIsPerStop(t *testing.T) {
+	fakeArea(t, nil, nil)
+	serviceAreaFn = func(ctx context.Context, _ string) (helpers.AreaResult, error) {
+		left, ok := ctx.Deadline()
+		if !ok || time.Until(left) > areaCheckTimeout {
+			t.Errorf("deadline %v, %v", left, ok)
+		}
+		return helpers.AreaResult{Verdict: helpers.AreaInside}, nil
+	}
+	checkStops(context.Background(), "100 Washington St")
 }
 
 func TestCheckStopsWhichBorough(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // googleResult is a Geocoding API result in the shape the API returns: a
@@ -382,5 +383,77 @@ func TestEchoesPlace(t *testing.T) {
 	}
 	if !echoesPlace("Yonkers", yonkers) || !echoesPlace("the mall in yonkers", yonkers) {
 		t.Error("the city itself")
+	}
+}
+
+// Six lookups at once: a stop with no city waits for the slowest, not the sum.
+func TestNoCityLookupsRunTogether(t *testing.T) {
+	const each = 150 * time.Millisecond
+	var mu sync.Mutex
+	inFlight, most, calls := 0, 0, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		inFlight++
+		if inFlight > most {
+			most = inFlight
+		}
+		mu.Unlock()
+		time.Sleep(each)
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		_, _ = w.Write([]byte(noResults))
+	}))
+	t.Cleanup(srv.Close)
+	prev := GeocodeURL
+	GeocodeURL = srv.URL
+	t.Cleanup(func() { GeocodeURL = prev })
+	t.Setenv("GOOGLE_MAPS_API_KEY", "test-key-not-real")
+
+	start := time.Now()
+	if _, err := ServiceArea(context.Background(), "100 Washington St"); err != nil {
+		t.Fatal(err)
+	}
+	took := time.Since(start)
+	if calls != 6 || most != 6 || took >= 2*each {
+		t.Fatalf("%d lookups, %d at once, %v (one takes %v)", calls, most, took, each)
+	}
+}
+
+// A stuck Google ends at the caller's deadline, as an error nothing books on.
+func TestNoCityLookupsStopAtTheDeadline(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+	prev := GeocodeURL
+	GeocodeURL = srv.URL
+	t.Cleanup(func() { GeocodeURL = prev })
+	t.Setenv("GOOGLE_MAPS_API_KEY", "test-key-not-real")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	r, err := ServiceArea(ctx, "100 Washington St")
+	if err == nil || r.Verdict != AreaUnclear || time.Since(start) > time.Second {
+		t.Fatalf("%+v, %v, %v", r, err, time.Since(start))
+	}
+}
+
+// A place found by the echo, not the words, still refuses: the borough lookups
+// beside it don't count.
+func TestEchoWinsOverTheBoroughs(t *testing.T) {
+	hoboken := googleResult{types: "locality", locationType: "APPROXIMATE", county: "Hudson County", state: "NJ", locality: "Hoboken"}
+	boroughGoogle(t, googleSays(hoboken), map[string]string{
+		"Kings County": googleSays(googleResult{county: "Kings County", state: "NY", formatted: "1 Hoboken St, Brooklyn, NY, USA"}),
+	})
+	if r, err := ServiceArea(context.Background(), "Hoboken"); err != nil || r.Verdict != AreaOutside {
+		t.Fatalf("%+v, %v", r, err)
 	}
 }

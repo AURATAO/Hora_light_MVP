@@ -23,8 +23,9 @@ import (
 // a task outside the area is one nobody can run. If Google can't answer, nothing
 // is posted.
 
-// areaCheckTimeout bounds one stop: two lookups, or six with no city.
-const areaCheckTimeout = 8 * time.Second
+// areaCheckTimeout bounds one stop, however many lookups it takes: six at once
+// with no city, or at most two in a row. Past it the post is refused.
+const areaCheckTimeout = 5 * time.Second
 
 // maxTaskStops: the clients offer three stops and the chat two. More than this
 // is not a task, and each stop is a billable lookup.

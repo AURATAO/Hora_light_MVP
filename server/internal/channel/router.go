@@ -581,7 +581,11 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 	if prev := conv.Pending; prev != nil && prev.WhichBorough {
 		applyBorough(items, prev.UnclearStop, latestLine(source))
 	}
-	area := r.checkArea(ctx, items)
+	var known map[string]string
+	if conv.Pending != nil {
+		known = conv.Pending.AreaStops
+	}
+	area, areaStops := r.checkArea(ctx, items, known)
 	switch area.Outcome {
 	case AreaOutside:
 		return r.refuseOutOfArea(ctx, in, conv)
@@ -595,6 +599,7 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		p.WhileActive, p.WhileActiveShown = conv.Pending.WhileActive, conv.Pending.WhileActiveShown
 	}
 	p.SetItems(items)
+	p.AreaStops = areaStops
 	unclear := area.Outcome == AreaUnclear || area.Outcome == AreaWhichBorough
 	if unclear {
 		p.UnclearStop, p.WhichBorough = area.Stop, area.Outcome == AreaWhichBorough
@@ -668,20 +673,46 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 // failed check, then an unclear stop: "that's outside NYC" is final, while a
 // clearer address could not change it. A stop that passes takes the address
 // the check resolved, so the summary shows what was picked and the YES books
-// that, not the words it was found from.
-func (r *Router) checkArea(ctx context.Context, items []DraftItem) AreaCheck {
+// that, not the words it was found from. A stop in known is not asked about
+// again. Returns the stops that passed, for the next re-draft.
+func (r *Router) checkArea(ctx context.Context, items []DraftItem, known map[string]string) (AreaCheck, map[string]string) {
 	worst := AreaCheck{Outcome: AreaInside}
+	passed := map[string]string{}
 	for i := range items {
-		it := &items[i]
-		if where(it.Draft.Location1, it.Draft.Location2) == "" {
+		d := &items[i].Draft
+		if where(d.Location1, d.Location2) == "" {
 			continue // no place yet: the details question asks for one
 		}
-		got := r.Booker.CheckArea(ctx, it.Draft)
+		ask := *d // the stops still to check; the rest are blank
+		stops, askStops := draftStops(d), draftStops(&ask)
+		var open []*string
+		var keys []string
+		for j, s := range stops {
+			key := stopKey(*s)
+			found, ok := passed[key]
+			if !ok {
+				found, ok = known[key]
+			}
+			if ok {
+				passed[key], *s, *askStops[j] = found, found, ""
+				continue
+			}
+			open, keys = append(open, s), append(keys, key)
+		}
+		if len(open) == 0 {
+			continue
+		}
+		got := r.Booker.CheckArea(ctx, ask)
 		switch got.Outcome {
 		case AreaInside:
-			useResolved(&it.Draft, got.Resolved)
+			if len(got.Resolved) != len(open) {
+				continue
+			}
+			for j, s := range open {
+				*s, passed[keys[j]] = got.Resolved[j], got.Resolved[j]
+			}
 		case AreaOutside:
-			return got
+			return got, nil
 		case AreaUnavailable:
 			worst = got
 		default:
@@ -690,7 +721,21 @@ func (r *Router) checkArea(ctx context.Context, items []DraftItem) AreaCheck {
 			}
 		}
 	}
-	return worst
+	return worst, passed
+}
+
+// stopKey: the same words, however they were spaced or capitalised.
+func stopKey(stop string) string {
+	return strings.ToLower(strings.Join(strings.Fields(stop), " "))
+}
+
+// refuseOutOfArea: the draft ends here, with fixed copy, and every errand in
+// it goes with it. An approval question still waits on its answer.
+func (r *Router) refuseOutOfArea(ctx context.Context, in Inbound, conv Conversation) error {
+	if conv.State == StateAwaitingApproval {
+		return r.Reply(ctx, in, CopyOutOfArea+"\n\n"+approvalStillPending(conv), "")
+	}
+	return r.dropDraftWith(ctx, in, conv, CopyOutOfArea)
 }
 
 func draftStops(d *llm.TaskDraft) []*string {
@@ -701,16 +746,6 @@ func draftStops(d *llm.TaskDraft) []*string {
 		}
 	}
 	return stops
-}
-
-func useResolved(d *llm.TaskDraft, resolved []string) {
-	stops := draftStops(d)
-	if len(resolved) != len(stops) {
-		return
-	}
-	for i, s := range stops {
-		*s = resolved[i]
-	}
 }
 
 var boroughRE = regexp.MustCompile(`(?i)\b(?:manhattan|brooklyn|queens|(?:the )?bronx|staten island)\b`)
@@ -729,15 +764,6 @@ func applyBorough(items []DraftItem, stop, answer string) {
 			}
 		}
 	}
-}
-
-// refuseOutOfArea: the draft ends here, with fixed copy, and every errand in
-// it goes with it. An approval question still waits on its answer.
-func (r *Router) refuseOutOfArea(ctx context.Context, in Inbound, conv Conversation) error {
-	if conv.State == StateAwaitingApproval {
-		return r.Reply(ctx, in, CopyOutOfArea+"\n\n"+approvalStillPending(conv), "")
-	}
-	return r.dropDraftWith(ctx, in, conv, CopyOutOfArea)
 }
 
 func (r *Router) showSummary(ctx context.Context, in Inbound, conv Conversation) error {
@@ -1101,6 +1127,7 @@ func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Co
 	case PostAddressUnclear:
 		conv.Pending.UnclearStop, conv.Pending.WhichBorough = res.Message, false
 		conv.Pending.DetailsAsked = true
+		conv.Pending.AreaStops = nil // the post disagreed with them
 		conv.State = StateAwaitingConfirm
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 			log.Printf("[channel] save after post identity=%s: %v", id.ID, err)

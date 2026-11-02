@@ -57,17 +57,35 @@ func isNYCCounty(county string) bool {
 // nothing is known (no key, REQUEST_DENIED, quota, a timeout): the caller must
 // not book on it, and must not tell the person their address was the problem.
 func ServiceArea(ctx context.Context, address string) (AreaResult, error) {
-	results, err := geocodeLookup(ctx, address, nycBias)
-	switch {
-	case err != nil && !errors.Is(err, ErrNotGeocodable):
-		return AreaResult{}, err
-	case addressNamesPlace(address), err == nil && echoesPlace(address, results[0]):
-		if err != nil {
+	if addressNamesPlace(address) {
+		results, err := geocodeLookup(ctx, address, nycBias)
+		switch {
+		case errors.Is(err, ErrNotGeocodable):
 			return AreaResult{}, nil
+		case err != nil:
+			return AreaResult{}, err
 		}
 		return asWritten(ctx, address, results)
 	}
-	return inTheBoroughs(ctx, address)
+	// The words name no place, so Google's answer decides whether they did
+	// ("Hoboken"). Asked beside the boroughs rather than before them, so a
+	// stop with no city waits for one round trip, not two.
+	var results []geocodeResult
+	var err error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		results, err = geocodeLookup(ctx, address, nycBias)
+	}()
+	inBoroughs, boroughsErr := inTheBoroughs(ctx, address)
+	<-done
+	switch {
+	case err != nil && !errors.Is(err, ErrNotGeocodable):
+		return AreaResult{}, err
+	case err == nil && echoesPlace(address, results[0]):
+		return asWritten(ctx, address, results)
+	}
+	return inBoroughs, boroughsErr
 }
 
 // asWritten reads the lookup of an address that says where it is.
@@ -104,8 +122,9 @@ func asWritten(ctx context.Context, address string, results []geocodeResult) (Ar
 	return inside, nil
 }
 
-// inTheBoroughs looks for an address with no city in each borough. The filter
-// only leans the search (Google enforces postal_code and country, not
+// inTheBoroughs looks for an address with no city in each borough, all five at
+// once: the delay is the slowest lookup, and the deadline in ctx bounds it. The
+// filter only leans the search (Google enforces postal_code and country, not
 // administrative_area, and has no strict bounds), so the rule is on what comes
 // back: an exact match, in the county that was asked for. A partial match is
 // how Google says the street isn't in that borough.

@@ -2,6 +2,7 @@ package channel
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -156,13 +157,13 @@ func TestCheckAreaAcrossErrands(t *testing.T) {
 		return AreaCheck{Outcome: AreaInside}
 	}
 	ctx := context.Background()
-	if got := g.r.checkArea(ctx, items); got.Outcome != AreaOutside {
+	if got, _ := g.r.checkArea(ctx, items, nil); got.Outcome != AreaOutside {
 		t.Errorf("%+v", got)
 	}
-	if got := g.r.checkArea(ctx, items[:2]); got.Outcome != AreaUnavailable {
+	if got, _ := g.r.checkArea(ctx, items[:2], nil); got.Outcome != AreaUnavailable {
 		t.Errorf("%+v", got)
 	}
-	if got := g.r.checkArea(ctx, items[:1]); got.Outcome != AreaUnclear || got.Stop != "unclear" {
+	if got, _ := g.r.checkArea(ctx, items[:1], nil); got.Outcome != AreaUnclear || got.Stop != "unclear" {
 		t.Errorf("%+v", got)
 	}
 }
@@ -293,5 +294,123 @@ func TestApplyBorough(t *testing.T) {
 	applyBorough(items, "Broadway 100", "not sure")
 	if items[0].Draft.Location1 != "Broadway 100" {
 		t.Fatalf("%+v", items[0].Draft)
+	}
+}
+
+// resolvingBooker answers every stop inside, resolved, and records what it was
+// asked.
+func resolvingBooker(g *rig) *[]llm.TaskDraft {
+	var asked []llm.TaskDraft
+	g.booker.area = func(d llm.TaskDraft) AreaCheck {
+		asked = append(asked, d)
+		var resolved []string
+		for _, s := range draftStops(&d) {
+			resolved = append(resolved, *s+", New York, NY 10006")
+		}
+		return AreaCheck{Outcome: AreaInside, Resolved: resolved}
+	}
+	return &asked
+}
+
+func TestRedraftKeepsACheckedStop(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.parser.draft.Location1 = "100 Washington St"
+	asked := resolvingBooker(g)
+	g.say(t, "laundry pickup at 100 Washington St")
+	// A correction that leaves the address alone: no lookup, same address shown.
+	if got := g.say(t, "make it 4pm"); !strings.Contains(got, "100 Washington St, New York, NY 10006") {
+		t.Fatalf("got %q", got)
+	}
+	// The same words, spaced and cased differently.
+	g.parser.draft.Location1 = "100  washington st"
+	g.say(t, "make it 5pm")
+	if len(*asked) != 1 {
+		t.Fatalf("%d checks: %+v", len(*asked), *asked)
+	}
+	if g.pending(t).Draft.Location1 != "100 Washington St, New York, NY 10006" {
+		t.Fatalf("%+v", g.pending(t).Draft)
+	}
+	// A new address is checked.
+	g.parser.draft.Location1 = "1 Bay St"
+	g.say(t, "actually 1 Bay St")
+	if len(*asked) != 2 {
+		t.Fatalf("%d checks", len(*asked))
+	}
+	if got := g.say(t, "yes"); got != CopyBooked {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestRedraftChecksOnlyTheStopThatChanged(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.parser.draft.Location1, g.parser.draft.Location2 = "100 Washington St", "1 Bay St"
+	asked := resolvingBooker(g)
+	g.say(t, "laundry from A to B")
+	g.parser.draft.Location2 = "12 Bedford Ave"
+	got := g.say(t, "drop it at 12 Bedford Ave instead")
+	if len(*asked) != 2 || (*asked)[1].Location1 != "" || (*asked)[1].Location2 != "12 Bedford Ave" {
+		t.Fatalf("%+v", *asked)
+	}
+	if !strings.Contains(got, "100 Washington St, New York, NY 10006 → 12 Bedford Ave, New York, NY 10006") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+// Two errands at one address in one message: one lookup.
+func TestSameStopInTwoErrandsIsCheckedOnce(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	asked := resolvingBooker(g)
+	items := []DraftItem{{Draft: llm.TaskDraft{Location1: "1 Bay St"}}, {Draft: llm.TaskDraft{Location1: "1 Bay St"}}}
+	g.r.checkArea(context.Background(), items, nil)
+	if len(*asked) != 1 || items[1].Draft.Location1 != "1 Bay St, New York, NY 10006" {
+		t.Fatalf("%+v %+v", *asked, items)
+	}
+}
+
+// Only a pass is kept: a stop that was unclear is asked about again.
+func TestUnclearStopIsCheckedAgain(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.parser.draft.Location1 = "the market"
+	n := 0
+	g.booker.area = func(d llm.TaskDraft) AreaCheck {
+		n++
+		return AreaCheck{Outcome: AreaUnclear, Stop: d.Location1}
+	}
+	g.say(t, "laundry at the market")
+	g.say(t, "tomorrow please")
+	if n != 2 {
+		t.Fatalf("%d checks", n)
+	}
+}
+
+// createTask refusing at the post outranks what the draft remembered.
+func TestRefusalAtThePostForgetsTheStop(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	asked := resolvingBooker(g)
+	g.booker.result = PostResult{Outcome: PostAddressUnclear, Message: "12 Bedford Ave"}
+	g.say(t, "laundry pickup")
+	g.say(t, "yes")
+	if g.pending(t).AreaStops != nil {
+		t.Fatalf("%+v", g.pending(t).AreaStops)
+	}
+	g.say(t, "12 Bedford Ave please")
+	if len(*asked) != 2 {
+		t.Fatalf("%d checks", len(*asked))
+	}
+}
+
+// The cache rides in the stored draft, or the next message would not have it.
+func TestAreaStopsSurviveStorage(t *testing.T) {
+	b, err := json.Marshal(PendingDraft{AreaStops: map[string]string{"1 bay st": "1 Bay St, Staten Island, NY 10301"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p PendingDraft
+	if err := json.Unmarshal(b, &p); err != nil || p.AreaStops["1 bay st"] == "" {
+		t.Fatalf("%+v %v", p, err)
 	}
 }
