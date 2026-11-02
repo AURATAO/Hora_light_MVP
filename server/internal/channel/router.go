@@ -333,7 +333,7 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	// only an explicit YES/NO answers a question of ours; "ok", "sure",
 	// "👍" go to the supporter, and the person is told what still waits.
 	plain := stripFiller(text) // "oh yes" is answer-ish but not strict
-	casual := (IsYes(plain) || IsNo(plain)) && !IsStrictYesNo(text)
+	casual := (IsAffirmation(plain) || IsNo(plain)) && !IsStrictYesNo(text)
 	if conv.State == StateAwaitingApproval {
 		casual = approvalCasual(text) // R-2/R-3's wider words; 不要啦 is strict (I-AN)
 	}
@@ -414,6 +414,10 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 		if id.Linked() {
 			if handled, err := r.answerToSupporter(ctx, in, id, conv, text); handled {
 				return err
+			}
+			if isPoliteYes(text) {
+				// A thanks is for the supporter on the job, asked or not.
+				return r.relayOr(ctx, in, id, conv, text, CopyAck)
 			}
 			return r.Reply(ctx, in, CopyAck, "")
 		}
@@ -790,7 +794,11 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 			conv.Pending.NoAutoExtend = true
 		}
 		return r.showSummary(ctx, in, conv)
-	case IsYes(text) && (conv.QuestionShownAt == nil || in.ReceivedAt.IsZero() || in.ReceivedAt.Before(*conv.QuestionShownAt)):
+	case !IsBookingYes(text) && IsAffirmation(text):
+		// "book it please", "sure", "👍": agreeing, but not the plain YES a
+		// booking needs (money rule). Asked again; nothing to re-draft.
+		return r.Reply(ctx, in, CopyConfirmReask, "")
+	case IsBookingYes(text) && (conv.QuestionShownAt == nil || in.ReceivedAt.IsZero() || in.ReceivedAt.Before(*conv.QuestionShownAt)):
 		// (No stamp: a draft shown before R-1 existed — put again once.)
 		// Sent before this summary was (re)shown — the second tap of a
 		// double YES that answered something else — or with no usable
@@ -798,7 +806,7 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 		// no margin, Arbiter).
 		log.Printf("[channel] booking identity=%s: YES sent %s before the summary, re-asked", id.ID, sentBefore(in, conv.QuestionShownAt))
 		return r.showSummary(ctx, in, conv)
-	case IsYes(text):
+	case IsBookingYes(text):
 		now := r.now()
 		conv.TermsAcceptedAt = &now
 		if !id.Linked() {
