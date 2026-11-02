@@ -512,6 +512,14 @@ type fakeBooker struct {
 	cancelled     []string
 	cancelReasons []string
 	cancelRes     CancelResult
+	area          func(llm.TaskDraft) AreaCheck // CheckArea's answer when set; inside otherwise
+}
+
+func (b *fakeBooker) CheckArea(_ context.Context, d llm.TaskDraft) AreaCheck {
+	if b.area != nil {
+		return b.area(d)
+	}
+	return AreaCheck{Outcome: AreaInside}
 }
 
 func (b *fakeBooker) OpenTasks(context.Context, string) ([]TaskRef, error) {

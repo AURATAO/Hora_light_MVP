@@ -531,7 +531,7 @@ func TestRoundThreeMinors(t *testing.T) {
 
 // I-P version B: "ok" while a supporter wrote in the last minutes goes to
 // the supporter; the person is told what still waits; a plain YES books.
-// With no recent supporter message, "ok" books as before.
+// With no recent supporter message, "ok" is ours: it is re-asked, not booked.
 func TestCasualAffirmativeGoesToTheSupporterWhoJustWrote(t *testing.T) {
 	g, chat, tasks, _ := contextRig(llm.IntentNewTask, bagelT)
 	g.say(t, "new task: pick up my laundry tomorrow at 3") // awaiting_confirm
@@ -547,13 +547,14 @@ func TestCasualAffirmativeGoesToTheSupporterWhoJustWrote(t *testing.T) {
 	if g.booker.posts != 1 {
 		t.Fatalf("booked %d", g.booker.posts)
 	}
-	// Eleven minutes of silence from the supporter: "ok" is a YES again.
+	// Eleven minutes of silence from the supporter: "ok" answers our summary,
+	// and a booking needs the plain YES.
 	g, chat, tasks, _ = contextRig(llm.IntentNewTask, bagelT)
 	g.say(t, "new task: pick up my laundry tomorrow at 3")
 	tasks.lastText, tasks.lastTask, tasks.lastAt = "Sam · Bagel run: toasted?", "task-2", time.Now().Add(-11*time.Minute)
-	g.say(t, "ok")
-	if g.booker.posts != 1 || len(chat.posted) != 0 {
-		t.Fatalf("booked %d posted %v", g.booker.posts, chat.posted)
+	got = g.say(t, "ok")
+	if got != CopyConfirmReask || g.booker.posts != 0 || len(chat.posted) != 0 {
+		t.Fatalf("reply %q booked %d posted %v", got, g.booker.posts, chat.posted)
 	}
 	// Same for an approval: "sure" is relayed, "YES" approves.
 	g, chat, tasks, _ = contextRig(llm.IntentToSupporter, bagelT)

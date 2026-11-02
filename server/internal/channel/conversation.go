@@ -75,6 +75,10 @@ type PendingDraft struct {
 	// draft without what it needs. At MaxDetailsTries the thread goes to a
 	// person instead of asking again forever (review 10/24 #6).
 	DetailsTries int `json:"details_tries,omitempty"`
+	// UnclearStop: the address the service-area check could not place. Set
+	// with DetailsAsked, so no YES books the draft until the words that
+	// answer detailsQuestion re-draft it and the check passes.
+	UnclearStop string `json:"unclear_stop,omitempty"`
 	// WhileActive is the supporter's first name when the draft was started
 	// while that supporter was on the job (D-17 P6): the summary says so
 	// and "for <name>" relays the words instead.
@@ -920,12 +924,42 @@ var (
 	strictYesRE = regexp.MustCompile(`(?i)^\s*(yes|y|是|確認|sí|si|confirm|confirmed)[\s!.]*$`)
 	strictNoRE  = regexp.MustCompile(`(?i)^\s*(no|n|不要|取消|cancel|stop)[\s!.]*$`)
 	yesRE       = regexp.MustCompile(`(?i)^\s*(yes|y|yep|yeah|yup|yes please|ok|okay|confirm|confirmed|book it|book|do it|go ahead|sure|👍|✅|是|好|好的|確認|sí|si)[\s!.]*$`)
-	noRE        = regexp.MustCompile(`(?i)^\s*(no|n|nope|nah|cancel|stop|never ?mind|don'?t|不要|取消|不用)[\s!.]*$`)
-	nameBadR    = regexp.MustCompile(`[0-9@/:]`)
+	// politeYesRE: a yes that also says thanks or please, as the whole
+	// message ("yes thanks", "ok thx", "好謝謝"). One courtesy, on these words
+	// only: "book it please" is not "book it", and "yes please, thank you" is
+	// said to someone. The separator keeps "okthanks" out.
+	politeYesRE = regexp.MustCompile(`(?i)^\s*(?:yes|ok|okay|是|好|好的)(?:[\s,!.]+(?:please|pls|thanks|thank you|thx|ty)|[\s,!.]*(?:謝謝|谢谢))[\s!.]*$`)
+	// bookingYesRE: the courteous forms a booking accepts beside strictYesRE.
+	// The word is still YES and nothing else is in the message, so it has no
+	// second reading: "thanks" adds no condition, no change and no name. If a
+	// supporter has just written it is theirs first (HandleInbound: casual).
+	bookingYesRE = regexp.MustCompile(`(?i)^\s*(?:yes|是|確認)(?:[\s,!.]+(?:please|pls|thanks|thank you|thx|ty)|[\s,!.]*(?:謝謝|谢谢))[\s!.]*$`)
+	// affirmationRE: nothing but agreeing words, more than a plain yes:
+	// "ok book it", "sure go ahead", "book it please". Never a booking, and
+	// nothing in it to re-draft.
+	affirmationRE = regexp.MustCompile(`(?i)^\s*(?:yes|y|yep|yeah|yup|ok|okay|confirm|confirmed|book it|book|do it|go ahead|sure|👍|✅)(?:[\s,!.]+(?:yes|y|yep|yeah|yup|ok|okay|confirm|confirmed|book it|book|do it|go ahead|sure|👍|✅|please|pls|thanks|thank you|thx|ty))*[\s,!.]*$`)
+	noRE          = regexp.MustCompile(`(?i)^\s*(no|n|nope|nah|cancel|stop|never ?mind|don'?t|不要|取消|不用)[\s!.]*$`)
+	nameBadR      = regexp.MustCompile(`[0-9@/:]`)
 )
 
-// IsYes reports an explicit confirmation.
-func IsYes(text string) bool { return yesRE.MatchString(text) }
+// IsYes reports an agreeing word, as the whole message. Wider than a booking
+// takes: see IsBookingYes.
+func IsYes(text string) bool { return yesRE.MatchString(text) || politeYesRE.MatchString(text) }
+
+// IsBookingYes: the YES a booking needs, the word the summary asks for ("Reply
+// YES to book"). "ok", "sure", "👍" and "book it" agree but do not book: the
+// person is asked again, which costs a message; a wrong booking costs a hold
+// on their card.
+func IsBookingYes(text string) bool {
+	return bookingYesRE.MatchString(text) || (strictYesRE.MatchString(text) && IsYes(text))
+}
+
+// IsAffirmation: agreeing words and nothing else, however many.
+func IsAffirmation(text string) bool { return IsYes(text) || affirmationRE.MatchString(text) }
+
+// isPoliteYes: a yes with a thanks or please in it, which is words as well as
+// an answer.
+func isPoliteYes(text string) bool { return politeYesRE.MatchString(text) }
 
 // IsStrictYesNo: the explicit YES/NO words only (I-P version B).
 func IsStrictYesNo(text string) bool {

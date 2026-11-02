@@ -30,6 +30,10 @@ type PostOptions struct {
 type Booker interface {
 	// Quote prices a draft with the budget the hold must also cover.
 	Quote(ctx context.Context, d llm.TaskDraft, budgetCents int) (cents, minutes int, err error)
+	// CheckArea says whether every stop of a draft is inside the service area,
+	// by POST /tasks's own check. Rules on the geocoding result: the model's
+	// part ends at reading the address out of the message.
+	CheckArea(ctx context.Context, d llm.TaskDraft) AreaCheck
 	Post(ctx context.Context, userID string, d llm.TaskDraft, opts PostOptions) PostResult
 	// ApplyChatProfile writes the name and terms consent gathered in the chat
 	// onto the user's profile (fills blanks only; never overwrites).
@@ -52,6 +56,23 @@ type Booker interface {
 	// chose (CancelReasonChoices) — relayed to the supporter exactly as an
 	// app cancel with that reason is.
 	Cancel(ctx context.Context, userID, taskID, reasonCode string) CancelResult
+}
+
+// AreaOutcome is what the service-area check said about a draft. The zero
+// value refuses: nothing books on an answer nobody gave.
+type AreaOutcome int
+
+const (
+	AreaUnclear     AreaOutcome = iota // a stop can't be placed, or could be more than one place
+	AreaInside                         // every stop is in the five boroughs
+	AreaOutside                        // a stop is outside them
+	AreaUnavailable                    // the check itself failed; nothing is known
+)
+
+// AreaCheck: Stop is the address that decided an Unclear or Outside.
+type AreaCheck struct {
+	Outcome AreaOutcome
+	Stop    string
 }
 
 // CancelQuote is what cancelling a task now would charge.
@@ -112,18 +133,21 @@ type ExtensionResult struct {
 type PostOutcome int
 
 const (
-	PostBooked      PostOutcome = iota // task created (and held, when payments are on)
-	PostNeedsCard                      // 402 payment_method_required
-	PostNeeds3DS                       // 402 payment_authentication_required
-	PostDeclined                       // 402 payment_required — card refused
-	PostOwesBalance                    // 403 outstanding_balance
-	PostFailed                         // anything else
+	PostBooked         PostOutcome = iota // task created (and held, when payments are on)
+	PostNeedsCard                         // 402 payment_method_required
+	PostNeeds3DS                          // 402 payment_authentication_required
+	PostDeclined                          // 402 payment_required — card refused
+	PostOwesBalance                       // 403 outstanding_balance
+	PostFailed                            // anything else
+	PostOutOfArea                         // 422 outside_service_area
+	PostAddressUnclear                    // 422 address_unclear
 )
 
 type PostResult struct {
 	Outcome PostOutcome
 	TaskID  string
-	// Message is the server's own wording for a refusal, when it has one.
+	// Message is the server's own wording for a refusal, when it has one;
+	// for PostAddressUnclear, the address that could not be placed.
 	Message string
 }
 
@@ -309,7 +333,7 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	// only an explicit YES/NO answers a question of ours; "ok", "sure",
 	// "👍" go to the supporter, and the person is told what still waits.
 	plain := stripFiller(text) // "oh yes" is answer-ish but not strict
-	casual := (IsYes(plain) || IsNo(plain)) && !IsStrictYesNo(text)
+	casual := (IsAffirmation(plain) || IsNo(plain)) && !IsStrictYesNo(text)
 	if conv.State == StateAwaitingApproval {
 		casual = approvalCasual(text) // R-2/R-3's wider words; 不要啦 is strict (I-AN)
 	}
@@ -390,6 +414,10 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 		if id.Linked() {
 			if handled, err := r.answerToSupporter(ctx, in, id, conv, text); handled {
 				return err
+			}
+			if isPoliteYes(text) {
+				// A thanks is for the supporter on the job, asked or not.
+				return r.relayOr(ctx, in, id, conv, text, CopyAck)
 			}
 			return r.Reply(ctx, in, CopyAck, "")
 		}
@@ -544,6 +572,16 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		}
 		return r.Reply(ctx, in, CopyParseFailed, "")
 	}
+	// The service area, by rule, before the person is asked anything else
+	// about a task that may not be able to run. createTask checks again at
+	// the post, before any hold.
+	area := r.checkArea(ctx, items)
+	switch area.Outcome {
+	case AreaOutside:
+		return r.refuseOutOfArea(ctx, in, conv)
+	case AreaUnavailable:
+		return r.Reply(ctx, in, CopyAreaCheckDown, "")
+	}
 	p := &PendingDraft{Source: source, CreatedAtUnix: r.now().Unix(), Unparsed: unparsed, BudgetAskIndex: -1, WhileActive: whileActive}
 	if conv.Pending != nil {
 		// A correction re-drafts; the opt-out they already gave stands.
@@ -551,7 +589,10 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		p.WhileActive, p.WhileActiveShown = conv.Pending.WhileActive, conv.Pending.WhileActiveShown
 	}
 	p.SetItems(items)
-	p.DetailsAsked = needsDetails(items)
+	if area.Outcome == AreaUnclear {
+		p.UnclearStop = area.Stop
+	}
+	p.DetailsAsked = needsDetails(items) || area.Outcome == AreaUnclear
 	if prev := conv.Pending; p.DetailsAsked && prev != nil && prev.DetailsAsked {
 		p.DetailsTries = prev.DetailsTries + 1
 	}
@@ -614,6 +655,40 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		return r.Reply(ctx, in, lead+fmt.Sprintf(CopyAskName, p.Headline()), "")
 	}
 	return r.continueDraft(ctx, in, id, conv)
+}
+
+// checkArea asks about every errand. Outside wins over everything, then a
+// failed check, then an unclear stop: "that's outside NYC" is final, while a
+// clearer address could not change it.
+func (r *Router) checkArea(ctx context.Context, items []DraftItem) AreaCheck {
+	worst := AreaCheck{Outcome: AreaInside}
+	for _, it := range items {
+		if where(it.Draft.Location1, it.Draft.Location2) == "" {
+			continue // no place yet: the details question asks for one
+		}
+		got := r.Booker.CheckArea(ctx, it.Draft)
+		switch got.Outcome {
+		case AreaInside:
+		case AreaOutside:
+			return got
+		case AreaUnavailable:
+			worst = got
+		default:
+			if worst.Outcome != AreaUnavailable {
+				worst = AreaCheck{Outcome: AreaUnclear, Stop: got.Stop}
+			}
+		}
+	}
+	return worst
+}
+
+// refuseOutOfArea: the draft ends here, with fixed copy, and every errand in
+// it goes with it. An approval question still waits on its answer.
+func (r *Router) refuseOutOfArea(ctx context.Context, in Inbound, conv Conversation) error {
+	if conv.State == StateAwaitingApproval {
+		return r.Reply(ctx, in, CopyOutOfArea+"\n\n"+approvalStillPending(conv), "")
+	}
+	return r.dropDraftWith(ctx, in, conv, CopyOutOfArea)
 }
 
 func (r *Router) showSummary(ctx context.Context, in Inbound, conv Conversation) error {
@@ -719,7 +794,11 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 			conv.Pending.NoAutoExtend = true
 		}
 		return r.showSummary(ctx, in, conv)
-	case IsYes(text) && (conv.QuestionShownAt == nil || in.ReceivedAt.IsZero() || in.ReceivedAt.Before(*conv.QuestionShownAt)):
+	case !IsBookingYes(text) && IsAffirmation(text):
+		// "book it please", "ok", "👍": agreeing, but not the plain YES a
+		// booking needs (money rule). Asked again; nothing to re-draft.
+		return r.Reply(ctx, in, CopyConfirmReask, "")
+	case IsBookingYes(text) && (conv.QuestionShownAt == nil || in.ReceivedAt.IsZero() || in.ReceivedAt.Before(*conv.QuestionShownAt)):
 		// (No stamp: a draft shown before R-1 existed — put again once.)
 		// Sent before this summary was (re)shown — the second tap of a
 		// double YES that answered something else — or with no usable
@@ -727,7 +806,7 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 		// no margin, Arbiter).
 		log.Printf("[channel] booking identity=%s: YES sent %s before the summary, re-asked", id.ID, sentBefore(in, conv.QuestionShownAt))
 		return r.showSummary(ctx, in, conv)
-	case IsYes(text):
+	case IsBookingYes(text):
 		now := r.now()
 		conv.TermsAcceptedAt = &now
 		if !id.Linked() {
@@ -954,6 +1033,31 @@ func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Co
 			r.resumeDeferred(c, id) // a question held while the booking was in flight / setup
 			return nil
 		})
+	case PostOutOfArea:
+		// Only a draft from before the check, or an address Google now reads
+		// differently: the draft-time check stops the rest. Nothing is kept.
+		conv.Pending = nil
+		conv.State = StateIdle
+		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+			log.Printf("[channel] save after post identity=%s: %v", id.ID, err)
+		}
+		out.Text = partial + CopyOutOfArea
+		return r.dispatch(ctx, async, func(c context.Context) error {
+			if err := r.Send(c, out, ""); err != nil {
+				return err
+			}
+			r.resumeDeferred(c, id)
+			return nil
+		})
+	case PostAddressUnclear:
+		conv.Pending.UnclearStop = res.Message
+		conv.Pending.DetailsAsked = true
+		conv.State = StateAwaitingConfirm
+		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+			log.Printf("[channel] save after post identity=%s: %v", id.ID, err)
+		}
+		out.Text = partial + detailsQuestion(conv.Pending)
+		return r.dispatch(ctx, async, func(c context.Context) error { return r.Send(c, out, "") })
 	case PostNeedsCard:
 		in := Inbound{Channel: ch, From: id.Address}
 		return r.dispatch(ctx, async, func(c context.Context) error { return r.sendSetupLink(c, in, id, conv, partial+CopyNeedCard) })
@@ -1329,9 +1433,13 @@ func needsDetails(items []DraftItem) bool {
 	return false
 }
 
-// detailsQuestion asks what is missing: what and where for an empty
-// request, where for a draft without a place.
+// detailsQuestion asks what is missing: a clearer address for a stop that
+// could not be placed, what and where for an empty request, where for a draft
+// without a place.
 func detailsQuestion(p *PendingDraft) string {
+	if p.UnclearStop != "" {
+		return fmt.Sprintf(CopyAskClearerAddress, p.UnclearStop)
+	}
 	if vagueRequestRE.MatchString(p.Source) {
 		return CopyAskWhatWhere
 	}
@@ -1344,7 +1452,7 @@ func detailsQuestion(p *PendingDraft) string {
 var draftDeclineRE = regexp.MustCompile(`(?i)^\s*(?:(?:ok(?:ay)?|sorry|actually|hmm+|oh|wait|no|nah|nope|thanks|thank you)[\s,.!]*)*` +
 	`(?:(?:(?:i|we)\s+)?(?:` +
 	`(?:don'?t|do not|no longer)\s+(?:really\s+)?(?:need|want)(?:\s+(?:it|that|this|them|one|the task|this task|that task|this one|that one))?(?:\s+(?:anymore|any more|after all))?` +
-	`|never ?mind|forget (?:it|that|about it)|no thanks|no thank you|not anymore|not needed|skip it|(?:i )?changed my mind|not now` +
+	`|never ?mind|forget (?:it|that|about it)|no thanks|no thank you|not anymore|not needed|skip it|(?:i )?changed? my mind|not now` +
 	`|算了|不用了|不用|不需要了?|不要了|先不用了?|沒事了?)` +
 	`[\s,.!。！~，]*)+(?:(?:thanks|thank you|sorry|謝謝)[\s,.!。！~，]*)?$`)
 

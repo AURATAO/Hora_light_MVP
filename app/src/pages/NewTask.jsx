@@ -69,6 +69,9 @@ export default function NewTask() {
   // Set when a post is refused for a payment reason, so the message lands next
   // to the button that produced it rather than in a toast that scrolls away.
   const [paymentError, setPaymentError] = useState('')
+  // Refused by the service-area check: shown under the addresses, because a
+  // toast is gone before anyone can fix the address it was about.
+  const [addressError, setAddressError] = useState('')
   // The promo code. Typed here, checked with POST /promo/validate on Apply,
   // then sent on the estimate and on the post — where the server checks it
   // again and has the last word. `promoApplied` is the server's own answer.
@@ -262,6 +265,7 @@ export default function NewTask() {
   }
   setIsSubmitting(true)
   setPaymentError('')
+  setAddressError('')
   try {
     if (!user) throw new Error('Please sign in')
 
@@ -303,6 +307,11 @@ export default function NewTask() {
     if (promoFailure) {
       setPromoApplied(null)
       setPromoError(promoFailure)
+      return
+    }
+
+    if (err.body?.code === 'outside_service_area' || err.body?.code === 'address_unclear') {
+      setAddressError(err.message)
       return
     }
 
@@ -480,6 +489,7 @@ export default function NewTask() {
                 <AddressInput key={loc.id} onChange={(result) => updateLoc(i, result)} />
               </div>
             ))}
+            {addressError && <div className="text-sm text-red-400">{addressError}</div>}
             {locs.length < 3 && (
               <button
                 type="button"

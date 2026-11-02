@@ -27,6 +27,9 @@ func TestMain(m *testing.M) {
 	// that exercise geocoding install their own fake (task_geocode_test.go).
 	geocodeFn = func(context.Context, string) (float64, float64, error) { return 0, 0, helpers.ErrGeocodeNoKey }
 	os.Unsetenv("GOOGLE_MAPS_API_KEY") // so no background lookup is ever started
+	// Nor does the service-area check, which is on the request path: every
+	// task in a test is in the area unless task_service_area_test.go says not.
+	checkTaskArea = func(context.Context, string) areaCheck { return areaCheck{Verdict: helpers.AreaInside} }
 	os.Exit(m.Run())
 }
 

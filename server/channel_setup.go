@@ -158,6 +158,8 @@ func outcomeName(booked int, last channel.PostResult) string {
 		return "outstanding_balance"
 	case channel.PostNeeds3DS:
 		return "needs_authentication"
+	case channel.PostOutOfArea, channel.PostAddressUnclear:
+		return "needs_address"
 	}
 	return "nothing_to_book"
 }

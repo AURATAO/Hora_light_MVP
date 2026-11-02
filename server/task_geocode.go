@@ -20,9 +20,11 @@ import (
 // stop is geocoded server-side when the task is created and whenever its
 // address changes — the place a supporter heads to first.
 //
-// Off the request path: a post never waits on Google, and a geocoding
-// failure never fails a post. The write is a compare-and-set on the
-// address it was computed from, so an edit made meanwhile wins.
+// Off the request path: writing the coordinates never holds up a post, and
+// failing to never fails one. (The service-area check is the opposite, on the
+// request path and fail-closed: task_service_area.go.) The write is a
+// compare-and-set on the address it was computed from, so an edit made
+// meanwhile wins.
 
 // geocodeFn is the geocoder; a variable so tests can replace it.
 var geocodeFn = helpers.GeocodeAddress
@@ -50,12 +52,15 @@ var geocodeTried struct {
 	at map[string]time.Time
 }
 
-// firstStop: the first address of a task's location text. Web and mobile
-// join several stops with "|" (" | "); the chat with "→". An empty first
+// stopSeparators: web and mobile join several stops with "|" (" | "); the chat
+// with "→".
+var stopSeparators = []string{"|", "→", "->"}
+
+// firstStop: the first address of a task's location text. An empty first
 // stop is "" — never a later stop promoted to first (review).
 func firstStop(locationText string) string {
 	t := locationText
-	for _, sep := range []string{"|", "→", "->"} {
+	for _, sep := range stopSeparators {
 		if i := strings.Index(t, sep); i >= 0 {
 			t = t[:i]
 		}
@@ -141,7 +146,7 @@ func geocodeNotPlaceable(taskID string) {
 
 const geocodeNotPlaceableFor = time.Hour
 
-var geocodeNoKeyOnce, geocodeDeniedOnce sync.Once
+var geocodeNoKeyOnce sync.Once
 
 // geocodeTask writes the coordinates of the task's first stop, if the task
 // still has the location text they were computed from and no coordinates
@@ -176,9 +181,10 @@ func geocodeTaskWith(ctx context.Context, fn func(context.Context, string) (floa
 		geocodeNotPlaceable(taskID)
 		return nil // nothing to write; distances stay unknown for this task
 	case err != nil && strings.Contains(err.Error(), "REQUEST_DENIED"):
-		geocodeDeniedOnce.Do(func() {
-			log.Printf("[geocode] REQUEST_DENIED — enable the Geocoding API for GOOGLE_MAPS_API_KEY's project")
-		})
+		// Every time, not once per process (2026-10-30: the one line was
+		// logged at 17:34 and every later denial was silent, so a fix to
+		// the key could not be told from no fix). One line per new task.
+		log.Printf("[geocode] task=%s: REQUEST_DENIED — enable the Geocoding API for GOOGLE_MAPS_API_KEY's project (and allow it in the key's API restrictions)", taskID)
 		return nil
 	case err != nil:
 		return err
