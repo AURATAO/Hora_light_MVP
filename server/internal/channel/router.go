@@ -795,7 +795,7 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 		}
 		return r.showSummary(ctx, in, conv)
 	case !IsBookingYes(text) && IsAffirmation(text):
-		// "book it please", "sure", "👍": agreeing, but not the plain YES a
+		// "book it please", "ok", "👍": agreeing, but not the plain YES a
 		// booking needs (money rule). Asked again; nothing to re-draft.
 		return r.Reply(ctx, in, CopyConfirmReask, "")
 	case IsBookingYes(text) && (conv.QuestionShownAt == nil || in.ReceivedAt.IsZero() || in.ReceivedAt.Before(*conv.QuestionShownAt)):

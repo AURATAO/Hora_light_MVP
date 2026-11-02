@@ -934,7 +934,6 @@ var (
 	// second reading: "thanks" adds no condition, no change and no name. If a
 	// supporter has just written it is theirs first (HandleInbound: casual).
 	bookingYesRE = regexp.MustCompile(`(?i)^\s*(?:yes|是|確認)(?:[\s,!.]+(?:please|pls|thanks|thank you|thx|ty)|[\s,!.]*(?:謝謝|谢谢))[\s!.]*$`)
-	bareOkRE     = regexp.MustCompile(`(?i)^\s*(?:ok|okay)[\s!.]*$`)
 	// affirmationRE: nothing but agreeing words, more than a plain yes:
 	// "ok book it", "sure go ahead", "book it please". Never a booking, and
 	// nothing in it to re-draft.
@@ -948,12 +947,11 @@ var (
 func IsYes(text string) bool { return yesRE.MatchString(text) || politeYesRE.MatchString(text) }
 
 // IsBookingYes: the YES a booking needs, the word the summary asks for ("Reply
-// YES to book"). "sure", "👍" and "book it" agree but do not book: the person
-// is asked again, which costs a message; a wrong booking costs a hold on their
-// card. A bare "ok" still books with no supporter writing (D-17 I-P version B).
+// YES to book"). "ok", "sure", "👍" and "book it" agree but do not book: the
+// person is asked again, which costs a message; a wrong booking costs a hold
+// on their card.
 func IsBookingYes(text string) bool {
-	return bookingYesRE.MatchString(text) || bareOkRE.MatchString(text) ||
-		(strictYesRE.MatchString(text) && IsYes(text))
+	return bookingYesRE.MatchString(text) || (strictYesRE.MatchString(text) && IsYes(text))
 }
 
 // IsAffirmation: agreeing words and nothing else, however many.

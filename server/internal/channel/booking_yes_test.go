@@ -18,8 +18,8 @@ func TestBookingNeedsAPlainYes(t *testing.T) {
 	}{
 		{"YES", true}, {"yes", true}, {"yes!", true}, {"y", true}, {"Yes.", true},
 		{"yes please", true}, {"Yes, please", true}, {"yes thanks", true}, {"yes, thank you!", true},
-		{"ok", true}, // D-17 I-P version B, TestCasualAffirmativeGoesToTheSupporterWhoJustWrote
 
+		{"ok", false}, {"okay", false}, {"OK!", false},
 		{"book it please", false}, {"ok book it", false}, {"sure go ahead", false},
 		{"👍", false}, {"✅", false}, {"book it", false}, {"sure", false}, {"go ahead", false},
 		{"do it", false}, {"yep", false}, {"yeah", false}, {"ok thx", false}, {"ok thanks", false},
