@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"hora-auth/helpers"
+	"hora-auth/internal/channel"
 )
 
 // The service area: a task runs only if EVERY stop is in the five boroughs.
@@ -21,8 +23,8 @@ import (
 // a task outside the area is one nobody can run. If Google can't answer, nothing
 // is posted.
 
-// areaCheckTimeout bounds one lookup. A partial match takes two.
-const areaCheckTimeout = 5 * time.Second
+// areaCheckTimeout bounds one stop: two lookups, or six with no city.
+const areaCheckTimeout = 8 * time.Second
 
 // maxTaskStops: the clients offer three stops and the chat two. More than this
 // is not a task, and each stop is a billable lookup.
@@ -30,9 +32,10 @@ const maxTaskStops = 5
 
 // The refusal's `code`, which postResultFrom branches on.
 const (
-	areaCodeOutside     = "outside_service_area"
-	areaCodeUnclear     = "address_unclear"
-	areaCodeUnavailable = "address_check_unavailable"
+	areaCodeOutside      = "outside_service_area"
+	areaCodeUnclear      = "address_unclear"
+	areaCodeWhichBorough = "address_which_borough"
+	areaCodeUnavailable  = "address_check_unavailable"
 )
 
 const (
@@ -41,10 +44,6 @@ const (
 	areaMsgUnavailable = "We can't check that address right now, so your task wasn't posted. Please try again in a few minutes."
 )
 
-func areaMsgUnclear(stop string) string {
-	return "We couldn't pin down “" + stop + "”. Enter the full street address, with the borough or ZIP code."
-}
-
 // serviceAreaFn is the per-address rule; a variable so tests can replace it.
 var serviceAreaFn = helpers.ServiceArea
 
@@ -52,12 +51,14 @@ var serviceAreaFn = helpers.ServiceArea
 // the suite need not spell out addresses.
 var checkTaskArea = checkStops
 
-// areaCheck: Stop is the address that decided an Unclear or Outside ("" when
-// the task names none). Err set: the check itself failed; Verdict is Unclear.
+// areaCheck: Stop is the address that decided anything but Inside ("" when the
+// task names none). Resolved, on Inside: the stops in order, as the check found
+// them. Err set: the check itself failed; Verdict is Unclear.
 type areaCheck struct {
-	Verdict helpers.AreaVerdict
-	Stop    string
-	Err     error
+	Verdict  helpers.AreaVerdict
+	Stop     string
+	Resolved []string
+	Err      error
 }
 
 // taskStops splits a task's location text into its stops.
@@ -84,31 +85,44 @@ func checkStops(ctx context.Context, locationText string) areaCheck {
 		return areaCheck{Verdict: helpers.AreaUnclear}
 	}
 	worst := areaCheck{Verdict: helpers.AreaInside}
+	var resolved []string
 	for _, stop := range stops {
 		lctx, cancel := context.WithTimeout(ctx, areaCheckTimeout)
-		v, err := serviceAreaFn(lctx, stop)
+		res, err := serviceAreaFn(lctx, stop)
 		cancel()
 		switch {
 		case err != nil:
 			worst = areaCheck{Verdict: helpers.AreaUnclear, Err: err}
-		case v == helpers.AreaOutside:
+		case res.Verdict == helpers.AreaOutside:
 			return areaCheck{Verdict: helpers.AreaOutside, Stop: stop}
-		case v != helpers.AreaInside && worst.Err == nil:
-			worst = areaCheck{Verdict: helpers.AreaUnclear, Stop: stop}
+		case res.Verdict != helpers.AreaInside && worst.Err == nil:
+			worst = areaCheck{Verdict: res.Verdict, Stop: stop}
 		}
+		if res.Resolved != "" {
+			stop = res.Resolved
+		}
+		resolved = append(resolved, stop)
+	}
+	if worst.Verdict == helpers.AreaInside {
+		worst.Resolved = resolved
 	}
 	return worst
 }
 
 // refuseTaskArea writes the refusal when the task's stops don't pass, and
-// reports whether it did.
+// reports whether it did. On a pass, locationText becomes the addresses as
+// resolved, so a stop given with no city is stored as the place it was taken
+// to be.
 //
 // `error` carries the sentence as well as `message`: shipped mobile builds show
 // `error` for anything but a 402, and a phrase with spaces is what web's
 // apiErrorMessage and those builds both print as is. Branch on `code`.
-func refuseTaskArea(c *gin.Context, ctx context.Context, uid, locationText string) bool {
-	res := checkTaskArea(ctx, locationText)
+func refuseTaskArea(c *gin.Context, ctx context.Context, uid string, locationText *string) bool {
+	res := checkTaskArea(ctx, *locationText)
 	if res.Err == nil && res.Verdict == helpers.AreaInside {
+		if len(res.Resolved) > 0 {
+			*locationText = strings.Join(res.Resolved, " | ")
+		}
 		return false
 	}
 	// The App Review account posts from wherever the reviewer is. Asked only
@@ -123,10 +137,12 @@ func refuseTaskArea(c *gin.Context, ctx context.Context, uid, locationText strin
 		status, code, msg = http.StatusServiceUnavailable, areaCodeUnavailable, areaMsgUnavailable
 	case res.Verdict == helpers.AreaOutside:
 		code, msg = areaCodeOutside, areaMsgOutside
+	case res.Verdict == helpers.AreaWhichBorough:
+		code, msg = areaCodeWhichBorough, fmt.Sprintf(channel.CopyWhichBorough, res.Stop)
 	case res.Stop == "":
 		msg = areaMsgNoAddress
 	default:
-		msg = areaMsgUnclear(res.Stop)
+		msg = fmt.Sprintf(channel.CopyAskClearerAddress, res.Stop)
 	}
 	c.JSON(status, gin.H{"error": msg, "message": msg, "code": code, "stop": res.Stop})
 	return true

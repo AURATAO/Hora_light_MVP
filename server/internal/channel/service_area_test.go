@@ -100,7 +100,7 @@ func TestUnclearAddressAsksAndBooksOnlyOnceClear(t *testing.T) {
 		}
 		return AreaCheck{Outcome: AreaInside}
 	}
-	want := "I couldn't pin down “the market”"
+	want := "I couldn't find \"the market\" exactly"
 	if got := g.say(t, "pick up laundry at the market"); !strings.Contains(got, want) {
 		t.Fatalf("got %q", got)
 	}
@@ -187,10 +187,10 @@ func TestPostRefusedUnclearAsksForTheAddress(t *testing.T) {
 	g.ids.link(me, "user-1")
 	g.booker.result = PostResult{Outcome: PostAddressUnclear, Message: "12 Bedford Ave"}
 	g.say(t, "laundry pickup")
-	if got := g.say(t, "yes"); !strings.Contains(got, "“12 Bedford Ave”") {
+	if got := g.say(t, "yes"); !strings.Contains(got, "\"12 Bedford Ave\"") {
 		t.Fatalf("got %q", got)
 	}
-	if got := g.say(t, "yes"); !strings.Contains(got, "pin down") || g.booker.posts != 1 {
+	if got := g.say(t, "yes"); !strings.Contains(got, "couldn't find") || g.booker.posts != 1 {
 		t.Fatalf("got %q, posts %d", got, g.booker.posts)
 	}
 }
@@ -212,5 +212,86 @@ func TestOutOfAreaKeepsAnArmedApproval(t *testing.T) {
 	got := g.ad.last()
 	if !strings.Contains(got, CopyOutOfArea) || !strings.Contains(got, approvalStillPending(conv)) || g.state() != StateAwaitingApproval {
 		t.Fatalf("got %q state %s", got, g.state())
+	}
+}
+
+func TestClearerAddressCopy(t *testing.T) {
+	p := &PendingDraft{UnclearStop: "asdf"}
+	want := `I couldn't find "asdf" exactly. Could you send the full address with the borough or ZIP code? (We run errands in all five NYC boroughs.)`
+	if got := detailsQuestion(p); got != want {
+		t.Fatalf("%q", got)
+	}
+}
+
+// The summary shows the address the check picked, the YES books that, and a
+// re-draft is checked from the person's words again.
+func TestSummaryShowsTheResolvedAddress(t *testing.T) {
+	const picked = "100 Washington St, New York, NY 10006"
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.parser.draft.Location1 = "100 Washington St"
+	g.booker.area = func(d llm.TaskDraft) AreaCheck {
+		return AreaCheck{Outcome: AreaInside, Resolved: []string{picked}}
+	}
+	got := g.say(t, "laundry pickup at 100 Washington St")
+	if !strings.Contains(got, picked) || !strings.Contains(got, "Reply YES") {
+		t.Fatalf("summary: %q", got)
+	}
+	if loc := g.pending(t).Draft.Location1; loc != picked {
+		t.Fatalf("draft keeps %q", loc)
+	}
+}
+
+func TestSummaryShowsBothResolvedStops(t *testing.T) {
+	g := newRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.parser.draft.Location1, g.parser.draft.Location2 = "100 Washington St", "1 Bay St"
+	g.booker.area = func(llm.TaskDraft) AreaCheck {
+		return AreaCheck{Outcome: AreaInside, Resolved: []string{"100 Washington St, New York, NY 10006", "1 Bay St, Staten Island, NY 10301"}}
+	}
+	if got := g.say(t, "laundry from A to B"); !strings.Contains(got, "NY 10006 → 1 Bay St, Staten Island, NY 10301") {
+		t.Fatalf("summary: %q", got)
+	}
+}
+
+func TestWhichBoroughIsAskedThenBooked(t *testing.T) {
+	const picked = "100 Broadway, Brooklyn, NY 11249"
+	for _, answer := range []string{"Brooklyn", "in brooklyn please"} {
+		g := newRig(llm.IntentNewTask)
+		g.ids.link(me, "user-1")
+		g.parser.draft.Location1 = "Broadway 100" // the parser keeps the old stop
+		g.booker.area = func(d llm.TaskDraft) AreaCheck {
+			if d.Location1 == "Broadway 100" {
+				return AreaCheck{Outcome: AreaWhichBorough, Stop: d.Location1}
+			}
+			return AreaCheck{Outcome: AreaInside, Resolved: []string{picked}}
+		}
+		if got := g.say(t, "laundry pickup at Broadway 100"); got != "Which borough is Broadway 100 in?" {
+			t.Fatalf("got %q", got)
+		}
+		// Nothing to say yes to yet.
+		if got := g.say(t, "yes"); got != "Which borough is Broadway 100 in?" || g.booker.posts != 0 {
+			t.Fatalf("yes: %q, posts %d", got, g.booker.posts)
+		}
+		if got := g.say(t, answer); !strings.Contains(got, picked) || !strings.Contains(got, "Reply YES") {
+			t.Fatalf("%q: got %q", answer, got)
+		}
+		if got := g.say(t, "yes"); got != CopyBooked || g.booker.posts != 1 {
+			t.Fatalf("got %q, posts %d", got, g.booker.posts)
+		}
+	}
+}
+
+// An answer the parser read as the place itself still joins the address.
+func TestApplyBorough(t *testing.T) {
+	items := []DraftItem{{Draft: llm.TaskDraft{Location1: "Queens", Location2: "1 Bay St"}}}
+	applyBorough(items, "Broadway 100", "Queens")
+	if d := items[0].Draft; d.Location1 != "Broadway 100, Queens" || d.Location2 != "1 Bay St" {
+		t.Fatalf("%+v", d)
+	}
+	items = []DraftItem{{Draft: llm.TaskDraft{Location1: "Broadway 100"}}}
+	applyBorough(items, "Broadway 100", "not sure")
+	if items[0].Draft.Location1 != "Broadway 100" {
+		t.Fatalf("%+v", items[0].Draft)
 	}
 }

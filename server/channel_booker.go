@@ -65,9 +65,11 @@ func (b *chatBooker) CheckArea(ctx context.Context, d llm.TaskDraft) channel.Are
 		logAreaFailure(res.Err)
 		return channel.AreaCheck{Outcome: channel.AreaUnavailable}
 	case res.Verdict == helpers.AreaInside:
-		return channel.AreaCheck{Outcome: channel.AreaInside}
+		return channel.AreaCheck{Outcome: channel.AreaInside, Resolved: res.Resolved}
 	case res.Verdict == helpers.AreaOutside:
 		return channel.AreaCheck{Outcome: channel.AreaOutside, Stop: res.Stop}
+	case res.Verdict == helpers.AreaWhichBorough:
+		return channel.AreaCheck{Outcome: channel.AreaWhichBorough, Stop: res.Stop}
 	}
 	return channel.AreaCheck{Outcome: channel.AreaUnclear, Stop: res.Stop}
 }
@@ -160,7 +162,7 @@ func postResultFrom(status int, raw []byte) channel.PostResult {
 		return channel.PostResult{Outcome: channel.PostOwesBalance, Message: r.Message}
 	case status == http.StatusUnprocessableEntity && r.Code == areaCodeOutside:
 		return channel.PostResult{Outcome: channel.PostOutOfArea}
-	case status == http.StatusUnprocessableEntity && r.Code == areaCodeUnclear:
+	case status == http.StatusUnprocessableEntity && (r.Code == areaCodeUnclear || r.Code == areaCodeWhichBorough):
 		return channel.PostResult{Outcome: channel.PostAddressUnclear, Message: r.Stop}
 	default:
 		return channel.PostResult{Outcome: channel.PostFailed, Message: ""}

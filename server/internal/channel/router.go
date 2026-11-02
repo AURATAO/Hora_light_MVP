@@ -63,16 +63,19 @@ type Booker interface {
 type AreaOutcome int
 
 const (
-	AreaUnclear     AreaOutcome = iota // a stop can't be placed, or could be more than one place
-	AreaInside                         // every stop is in the five boroughs
-	AreaOutside                        // a stop is outside them
-	AreaUnavailable                    // the check itself failed; nothing is known
+	AreaUnclear      AreaOutcome = iota // a stop can't be placed, or could be more than one place
+	AreaInside                          // every stop is in the five boroughs
+	AreaOutside                         // a stop is outside them
+	AreaUnavailable                     // the check itself failed; nothing is known
+	AreaWhichBorough                    // a stop with no city exists in several boroughs
 )
 
-// AreaCheck: Stop is the address that decided an Unclear or Outside.
+// AreaCheck: Stop is the address that decided anything but Inside. Resolved,
+// on Inside: the draft's stops in order, as the check found them.
 type AreaCheck struct {
-	Outcome AreaOutcome
-	Stop    string
+	Outcome  AreaOutcome
+	Stop     string
+	Resolved []string
 }
 
 // CancelQuote is what cancelling a task now would charge.
@@ -575,6 +578,9 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 	// The service area, by rule, before the person is asked anything else
 	// about a task that may not be able to run. createTask checks again at
 	// the post, before any hold.
+	if prev := conv.Pending; prev != nil && prev.WhichBorough {
+		applyBorough(items, prev.UnclearStop, latestLine(source))
+	}
 	area := r.checkArea(ctx, items)
 	switch area.Outcome {
 	case AreaOutside:
@@ -589,10 +595,11 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		p.WhileActive, p.WhileActiveShown = conv.Pending.WhileActive, conv.Pending.WhileActiveShown
 	}
 	p.SetItems(items)
-	if area.Outcome == AreaUnclear {
-		p.UnclearStop = area.Stop
+	unclear := area.Outcome == AreaUnclear || area.Outcome == AreaWhichBorough
+	if unclear {
+		p.UnclearStop, p.WhichBorough = area.Stop, area.Outcome == AreaWhichBorough
 	}
-	p.DetailsAsked = needsDetails(items) || area.Outcome == AreaUnclear
+	p.DetailsAsked = needsDetails(items) || unclear
 	if prev := conv.Pending; p.DetailsAsked && prev != nil && prev.DetailsAsked {
 		p.DetailsTries = prev.DetailsTries + 1
 	}
@@ -659,27 +666,69 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 
 // checkArea asks about every errand. Outside wins over everything, then a
 // failed check, then an unclear stop: "that's outside NYC" is final, while a
-// clearer address could not change it.
+// clearer address could not change it. A stop that passes takes the address
+// the check resolved, so the summary shows what was picked and the YES books
+// that, not the words it was found from.
 func (r *Router) checkArea(ctx context.Context, items []DraftItem) AreaCheck {
 	worst := AreaCheck{Outcome: AreaInside}
-	for _, it := range items {
+	for i := range items {
+		it := &items[i]
 		if where(it.Draft.Location1, it.Draft.Location2) == "" {
 			continue // no place yet: the details question asks for one
 		}
 		got := r.Booker.CheckArea(ctx, it.Draft)
 		switch got.Outcome {
 		case AreaInside:
+			useResolved(&it.Draft, got.Resolved)
 		case AreaOutside:
 			return got
 		case AreaUnavailable:
 			worst = got
 		default:
 			if worst.Outcome != AreaUnavailable {
-				worst = AreaCheck{Outcome: AreaUnclear, Stop: got.Stop}
+				worst = got
 			}
 		}
 	}
 	return worst
+}
+
+func draftStops(d *llm.TaskDraft) []*string {
+	var stops []*string
+	for _, s := range []*string{&d.Location1, &d.Location2} {
+		if strings.TrimSpace(*s) != "" {
+			stops = append(stops, s)
+		}
+	}
+	return stops
+}
+
+func useResolved(d *llm.TaskDraft, resolved []string) {
+	stops := draftStops(d)
+	if len(resolved) != len(stops) {
+		return
+	}
+	for i, s := range stops {
+		*s = resolved[i]
+	}
+}
+
+var boroughRE = regexp.MustCompile(`(?i)\b(?:manhattan|brooklyn|queens|(?:the )?bronx|staten island)\b`)
+
+// applyBorough: the answer to "which borough is it in?" joins the address by
+// rule, whether the parser kept the old stop or read the borough as the place.
+func applyBorough(items []DraftItem, stop, answer string) {
+	borough := boroughRE.FindString(answer)
+	if borough == "" {
+		return
+	}
+	for i := range items {
+		for _, s := range draftStops(&items[i].Draft) {
+			if t := strings.TrimSpace(*s); strings.EqualFold(t, stop) || strings.EqualFold(t, borough) {
+				*s = stop + ", " + borough
+			}
+		}
+	}
 }
 
 // refuseOutOfArea: the draft ends here, with fixed copy, and every errand in
@@ -1050,7 +1099,7 @@ func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Co
 			return nil
 		})
 	case PostAddressUnclear:
-		conv.Pending.UnclearStop = res.Message
+		conv.Pending.UnclearStop, conv.Pending.WhichBorough = res.Message, false
 		conv.Pending.DetailsAsked = true
 		conv.State = StateAwaitingConfirm
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
@@ -1433,10 +1482,13 @@ func needsDetails(items []DraftItem) bool {
 	return false
 }
 
-// detailsQuestion asks what is missing: a clearer address for a stop that
-// could not be placed, what and where for an empty request, where for a draft
+// detailsQuestion asks what is missing: the borough of a stop in several, a
+// clearer address for a stop that could not be placed, what and where for an empty request, where for a draft
 // without a place.
 func detailsQuestion(p *PendingDraft) string {
+	if p.WhichBorough {
+		return fmt.Sprintf(CopyWhichBorough, p.UnclearStop)
+	}
 	if p.UnclearStop != "" {
 		return fmt.Sprintf(CopyAskClearerAddress, p.UnclearStop)
 	}

@@ -1655,7 +1655,7 @@ func createTask(c *gin.Context) {
 
 	// Every stop inside the five boroughs, before the payments gate: no hold,
 	// no Stripe call, nothing written for a task that cannot run.
-	if refuseTaskArea(c, ctx, c.GetString("uid"), in.LocationText) {
+	if refuseTaskArea(c, ctx, c.GetString("uid"), &in.LocationText) {
 		return
 	}
 
@@ -2567,7 +2567,7 @@ func updateTask(c *gin.Context) {
 	// An edit must not carry a task out of the area createTask let it into.
 	// Only when the address changes: a task posted before the check existed
 	// can still have its typo fixed.
-	if in.LocationText != wasLocation && refuseTaskArea(c, ctx, meUID, in.LocationText) {
+	if in.LocationText != wasLocation && refuseTaskArea(c, ctx, meUID, &in.LocationText) {
 		return
 	}
 

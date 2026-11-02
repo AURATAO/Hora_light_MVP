@@ -29,6 +29,8 @@ var GeocodeURL = "https://maps.googleapis.com/maps/api/geocode/json"
 // address is in the service area; that is ServiceArea's job.
 const nycBounds = "40.4774,-74.2591|40.9176,-73.7004"
 
+var nycBias = url.Values{"bounds": {nycBounds}}
+
 type geocodeComponent struct {
 	LongName  string   `json:"long_name"`
 	ShortName string   `json:"short_name"`
@@ -38,6 +40,8 @@ type geocodeComponent struct {
 type geocodeResult struct {
 	Types             []string           `json:"types"`
 	PartialMatch      bool               `json:"partial_match"`
+	FormattedAddress  string             `json:"formatted_address"`
+	PlaceID           string             `json:"place_id"`
 	AddressComponents []geocodeComponent `json:"address_components"`
 	Geometry          struct {
 		Location struct {
@@ -57,9 +61,9 @@ type geocodeResponse struct {
 // same key as the Distance Matrix call (GOOGLE_MAPS_API_KEY — the key must
 // have the Geocoding API enabled). The address is never logged (it is the
 // requester's), and errors carry the API's status only, never the key or the
-// address. biased: lean toward NYC with nycBounds. At least one result, or an
-// error.
-func geocodeLookup(ctx context.Context, address string, biased bool) ([]geocodeResult, error) {
+// address. params are added to the request (nycBias, a components filter). At
+// least one result, or an error.
+func geocodeLookup(ctx context.Context, address string, params url.Values) ([]geocodeResult, error) {
 	key := strings.TrimSpace(os.Getenv("GOOGLE_MAPS_API_KEY"))
 	if key == "" {
 		return nil, ErrGeocodeNoKey
@@ -70,8 +74,8 @@ func geocodeLookup(ctx context.Context, address string, biased bool) ([]geocodeR
 	}
 	q := url.Values{}
 	q.Set("address", address)
-	if biased {
-		q.Set("bounds", nycBounds)
+	for k, v := range params {
+		q[k] = v
 	}
 	q.Set("region", "us")
 	q.Set("key", key)
@@ -112,7 +116,7 @@ func geocodeLookup(ctx context.Context, address string, biased bool) ([]geocodeR
 
 // GeocodeAddress turns a street address into coordinates.
 func GeocodeAddress(ctx context.Context, address string) (float64, float64, error) {
-	results, err := geocodeLookup(ctx, address, true)
+	results, err := geocodeLookup(ctx, address, nycBias)
 	if err != nil {
 		return 0, 0, err
 	}

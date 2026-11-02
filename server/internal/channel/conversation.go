@@ -79,6 +79,9 @@ type PendingDraft struct {
 	// with DetailsAsked, so no YES books the draft until the words that
 	// answer detailsQuestion re-draft it and the check passes.
 	UnclearStop string `json:"unclear_stop,omitempty"`
+	// WhichBorough: UnclearStop exists in more than one borough, so the
+	// question is which one.
+	WhichBorough bool `json:"which_borough,omitempty"`
 	// WhileActive is the supporter's first name when the draft was started
 	// while that supporter was on the job (D-17 P6): the summary says so
 	// and "for <name>" relays the words instead.

@@ -23,15 +23,15 @@ func fakeArea(t *testing.T, verdicts map[string]helpers.AreaVerdict, failing map
 	t.Helper()
 	var asked []string
 	prevFn, prevCheck := serviceAreaFn, checkTaskArea
-	serviceAreaFn = func(_ context.Context, stop string) (helpers.AreaVerdict, error) {
+	serviceAreaFn = func(_ context.Context, stop string) (helpers.AreaResult, error) {
 		asked = append(asked, stop)
 		if err := failing[stop]; err != nil {
-			return helpers.AreaUnclear, err
+			return helpers.AreaResult{}, err
 		}
 		if v, ok := verdicts[stop]; ok {
-			return v, nil
+			return helpers.AreaResult{Verdict: v}, nil
 		}
-		return helpers.AreaInside, nil
+		return helpers.AreaResult{Verdict: helpers.AreaInside}, nil
 	}
 	checkTaskArea = checkStops
 	t.Cleanup(func() { serviceAreaFn, checkTaskArea = prevFn, prevCheck })
@@ -132,10 +132,47 @@ func TestPostResultFromAreaRefusals(t *testing.T) {
 	if got := postResultFrom(422, unclear); got.Outcome != channel.PostAddressUnclear || got.Message != "the market" {
 		t.Errorf("%+v", got)
 	}
+	which, _ := json.Marshal(gin.H{"error": "x", "code": areaCodeWhichBorough, "stop": "Broadway 100"})
+	if got := postResultFrom(422, which); got.Outcome != channel.PostAddressUnclear || got.Message != "Broadway 100" {
+		t.Errorf("%+v", got)
+	}
 	// Google down at the post is the retryable failure: YES tries again.
 	down, _ := json.Marshal(gin.H{"error": areaMsgUnavailable, "code": areaCodeUnavailable})
 	if got := postResultFrom(503, down); got.Outcome != channel.PostFailed {
 		t.Errorf("%+v", got)
+	}
+}
+
+func TestCheckStopsResolvesEveryStop(t *testing.T) {
+	fakeArea(t, nil, nil)
+	serviceAreaFn = func(_ context.Context, stop string) (helpers.AreaResult, error) {
+		if stop == "100 Washington St" {
+			return helpers.AreaResult{Verdict: helpers.AreaInside, Resolved: "100 Washington St, New York, NY 10006"}, nil
+		}
+		return helpers.AreaResult{Verdict: helpers.AreaInside}, nil
+	}
+	got := checkStops(context.Background(), "100 Washington St | 1 Bay St")
+	if want := []string{"100 Washington St, New York, NY 10006", "1 Bay St"}; !reflect.DeepEqual(got.Resolved, want) {
+		t.Fatalf("%q", got.Resolved)
+	}
+	res := (&chatBooker{}).CheckArea(context.Background(), llm.TaskDraft{Location1: "100 Washington St", Location2: "1 Bay St"})
+	if res.Outcome != channel.AreaInside || res.Resolved[0] != "100 Washington St, New York, NY 10006" {
+		t.Fatalf("%+v", res)
+	}
+}
+
+func TestCheckStopsWhichBorough(t *testing.T) {
+	fakeArea(t, map[string]helpers.AreaVerdict{"Broadway 100": helpers.AreaWhichBorough, "Hoboken": helpers.AreaOutside}, nil)
+	got := checkStops(context.Background(), "12 Bedford Ave | Broadway 100")
+	if got.Verdict != helpers.AreaWhichBorough || got.Stop != "Broadway 100" || got.Resolved != nil {
+		t.Fatalf("%+v", got)
+	}
+	if got := checkStops(context.Background(), "Broadway 100 | Hoboken"); got.Verdict != helpers.AreaOutside {
+		t.Fatalf("outside wins: %+v", got)
+	}
+	res := (&chatBooker{}).CheckArea(context.Background(), llm.TaskDraft{Location1: "Broadway 100"})
+	if res.Outcome != channel.AreaWhichBorough || res.Stop != "Broadway 100" {
+		t.Fatalf("%+v", res)
 	}
 }
 
@@ -192,6 +229,41 @@ func TestCreateTaskRefusesOutsideTheArea(t *testing.T) {
 	}
 	if n := taskCount(t); n != before {
 		t.Fatalf("a refused post wrote %d task(s)", n-before)
+	}
+}
+
+// The app and web path: same rules, and the task keeps the address as found.
+func TestCreateTaskNoCity(t *testing.T) {
+	setupCreatedViaDB(t)
+	fakeArea(t, nil, nil)
+	serviceAreaFn = func(_ context.Context, stop string) (helpers.AreaResult, error) {
+		switch stop {
+		case "100 Washington St":
+			return helpers.AreaResult{Verdict: helpers.AreaInside, Resolved: "100 Washington St, New York, NY 10006"}, nil
+		case "Broadway 100":
+			return helpers.AreaResult{Verdict: helpers.AreaWhichBorough}, nil
+		}
+		return helpers.AreaResult{}, nil
+	}
+	code, body := postTaskJSON(t, `{"title":"Parcel","category":"delivery","is_immediate":true,"location_text":"100 Washington St"}`)
+	if code != 201 || body["location_text"] != "100 Washington St, New York, NY 10006" {
+		t.Fatalf("%d %v", code, body)
+	}
+	var stored string
+	if err := db.QueryRow(context.Background(), `select location_text from public.tasks where id=$1::uuid`, body["id"]).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != "100 Washington St, New York, NY 10006" {
+		t.Fatalf("stored %q", stored)
+	}
+	code, body = postTaskJSON(t, `{"title":"Parcel","category":"delivery","is_immediate":true,"location_text":"Broadway 100"}`)
+	if code != 422 || body["code"] != areaCodeWhichBorough || body["error"] != "Which borough is Broadway 100 in?" {
+		t.Fatalf("%d %v", code, body)
+	}
+	code, body = postTaskJSON(t, `{"title":"Parcel","category":"delivery","is_immediate":true,"location_text":"asdf"}`)
+	want := `I couldn't find "asdf" exactly. Could you send the full address with the borough or ZIP code? (We run errands in all five NYC boroughs.)`
+	if code != 422 || body["code"] != areaCodeUnclear || body["error"] != want {
+		t.Fatalf("%d %v", code, body)
 	}
 }
 

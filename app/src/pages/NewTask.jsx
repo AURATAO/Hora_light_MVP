@@ -310,7 +310,7 @@ export default function NewTask() {
       return
     }
 
-    if (err.body?.code === 'outside_service_area' || err.body?.code === 'address_unclear') {
+    if (['outside_service_area', 'address_unclear', 'address_which_borough'].includes(err.body?.code)) {
       setAddressError(err.message)
       return
     }

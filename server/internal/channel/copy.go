@@ -15,7 +15,8 @@ const (
 		"We only operate in New York City's five boroughs: Manhattan, Brooklyn, Queens, the Bronx and Staten Island.\n\n" +
 		"What can I help you with today?"
 	CopyOutOfArea         = "Sorry, HO:RA only runs errands in New York City's five boroughs right now. If you have an errand in NYC, send it over!"
-	CopyAskClearerAddress = "I couldn't pin down \u201c%s\u201d. Could you send the full street address, with the borough or ZIP code? HO:RA only runs errands in New York City's five boroughs."
+	CopyAskClearerAddress = "I couldn't find \"%s\" exactly. Could you send the full address with the borough or ZIP code? (We run errands in all five NYC boroughs.)"
+	CopyWhichBorough      = "Which borough is %s in?"
 	CopyAreaCheckDown     = "I can't check that address right now, so I can't book it yet. Please send it again in a few minutes."
 	CopyAbout             = "HO:RA sends a vetted local supporter to do the errand for you. You see the estimate before anything is booked, " +
 		"and you pay for the time actually used.\n\nTell me what you need and when, and I'll price it."
