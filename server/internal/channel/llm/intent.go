@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"hora-auth/internal/tracing"
 )
 
 // Intent is what a free-text message from an idle conversation is for. The
@@ -50,7 +52,14 @@ func classifySchema() map[string]any {
 // Classify asks the model, and falls back to a local rule if the model is
 // unavailable or answers out of schema — a person should never get silence
 // because a provider hiccuped.
-func (o *OpenAICompat) Classify(ctx context.Context, text string) (Intent, error) {
+func (o *OpenAICompat) Classify(ctx context.Context, text string) (got Intent, err error) {
+	ctx, sp := tracing.StartSpan(ctx, "llm.Classify", tracing.KindChain)
+	defer func() {
+		sp.Input(text)
+		sp.OutputValue(map[string]any{"intent": got, "fallback": err != nil})
+		sp.Fail(err)
+		sp.End()
+	}()
 	out, _, err := o.completeJSON(ctx, classifyPrompt, text, "intent", classifySchema(), 256)
 	if err != nil {
 		return HeuristicIntent(text), fmt.Errorf("classify: %w", err)
@@ -151,8 +160,16 @@ func classifyInContextSchema() map[string]any {
 // ClassifyInContext asks the model with the thread's context. On any
 // failure it returns IntentToSupporter with the error (D-17 P7: fail
 // toward the human), never a draft.
-func (o *OpenAICompat) ClassifyInContext(ctx context.Context, text string, c Context) (Intent, error) {
+func (o *OpenAICompat) ClassifyInContext(ctx context.Context, text string, c Context) (got Intent, err error) {
+	ctx, sp := tracing.StartSpan(ctx, "llm.ClassifyInContext", tracing.KindChain)
 	var b strings.Builder
+	defer func() {
+		sp.Input(text)
+		sp.Text("hora.classify.context", b.String())
+		sp.OutputValue(map[string]any{"intent": got, "fallback": err != nil, "open_question": c.OpenQuestion})
+		sp.Fail(err)
+		sp.End()
+	}()
 	b.WriteString("Errands in progress:\n")
 	for i, t := range c.ActiveTasks {
 		fmt.Fprintf(&b, "%d. %q with supporter %s\n", i+1, t.Title, firstNonEmptyStr(t.SupporterName, "(unnamed)"))

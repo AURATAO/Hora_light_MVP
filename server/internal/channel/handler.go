@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"hora-auth/internal/tracing"
 )
 
 // InboundRouter decides what an inbound message means and acts on it
@@ -157,7 +159,12 @@ func (h *WebhookHandler) route(m Inbound) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	if err := h.Router.HandleInbound(ctx, m); err != nil {
+	// One trace per message (D-22); a no-op unless Phoenix is configured.
+	// The trace never touches the context's deadline or the result.
+	ctx = tracing.StartMessage(ctx, string(m.Channel), m.ProviderMessageID, m.Text)
+	err := h.Router.HandleInbound(ctx, m)
+	tracing.EndMessage(ctx, err)
+	if err != nil {
 		log.Printf("[channel] %s route failed id=%s: %v", m.Channel, m.ProviderMessageID, err)
 		return // processed_at stays NULL → recovery sweep
 	}

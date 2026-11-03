@@ -10,6 +10,10 @@ import (
 	"net/url"
 	"os"
 	"strings"
+
+	"go.opentelemetry.io/otel/attribute"
+
+	"hora-auth/internal/tracing"
 )
 
 // ErrNotGeocodable: Google answered, and the address has no usable result
@@ -63,7 +67,23 @@ type geocodeResponse struct {
 // requester's), and errors carry the API's status only, never the key or the
 // address. params are added to the request (nycBias, a components filter). At
 // least one result, or an error.
-func geocodeLookup(ctx context.Context, address string, params url.Values) ([]geocodeResult, error) {
+func geocodeLookup(ctx context.Context, address string, params url.Values) (results []geocodeResult, err error) {
+	// One span per Google request (D-22): its time, and what came back. The
+	// address is redacted like any text; the key and coordinates never go.
+	_, sp := tracing.StartSpan(ctx, "geocode.google", tracing.KindTool)
+	googleStatus, httpStatus := "", 0
+	defer func() {
+		sp.Input(address)
+		sp.Attr(
+			attribute.String("hora.geocode.status", googleStatus),
+			attribute.Int("http.status_code", httpStatus),
+			attribute.Int("hora.geocode.results", len(results)),
+			attribute.Bool("hora.geocode.bounds", params.Has("bounds")),
+			attribute.String("hora.geocode.components", params.Get("components")),
+		)
+		sp.Fail(err)
+		sp.End()
+	}()
 	key := strings.TrimSpace(os.Getenv("GOOGLE_MAPS_API_KEY"))
 	if key == "" {
 		return nil, ErrGeocodeNoKey
@@ -88,6 +108,7 @@ func geocodeLookup(ctx context.Context, address string, params url.Values) ([]ge
 		return nil, fmt.Errorf("geocode: request failed")
 	}
 	defer resp.Body.Close()
+	httpStatus = resp.StatusCode
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("geocode: read response")
@@ -99,6 +120,7 @@ func geocodeLookup(ctx context.Context, address string, params url.Values) ([]ge
 	if err := json.Unmarshal(body, &r); err != nil {
 		return nil, fmt.Errorf("geocode: bad response")
 	}
+	googleStatus = r.Status
 	switch r.Status {
 	case "OK":
 	case "ZERO_RESULTS":

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"hora-auth/internal/tracing"
 )
 
 // Splitter separates one message into the errands it asks for (M3, Aura
@@ -54,7 +56,14 @@ func splitSchema() map[string]any {
 // SplitErrands asks the model. If the model is unavailable or answers out of
 // schema, the whole message is one errand — the person still gets a draft,
 // just not a split one — and the error is returned for the log.
-func (o *OpenAICompat) SplitErrands(ctx context.Context, text string) ([]string, Usage, error) {
+func (o *OpenAICompat) SplitErrands(ctx context.Context, text string) (errands []string, u Usage, err error) {
+	ctx, sp := tracing.StartSpan(ctx, "llm.SplitErrands", tracing.KindChain)
+	defer func() {
+		sp.Input(text)
+		sp.OutputValue(errands)
+		sp.Fail(err) // failed: errands is the whole message (the fallback)
+		sp.End()
+	}()
 	single := []string{strings.TrimSpace(text)}
 	out, u, err := o.completeJSON(ctx, splitPrompt, text, "errands", splitSchema(), 512)
 	if err != nil {
@@ -66,7 +75,7 @@ func (o *OpenAICompat) SplitErrands(ctx context.Context, text string) ([]string,
 	if err := json.Unmarshal([]byte(out), &r); err != nil {
 		return single, u, fmt.Errorf("split errands: decode: %w", err)
 	}
-	errands := make([]string, 0, len(r.Errands))
+	errands = make([]string, 0, len(r.Errands))
 	for _, e := range r.Errands {
 		if e = strings.TrimSpace(e); e != "" {
 			errands = append(errands, e)
@@ -84,7 +93,14 @@ func (o *OpenAICompat) SplitErrands(ctx context.Context, text string) ([]string,
 // NeedsPurchase is the tiebreak for the budget question (budget.go): does
 // this errand involve the supporter paying for something? Used only when the
 // rule saw no purchase word. The answer never sets an amount.
-func (o *OpenAICompat) NeedsPurchase(ctx context.Context, text string) (bool, error) {
+func (o *OpenAICompat) NeedsPurchase(ctx context.Context, text string) (yes bool, err error) {
+	ctx, sp := tracing.StartSpan(ctx, "llm.NeedsPurchase", tracing.KindChain)
+	defer func() {
+		sp.Input(text)
+		sp.OutputValue(map[string]bool{"purchase": yes})
+		sp.Fail(err)
+		sp.End()
+	}()
 	// 256: the answer is a few tokens, but a model that thinks first ran past
 	// 32 on staging (2026-10-24) and the check fell back to "no purchase" —
 	// a bagel errand was drafted without the budget question.

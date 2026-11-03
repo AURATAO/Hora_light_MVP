@@ -822,10 +822,15 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
+	// Phoenix tracing (D-22): only when PHOENIX_COLLECTOR_ENDPOINT and
+	// PHOENIX_API_KEY are set; otherwise nothing here changes.
+	waitTracingFlush := startTracing(srv, sqldb)
+
 	log.Printf("listening on :%s", port)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+	waitTracingFlush()
 }
 func parseLimit(q string, def, max int) int {
 	if n, err := strconv.Atoi(q); err == nil && n > 0 && n <= max {

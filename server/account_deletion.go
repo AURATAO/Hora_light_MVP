@@ -45,6 +45,7 @@ import (
 	"errors"
 	"fmt"
 	"hora-auth/internal/channel"
+	"hora-auth/internal/tracing"
 	"log"
 	"net/http"
 	"os"
@@ -233,7 +234,7 @@ func deleteMyAccount(c *gin.Context) {
 	// The audit row names no task, so job_id is the system placeholder, as
 	// promo actions do (promo.go). The email is deliberately NOT in meta
 	// (S-12) — the row's actor_id is the anonymised account.
-	writeAudit(ctx, systemActorUID, uid, "ACCOUNT_DELETED", "", map[string]any{
+	meta := map[string]any{
 		"stripe_customer_deleted":   stripeDeleted,
 		"stripe_customer_id":        stripeCustomerID.String,
 		"supabase_user_deleted":     supabaseDeleted,
@@ -244,7 +245,11 @@ func deleteMyAccount(c *gin.Context) {
 		"tasks_anonymised":          counts.tasks,
 		"worklogs_anonymised":       counts.worklogs,
 		"requested_from_user_agent": c.Request.UserAgent(),
-	})
+	}
+	if tracing.Configured() {
+		meta["trace_sessions_queued"] = counts.traceSessions // D-22
+	}
+	writeAudit(ctx, systemActorUID, uid, "ACCOUNT_DELETED", "", meta)
 	log.Printf("[account.delete] uid=%s done stripe=%v supabase=%v tasks=%d", uid, stripeDeleted, supabaseDeleted, counts.tasks)
 
 	// A deleted account is signed out on the spot.
@@ -260,6 +265,8 @@ type anonymiseCounts struct {
 	// Phone numbers linked for chat booking and everything said over them
 	// (D-16 R-3: a phone number is personal data and goes with the account).
 	channelNumbers int64
+	// Conversations whose Phoenix traces were queued for deletion (D-22).
+	traceSessions int64
 }
 
 // anonymiseAccount is the database half, in one transaction.
@@ -330,6 +337,14 @@ func anonymiseAccount(ctx context.Context, uid, email, placeholder string) (anon
 		delete from public.notifications where user_id = $1::uuid
 	`, uid); err != nil {
 		return n, err
+	}
+	// Their chat traces in Phoenix (D-22), queued while the identities that
+	// name the traces' sessions still exist. Only when Phoenix is configured:
+	// with tracing off nothing was ever sent.
+	if tracing.Configured() {
+		if n.traceSessions, err = channel.QueueTraceDeletionsTx(ctx, tx, uid); err != nil {
+			return n, err
+		}
 	}
 	// Chat booking (D-16 R-3): linked numbers and everything said over them.
 	if n.channelNumbers, err = channel.PurgeUserTx(ctx, tx, uid); err != nil {

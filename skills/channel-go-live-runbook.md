@@ -181,6 +181,9 @@ Nothing here is in the repo; Aura sets them in the dashboard.
 | `CHANNEL_SETUP_BASE_URL` | optional, `https://core.horaapp.co` | the host in texted links; unset = `RENDER_EXTERNAL_URL` (`*.onrender.com`) |
 | `APP_ENV` | `production` | already set |
 | `POSTMARK_API_TOKEN` | already set | — |
+| `PHOENIX_COLLECTOR_ENDPOINT` | optional — our Phoenix's base URL, e.g. `https://phoenix.<host>` (no `/v1/traces`) | redacted chat traces (D-22); unset = tracing off. Staging first. Phoenix 13.13+, server run with `PHOENIX_DEFAULT_RETENTION_POLICY_DAYS=30` |
+| `PHOENIX_API_KEY` | optional — a Phoenix system API key | " — needs both. Also used to delete a deleted account's traces |
+| `PHOENIX_PROJECT_NAME` | optional, default `hora-channel` | set `hora-channel-staging` on staging to keep the two apart |
 
 Check at the same time:
 

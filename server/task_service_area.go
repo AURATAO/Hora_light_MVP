@@ -10,8 +10,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"hora-auth/helpers"
 	"hora-auth/internal/channel"
+	"hora-auth/internal/tracing"
 )
 
 // The service area: a task runs only if EVERY stop is in the five boroughs.
@@ -89,7 +92,15 @@ func checkStops(ctx context.Context, locationText string) areaCheck {
 	var resolved []string
 	for _, stop := range stops {
 		lctx, cancel := context.WithTimeout(ctx, areaCheckTimeout)
+		// A chat message's trace shows each stop's check (D-22); the app's
+		// requests are not traced (no message in ctx).
+		lctx, sp := tracing.StartSpan(lctx, "service_area.stop", tracing.KindTool)
 		res, err := serviceAreaFn(lctx, stop)
+		sp.Input(stop)
+		sp.Attr(attribute.String("hora.area.verdict", areaVerdictName(res.Verdict)))
+		sp.Text("hora.area.resolved", res.Resolved)
+		sp.Fail(err)
+		sp.End()
 		cancel()
 		switch {
 		case err != nil:
@@ -153,4 +164,17 @@ func refuseTaskArea(c *gin.Context, ctx context.Context, uid string, locationTex
 // address is never logged; a helpers error carries only Google's status.
 func logAreaFailure(err error) {
 	log.Printf("[service-area] check failed, booking refused: %v", err)
+}
+
+// areaVerdictName is the verdict's name for the trace.
+func areaVerdictName(v helpers.AreaVerdict) string {
+	switch v {
+	case helpers.AreaInside:
+		return "inside"
+	case helpers.AreaOutside:
+		return "outside"
+	case helpers.AreaWhichBorough:
+		return "which_borough"
+	}
+	return "unclear"
 }

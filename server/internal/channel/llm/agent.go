@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"hora-auth/internal/tracing"
 )
 
 // The requester agent (D-18): one structured proposal per message, never an
@@ -283,12 +285,68 @@ func SafeProposal() Proposal { return Proposal{Action: ActionRelay, Task: -1} }
 
 // Propose asks the model. On any failure it returns SafeProposal with the
 // error.
-func (o *OpenAICompat) Propose(ctx context.Context, text string, c AgentContext) (Proposal, error) {
-	out, _, err := o.ProposeRaw(ctx, text, c)
+func (o *OpenAICompat) Propose(ctx context.Context, text string, c AgentContext) (p Proposal, err error) {
+	// The agent span (D-22): what was asked, what the model said, and what
+	// it became after DecodeProposal — so a proposal made safe shows as one.
+	ctx, sp := tracing.StartSpan(ctx, "agent.propose", tracing.KindAgent)
+	var out string
+	var u Usage
+	defer func() {
+		if sp.Recording() {
+			sp.Input(text)
+			sp.Text("hora.agent.context", AgentUserMessage(text, c))
+			sp.Text("hora.agent.raw_output", out)
+			sp.OutputValue(proposalView(p, len(c.Tasks)))
+			raw, rawOK := rawProposal(out)
+			sp.Model(o.Model)
+			sp.PromptVersion(AgentPromptVersion)
+			sp.Metadata(map[string]any{
+				"prompt_version": AgentPromptVersion,
+				"model":          u.Model,
+				"latency_ms":     u.Latency.Milliseconds(),
+				"input_tokens":   u.InputTokens,
+				"output_tokens":  u.OutputTokens,
+				"raw_action":     raw.Action,
+				"raw_task":       raw.Task,
+				"raw_escalation": raw.Escalation,
+				"made_safe":      !rawOK || raw != proposalView(p, len(c.Tasks)),
+				"open_question":  c.OpenQuestion,
+				"tasks":          len(c.Tasks),
+			})
+			sp.Fail(err)
+		}
+		sp.End()
+	}()
+	out, u, err = o.ProposeRaw(ctx, text, c)
 	if err != nil {
 		return SafeProposal(), err
 	}
 	return DecodeProposal(out, c)
+}
+
+// proposalFields is a proposal as the schema spells it, for the trace.
+type proposalFields struct {
+	Action     string `json:"action"`
+	Task       string `json:"task"`
+	Escalation string `json:"escalation"`
+}
+
+func proposalView(p Proposal, nTasks int) proposalFields {
+	v := proposalFields{Action: string(p.Action), Escalation: string(p.Escalation)}
+	if p.Task >= 0 && p.Task < nTasks {
+		v.Task = fmt.Sprintf("t%d", p.Task+1)
+	}
+	return v
+}
+
+// rawProposal is what the model said, before DecodeProposal; ok is false
+// when it was not a readable object.
+func rawProposal(out string) (proposalFields, bool) {
+	var r proposalFields
+	if err := json.Unmarshal([]byte(extractJSONObject(out)), &r); err != nil {
+		return proposalFields{}, false
+	}
+	return r, true
 }
 
 // ProposeRaw is the model's raw JSON, for the test runner (cmd/agenttest),

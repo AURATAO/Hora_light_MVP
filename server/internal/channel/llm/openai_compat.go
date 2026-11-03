@@ -8,8 +8,13 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+
+	"hora-auth/internal/tracing"
 )
 
 // OpenAICompat calls any OpenAI-compatible chat-completions endpoint. First
@@ -35,7 +40,14 @@ type chatMessage struct {
 	Content string `json:"content"`
 }
 
-func (o *OpenAICompat) ParseTask(ctx context.Context, systemPrompt, text string) (TaskDraft, Usage, error) {
+func (o *OpenAICompat) ParseTask(ctx context.Context, systemPrompt, text string) (d TaskDraft, u Usage, err error) {
+	ctx, sp := tracing.StartSpan(ctx, "llm.ParseTask", tracing.KindChain)
+	defer func() {
+		sp.Input(text)
+		sp.OutputValue(d) // the validated draft
+		sp.Fail(err)
+		sp.End()
+	}()
 	maxTokens := o.MaxTokens
 	if maxTokens == 0 {
 		maxTokens = 2048
@@ -44,14 +56,25 @@ func (o *OpenAICompat) ParseTask(ctx context.Context, systemPrompt, text string)
 	if err != nil {
 		return TaskDraft{}, u, fmt.Errorf("llm parse: %w", err)
 	}
-	d, err := decodeDraft(out)
+	d, err = decodeDraft(out)
 	return d, u, wrapErr("ParseTask", err)
 }
 
 // completeJSON runs one schema-constrained completion and returns the raw
 // message content.
-func (o *OpenAICompat) completeJSON(ctx context.Context, system, user, schemaName string, schema map[string]any, maxTokens int) (string, Usage, error) {
-	u := Usage{Model: o.Model}
+func (o *OpenAICompat) completeJSON(ctx context.Context, system, user, schemaName string, schema map[string]any, maxTokens int) (out string, u Usage, err error) {
+	u = Usage{Model: o.Model}
+	// One LLM span per call (D-22): the prompt, the raw output and the
+	// tokens, redacted. A no-op unless a message is being traced.
+	_, sp := tracing.StartLLM(ctx, "llm."+schemaName, tracing.LLMCall{
+		Model: o.Model, Provider: providerHost(o.BaseURL), System: system, User: user,
+		Params: map[string]any{"max_tokens": maxTokens, "temperature": 0, "response_format": schemaName, "extra_body": o.ExtraBody},
+	})
+	defer func() {
+		sp.LLMResult(out, u.InputTokens, u.OutputTokens)
+		sp.Fail(err)
+		sp.End()
+	}()
 	if o.BaseURL == "" || o.APIKey == "" || o.Model == "" {
 		return "", u, fmt.Errorf("provider not configured")
 	}
@@ -109,6 +132,7 @@ func (o *OpenAICompat) completeJSON(ctx context.Context, system, user, schemaNam
 	if err != nil {
 		return "", u, fmt.Errorf("llm read response: status %d: %w", resp.StatusCode, err)
 	}
+	sp.Attr(attribute.Int("http.status_code", resp.StatusCode))
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		// Status only: an error body can echo the prompt, i.e. the person's
 		// message (S-12).
@@ -135,8 +159,18 @@ func (o *OpenAICompat) completeJSON(ctx context.Context, system, user, schemaNam
 	if len(r.Choices) == 0 {
 		return "", u, fmt.Errorf("no choices")
 	}
+	sp.Attr(attribute.String("hora.llm.finish_reason", r.Choices[0].FinishReason))
 	if r.Choices[0].FinishReason == "length" {
+		sp.Text("hora.llm.truncated_output", r.Choices[0].Message.Content)
 		return "", u, fmt.Errorf("output truncated (max_tokens %d)", maxTokens)
 	}
 	return r.Choices[0].Message.Content, u, nil
+}
+
+// providerHost is the provider's host for the trace ("inference.baseten.co").
+func providerHost(base string) string {
+	if u, err := url.Parse(base); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return ""
 }

@@ -52,3 +52,34 @@ func PurgeUserTx(ctx context.Context, tx *sql.Tx, userID string) (int64, error) 
 	}
 	return n, nil
 }
+
+// QueueTraceDeletionsTx queues the Phoenix traces of every conversation tied
+// to userID for deletion (D-22), inside the caller's transaction and BEFORE
+// PurgeUserTx removes the identities that name them: a trace's session.id is
+// the identity id. The sweeper (server/trace_deletions.go) deletes them.
+// Returns how many conversations were queued.
+//
+// A database without the queue table, or without the channel tables, is not
+// an error: account deletion must never break on it. The caller logs the
+// count; traces left unqueued go with Phoenix's 30-day retention.
+func QueueTraceDeletionsTx(ctx context.Context, tx *sql.Tx, userID string) (int64, error) {
+	var present bool
+	if err := tx.QueryRowContext(ctx, `SELECT to_regclass('public.trace_deletions') IS NOT NULL
+		AND to_regclass('public.channel_identities') IS NOT NULL`).Scan(&present); err != nil {
+		return 0, fmt.Errorf("queue trace deletions: probe: %w", err)
+	}
+	if !present {
+		return 0, nil
+	}
+	res, err := tx.ExecContext(ctx, `INSERT INTO public.trace_deletions (session_id)
+		SELECT id::text FROM public.channel_identities WHERE user_id = $1::uuid
+		ON CONFLICT (session_id) DO UPDATE SET next_attempt_at = LEAST(public.trace_deletions.next_attempt_at, EXCLUDED.next_attempt_at)`, userID)
+	if err != nil {
+		return 0, fmt.Errorf("queue trace deletions: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("queue trace deletions: count: %w", err)
+	}
+	return n, nil
+}

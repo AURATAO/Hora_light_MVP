@@ -10,7 +10,10 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"hora-auth/internal/channel/llm"
+	"hora-auth/internal/tracing"
 )
 
 // Booker is the bridge to the existing task and pricing code in package main.
@@ -69,6 +72,22 @@ const (
 	AreaUnavailable                     // the check itself failed; nothing is known
 	AreaWhichBorough                    // a stop with no city exists in several boroughs
 )
+
+// areaOutcomeName is the outcome's name for the trace (not a String
+// method: that would change how existing log lines print it).
+func areaOutcomeName(o AreaOutcome) string {
+	switch o {
+	case AreaInside:
+		return "inside"
+	case AreaOutside:
+		return "outside"
+	case AreaUnavailable:
+		return "unavailable"
+	case AreaWhichBorough:
+		return "which_borough"
+	}
+	return "unclear"
+}
 
 // AreaCheck: Stop is the address that decided anything but Inside. Resolved,
 // on Inside: the draft's stops in order, as the check found them.
@@ -257,6 +276,9 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	if err != nil {
 		return fmt.Errorf("HandleInbound: %w", err)
 	}
+	// The trace's session is the conversation, its user the account; never
+	// the number (D-22).
+	tracing.WithIdentity(ctx, id.UserID, id.ID)
 	// Bookkeeping failures are logged, not fatal: the person still deserves
 	// an answer, and neither row gates anything money-related.
 	if err := r.Identities.AttachMessage(ctx, in.Channel, in.ProviderMessageID, id.ID); err != nil {
@@ -702,7 +724,11 @@ func (r *Router) checkArea(ctx context.Context, items []DraftItem, known map[str
 		if len(open) == 0 {
 			continue
 		}
-		got := r.Booker.CheckArea(ctx, ask)
+		actx, sp := tracing.StartSpan(ctx, "service_area.errand", tracing.KindChain)
+		sp.Input(where(ask.Location1, ask.Location2))
+		got := r.Booker.CheckArea(actx, ask)
+		sp.OutputValue(map[string]any{"outcome": areaOutcomeName(got.Outcome), "stop": got.Stop, "resolved": got.Resolved})
+		sp.End()
 		switch got.Outcome {
 		case AreaInside:
 			if len(got.Resolved) != len(open) {
@@ -1264,7 +1290,13 @@ func (r *Router) sendStamped(ctx context.Context, out Outbound, taskID string) (
 	if err != nil {
 		return time.Time{}, "", fmt.Errorf("send to %s: %w", Redact(out.To), err)
 	}
+	tracing.Replied(ctx, out.RecordedText())
+	_, sp := tracing.StartSpan(ctx, "channel.send", tracing.KindTool)
+	sp.Input(out.RecordedText())
+	sp.Attr(attribute.String("hora.channel", string(out.Channel)), attribute.Bool("hora.relay", out.Relay), attribute.Bool("hora.media", out.MediaURL != ""))
 	pid, err := a.Send(ctx, out)
+	sp.Fail(err)
+	sp.End()
 	if err != nil {
 		return stamp, "", fmt.Errorf("send to %s: %w", Redact(out.To), err)
 	}

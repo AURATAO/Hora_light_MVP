@@ -13,7 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"hora-auth/internal/channel"
+	"hora-auth/internal/tracing"
 )
 
 // Chat relay, server side (PLAN §6 steps 5–7; M3.2). The channel package
@@ -106,8 +109,20 @@ func (t *talkjsRelay) ActiveTasks(ctx context.Context, userID string) ([]channel
 	return out, rows.Err()
 }
 
-// PostAsRequester puts text into the task's chat as the requester.
+// PostAsRequester puts text into the task's chat as the requester. Traced
+// (D-22) as one step of the message: the TalkJS round trip is part of a
+// reply's latency.
 func (t *talkjsRelay) PostAsRequester(ctx context.Context, taskID, userID, text, key string) error {
+	ctx, sp := tracing.StartSpan(ctx, "chat.relay_to_supporter", tracing.KindTool)
+	sp.Input(text)
+	sp.Attr(attribute.String("hora.task_id", taskID))
+	err := t.postAsRequester(ctx, taskID, userID, text, key)
+	sp.Fail(err)
+	sp.End()
+	return err
+}
+
+func (t *talkjsRelay) postAsRequester(ctx context.Context, taskID, userID, text, key string) error {
 	pair, err := relayPair(ctx, t.sqlDB, taskID)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("post as requester: task %s: %w", taskID, channel.ErrTaskNotActive)
