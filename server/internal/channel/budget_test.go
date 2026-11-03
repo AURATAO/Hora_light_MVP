@@ -436,7 +436,7 @@ func TestDeclineAtTheBudgetQuestionDropsTheDraft(t *testing.T) {
 	if g.state() != StateAwaitingBudget {
 		t.Fatalf("state %s", g.state())
 	}
-	if got := g.say(t, "Oh sorry I change my mind never mind I don’t need it"); got != CopyDropped || g.state() != StateIdle {
+	if got := g.say(t, "Oh sorry I change my mind never mind I don’t need it"); got != CopyDroppedCancelHint || g.state() != StateIdle {
 		t.Fatalf("reply %q state %s", got, g.state())
 	}
 	g.say(t, "bring me a bagel from Russ & Daughters")

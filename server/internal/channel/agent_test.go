@@ -843,7 +843,7 @@ func TestNoInWordsDropsTheDraft(t *testing.T) {
 		if g.state() != StateAwaitingConfirm {
 			t.Fatalf("state %s", g.state())
 		}
-		if got := g.say(t, s); got != CopyDropped || g.state() != StateIdle {
+		if got := g.say(t, s); (got != CopyDroppedCancelHint && got != CopyDropped) || g.state() != StateIdle {
 			t.Errorf("%q: reply %q state %s, want the draft dropped", s, got, g.state())
 		}
 	}
@@ -861,7 +861,7 @@ func TestAgentDeclineDropsTheDraftWithNoActiveTask(t *testing.T) {
 	g, _, _, fa := agentRig(llm.Proposal{Action: llm.ActionDecline, Task: -1})
 	g.ids.link(me, "user-1")
 	g.say(t, "pick up my laundry at 12 Bedford Ave")
-	if got := g.say(t, "honestly I'll just do it myself"); got != CopyDropped || g.state() != StateIdle {
+	if got := g.say(t, "honestly I'll just do it myself"); got != CopyDroppedCancelHint || g.state() != StateIdle {
 		t.Fatalf("reply %q state %s", got, g.state())
 	}
 	if n := len(fa.calls); n == 0 || fa.calls[n-1].OpenQuestion != "booking" {

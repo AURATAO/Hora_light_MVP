@@ -854,6 +854,12 @@ func (r *Router) routeInContextLabel(ctx context.Context, in Inbound, id Identit
 			}
 		}
 		intent = llm.ToIntent(p)
+		if p.Action == llm.ActionDecline && conv.Pending != nil && newBookingQuestion(conv.State) {
+			// A no while a new booking's question is open is a no to the
+			// booking: the caller drops it (ToIntent would make it an
+			// "answer", re-asked as "Reply YES to book").
+			intent = intentDecline
+		}
 		if p.Task >= 0 && p.Task < len(active) {
 			agentTarget = active[p.Task].ID
 		}
@@ -877,7 +883,7 @@ func (r *Router) routeInContextLabel(ctx context.Context, in Inbound, id Identit
 		intent = got
 	}
 	switch intent {
-	case llm.IntentCorrection, llm.IntentAnswer:
+	case llm.IntentCorrection, llm.IntentAnswer, intentDecline:
 		return false, intent, nil // the caller's own path: re-draft / re-ask for a plain YES/NO
 	case llm.IntentNewTask:
 		if conv.State != StateIdle {

@@ -366,6 +366,12 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	if handled, err := r.routeReply(ctx, in, id, conv, text); handled {
 		return err
 	}
+	// A new booking's question is open and the message only takes the
+	// request back: dropped by rule, before any model reads it (withdrawal.go;
+	// production 2026-11-03 re-drafted one as "… (CANCELLED)").
+	if r.isDraftWithdrawal(conv, text) {
+		return r.dropDraftWith(ctx, in, conv, CopyDroppedCancelHint)
+	}
 	// D-17 I-P (version B): with a supporter writing in the last minutes,
 	// only an explicit YES/NO answers a question of ours; "ok", "sure",
 	// "👍" go to the supporter, and the person is told what still waits.
@@ -602,6 +608,13 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		}
 		it.QuoteCents, it.QuoteMinutes = cents, minutes
 		items = append(items, it)
+	}
+	if len(prev) > 0 && statusWordAdded(prev, items) {
+		// The parser read the message as a change of state ("… (CANCELLED)",
+		// "booked"): it was a withdrawal. Never shown as a summary to say
+		// YES to (production 2026-11-03).
+		log.Printf("[channel] re-draft identity=%s: status word in title, read as a withdrawal", id.ID)
+		return r.dropDraftWith(ctx, in, conv, CopyDroppedCancelHint)
 	}
 	if len(items) == 0 {
 		if r.lastReplyWasParseFailure(ctx, id) {
@@ -997,16 +1010,24 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 			}
 			conv = fresh
 			switch {
-			case p.Action == llm.ActionDecline && !changeWordsRE.MatchString(text):
+			case p.Action == llm.ActionDecline && !declineCarriesChange(text):
 				// A no with nothing to change in it. "no, I need it at 5"
 				// or "forget it, make it laundry" carries a change: it is
 				// re-drafted below, never dropped (a correction is not lost).
-				return r.dropDraft(ctx, in, conv)
+				// Not changeWordsRE: that one matches "to", "for", "one" —
+				// "I don't need to task anymore" was re-drafted as a
+				// correction (production 2026-11-03).
+				return r.dropDraftWith(ctx, in, conv, CopyDroppedCancelHint)
 			case p.Action == llm.ActionApprove:
 				label = llm.IntentAnswer
 			}
 		}
-		if label == llm.IntentAnswer {
+		if label == intentDecline && !declineCarriesChange(text) {
+			// The agent read a no to the booking (with a supporter on
+			// another job): dropped, never re-asked as "Reply YES".
+			return r.dropDraftWith(ctx, in, conv, CopyDroppedCancelHint)
+		}
+		if label == llm.IntentAnswer || label == intentDecline {
 			// "book it please": an answer in words — the YES has to be plain.
 			return r.Reply(ctx, in, CopyConfirmReask, "")
 		}

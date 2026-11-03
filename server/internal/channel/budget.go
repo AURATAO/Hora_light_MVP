@@ -194,6 +194,9 @@ func (r *Router) onAwaitingBudget(ctx context.Context, in Inbound, id Identity, 
 			if handled {
 				return err
 			}
+			if label == intentDecline && !declineCarriesChange(text) {
+				return r.dropDraftWith(ctx, in, conv, CopyDroppedCancelHint)
+			}
 			if label == llm.IntentCorrection {
 				return r.startDraft(ctx, in, id, conv, conv.Pending.Source+"\n"+text)
 			}

@@ -106,7 +106,7 @@ func TestCancelDuringADraftDropsTheDraft(t *testing.T) {
 	g.ids.link(me, "user-1")
 	g.booker.open = []TaskRef{{ID: "a", Title: "Bagel run"}}
 	g.say(t, "pick up my laundry tomorrow at 3")
-	if got := g.say(t, "cancel"); got != CopyDropped || len(g.booker.cancelled) != 0 {
+	if got := g.say(t, "cancel"); got != CopyDroppedCancelHint || len(g.booker.cancelled) != 0 {
 		t.Fatalf("%q cancelled %v", got, g.booker.cancelled)
 	}
 }

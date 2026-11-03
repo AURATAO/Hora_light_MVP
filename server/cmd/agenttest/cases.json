@@ -2463,6 +2463,93 @@
     "where"
    ],
    "note": "Italian: I'm scared — escalate wins"
+  },
+  {
+   "n": 141,
+   "group": "R withdrawal at a booking question (v0.4.4)",
+   "ctx": {
+    "open_question": "booking",
+    "hora_line": {
+     "text": "Pick up cake and deliver to office\nToday, 3:00 PM · about 30 min\nEstimate: $24\n\nReply YES to book, or tell me what to change.",
+     "minutes_ago": 1
+    }
+   },
+   "msg": "Oh sorry I don't need to task anymore thanks",
+   "expect": {
+    "action": "decline"
+   },
+   "forbid": [
+    "reply",
+    "correction",
+    "approve"
+   ],
+   "money": true,
+   "note": "production 2026-11-03 21:58 Rome: was re-drafted as “… (CANCELLED)”"
+  },
+  {
+   "n": 142,
+   "group": "R withdrawal at a booking question (v0.4.4)",
+   "ctx": {
+    "open_question": "booking",
+    "hora_line": {
+     "text": "Pick up cake and deliver to office\nToday, 3:00 PM · about 30 min\nEstimate: $24\n\nReply YES to book, or tell me what to change.",
+     "minutes_ago": 1
+    }
+   },
+   "msg": "never mind I don't need that anymore",
+   "expect": {
+    "action": "decline"
+   },
+   "forbid": [
+    "reply",
+    "correction",
+    "approve"
+   ],
+   "money": true,
+   "note": "production 2026-11-02: the summary was put again"
+  },
+  {
+   "n": 143,
+   "group": "R withdrawal at a booking question (v0.4.4)",
+   "ctx": {
+    "open_question": "booking",
+    "hora_line": {
+     "text": "Pick up cake and deliver to office\nToday, 3:00 PM · about 30 min\nEstimate: $24\n\nReply YES to book, or tell me what to change.",
+     "minutes_ago": 1
+    }
+   },
+   "msg": "I changed my mind, forget it",
+   "expect": {
+    "action": "decline"
+   },
+   "forbid": [
+    "reply",
+    "correction",
+    "approve"
+   ],
+   "money": true
+  },
+  {
+   "n": 144,
+   "group": "R withdrawal at a booking question (v0.4.4)",
+   "ctx": {
+    "open_question": "booking",
+    "hora_line": {
+     "text": "Pick up cake and deliver to office\nToday, 3:00 PM · about 30 min\nEstimate: $24\n\nReply YES to book, or tell me what to change.",
+     "minutes_ago": 1
+    }
+   },
+   "msg": "算了不用了",
+   "expect": {
+    "action": "decline"
+   },
+   "forbid": [
+    "reply",
+    "correction",
+    "approve"
+   ],
+   "money": true,
+   "note": "Chinese withdrawal"
   }
  ]
 }

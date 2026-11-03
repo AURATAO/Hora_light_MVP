@@ -838,7 +838,7 @@ func TestNoDropsTheDraft(t *testing.T) {
 	g := newRig(llm.IntentNewTask)
 	g.ids.link(me, "user-1")
 	g.say(t, "laundry pickup")
-	if got := g.say(t, "cancel"); got != CopyDropped || g.state() != StateIdle {
+	if got := g.say(t, "cancel"); got != CopyDroppedCancelHint || g.state() != StateIdle {
 		t.Fatalf("got %q state %s", got, g.state())
 	}
 	if g.booker.posts != 0 {
