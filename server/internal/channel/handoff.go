@@ -67,6 +67,13 @@ type HandoffNotice struct {
 	// AutoReleased: no ops activity for HandoffTimeout — the thread went
 	// back to the bot and the person was told. Emailed, never texted.
 	AutoReleased bool
+	// OptedOut: the person stopped texts (Reason HandoffOptedOut). Not a
+	// hand-off — the thread is not held and cannot be written to — so the
+	// notice says what to do instead. OpenTasks are their tasks still under
+	// way; OpenTasksUnknown: they could not be read (assume there are).
+	OptedOut         bool
+	OpenTasks        []TaskRef
+	OpenTasksUnknown bool
 }
 
 // OpsNotifier delivers a notice to the people who will take over.
@@ -157,6 +164,9 @@ type handoffOpen struct {
 	unconfirmed         bool
 	detail              string // the agent's escalation reason
 	autoReleased        bool   // the thread went back to the bot (HandoffTimeout)
+	optedOut            bool   // the person stopped texts (optout.go)
+	openTasks           []TaskRef
+	openTasksUnknown    bool
 }
 
 func (r *Router) notifyOps(ctx context.Context, id Identity, reason HandoffReason, update bool, open handoffOpen) error {
@@ -165,7 +175,7 @@ func (r *Router) notifyOps(ctx context.Context, id Identity, reason HandoffReaso
 	}
 	n := HandoffNotice{IdentityID: id.ID, Channel: id.Channel, PhoneHint: PhoneHint(id.Address), UserID: id.UserID, Reason: reason, Update: update,
 		OpenRequestID: open.extensionID, OpenRequestTaskID: open.taskID, OpenRequestUnconfirmed: open.unconfirmed, Detail: open.detail,
-		AutoReleased: open.autoReleased}
+		AutoReleased: open.autoReleased, OptedOut: open.optedOut, OpenTasks: open.openTasks, OpenTasksUnknown: open.openTasksUnknown}
 	limit := handoffThreadLen
 	if update {
 		limit = 1

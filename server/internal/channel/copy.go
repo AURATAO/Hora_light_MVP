@@ -88,11 +88,11 @@ const (
 	CopyAskNameAgain              = "Just your first name is fine."
 	CopyOneStepToBook             = "One step to book, about a minute: confirm your email and add a card. Nothing is charged until the task is done.\n\n%s\n\nI'll book it as soon as you finish."
 	CopyOneStepToBookAgain        = "Here's a fresh link to finish booking:\n\n%s"
-	CopySetupAlreadySent          = "I just sent you a link to finish booking. It works for 30 minutes. Lost it? Text me again in a couple of minutes for a new one, or reply CANCEL."
+	CopySetupAlreadySent          = "I just sent you a link to finish booking. It works for 30 minutes. Lost it? Text me again in a couple of minutes for a new one, or reply NO to drop it."
 	CopyNeedCard                  = "To book, add a card first (nothing is charged until the task is done):\n\n%s"
 	CopyDropped                   = "No worries at all, I won't book that. I'm here whenever you need me."
-	CopyBooked                    = "Booked. I'm finding a supporter now and will text you when someone accepts."
-	CopyBookedAll                 = "Booked all %d. I'm finding supporters now and will text you as each one is accepted."
+	CopyBooked                    = "Booked. I'm finding a supporter now and will text you when someone accepts. " + CopyCancelHint
+	CopyBookedAll                 = "Booked all %d. I'm finding supporters now and will text you as each one is accepted. " + CopyCancelHint
 	CopyBookedSome                = "Booked %d of %d so far. "
 	CopyBookingInFlight           = "One moment, I'm booking it now."
 	CopyCardProblem               = "Your card couldn't be used for this booking."
@@ -133,15 +133,15 @@ const (
 	CopyCancelConfirmClosing      = "Cancel “%s”%s? The free-cancel window is about to end, so cancelling will cost %s (the %s base fee plus any time already worked). Reply YES to cancel, or NO to keep it."
 	CopyCancelInApp               = "Your supporter is on “%s” right now, so the cancellation charge is still changing. Please cancel it in the app, where you'll see the exact amount first."
 	CopyCancelledUnknown          = "All set: “%s” is cancelled. Any cancellation charge will show in the app. I'm here whenever you need me."
-	CopyCancelSetAside            = "(I've set aside cancelling “%s” — send “cancel” again after this if you still want to.)"
-	CopyCancelAfterApproval       = "Your supporter just sent a request — answer that first, then send “cancel” again."
+	CopyCancelSetAside            = "(I've set aside cancelling “%s” — send “cancel task” after this if you still want to.)"
+	CopyCancelAfterApproval       = "Your supporter just sent a request — answer that first, then send “cancel task” again."
 	CopyCancelMoreInApp           = "(You have more open tasks — those can be cancelled in the app.)"
-	CopyCancelRetry               = "I couldn't start the cancel just now — please send “cancel” again in a moment, or cancel it in the app."
-	CopyCancelTakenOver           = "Your supporter's request came in first, so “%s” was not cancelled. Answer it above, then send “cancel” again if you still want to."
+	CopyCancelRetry               = "I couldn't start the cancel just now — please send “cancel task” again in a moment, or cancel it in the app."
+	CopyCancelTakenOver           = "Your supporter's request came in first, so “%s” was not cancelled. Answer it above, then send “cancel task” if you still want to."
 	CopyStillWaitingCancel        = "Still waiting on your YES or NO — cancel “%s”."
 	CopyStillWaitingCancelReason  = "Still waiting on the reason for cancelling “%s” — reply with its number, or NO to keep the task."
-	CopyCancelNotDone             = "(I haven't cancelled “%s”. Say “cancel” again if you still want to.)"
-	CopyDroppedCancelHint         = "No worries at all, I won't book that. If you meant a task that's already posted, just say “cancel” again."
+	CopyCancelNotDone             = "(I haven't cancelled “%s”. Say “cancel task” if you still want to.)"
+	CopyDroppedCancelHint         = "No worries at all, I won't book that. If you meant a task that's already posted, say “cancel task”."
 	CopyStillWaitingCancelChoice  = "Still waiting on which task to cancel — reply with its number."
 	CopyAskWhatWhere              = "Sure — what do you need done, and where should the supporter go? (When, too, if it isn't as soon as possible.)"
 	CopyAskWhere                  = "Where should the supporter go for “%s”? An address or a place name is enough."
@@ -166,6 +166,14 @@ const (
 	CopyApprovalTimedOut          = "%s"
 	CopyBackToDraft               = "Back to your new request:"
 	TermsURL                      = "my-hora.com/terms"
+)
+
+const (
+	// CopyCancelHint teaches the cancel phrase: two words, never a bare
+	// carrier opt-out keyword (optout.go — a lone "cancel" stops every text).
+	CopyCancelHint = `To cancel, reply "cancel task".`
+	// CopyOptInWelcome answers START from a number that had stopped texts.
+	CopyOptInWelcome = "Welcome back! Texts from HO:RA are on again. What can I help you with?"
 )
 
 // Summary is the message that asks for the YES. It states the price and the
@@ -202,6 +210,7 @@ func (r *Router) Summary(p *PendingDraft) string {
 		fmt.Fprintf(&b, "\n\nI couldn't work out \u201c%s\u201d — tell me a bit more and I'll add it.", u)
 	}
 	b.WriteString("\nBy booking you agree to our Terms: " + TermsURL)
+	b.WriteString("\n" + CopyCancelHint)
 	return b.String()
 }
 

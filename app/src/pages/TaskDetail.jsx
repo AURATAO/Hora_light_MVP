@@ -2393,6 +2393,13 @@ export default function TaskDetail() {
                 💬 Chat available once a supporter accepts
               </div>
             )}
+            {/* The requester texted STOP to HO:RA: chat messages no longer
+                reach their phone as texts, only the app. */}
+            {isAssignee && task.requester_texts_stopped && (
+              <div role="status" className="text-xs text-white/60">
+                {task.requester_name ? task.requester_name.split(' ')[0] : 'The requester'} has stopped texts from HO:RA, so they can't be reached by text. Your messages only reach them in the app.
+              </div>
+            )}
 
             {/* The disabled-until-you-have-clocked state. While PAUSED this is
                 suppressed: the work-session card above carries an enabled

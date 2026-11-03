@@ -161,7 +161,11 @@ func (a *SendblueAdapter) Send(ctx context.Context, out Outbound) (string, error
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		// Sendblue answers 400 (not 429) for plan-limit declines; never retry
 		// those blindly. The body may echo the recipient: scrubbed (S-12).
-		return "", &ProviderStatusError{Provider: "sendblue", Status: resp.StatusCode, Text: ProviderErrorText(respBody)}
+		e := &ProviderStatusError{Provider: "sendblue", Status: resp.StatusCode, Text: ProviderErrorText(respBody)}
+		if sendblueOptedOut(resp.StatusCode, respBody) {
+			e.Cause = ErrRecipientOptedOut
+		}
+		return "", e
 	}
 	var r struct {
 		MessageHandle string `json:"message_handle"`
@@ -173,6 +177,28 @@ func (a *SendblueAdapter) Send(ctx context.Context, out Outbound) (string, error
 		return "", fmt.Errorf("sendblue send: response had no message_handle")
 	}
 	return r.MessageHandle, nil
+}
+
+// sendblueOptedOut: Sendblue refused the send because the recipient texted an
+// opt-out keyword (production 2026-11-03: status 400, error_message
+// OPTED_OUT). Read from the error fields; a body that is not JSON is
+// searched as text.
+func sendblueOptedOut(status int, body []byte) bool {
+	if status < 400 || status > 499 {
+		return false
+	}
+	var r struct {
+		ErrorMessage string `json:"error_message"`
+		ErrorCode    any    `json:"error_code"`
+		Message      string `json:"message"`
+		Status       string `json:"status"`
+	}
+	text := string(body)
+	if err := json.Unmarshal(body, &r); err == nil {
+		text = r.ErrorMessage + " " + r.Message + " " + r.Status + " " + fmt.Sprint(r.ErrorCode)
+	}
+	t := strings.ToUpper(text)
+	return strings.Contains(t, "OPTED_OUT") || strings.Contains(t, "OPTED OUT")
 }
 
 func httpClient(c *http.Client) *http.Client {

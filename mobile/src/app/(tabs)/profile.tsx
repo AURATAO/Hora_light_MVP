@@ -286,6 +286,16 @@ export default function Profile() {
         </View>
       </View>
 
+      {/* The number linked to this account texted STOP (or CANCEL, …): HO:RA
+          sends it nothing until it texts START. Said here because nothing can
+          say it by text. */}
+      {profile.texts_stopped ? (
+        <View className="mb-6 rounded-card border border-line bg-surface p-4">
+          <Text className="text-body font-semibold text-ink">Texts are off</Text>
+          <Text className="mt-0.5 text-caption text-muted">{profile.texts_stopped.message}</Text>
+        </View>
+      ) : null}
+
       <View className="mb-6">
         {profile.supporter_status !== "none" ? (
           // approved/applied/rejected: same states as the Work tab banner, at row scale.

@@ -164,9 +164,14 @@ func (h *WebhookHandler) route(m Inbound) {
 	ctx = tracing.StartMessage(ctx, string(m.Channel), m.ProviderMessageID, m.Text)
 	err := h.Router.HandleInbound(ctx, m)
 	tracing.EndMessage(ctx, err)
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrRecipientOptedOut) {
 		log.Printf("[channel] %s route failed id=%s: %v", m.Channel, m.ProviderMessageID, err)
 		return // processed_at stays NULL → recovery sweep
+	}
+	if err != nil {
+		// The reply was refused because the number stopped texts: routing
+		// it again would be refused again. Done.
+		log.Printf("[channel] %s route id=%s: reply not sent, number has stopped texts", m.Channel, m.ProviderMessageID)
 	}
 	if err := h.Store.MarkProcessed(ctx, m.Channel, m.ProviderMessageID); err != nil {
 		log.Printf("[channel] %s mark processed failed id=%s: %v", m.Channel, m.ProviderMessageID, err)

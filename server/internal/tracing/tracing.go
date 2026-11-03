@@ -395,6 +395,38 @@ func fail(sp trace.Span, err error) {
 	sp.AddEvent("exception", trace.WithAttributes(attribute.String("exception.message", msg)))
 }
 
+// ErrorEvent records one failed step as its own error span: a child of the
+// message trace in ctx when there is one, otherwise a root span (a send from
+// an app notification has no inbound message above it). sessionID is the
+// conversation (channel identity) id and must be set — a span no session
+// names could not be deleted with the account, so none is recorded. meta
+// holds labels only, never personal text; err's text is redacted.
+func ErrorEvent(ctx context.Context, name, channel, userID, sessionID string, err error, meta map[string]any) {
+	if !Enabled() || sessionID == "" || err == nil {
+		return
+	}
+	var sp trace.Span
+	if m := msgFrom(ctx); m != nil {
+		_, sp = tracer().Start(ctx, name)
+	} else {
+		_, sp = tracer().Start(context.WithoutCancel(ctx), name, trace.WithNewRoot())
+	}
+	kv := []attribute.KeyValue{
+		attribute.String(attrKind, KindTool),
+		attribute.String(attrChannel, channel),
+		attribute.String(attrSession, sessionID),
+	}
+	if userID != "" {
+		kv = append(kv, attribute.String(attrUser, userID))
+	}
+	if len(meta) > 0 {
+		kv = append(kv, attribute.String(attrMetadata, jsonString(meta)))
+	}
+	sp.SetAttributes(kv...)
+	fail(sp, err)
+	sp.End()
+}
+
 // LLMCall is one chat completion, as Phoenix's LLM view shows it.
 type LLMCall struct {
 	Model, Provider string

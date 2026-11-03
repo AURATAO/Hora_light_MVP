@@ -1413,6 +1413,14 @@ export default function TaskDetail() {
                 <MessageCircle color={color.muted} size={18} strokeWidth={size.iconStroke} />
                 <Text className="text-body text-ink">Message {firstName(requester?.name)}</Text>
               </View>
+              {/* They texted STOP to HO:RA: messages here no longer reach
+                  their phone as texts, only the app. */}
+              {task.requester_texts_stopped ? (
+                <Text className="mt-1 text-caption text-muted">
+                  {firstName(requester?.name)} has stopped texts from HO:RA, so they can't be reached by text. Your
+                  messages only reach them in the app.
+                </Text>
+              ) : null}
             </PressableScale>
           </View>
         ) : null}

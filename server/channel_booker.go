@@ -313,6 +313,39 @@ func (b *chatBooker) OpenTasks(ctx context.Context, userID string) ([]channel.Ta
 	return out, rows.Err()
 }
 
+// OpenOrPendingTasks lists the requester's tasks still under way: posted
+// (open — waiting for a supporter or being worked on) or parked on a payment
+// step (pending_payment). Ops are told about them when the person stops
+// texts (channel/optout.go).
+func (b *chatBooker) OpenOrPendingTasks(ctx context.Context, userID string) ([]channel.TaskRef, error) {
+	rows, err := b.sqlDB.QueryContext(ctx, `
+		SELECT id::text, COALESCE(title, '')
+		  FROM public.tasks
+		 WHERE requester_id = $1::uuid AND status IN ('open', 'pending_payment')
+		 ORDER BY created_at DESC
+		 LIMIT 20`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("open or pending tasks: %w", err)
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			log.Printf("[channel-booker] open or pending tasks: close rows: %v", cerr)
+		}
+	}()
+	var out []channel.TaskRef
+	for rows.Next() {
+		var t channel.TaskRef
+		if err := rows.Scan(&t.ID, &t.Title); err != nil {
+			return nil, fmt.Errorf("open or pending tasks: %w", err)
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("open or pending tasks: %w", err)
+	}
+	return out, nil
+}
+
 // CancelQuote prices cancelling now with the app's own preview
 // (cancellationPreview — parity-tested against the cancel handler).
 func (b *chatBooker) CancelQuote(ctx context.Context, userID, taskID string) (channel.CancelQuote, error) {

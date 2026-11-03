@@ -120,11 +120,21 @@ type ProviderStatusError struct {
 	Provider string
 	Status   int
 	Text     string // ProviderErrorText of the body
+	// Cause, when set, is what the refusal means in our terms
+	// (ErrRecipientOptedOut); errors.Is sees it.
+	Cause error
 }
 
 func (e *ProviderStatusError) Error() string {
 	return fmt.Sprintf("%s send: status %d: %s", e.Provider, e.Status, e.Text)
 }
+
+func (e *ProviderStatusError) Unwrap() error { return e.Cause }
+
+// ErrRecipientOptedOut: the recipient has stopped texts from us (an opt-out
+// keyword: STOP, CANCEL, …). The provider refuses every send until they text
+// START, and so does the router (optout.go).
+var ErrRecipientOptedOut = errors.New("channel: recipient opted out of texts")
 
 // ErrNotConfigured means the adapter is missing credentials it needs.
 var ErrNotConfigured = errors.New("channel: adapter not configured")

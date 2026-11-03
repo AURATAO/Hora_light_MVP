@@ -2,6 +2,7 @@ package channel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
@@ -235,6 +236,9 @@ type Router struct {
 	// Agent, when set, replaces InContext (D-18, behind CHANNEL_AGENT): it
 	// proposes what a message is; the rules decide. nil = today's routing.
 	Agent llm.Agent
+	// OptOuts keeps the text opt-out mark (optout.go). Nil = off: opt-out
+	// keywords are read as any other words, and sends are not checked.
+	OptOuts OptOutStore
 	// Go runs a reply off the request path when the caller is an HTTP
 	// request (S-32: the setup page's finish step must not wait on
 	// Sendblue/Meta). Default `go f()`; tests run it inline.
@@ -283,6 +287,14 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	// an answer, and neither row gates anything money-related.
 	if err := r.Identities.AttachMessage(ctx, in.Channel, in.ProviderMessageID, id.ID); err != nil {
 		log.Printf("[channel] attach message id=%s: %v", in.ProviderMessageID, err)
+	}
+	// STOP / START and a stopped number, ahead of every other rule: a
+	// carrier keyword is never an answer to anything (optout.go).
+	if handled, err := r.handleOptOut(ctx, in, id); handled {
+		if err := r.Identities.TouchConversation(ctx, id.ID, in.ReceivedAt); err != nil {
+			log.Printf("[channel] touch conversation identity=%s: %v", id.ID, err)
+		}
+		return err
 	}
 	if strings.TrimSpace(in.Text) == "" && (len(in.MediaURLs) == 0 || r.linkJustSent(ctx, id)) && r.sentWithText(ctx, id.ID, in) {
 		// iMessage delivers a link's preview card as one or two extra
@@ -834,6 +846,10 @@ func (r *Router) onName(ctx context.Context, in Inbound, id Identity, conv Conve
 	if IsNo(text) {
 		return r.dropDraft(ctx, in, conv)
 	}
+	if IsCancelRequest(text) {
+		// "cancel task" is not a first name.
+		return r.dropDraftWith(ctx, in, conv, CopyDroppedCancelHint)
+	}
 	name := CleanName(text)
 	if name == "" {
 		return r.Reply(ctx, in, CopyAskNameAgain, "")
@@ -1007,6 +1023,11 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 func (r *Router) onAwaitingSetup(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
 	if IsNo(text) {
 		return r.dropDraft(ctx, in, conv)
+	}
+	if IsCancelRequest(text) {
+		// "cancel task" while the link is out: the booking waiting on it is
+		// dropped, as in every other drafting state — not a fresh link.
+		return r.dropDraftWith(ctx, in, conv, CopyDroppedCancelHint)
 	}
 	recent, err := r.Identities.SetupTokenIssuedSince(ctx, id.ID, r.now().Add(-resendAfter))
 	if err != nil {
@@ -1286,6 +1307,17 @@ func (r *Router) sendStamped(ctx context.Context, out Outbound, taskID string) (
 	if !ok {
 		return time.Time{}, "", fmt.Errorf("send: no adapter for channel %q", out.Channel)
 	}
+	if r.OptOuts != nil {
+		// A stopped number gets nothing (TCPA; the provider would refuse it
+		// anyway). Fail closed: no answer, no text.
+		opted, err := r.OptOuts.OptedOut(ctx, out.Channel, out.To)
+		if err != nil {
+			return time.Time{}, "", fmt.Errorf("send to %s: opt-out check: %w", Redact(out.To), err)
+		}
+		if opted {
+			return time.Time{}, "", fmt.Errorf("send to %s: %w", Redact(out.To), ErrRecipientOptedOut)
+		}
+	}
 	stamp, err := r.Conversations.TouchOutbound(ctx, out.Channel, out.To)
 	if err != nil {
 		return time.Time{}, "", fmt.Errorf("send to %s: %w", Redact(out.To), err)
@@ -1298,6 +1330,11 @@ func (r *Router) sendStamped(ctx context.Context, out Outbound, taskID string) (
 	sp.Fail(err)
 	sp.End()
 	if err != nil {
+		if errors.Is(err, ErrRecipientOptedOut) {
+			// Stopped in a way we did not see (a keyword before this code,
+			// or sent elsewhere): marked now, ops told once.
+			r.recordOptOut(ctx, out.Channel, out.To, "provider")
+		}
 		return stamp, "", fmt.Errorf("send to %s: %w", Redact(out.To), err)
 	}
 	if err := r.Messages.RecordOutbound(ctx, out, pid, taskID); err != nil {

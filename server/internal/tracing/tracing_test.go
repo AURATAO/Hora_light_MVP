@@ -203,3 +203,41 @@ func TestDeleteSession(t *testing.T) {
 		t.Fatal("unconfigured deleter succeeded")
 	}
 }
+
+// ErrorEvent: a root span outside a message trace (a send from an app
+// notification), a child inside one; never without a session.
+func TestErrorEvent(t *testing.T) {
+	exp := tracetest.NewInMemoryExporter()
+	stop := StartWithExporter(exp)
+	defer func() { _ = stop(context.Background()) }()
+
+	ErrorEvent(context.Background(), "channel.opted_out", "imessage", "user-1", "conv-1",
+		errors.New("send to +1*******67: opted out"), map[string]any{"source": "provider"})
+	ErrorEvent(context.Background(), "channel.no_session", "imessage", "", "", errors.New("x"), nil)
+
+	ctx := StartMessage(context.Background(), "imessage", "m1", "STOP")
+	WithIdentity(ctx, "user-1", "conv-1")
+	ErrorEvent(ctx, "channel.opted_out_child", "imessage", "user-1", "conv-1", errors.New("opted out"), nil)
+	EndMessage(ctx, nil)
+
+	spans := exp.GetSpans()
+	root, ok := byName(spans, "channel.opted_out")
+	if !ok {
+		t.Fatal("no span")
+	}
+	a := attrs(root)
+	if a["session.id"] != "conv-1" || a["user.id"] != "user-1" || a["hora.channel"] != "imessage" || !strings.Contains(a["metadata"], "provider") {
+		t.Fatalf("attrs %v", a)
+	}
+	if root.Status.Code.String() != "Error" || root.Parent.IsValid() {
+		t.Fatalf("status %v parent %v", root.Status, root.Parent)
+	}
+	if _, ok := byName(spans, "channel.no_session"); ok {
+		t.Fatal("a span with no session was recorded")
+	}
+	child, ok := byName(spans, "channel.opted_out_child")
+	inbound, _ := byName(spans, "channel.inbound")
+	if !ok || child.Parent.SpanID() != inbound.SpanContext.SpanID() {
+		t.Fatal("inside a message trace the error span is its child")
+	}
+}

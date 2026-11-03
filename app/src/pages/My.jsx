@@ -278,6 +278,14 @@ export default function My() {
   <div className="bg-linear-to-br from-primary to-primary/30 text-accent min-h-screen py-[100px] px-4">
     <div className="mx-auto max-w-3xl space-y-3">
 
+      {/* The number linked to this account texted STOP (or CANCEL, …) to
+          HO:RA: nothing is texted to it until it texts START. */}
+      {profile?.texts_stopped && (
+        <div role="status" className="rounded-2xl border border-white/10 bg-surface/60 px-4 py-3 text-sm text-white/80">
+          {profile.texts_stopped.message}
+        </div>
+      )}
+
       {/* Top bar + stat pills grouped tightly */}
       <div className="space-y-2">
         <div className="flex items-center justify-between gap-3">

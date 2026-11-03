@@ -170,6 +170,11 @@ type Task struct {
 	// getTask, so it is absent from list responses rather than false there.
 	AutoExtendConsent *bool `json:"auto_extend_consent,omitempty"`
 
+	// The requester's number has stopped texts from HO:RA: the supporter's
+	// chat messages no longer reach them by text. Selected only by getTask,
+	// for the assignee (and ops) of an open task (channel_optout.go).
+	RequesterTextsStopped bool `json:"requester_texts_stopped,omitempty"`
+
 	// What the supporter handed in at completion: the proof-of-work photo,
 	// their note, and when. Selected only by getTask, on a completed task,
 	// for whoever passed its read check — the requester who paid for the
@@ -298,6 +303,10 @@ type Profile struct {
 	SupporterStatus     string     `json:"supporter_status"`
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
+	// TextsStopped: the person's number has stopped texts from HO:RA (an
+	// opt-out keyword); the app shows Message. Absent when texts are on.
+	// GET /profile only (channel_optout.go).
+	TextsStopped *TextsStopped `json:"texts_stopped,omitempty"`
 }
 
 func (p *Profile) deriveSupporterStatus() {
@@ -1210,6 +1219,7 @@ func getMyProfile(c *gin.Context) {
   `, email).Scan(&p.Email, &p.Name, &p.Phone, &p.City, &p.AvatarURL, &p.Bio, &p.BetaAccepted, &p.IsVerifiedSupporter, &p.SupporterAppliedAt, &p.SupporterRejectedAt, &p.CreatedAt, &p.UpdatedAt)
 
 	p.deriveSupporterStatus()
+	p.TextsStopped = textsStoppedFor(ctx, uid)
 	c.JSON(http.StatusOK, p)
 }
 
@@ -2352,6 +2362,12 @@ func getTask(c *gin.Context) {
 		).Scan(&approvedBudget); err == nil {
 			t.ShoppingBudgetApprovedCents = &approvedBudget
 		}
+	}
+
+	// The requester has stopped texts: the supporter must not count on the
+	// chat reaching them (channel_optout.go). Open tasks only.
+	if t.Status == "open" && (isAssignee || isAdmin) && t.RequesterID != "" {
+		t.RequesterTextsStopped = requesterTextsStopped(ctx, t.RequesterID)
 	}
 
 	// The live-sharing window, for the two people it concerns. Read separately

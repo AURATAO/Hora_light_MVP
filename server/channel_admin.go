@@ -104,7 +104,9 @@ func (o opsEmailNotifier) NotifyOps(ctx context.Context, n channel.HandoffNotice
 		}
 	}
 	subject := fmt.Sprintf("[HO:RA] Chat handoff — %s %s", n.Channel, n.PhoneHint)
-	if n.AutoReleased {
+	if n.OptedOut {
+		subject = fmt.Sprintf("[HO:RA] Texts stopped — %s %s%s", n.Channel, n.PhoneHint, optOutTasksShort(n))
+	} else if n.AutoReleased {
 		subject = fmt.Sprintf("[HO:RA] Chat handoff — back to the bot (no reply in %s) — %s %s", channel.HandoffTimeout, n.Channel, n.PhoneHint)
 	} else if n.Update {
 		subject = fmt.Sprintf("[HO:RA] Chat handoff — new message — %s %s", n.Channel, n.PhoneHint)
@@ -143,6 +145,9 @@ func (o opsEmailNotifier) NotifyOps(ctx context.Context, n channel.HandoffNotice
 	}
 	if !n.Update && !n.AutoReleased && o.sms != nil {
 		text := fmt.Sprintf("[HO:RA] Chat handoff (%s) — %s %s. Details in the ops email / admin.", reasonLabelOps(n.Reason), n.Channel, n.PhoneHint)
+		if n.OptedOut {
+			text = fmt.Sprintf("[HO:RA] Texts stopped — %s %s opted out%s. Details in the ops email.", n.Channel, n.PhoneHint, optOutTasksShort(n))
+		}
 		own, err := o.addressOf(ctx, n.IdentityID)
 		if err != nil {
 			// Cannot tell whether an ops number is the person handed off:
@@ -213,6 +218,9 @@ func opsNoticeHTML(n channel.HandoffNotice, who string) string {
 	if n.Update {
 		heading = "New message in a handed-off chat"
 	}
+	if n.OptedOut {
+		return optOutNoticeHTML(n, who)
+	}
 	if n.AutoReleased {
 		heading = fmt.Sprintf("No one replied within %s — the chat went back to the bot and the person was told. Follow up by email if it was a payment or a problem.", channel.HandoffTimeout)
 	}
@@ -238,6 +246,48 @@ func opsNoticeHTML(n channel.HandoffNotice, who string) string {
 		html.EscapeString(n.IdentityID), openRequestHTML(n), html.EscapeString(n.IdentityID), html.EscapeString(n.IdentityID), lines.String())
 }
 
+// optOutTasksShort is the open-task part of the subject and the ops text.
+func optOutTasksShort(n channel.HandoffNotice) string {
+	switch {
+	case n.OpenTasksUnknown:
+		return " — open tasks UNKNOWN (lookup failed)"
+	case len(n.OpenTasks) == 1:
+		return " — HAS 1 OPEN TASK"
+	case len(n.OpenTasks) > 1:
+		return fmt.Sprintf(" — HAS %d OPEN TASKS", len(n.OpenTasks))
+	}
+	return ""
+}
+
+// optOutNoticeHTML: the person texted an opt-out keyword (or the provider
+// refused a send with OPTED_OUT). Not a hand-off: there is nothing to reply
+// to or release, and nothing can be texted to them until they send START.
+func optOutNoticeHTML(n channel.HandoffNotice, who string) string {
+	var tasks strings.Builder
+	switch {
+	case n.OpenTasksUnknown:
+		tasks.WriteString("<p><b>Open tasks: could not be read.</b> Check the account in the admin panel — a supporter may be waiting on them.</p>\n")
+	case len(n.OpenTasks) > 0:
+		tasks.WriteString("<p><b>They have open tasks.</b> Their supporter's chat messages no longer reach them by text, and approval questions are not asked (they decline on their timer). The supporter's task screen says the requester can't be reached by text.</p>\n<ul>\n")
+		for _, t := range n.OpenTasks {
+			fmt.Fprintf(&tasks, "  <li>%s <code>%s</code></li>\n", html.EscapeString(t.Title), html.EscapeString(t.ID))
+		}
+		tasks.WriteString("</ul>\n")
+	case n.UserID != "":
+		tasks.WriteString("<p>No open tasks.</p>\n")
+	}
+	return fmt.Sprintf(`<p><strong>A number stopped texts from HO:RA</strong></p>
+<p>It sent an opt-out keyword (STOP, CANCEL, END, QUIT, REVOKE, OPT OUT, UNSUBSCRIBE), or Sendblue refused a send with OPTED_OUT. Nothing more is texted to it until the person texts START; the app tells them how.</p>
+<ul>
+  <li>Channel: %s</li>
+  <li>Number: %s</li>
+  <li>Account: %s</li>
+  <li>Identity id: <code>%s</code></li>
+</ul>
+%s<p>This chat is not handed off: it cannot be written to. Reach the person by email.</p>`,
+		n.Channel, html.EscapeString(n.PhoneHint), who, html.EscapeString(n.IdentityID), tasks.String())
+}
+
 // openRequestHTML: an approval question armed at hand-off. It stays pending
 // in the app (auto-declines on its timer) and is not asked again by text.
 func openRequestHTML(n channel.HandoffNotice) string {
@@ -260,6 +310,8 @@ func reasonLabelOps(r channel.HandoffReason) string {
 		return "not understood twice"
 	case channel.HandoffPayment3DS:
 		return "payment needs authentication"
+	case channel.HandoffOptedOut:
+		return "stopped texts"
 	case channel.HandoffAgentEscalated:
 		return "the assistant judged a person should handle it (safety, dispute, legal/medical or repeated confusion)"
 	}

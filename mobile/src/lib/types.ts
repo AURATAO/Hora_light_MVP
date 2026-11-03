@@ -117,6 +117,16 @@ export interface Profile {
   supporter_status: SupporterStatus;
   created_at: string;
   updated_at: string;
+  /** Present only when the person's number has stopped texts from HO:RA (it
+   *  sent STOP, CANCEL, … to our iMessage line). `message` is the sentence to
+   *  show, with the number to text START to. */
+  texts_stopped?: TextsStopped;
+}
+
+export interface TextsStopped {
+  stopped_at: string;
+  resume_number?: string;
+  message: string;
 }
 
 // GET /profiles/:id (public profile)
@@ -221,6 +231,10 @@ export interface Task {
    * 15 minutes past the estimate. Requester-only and detail-only: the server
    * selects it in GET /tasks/:id and omits it from every list. */
   auto_extend_consent?: boolean;
+  /** The requester's number has stopped texts from HO:RA, so chat messages
+   *  no longer reach them by text. Detail-only, for the assignee of an open
+   *  task; absent otherwise. */
+  requester_texts_stopped?: boolean;
   /** What the receipt came to on a shopping task, and the photo behind it.
    * Written at completion (Stripe Phase 2b). Read the settlement object from
    * GET /tasks/:id/worklogs instead where you need the reimbursed figure —

@@ -331,7 +331,11 @@ The setup step is the one to watch.
 Both raised by the policy audit, both ruled **not urgent** (Aura) and both are
 CODE, not wording — so until they exist, neither document may promise them.
 
-- [ ] **STOP / START / HELP.** The three words a US text service is expected
+- [ ] **STOP / START / HELP.** *STOP and START built 2026-11-03 on
+  `fix/opt-out-keywords` (server/internal/channel/optout.go, migration
+  20261103150000) after a test number texted "Cancel" — which our own copy
+  taught — and Sendblue opted it out silently. HELP is still not built, and
+  the Terms/Privacy rule below still stands until it ships.* The three words a US text service is expected
   to honour. Today `stop` is read as a NO (approval answers) or as "cancel"
   (the budget step), so a person genuinely trying to unsubscribe has their
   word taken as an answer to whatever question is open — a real bug
