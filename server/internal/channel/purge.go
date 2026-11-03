@@ -61,7 +61,7 @@ func PurgeUserTx(ctx context.Context, tx *sql.Tx, userID string) (int64, error) 
 //
 // A database without the queue table, or without the channel tables, is not
 // an error: account deletion must never break on it. The caller logs the
-// count; traces left unqueued go with Phoenix's 30-day retention.
+// count; traces left unqueued go with Phoenix's 90-day retention.
 func QueueTraceDeletionsTx(ctx context.Context, tx *sql.Tx, userID string) (int64, error) {
 	var present bool
 	if err := tx.QueryRowContext(ctx, `SELECT to_regclass('public.trace_deletions') IS NOT NULL

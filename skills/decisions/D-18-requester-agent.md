@@ -125,7 +125,7 @@ the rules have already declined to treat as an answer.
   **Amended by D-22 (2026-11-03):** logs are unchanged. Separately, the
   message, the rendered context, the model's raw output and the decoded
   proposal may go, redacted, to our self-hosted Phoenix only — off unless
-  `PHOENIX_*` is set, 30-day retention, deleted with the account.
+  `PHOENIX_*` is set, 90-day retention, deleted with the account.
 - **A-8 Case file v0.3.** The 71 v0.2 cases are converted to actions
   (same expectations; #41 no longer allows approve — R-6); 9 cases added
   (corrections, M3.2d rules, two-errand targeting, injection in the

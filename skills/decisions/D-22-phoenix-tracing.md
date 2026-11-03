@@ -1,11 +1,11 @@
-# D-22: Redacted chat traces go to our self-hosted Phoenix, kept 30 days
+# D-22: Redacted chat traces go to our self-hosted Phoenix, kept 90 days
 
 **Date:** 2026-11-03
-**Status:** Proposed (Arbiter: Aura). Built on `feat/phoenix-tracing`, off unless configured; not merged, not deployed.
+**Status:** Accepted 2026-11-03 (Arbiter: Aura), with one change: retention is 90 days, not the proposed 30. Built on `feat/phoenix-tracing`, off unless configured; not merged, not deployed.
 **Trigger:** We could not tell where the requester agent misreads messages, or why one reply took 28 s. S-12 and D-18 A-7 keep message text out of every log, so nothing showed which step was slow or what the model was shown and said.
 
 ## Decision
-The server may send **redacted** conversation text to **our self-hosted Arize Phoenix**, and nowhere else, for quality and latency review. Phoenix keeps it **30 days**. Everywhere else S-12 and A-7 stand unchanged: stdout and Render logs, error strings and analytics carry no message text.
+The server may send **redacted** conversation text to **our self-hosted Arize Phoenix**, and nowhere else, for quality and latency review. Phoenix keeps it **90 days**. Everywhere else S-12 and A-7 stand unchanged: stdout and Render logs, error strings and analytics carry no message text.
 
 What is sent: one OpenTelemetry trace per inbound chat message, using OpenInference attributes. It contains:
 - the message, the replies sent, the agent's rendered context (`AgentUserMessage`), the model's raw output, and the decoded `Proposal` after `DecodeProposal`, with `made_safe` set when decoding changed it;
@@ -19,7 +19,7 @@ Conditions. The code must not weaken any of them:
 4. **Deletable.** Text is recorded only inside a message trace whose conversation is known. A trace with text therefore always names a session that account deletion can delete.
 5. **Never on the critical path.** A batch processor that drops when full, a 3 s export timeout and no retries. A Phoenix outage costs traces, never a reply (tested: a hanging and a failing collector leave `Propose`'s result and latency unchanged). On SIGTERM the server drains HTTP for up to 10 s, then flushes for up to 5 s.
 6. **Deleted with the account.** In its transaction, account deletion queues the account's conversation ids in `public.trace_deletions` (RLS on, no grants, no policies; `20261103120000`). A sweeper then calls Phoenix `DELETE /v1/sessions/{session_id}`, which cascades through traces and spans and needs Phoenix 13.13 or later. It retries with backoff (2 min doubling to 6 h), logs status codes only, and raises an `[ERROR]` line after 12 failures.
-7. **Retention.** The Phoenix server runs with `PHOENIX_DEFAULT_RETENTION_POLICY_DAYS=30`.
+7. **Retention.** The Phoenix server runs with `PHOENIX_DEFAULT_RETENTION_POLICY_DAYS=90`.
 
 ## Constitution impact
 - Standards added: none
@@ -34,7 +34,7 @@ Conditions. The code must not weaken any of them:
 
 ## Residuals (declared)
 - **Pre-13.13 Phoenix.** The route does not exist there, and Phoenix's 404 is also our "already gone" signal. So an old server would look like successful deletions. Run 13.13 or later. Phoenix documents no version endpoint, so we cannot probe for this.
-- **Phoenix switched off.** An account deleted while the `PHOENIX_*` variables are unset queues nothing. Any traces from an earlier enabled period then go only by the 30-day retention.
+- **Phoenix switched off.** An account deleted while the `PHOENIX_*` variables are unset queues nothing. Any traces from an earlier enabled period then go only by the 90-day retention.
 - **Late spans.** A trace still being exported after its session was deleted would recreate it. The first attempt therefore waits 3 minutes, against a 60 s routing timeout and a 5 s batch delay.
 - **Over-redaction.** A list of ten or more numbers written with spaces between them reads as a phone number. This errs toward privacy.
 - **Not redacted.** Names and addresses are kept on purpose, because review needs them. They go with the account (condition 6) and with retention (condition 7).
