@@ -842,6 +842,57 @@ whoever builds stage 1 does not have to ask again. Still open when it is
 picked up: push-only versus push + SMS (SMS needs each supporter's number
 linked, a setup link each, and the Sendblue dedicated line).
 
+### 13b-2. Offer dispatch with escalating price (raised 2026-11-04, Aura — direction, not built)
+
+Why: unit margin is negative today. The supporter is paid a share of the
+requester's per-minute charge, so every task carries the same thin or negative
+spread.
+
+What Aura described:
+- The supporter is offered a **flat price** for the job, not a time or rate.
+- The **nearest** available supporter gets the offer first.
+- If they decline or the offer expires, it goes to the **next-nearest** at a
+  **higher** price, and so on.
+- The margin then becomes "requester charge − accepted offer", so it is set
+  per task rather than fixed as a percentage.
+
+Server shape, when built:
+- **`task_offers` table:** task, supporter, price_cents, rank,
+  offered/accepted/declined/expired, expires_at.
+- **Ranking:** by distance from the supporter's last location while
+  "available".
+- **Price ladder:** a start price from distance and estimated effort,
+  rising +X% per step, capped at requester charge − minimum margin. At the
+  cap, or after N = 5 min, ops are alerted (§13b).
+- **Payout:** = the accepted offer, not a share of capture. This touches
+  settlement and payouts (T3).
+
+Hooks to put in the supporter-only app build now (2026-11-04), so turning
+this on later needs no App Store resubmission:
+1. **Pay text from the server.** Cards and detail show a server-built
+   `pay_label` (and hide minutes when the server says so). The client never
+   computes pay.
+2. **Push taps open the route in the push data.** Taps open a server-given
+   route, so a JOB_OFFER push needs no app change.
+3. **`GET /config` feature flags.** For example `availability_toggle`,
+   `job_offers`, all off until switched on in Render.
+4. **Hidden offer screen.** Accept / Decline, flat price, distance, a
+   countdown from `offer_expires_at`, and an optional decline reason.
+5. **Hidden "I'm available" toggle.** While on, it shares a coarse
+   foreground location. The usage string must ship in this build.
+
+Open, Aura's call before building:
+- **Payout policy.** What happens when a fixed-price job runs long? Does a
+  top-up still go through the requester's YES?
+- **Gaming.** Supporters may learn that declining raises the price.
+  Possible answers: an acceptance rate that affects rank, a step never
+  shown, and a cap.
+- **Legal.** NYC minimum-pay rules for app-based delivery and courier
+  workers may apply to delivery-type errands. Check with counsel before
+  pricing below that floor.
+- **Requester-side pricing.** A base fee or a minimum charge is the other
+  half of the margin.
+
 ## 14. Paused
 
 App Store public release of the requester app; requester-side app features;
