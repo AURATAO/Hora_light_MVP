@@ -202,12 +202,16 @@ func TestStopIsAnOptOutNotAnAnswer(t *testing.T) {
 	if len(g.booker.resolved) != 0 || g.ad.calls != callsBefore {
 		t.Fatalf("message from opted-out number was acted on: resolved=%v calls=%d", g.booker.resolved, g.ad.calls-callsBefore)
 	}
-	// A second keyword does not alert ops again.
+	// The YES went to ops instead (optout_forward.go), not to the number.
+	if len(ops.notices) != 2 || ops.notices[1].Reason != HandoffOptedOutMessage {
+		t.Fatalf("YES not forwarded to ops: %+v", ops.notices)
+	}
+	// A second keyword does not alert ops again, and is not forwarded.
 	if err := g.r.HandleInbound(context.Background(), Inbound{Channel: IMessage, ProviderMessageID: "stop-2", From: me, Text: "stop", ReceivedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if len(ops.notices) != 1 {
-		t.Fatalf("ops alerted twice: %d", len(ops.notices))
+	if len(ops.notices) != 2 {
+		t.Fatalf("ops alerted again: %d", len(ops.notices))
 	}
 }
 

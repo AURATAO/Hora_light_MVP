@@ -163,3 +163,94 @@ func TestOpenOrPendingTasks(t *testing.T) {
 		t.Fatalf("supporter's own: %v", got)
 	}
 }
+
+// A message from a stopped number (channel/optout_forward.go): email and ops
+// text, last four digits only, the words (escaped), open tasks, and never a
+// reply path by text. Urgent ones say so in the subject and the text.
+func TestOptedOutMessageOpsAlert(t *testing.T) {
+	prev := sendOpsEmail
+	defer func() { sendOpsEmail = prev }()
+	var mails []notify.EmailPayload
+	var mu sync.Mutex
+	sendOpsEmail = func(p notify.EmailPayload) error {
+		mu.Lock()
+		mails = append(mails, p)
+		mu.Unlock()
+		return nil
+	}
+	t.Setenv("CHANNEL_OPS_EMAILS", "ops@example.com")
+	t.Setenv("CHANNEL_OPS_NUMBERS", "+1 (555) 010-0199, +15551234567")
+	sms := &stubAdapter{}
+	n := newOpsNotifier(nil, sms, &stubToucher{})
+	n.lookup = func(context.Context, string) (string, error) { return "+15551234567", nil }
+	at := time.Date(2026, 11, 4, 16, 8, 0, 0, time.UTC)
+	notice := channel.HandoffNotice{IdentityID: "ident-1", Channel: channel.IMessage, PhoneHint: channel.PhoneHint("+15551234567"),
+		Reason: channel.HandoffOptedOutMessage, OptedOut: true,
+		OpenTasks: []channel.TaskRef{{ID: "task-9", Title: "Laundry pickup"}},
+		Thread: []channel.ThreadMessage{{Direction: "inbound", Text: "is <she> close?", At: at},
+			{Direction: "inbound", Text: "the door code is 4521", At: at.Add(time.Minute)}}}
+	if err := n.NotifyOps(context.Background(), notice); err != nil {
+		t.Fatal(err)
+	}
+	// The person's own number is in CHANNEL_OPS_NUMBERS: never texted.
+	if len(mails) != 1 || len(sms.sent) != 1 || sms.sent[0].To == "+15551234567" {
+		t.Fatalf("mails %d texts %+v", len(mails), sms.sent)
+	}
+	m := mails[0]
+	if !strings.Contains(m.Subject, "Message from a number that stopped texts") || strings.Contains(m.Subject, "URGENT") ||
+		!strings.Contains(m.Subject, "•••• 4567") || !strings.Contains(m.Subject, "HAS 1 OPEN TASK") {
+		t.Errorf("subject %q", m.Subject)
+	}
+	for _, want := range []string{"Do not reply by text", "is &lt;she&gt; close?", "the door code is 4521", "task-9", "not linked to an account", "10m0s"} {
+		if !strings.Contains(m.Html, want) {
+			t.Errorf("email missing %q", want)
+		}
+	}
+	if strings.Contains(m.Html, "/send") || strings.Contains(m.Html, "/release") {
+		t.Error("no reply-by-text instructions for a stopped number")
+	}
+	txt := sms.sent[0].Text
+	if !strings.Contains(txt, "the door code is 4521") || !strings.Contains(txt, "2 messages") || !strings.Contains(txt, "Do NOT text them") {
+		t.Errorf("ops text %q", txt)
+	}
+	for _, s := range []string{m.Subject, m.Html, txt} {
+		if strings.Contains(s, "5551234567") || strings.Contains(s, "555123") {
+			t.Fatalf("full number leaked: %q", s)
+		}
+	}
+
+	mails, sms.sent = nil, nil
+	notice.Urgent, notice.UrgentReason = true, "safety"
+	notice.Thread = []channel.ThreadMessage{{Direction: "inbound", Text: strings.Repeat("help ", 60), At: at}}
+	if err := n.NotifyOps(context.Background(), notice); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(mails[0].Subject, "[HO:RA] URGENT (safety)") || !strings.Contains(mails[0].Html, "URGENT (safety)") {
+		t.Errorf("urgent subject %q", mails[0].Subject)
+	}
+	if txt := sms.sent[0].Text; !strings.HasPrefix(txt, "[HO:RA] URGENT (safety):") || !strings.Contains(txt, "…") || len([]rune(txt)) > 320 {
+		t.Errorf("urgent ops text %q", txt)
+	}
+}
+
+// Linked: the account's email is in the alert.
+func TestOptedOutMessageOpsAlertNamesTheAccount(t *testing.T) {
+	setupCreatedViaDB(t)
+	var uid string
+	if err := db.QueryRow(context.Background(), `INSERT INTO public.users (email, name) VALUES ('rita@example.test', 'Rita') RETURNING id::text`).Scan(&uid); err != nil {
+		t.Fatal(err)
+	}
+	prev := sendOpsEmail
+	defer func() { sendOpsEmail = prev }()
+	var mails []notify.EmailPayload
+	sendOpsEmail = func(p notify.EmailPayload) error { mails = append(mails, p); return nil }
+	t.Setenv("CHANNEL_OPS_EMAILS", "ops@example.com")
+	t.Setenv("CHANNEL_OPS_NUMBERS", "")
+	n := newOpsNotifier(sqldb, nil, nil)
+	err := n.NotifyOps(context.Background(), channel.HandoffNotice{IdentityID: "ident-1", Channel: channel.IMessage, PhoneHint: "•••• 4567",
+		UserID: uid, Reason: channel.HandoffOptedOutMessage, OptedOut: true,
+		Thread: []channel.ThreadMessage{{Direction: "inbound", Text: "hello", At: time.Now()}}})
+	if err != nil || len(mails) != 1 || !strings.Contains(mails[0].Html, "rita@example.test") || !strings.Contains(mails[0].Html, "No open tasks") {
+		t.Fatalf("err %v mails %+v", err, mails)
+	}
+}

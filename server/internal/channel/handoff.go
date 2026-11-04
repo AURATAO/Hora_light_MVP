@@ -81,6 +81,11 @@ type HandoffNotice struct {
 	// BookingProblem (Reason HandoffBookingFailed): what went wrong, in
 	// words for ops. Never the person's words or number.
 	BookingProblem string
+	// Urgent (Reason HandoffOptedOutMessage): a stopped number asked for a
+	// person or wrote about safety, a theft, a charge… UrgentReason says
+	// which. Thread then holds the forwarded messages.
+	Urgent       bool
+	UrgentReason string
 }
 
 // OpsNotifier delivers a notice to the people who will take over.
@@ -175,6 +180,11 @@ type handoffOpen struct {
 	openTasks           []TaskRef
 	openTasksUnknown    bool
 	bookingProblem      string // a text booking failed (posting.go)
+	// A stopped number's messages (optout_forward.go): the thread ops get,
+	// instead of the recent conversation.
+	thread       []ThreadMessage
+	urgent       bool
+	urgentReason string
 }
 
 func (r *Router) notifyOps(ctx context.Context, id Identity, reason HandoffReason, update bool, open handoffOpen) error {
@@ -184,12 +194,14 @@ func (r *Router) notifyOps(ctx context.Context, id Identity, reason HandoffReaso
 	n := HandoffNotice{IdentityID: id.ID, Channel: id.Channel, PhoneHint: PhoneHint(id.Address), UserID: id.UserID, Reason: reason, Update: update,
 		OpenRequestID: open.extensionID, OpenRequestTaskID: open.taskID, OpenRequestUnconfirmed: open.unconfirmed, Detail: open.detail,
 		AutoReleased: open.autoReleased, OptedOut: open.optedOut, OpenTasks: open.openTasks, OpenTasksUnknown: open.openTasksUnknown,
-		BookingProblem: open.bookingProblem}
+		BookingProblem: open.bookingProblem, Urgent: open.urgent, UrgentReason: open.urgentReason}
 	limit := handoffThreadLen
 	if update {
 		limit = 1
 	}
-	if r.Thread != nil {
+	if open.thread != nil {
+		n.Thread = open.thread
+	} else if r.Thread != nil {
 		msgs, err := r.Thread.RecentMessages(ctx, id.Channel, id.Address, limit)
 		if err != nil {
 			return fmt.Errorf("notify ops: %w", err)

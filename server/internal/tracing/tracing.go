@@ -321,6 +321,29 @@ func StartSpan(ctx context.Context, name, kind string) (context.Context, Span) {
 	return ctx, Span{sp}
 }
 
+// StartRootSpan is StartSpan for work that may run outside a message trace
+// (a sweep): a child of the message trace when ctx has one, otherwise its own
+// root, named by the conversation. sessionID must be set — a span no session
+// names could not be deleted with the account, so none is recorded.
+func StartRootSpan(ctx context.Context, name, kind, channel, userID, sessionID string) (context.Context, Span) {
+	if msgFrom(ctx) != nil {
+		return StartSpan(ctx, name, kind)
+	}
+	if !Enabled() || sessionID == "" {
+		return ctx, Span{trace.SpanFromContext(context.Background())}
+	}
+	kv := []attribute.KeyValue{
+		attribute.String(attrKind, kind),
+		attribute.String(attrChannel, channel),
+		attribute.String(attrSession, sessionID),
+	}
+	if userID != "" {
+		kv = append(kv, attribute.String(attrUser, userID))
+	}
+	ctx, sp := tracer().Start(ctx, name, trace.WithNewRoot(), trace.WithAttributes(kv...))
+	return ctx, Span{sp}
+}
+
 // Recording reports whether anything set on s is kept; check it before
 // building an expensive value.
 func (s Span) Recording() bool { return s.s.IsRecording() }

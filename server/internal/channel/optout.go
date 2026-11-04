@@ -124,8 +124,10 @@ func (r *Router) handleOptOut(ctx context.Context, in Inbound, id Identity) (han
 	}
 	if opted {
 		// Stopped: no answer could reach them, so nothing is done on their
-		// word either. The message is recorded; ops were told at the opt-out.
-		log.Printf("[channel] inbound id=%s identity=%s: number has stopped texts, not acted on (START resumes)", in.ProviderMessageID, id.ID)
+		// word and nothing is sent back. Ops read it instead, and reach them
+		// another way (optout_forward.go).
+		log.Printf("[channel] inbound id=%s identity=%s: number has stopped texts, not acted on, forwarded to ops (START resumes)", in.ProviderMessageID, id.ID)
+		r.forwardOptedOut(ctx, in, id)
 		return true, nil
 	}
 	return false, nil
@@ -147,20 +149,8 @@ func (r *Router) recordOptOut(ctx context.Context, ch Channel, address, source s
 	if !newly {
 		return
 	}
-	open := handoffOpen{optedOut: true}
-	if id.UserID != "" && r.Booker != nil {
-		var tasks []TaskRef
-		if b, ok := r.Booker.(OpenOrPendingTasks); ok {
-			tasks, err = b.OpenOrPendingTasks(ctx, id.UserID)
-		} else {
-			tasks, err = r.Booker.OpenTasks(ctx, id.UserID)
-		}
-		if err != nil {
-			log.Printf("[channel] opt-out identity=%s: open tasks: %v", id.ID, err)
-			open.openTasksUnknown = true
-		}
-		open.openTasks = tasks
-	}
+	open := r.openTasksFor(ctx, id)
+	open.optedOut = true
 	tracing.ErrorEvent(ctx, "channel.opted_out", string(ch), id.UserID, id.ID, ErrRecipientOptedOut,
 		map[string]any{"source": source, "open_tasks": len(open.openTasks), "open_tasks_unknown": open.openTasksUnknown})
 	log.Printf("[channel] opt-out identity=%s source=%s open_tasks=%d: no more texts until START", id.ID, source, len(open.openTasks))
@@ -186,7 +176,8 @@ func (s *PGStore) MarkOptedOut(ctx context.Context, ch Channel, address string) 
 	// concurrent second UPDATE waits on the row lock, re-reads the WHERE on
 	// the committed row and matches nothing.
 	id, err := scan(s.DB.QueryRowContext(ctx, `
-		UPDATE channel_identities SET opted_out_at = now()
+		UPDATE channel_identities SET opted_out_at = now(), opted_out_forwarded_at = NULL,
+		       opted_out_forwarded_through = NULL, opted_out_pending_since = NULL
 		WHERE channel = $1 AND address = $2 AND opted_out_at IS NULL
 		RETURNING id, channel, address, user_id
 	`, string(ch), address))
@@ -221,7 +212,8 @@ func (s *PGStore) MarkOptedOut(ctx context.Context, ch Channel, address string) 
 
 func (s *PGStore) ClearOptedOut(ctx context.Context, ch Channel, address string) (bool, error) {
 	res, err := s.DB.ExecContext(ctx, `
-		UPDATE channel_identities SET opted_out_at = NULL
+		UPDATE channel_identities SET opted_out_at = NULL, opted_out_forwarded_at = NULL,
+		       opted_out_forwarded_through = NULL, opted_out_pending_since = NULL
 		WHERE channel = $1 AND address = $2 AND opted_out_at IS NOT NULL
 	`, string(ch), address)
 	if err != nil {

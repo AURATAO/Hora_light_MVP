@@ -104,7 +104,9 @@ func (o opsEmailNotifier) NotifyOps(ctx context.Context, n channel.HandoffNotice
 		}
 	}
 	subject := fmt.Sprintf("[HO:RA] Chat handoff — %s %s", n.Channel, n.PhoneHint)
-	if n.OptedOut {
+	if n.Reason == channel.HandoffOptedOutMessage {
+		subject = optedOutMessageSubject(n)
+	} else if n.OptedOut {
 		subject = fmt.Sprintf("[HO:RA] Texts stopped — %s %s%s", n.Channel, n.PhoneHint, optOutTasksShort(n))
 	} else if n.AutoReleased {
 		subject = fmt.Sprintf("[HO:RA] Chat handoff — back to the bot (no reply in %s) — %s %s", channel.HandoffTimeout, n.Channel, n.PhoneHint)
@@ -149,6 +151,9 @@ func (o opsEmailNotifier) NotifyOps(ctx context.Context, n channel.HandoffNotice
 		text := fmt.Sprintf("[HO:RA] Chat handoff (%s) — %s %s. Details in the ops email / admin.", reasonLabelOps(n.Reason), n.Channel, n.PhoneHint)
 		if n.OptedOut {
 			text = fmt.Sprintf("[HO:RA] Texts stopped — %s %s opted out%s. Details in the ops email.", n.Channel, n.PhoneHint, optOutTasksShort(n))
+		}
+		if n.Reason == channel.HandoffOptedOutMessage {
+			text = optedOutMessageText(n)
 		}
 		if n.Reason == channel.HandoffBookingFailed {
 			text = fmt.Sprintf("[HO:RA] Text booking failed — %s %s. The bot still has the chat. Details in the ops email.", n.Channel, n.PhoneHint)
@@ -223,6 +228,9 @@ func opsNoticeHTML(n channel.HandoffNotice, who string) string {
 	if n.Update {
 		heading = "New message in a handed-off chat"
 	}
+	if n.Reason == channel.HandoffOptedOutMessage {
+		return optedOutMessageHTML(n, who)
+	}
 	if n.OptedOut {
 		return optOutNoticeHTML(n, who)
 	}
@@ -273,6 +281,20 @@ func optOutTasksShort(n channel.HandoffNotice) string {
 // refused a send with OPTED_OUT). Not a hand-off: there is nothing to reply
 // to or release, and nothing can be texted to them until they send START.
 func optOutNoticeHTML(n channel.HandoffNotice, who string) string {
+	return fmt.Sprintf(`<p><strong>A number stopped texts from HO:RA</strong></p>
+<p>It sent an opt-out keyword (STOP, CANCEL, END, QUIT, REVOKE, OPT OUT, UNSUBSCRIBE), or Sendblue refused a send with OPTED_OUT. Nothing more is texted to it until the person texts START; the app tells them how.</p>
+<ul>
+  <li>Channel: %s</li>
+  <li>Number: %s</li>
+  <li>Account: %s</li>
+  <li>Identity id: <code>%s</code></li>
+</ul>
+%s<p>This chat is not handed off: it cannot be written to. Reach the person by email.</p>`,
+		n.Channel, html.EscapeString(n.PhoneHint), who, html.EscapeString(n.IdentityID), optOutTasksHTML(n))
+}
+
+// optOutTasksHTML: the stopped person's tasks under way, for ops.
+func optOutTasksHTML(n channel.HandoffNotice) string {
 	var tasks strings.Builder
 	switch {
 	case n.OpenTasksUnknown:
@@ -286,16 +308,65 @@ func optOutNoticeHTML(n channel.HandoffNotice, who string) string {
 	case n.UserID != "":
 		tasks.WriteString("<p>No open tasks.</p>\n")
 	}
-	return fmt.Sprintf(`<p><strong>A number stopped texts from HO:RA</strong></p>
-<p>It sent an opt-out keyword (STOP, CANCEL, END, QUIT, REVOKE, OPT OUT, UNSUBSCRIBE), or Sendblue refused a send with OPTED_OUT. Nothing more is texted to it until the person texts START; the app tells them how.</p>
+	return tasks.String()
+}
+
+// A number that stopped texts wrote to us (channel/optout_forward.go). Ops
+// read it and reach the person another way; nothing can be texted back.
+
+func optedOutMessageSubject(n channel.HandoffNotice) string {
+	if n.Urgent {
+		return fmt.Sprintf("[HO:RA] URGENT (%s) — message from a number that stopped texts — %s %s%s", n.UrgentReason, n.Channel, n.PhoneHint, optOutTasksShort(n))
+	}
+	return fmt.Sprintf("[HO:RA] Message from a number that stopped texts — %s %s%s", n.Channel, n.PhoneHint, optOutTasksShort(n))
+}
+
+// optedOutMessageText is the ops text: the newest words, cut short.
+func optedOutMessageText(n channel.HandoffNotice) string {
+	last := ""
+	if len(n.Thread) > 0 {
+		last = strings.TrimSpace(n.Thread[len(n.Thread)-1].Text)
+	}
+	if r := []rune(last); len(r) > opsTextQuoteRunes {
+		last = string(r[:opsTextQuoteRunes]) + "…"
+	}
+	head := "[HO:RA]"
+	if n.Urgent {
+		head = fmt.Sprintf("[HO:RA] URGENT (%s):", n.UrgentReason)
+	}
+	more := ""
+	if len(n.Thread) > 1 {
+		more = fmt.Sprintf(" (%d messages, newest shown)", len(n.Thread))
+	}
+	return fmt.Sprintf("%s %s %s stopped texts and wrote%s: \"%s\"%s. Do NOT text them — call or email. Details in the ops email.",
+		head, n.Channel, n.PhoneHint, more, last, optOutTasksShort(n))
+}
+
+// opsTextQuoteRunes: how much of the person's words an ops text quotes.
+const opsTextQuoteRunes = 160
+
+func optedOutMessageHTML(n channel.HandoffNotice, who string) string {
+	heading := "A number that stopped texts wrote to HO:RA"
+	if n.Urgent {
+		heading = fmt.Sprintf("URGENT (%s): a number that stopped texts wrote to HO:RA", n.UrgentReason)
+	}
+	var lines strings.Builder
+	for _, m := range n.Thread {
+		fmt.Fprintf(&lines, "<p style=\"margin:0 0 8px\"><b>Them</b> <span style=\"color:#888\">%s</span><br>%s</p>",
+			m.At.Format("Jan 2 15:04"), html.EscapeString(m.Text))
+	}
+	return fmt.Sprintf(`<p><strong>%s</strong></p>
+<p><b>Do not reply by text.</b> The number opted out of texts (TCPA): nothing is sent to it, and Sendblue would refuse it. Reach the person by phone call, email or through the app.</p>
 <ul>
   <li>Channel: %s</li>
   <li>Number: %s</li>
   <li>Account: %s</li>
   <li>Identity id: <code>%s</code></li>
 </ul>
-%s<p>This chat is not handed off: it cannot be written to. Reach the person by email.</p>`,
-		n.Channel, html.EscapeString(n.PhoneHint), who, html.EscapeString(n.IdentityID), tasks.String())
+%s<p>Ordinary messages from this number come at most once every %s, batched; urgent ones come at once. Texting START turns texts back on.</p>
+<hr>%s`,
+		html.EscapeString(heading), n.Channel, html.EscapeString(n.PhoneHint), who, html.EscapeString(n.IdentityID),
+		optOutTasksHTML(n), channel.OptedOutForwardWindow, lines.String())
 }
 
 // openRequestHTML: an approval question armed at hand-off. It stays pending
@@ -455,8 +526,9 @@ func registerChannelAdminRoutes(r *gin.Engine, sqlDB *sql.DB, store *channel.PGS
 }
 
 // watchHandoffs hands stale hand-offs back to the bot every `every`
-// (channel.HandoffTimeout without ops activity), and settles bookings stuck
-// in flight (channel.PostingStuckAfter). The person's next message does the
+// (channel.HandoffTimeout without ops activity), settles bookings stuck in
+// flight (channel.PostingStuckAfter), and sends ops the batched messages of
+// stopped numbers (channel.OptedOutForwardWindow). The person's next message does the
 // same on its own; this tells them without waiting for one.
 func watchHandoffs(ctx context.Context, store *channel.PGStore, router *channel.Router, every time.Duration) {
 	ticker := time.NewTicker(every)
@@ -482,6 +554,14 @@ func watchHandoffs(ctx context.Context, store *channel.PGStore, router *channel.
 					}
 				}()
 				sweepPostings(ctx, store, router)
+			}()
+			func() {
+				defer func() {
+					if p := recover(); p != nil {
+						log.Printf("[channel-admin] opted-out forward sweep panic: %v", p)
+					}
+				}()
+				sweepOptedOutForwards(ctx, store, router)
 			}()
 		}
 	}
@@ -529,6 +609,28 @@ func sweepPostings(ctx context.Context, store *channel.PGStore, router *channel.
 		c, cancel := context.WithTimeout(ctx, 20*time.Second)
 		if _, err := router.RecoverStuckPosting(c, id, false); err != nil {
 			log.Printf("[channel-admin] posting sweep identity=%s: %v", iid, err)
+		}
+		cancel()
+	}
+}
+
+// sweepOptedOutForwards sends ops the messages a stopped number wrote while
+// its forward window was closed, once it has passed (channel/optout_forward.go).
+func sweepOptedOutForwards(ctx context.Context, store *channel.PGStore, router *channel.Router) {
+	ids, err := store.WaitingOptedOutForwards(ctx, channel.OptedOutForwardWindow)
+	if err != nil {
+		log.Printf("[channel-admin] opted-out forward sweep: %v", err)
+		return
+	}
+	for _, iid := range ids {
+		id, err := store.IdentityByID(ctx, iid)
+		if err != nil {
+			log.Printf("[channel-admin] opted-out forward sweep identity=%s: %v", iid, err)
+			continue
+		}
+		c, cancel := context.WithTimeout(ctx, 20*time.Second)
+		if err := router.FlushOptedOut(c, id); err != nil {
+			log.Printf("[channel-admin] opted-out forward sweep identity=%s: %v", iid, err)
 		}
 		cancel()
 	}
