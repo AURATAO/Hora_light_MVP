@@ -143,3 +143,20 @@ func TestProviderErrorPathsCarryNoSecrets(t *testing.T) {
 		}
 	}
 }
+
+// "note" only exists while the booking summary is open; anywhere else it
+// is the safe relay (there is no booking to attach it to).
+func TestNoteOnlyAtTheBookingSummary(t *testing.T) {
+	raw := `{"action":"note","task":"t1","escalation":""}`
+	if p, err := DecodeProposal(raw, AgentContext{OpenQuestion: "booking", Tasks: []AgentTask{{Title: "Bagel run"}}}); err != nil || p.Action != ActionNote || p.Task != -1 {
+		t.Fatalf("booking: %+v %v", p, err)
+	}
+	for _, open := range []string{"", "budget", "name", "approval"} {
+		if p, err := DecodeProposal(raw, AgentContext{OpenQuestion: open}); err != nil || p.Action != ActionRelay {
+			t.Errorf("%q: %+v %v", open, p, err)
+		}
+	}
+	if ToIntent(Proposal{Action: ActionNote}) != IntentToSupporter {
+		t.Error("an unhandled note must fall to the supporter path")
+	}
+}

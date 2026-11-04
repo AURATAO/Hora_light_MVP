@@ -30,7 +30,7 @@ import (
 //     gate — outstanding balance, no card, decline, 3DS, PAYMENTS_ENFORCED —
 //     is therefore the production code path, not a copy of it.
 type chatBooker struct {
-	model *llm.OpenAICompat
+	model *llm.Model
 	sqlDB *sql.DB
 }
 
@@ -87,7 +87,7 @@ func draftToCreateInput(d llm.TaskDraft, opts channel.PostOptions) createTaskInp
 	}
 	in := createTaskInput{
 		Title:            d.Title,
-		Description:      d.Description,
+		Description:      channel.NotesDescription(d.Description, opts.Notes),
 		Category:         d.Category,
 		LocationText:     loc,
 		EstimatedMinutes: draftMinutes(d),

@@ -70,3 +70,17 @@ func TestChatSummaryWindowIsTheBillingValue(t *testing.T) {
 		t.Fatalf("summary says %q, billing window is %d", got, Billing.AutoExtendMinutes)
 	}
 }
+
+// The requester's notes (given while the summary was open) reach the
+// supporter in the task description; nothing else changes.
+func TestDraftToCreateInputCarriesNotes(t *testing.T) {
+	d := llm.TaskDraft{Title: "Pick up cake", Description: "Fragile.", Location1: "A", DurationMinutes: 30}
+	in := draftToCreateInput(d, channel.PostOptions{Notes: []string{"call my friend Lily when you arrive"}})
+	if in.Description != "Fragile.\n\nNote from the requester: call my friend Lily when you arrive" {
+		t.Fatalf("description %q", in.Description)
+	}
+	plain := draftToCreateInput(d, channel.PostOptions{})
+	if plain.Description != "Fragile." || plain.EstimatedMinutes != in.EstimatedMinutes || plain.LocationText != in.LocationText {
+		t.Fatalf("%+v vs %+v", plain, in)
+	}
+}

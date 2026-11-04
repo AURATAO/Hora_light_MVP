@@ -11,9 +11,10 @@
 //
 // Usage (from server/):
 //
-//	export LLM_API_KEY=...   # never commit it, never paste it in chat
-//	export LLM_MODEL=...     # default zai-org/GLM-5.3-Flash
-//	go run ./cmd/agenttest                     # all cases once
+//	export ANTHROPIC_API_KEY=... / LLM_API_KEY=...   # never commit them, never paste them in chat
+//	go run ./cmd/agenttest                     # all cases once, on LLM_AGENT_MODEL (default anthropic:claude-sonnet-5-5)
+//	go run ./cmd/agenttest -model baseten:zai-org/GLM-5.3-Flash
+//	go run ./cmd/agenttest -model anthropic:claude-opus-5-5
 //	go run ./cmd/agenttest -runs 5             # money cases must pass every run
 //	go run ./cmd/agenttest -case 19 -v         # one case, with the raw output
 //	go run ./cmd/agenttest -group "C "         # one group (prefix)
@@ -28,8 +29,13 @@
 //
 // Offline self-test (no model, no key): go test ./cmd/agenttest
 //
+// The model is called with no fallback: the eval grades the model named,
+// not the one that answers when it fails (production's fallback is a
+// separate path, llm.Model.Fallback).
+//
 // Optional: LLM_BASE_URL (default https://inference.baseten.co/v1),
-// LLM_DISABLE_THINKING=1, LLM_TIMEOUT (default 45s, production's timeout), -parallel (default 1),
+// LLM_ANTHROPIC_EFFORT, LLM_DISABLE_THINKING=1, LLM_TIMEOUT (default 45s,
+// production's timeout), -parallel (default 1),
 // -delay between requests (default 1s), -agent-only (ask the model only
 // where production would: the rules leave the message to the agent).
 // A 429 / 5xx is retried with backoff (up to 6 tries).
@@ -41,7 +47,6 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
-	"net/http"
 	"os"
 	"regexp"
 	"sort"
@@ -217,9 +222,14 @@ type Result struct {
 	Server    string `json:"server,omitempty"` // the rules' verdict (approval open)
 	Outcome   string `json:"outcome"`          // what production would do
 	LatencyMS int64  `json:"latency_ms"`       // the attempt that answered (what production would wait)
-	TotalMS   int64  `json:"total_ms"`         // all attempts and backoff
-	Retries   int    `json:"retries"`          // rate-limit / 5xx retries (production does not retry)
-	Raw       string `json:"raw,omitempty"`
+	// Tokens of the attempt that answered (llm.Usage), for the cost table.
+	InTok         int    `json:"in_tokens"`
+	CacheReadTok  int    `json:"cache_read_tokens"`
+	CacheWriteTok int    `json:"cache_write_tokens"`
+	OutTok        int    `json:"out_tokens"`
+	TotalMS       int64  `json:"total_ms"` // all attempts and backoff
+	Retries       int    `json:"retries"`  // rate-limit / 5xx retries (production does not retry)
+	Raw           string `json:"raw,omitempty"`
 }
 
 type rawProposal struct {
@@ -268,6 +278,8 @@ func grade(c Case, raw string, nTasks int, openQ string) (rawProposal, string, s
 		p.Action, note = "relay", " ("+p.Action+" with nothing open → relay in production)"
 	case p.Action == "correction" && openQ != "booking" && openQ != "budget" && openQ != "name":
 		p.Action, note = "relay", " (correction with no booking question → relay in production)"
+	case p.Action == "note" && openQ != "booking":
+		p.Action, note = "relay", " (note with no booking summary → relay in production)"
 	}
 	for _, f := range c.Forbid {
 		if p.Action == f {
@@ -343,6 +355,7 @@ func main() {
 		parallel  = flag.Int("parallel", 1, "concurrent requests (raise only if your plan's rate limit allows)")
 		delay     = flag.Duration("delay", time.Second, "pause between requests, per worker")
 		agentOnly = flag.Bool("agent-only", false, "skip cases the rules decide (the model is not asked there in production)")
+		modelFlag = flag.String("model", "", "provider:model (default LLM_AGENT_MODEL, else anthropic:claude-sonnet-5-5)")
 	)
 	flag.Parse()
 	f, err := load(*casesPath)
@@ -356,27 +369,24 @@ func main() {
 		}
 		os.Exit(3)
 	}
-	key := firstEnv("LLM_API_KEY", "BASETEN_API_KEY")
-	if key == "" {
-		fmt.Fprintln(os.Stderr, "set LLM_API_KEY (never commit it, never paste it in chat)")
+	spec, err := llm.ParseSpec(orDefault(*modelFlag, orDefault(os.Getenv("LLM_AGENT_MODEL"), "anthropic:"+llm.DefaultAnthropicModel)))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	timeout := 45 * time.Second // production's client timeout (openai_compat.go)
+	timeout := 45 * time.Second // production's client timeout (openai_compat.go, anthropic.go)
 	if v := os.Getenv("LLM_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			timeout = d
 		}
 	}
-	model := &llm.OpenAICompat{
-		BaseURL: orDefault(os.Getenv("LLM_BASE_URL"), "https://inference.baseten.co/v1"),
-		Model:   orDefault(os.Getenv("LLM_MODEL"), "zai-org/GLM-5.3-Flash"),
-		APIKey:  key,
-		// The client's own timeout would otherwise cap LLM_TIMEOUT at 45s.
-		HTTP: &http.Client{Timeout: timeout},
+	providers := llm.ProvidersFromEnv()
+	providers.Timeout = timeout // the client's own timeout would otherwise cap LLM_TIMEOUT at 45s
+	if (spec.Provider == "anthropic" && providers.AnthropicKey == "") || (spec.Provider == "baseten" && providers.BasetenKey == "") {
+		fmt.Fprintf(os.Stderr, "set the %s key (ANTHROPIC_API_KEY / LLM_API_KEY; never commit it, never paste it in chat)\n", spec.Provider)
+		os.Exit(1)
 	}
-	if os.Getenv("LLM_DISABLE_THINKING") == "1" {
-		model.ExtraBody = map[string]any{"chat_template_kwargs": map[string]any{"enable_thinking": false}}
-	}
+	model := &llm.Model{Primary: providers.Provider(spec)}
 
 	var todo []Case
 	for _, c := range f.Cases {
@@ -431,7 +441,7 @@ func main() {
 				results[i].Raw = ""
 			}
 		}
-		b, err := json.MarshalIndent(map[string]any{"model": model.Model, "prompt": llm.AgentPromptVersion, "grader": "v2", "at": time.Now().UTC().Format(time.RFC3339), "results": results}, "", " ")
+		b, err := json.MarshalIndent(map[string]any{"model": spec.String(), "prompt": llm.AgentPromptVersion, "grader": "v2", "at": time.Now().UTC().Format(time.RFC3339), "results": results}, "", " ")
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "report:", err)
 			os.Exit(max(code, 1))
@@ -444,7 +454,7 @@ func main() {
 	os.Exit(code)
 }
 
-func runOne(model *llm.OpenAICompat, f File, c Case, run int, timeout time.Duration) Result {
+func runOne(model *llm.Model, f File, c Case, run int, timeout time.Duration) Result {
 	r := Result{Case: c.N, Run: run, Group: c.Group, Money: c.Money, Msg: c.Msg}
 	ac, err := build(f, c)
 	if err != nil {
@@ -460,8 +470,10 @@ func runOne(model *llm.OpenAICompat, f File, c Case, run int, timeout time.Durat
 	for attempt := 1; ; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		t0 := time.Now()
-		raw, _, err = model.ProposeRaw(ctx, c.Msg, ac)
+		var u llm.Usage
+		raw, u, err = model.ProposeRaw(ctx, c.Msg, ac)
 		r.LatencyMS = time.Since(t0).Milliseconds()
+		r.InTok, r.CacheReadTok, r.CacheWriteTok, r.OutTok = u.InputTokens, u.CacheReadTokens, u.CacheWriteTokens, u.OutputTokens
 		cancel()
 		if err == nil || attempt == 6 || !retryable(err) {
 			break
@@ -492,10 +504,10 @@ func runOne(model *llm.OpenAICompat, f File, c Case, run int, timeout time.Durat
 }
 
 // retryableRE: the provider's rate limit (429) and server errors (5xx), as
-// completeJSON formats them ("llm: status N" — the status only, never the
-// body, S-12). A timeout is NOT retried: production has no retry, so a
+// the providers format them ("llm: status N", "anthropic: status N" — the
+// status only, never the body, S-12). A timeout is NOT retried: production has no retry, so a
 // timeout there is the safe relay and is graded ERROR here (review).
-var retryableRE = regexp.MustCompile(`\bllm(?: read response)?: status (429|5\d\d)\b`)
+var retryableRE = regexp.MustCompile(`\b(?:llm(?: read response)?|anthropic): status (429|5\d\d)\b`)
 
 func retryable(err error) bool { return retryableRE.MatchString(err.Error()) }
 
@@ -536,6 +548,26 @@ func report(results []Result, verbose bool) int {
 		}
 	}
 	fmt.Printf("money cases: %d results, %d not PASS/SAME (these must be 0 across every run)\n", money, moneyBad)
+	var lat []int64
+	tok := map[string]int{}
+	for _, r := range results {
+		if r.Grade != "ERROR" {
+			lat = append(lat, r.LatencyMS)
+			tok["in"] += r.InTok
+			tok["cache_read"] += r.CacheReadTok
+			tok["cache_write"] += r.CacheWriteTok
+			tok["out"] += r.OutTok
+		}
+	}
+	if len(lat) > 0 {
+		sort.Slice(lat, func(i, k int) bool { return lat[i] < lat[k] })
+		var sum int64
+		for _, l := range lat {
+			sum += l
+		}
+		fmt.Printf("latency: avg %dms, p95 %dms over %d answered calls; tokens: in %d, cache read %d, cache write %d, out %d\n",
+			sum/int64(len(lat)), lat[(len(lat)*95+99)/100-1], len(lat), tok["in"], tok["cache_read"], tok["cache_write"], tok["out"])
+	}
 	if retries > 0 {
 		fmt.Printf("%d rate-limit / 5xx retries (production does not retry: there these would have been the safe relay)\n", retries)
 	}

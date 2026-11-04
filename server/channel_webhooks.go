@@ -41,7 +41,7 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 	store := &channel.PGStore{DB: sqlDB}
 	sb := channel.SendblueFromEnv()
 	wa := channel.WhatsAppFromEnv()
-	model := chatModelFromEnv()
+	steps := chatModelsFromEnv()
 
 	base := setupBaseURL()
 	if base == "" {
@@ -52,12 +52,12 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		Identities:    store,
 		Conversations: store,
 		Adapters:      map[channel.Channel]channel.Adapter{channel.IMessage: sb, channel.WhatsApp: wa},
-		Parser:        model,
-		Splitter:      model,
-		Classifier:    model,
-		InContext:     model,
-		Booker:        &chatBooker{sqlDB: sqlDB, model: model},
-		Purchases:     model,
+		Parser:        steps.Parse,
+		Splitter:      steps.Parse,
+		Classifier:    steps.Small,
+		InContext:     steps.Small,
+		Booker:        &chatBooker{sqlDB: sqlDB, model: steps.Small},
+		Purchases:     steps.Small,
 		// The over-run window the summary states is the billing config's
 		// own value (S-11/5: the YES is to the real exposure).
 		AutoExtendMinutes: Billing.AutoExtendMinutes,
@@ -81,7 +81,7 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 	// CHANNEL_AGENT=1 (off by default; staging first). It proposes; the
 	// router's rules decide (money and time never through it).
 	if os.Getenv("CHANNEL_AGENT") == "1" {
-		router.Agent = model
+		router.Agent = steps.Agent
 		log.Printf("[channel] requester agent ON (D-18)")
 	}
 	// Chat relay both ways (channel_relay.go) — only with TalkJS REST
@@ -118,32 +118,19 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 	// Hand-offs ops never picked up go back to the bot (D-17, 10 minutes),
 	// and bookings stuck in flight are settled (posting.go, 3 minutes).
 	go watchHandoffs(context.Background(), store, router, time.Minute)
-	log.Printf("[channel] webhooks enabled: sendblue, whatsapp; model=%s; setup base=%s", model.Model, base)
+	log.Printf("[channel] webhooks enabled: sendblue, whatsapp; setup base=%s", base)
 }
 
-// chatModelFromEnv is the language model behind the chat (PLAN §9: chosen by
-// the eval, swapped by configuration).
-//
-//	LLM_BASE_URL   default https://inference.baseten.co/v1
-//	LLM_MODEL      default zai-org/GLM-5.3-Flash
-//	LLM_API_KEY    falls back to BASETEN_API_KEY
-//	LLM_DISABLE_THINKING=1  sends chat_template_kwargs.enable_thinking=false
-func chatModelFromEnv() *llm.OpenAICompat {
-	get := func(k, def string) string {
-		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
-			return v
-		}
-		return def
-	}
-	m := &llm.OpenAICompat{
-		BaseURL: get("LLM_BASE_URL", "https://inference.baseten.co/v1"),
-		Model:   get("LLM_MODEL", "zai-org/GLM-5.3-Flash"),
-		APIKey:  get("LLM_API_KEY", strings.TrimSpace(os.Getenv("BASETEN_API_KEY"))),
-	}
-	if os.Getenv("LLM_DISABLE_THINKING") == "1" {
-		m.ExtraBody = map[string]any{"chat_template_kwargs": map[string]any{"enable_thinking": false}}
-	}
-	return m
+// chatModelsFromEnv is the model behind each chat step (PLAN §9: chosen by
+// the eval, swapped by configuration) — see llm.StepsFromEnv for the
+// variables. Logged once at startup as provider:model, never a key.
+func chatModelsFromEnv() llm.Steps {
+	warn := func(s string) { log.Printf("[channel] WARNING: llm %s", s) }
+	steps := llm.StepsFromEnv(llm.ProvidersFromEnv(), warn)
+	log.Printf("[channel] llm agent (Propose)=%s", steps.Agent.Name())
+	log.Printf("[channel] llm parse (ParseTask, split)=%s", steps.Parse.Name())
+	log.Printf("[channel] llm small (purchase, classify)=%s", steps.Small.Name())
+	return steps
 }
 
 // setupBaseURL is the public origin of this backend, where the setup page is

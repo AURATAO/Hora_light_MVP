@@ -170,7 +170,13 @@ Nothing here is in the repo; Aura sets them in the dashboard.
 | `SENDBLUE_API_SECRET` | from Sendblue | " |
 | `SENDBLUE_FROM_NUMBER` | **the dedicated line**, E.164 | the sandbox line is shared and capped at 10 contacts |
 | `SENDBLUE_WEBHOOK_SECRET` | from Sendblue | inbound webhooks are rejected without it |
-| `LLM_API_KEY` | the production Baseten key | the agent and the classifier |
+| `LLM_API_KEY` | the production Baseten key | the small steps (purchase, classify) and the fallback for every Anthropic step |
+| `ANTHROPIC_API_KEY` | already set (the app's AI posting uses it) | the agent and the parser on Claude (feat/sonnet-channel). Unset = those steps run on Baseten, with a startup warning |
+| `LLM_AGENT_MODEL` | optional, default `anthropic:claude-sonnet-5-5` | Propose. Each `LLM_*_MODEL` is `anthropic:<model>` or `baseten:<model>`; a malformed one keeps the default and says so at startup |
+| `LLM_PARSE_MODEL` | optional, default `anthropic:claude-sonnet-5-5` | ParseTask and the errand splitter |
+| `LLM_SMALL_MODEL` | optional, default `baseten:zai-org/GLM-5.3-Flash` | the purchase tiebreak and the classifiers |
+| `LLM_MODEL` | optional, default `zai-org/GLM-5.3-Flash` | the Baseten model an Anthropic step falls back to, call by call, on an error or timeout |
+| `LLM_ANTHROPIC_EFFORT` | optional, default `low` | `output_config.effort` on the Anthropic steps |
 | `CHANNEL_OPS_EMAILS` | ops allowlist | hand-off notices |
 | `CHANNEL_OPS_NUMBERS` | Aura's number, E.164 | hand-off SMS |
 | `CHANNEL_AGENT` | `1` | the requester agent (on in staging since 2026-10-25) |

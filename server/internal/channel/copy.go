@@ -56,6 +56,8 @@ const (
 	CopyApprovalStillPending = "(Still waiting on your YES or NO to your supporter’s request above.)"
 	CopyApprovalFirst        = "Please answer your supporter’s request first — reply YES or NO — and then tell me about the new errand."
 	CopyConfirmReask         = "Reply YES to book, NO to drop it, or tell me what to change."
+	CopyExtraTimeAck         = "Got it: up to %d extra minutes are OK, and nothing else changes. Reply YES to book, NO to drop it, or tell me what to change."
+	CopyNoteForSupporter     = "Note for your supporter: %s"
 	CopyReceipt              = "Receipt: %s."
 	CopyReceiptNoPhoto       = "Receipt: %s. (The photo couldn't be sent here.)"
 	CopyReceiptPhotoOnly     = "The receipt:"
@@ -201,6 +203,9 @@ func (r *Router) Summary(p *PendingDraft) string {
 			fmt.Fprintf(&b, "\nEstimate: %s", Dollars(it.QuoteCents))
 		}
 		fmt.Fprintf(&b, "\n\nTotal estimate: %s (you pay for the time actually used)", Dollars(p.TotalCents()))
+	}
+	for _, n := range p.Notes {
+		b.WriteString("\n" + fmt.Sprintf(CopyNoteForSupporter, n))
 	}
 	// The over-run consent, stated where the YES can see it (the app's
 	// checkbox). One line either way, so the person always knows which.

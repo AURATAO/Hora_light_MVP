@@ -52,7 +52,11 @@ func classifySchema() map[string]any {
 // Classify asks the model, and falls back to a local rule if the model is
 // unavailable or answers out of schema — a person should never get silence
 // because a provider hiccuped.
-func (o *OpenAICompat) Classify(ctx context.Context, text string) (got Intent, err error) {
+func (o *OpenAICompat) Classify(ctx context.Context, text string) (Intent, error) {
+	return classify(ctx, o, text)
+}
+
+func classify(ctx context.Context, m Provider, text string) (got Intent, err error) {
 	ctx, sp := tracing.StartSpan(ctx, "llm.Classify", tracing.KindChain)
 	defer func() {
 		sp.Input(text)
@@ -60,7 +64,7 @@ func (o *OpenAICompat) Classify(ctx context.Context, text string) (got Intent, e
 		sp.Fail(err)
 		sp.End()
 	}()
-	out, _, err := o.completeJSON(ctx, classifyPrompt, text, "intent", classifySchema(), 256)
+	out, _, err := m.CompleteJSON(ctx, classifyPrompt, text, "intent", classifySchema(), 256)
 	if err != nil {
 		return HeuristicIntent(text), fmt.Errorf("classify: %w", err)
 	}
@@ -160,7 +164,11 @@ func classifyInContextSchema() map[string]any {
 // ClassifyInContext asks the model with the thread's context. On any
 // failure it returns IntentToSupporter with the error (D-17 P7: fail
 // toward the human), never a draft.
-func (o *OpenAICompat) ClassifyInContext(ctx context.Context, text string, c Context) (got Intent, err error) {
+func (o *OpenAICompat) ClassifyInContext(ctx context.Context, text string, c Context) (Intent, error) {
+	return classifyInContext(ctx, o, text, c)
+}
+
+func classifyInContext(ctx context.Context, m Provider, text string, c Context) (got Intent, err error) {
 	ctx, sp := tracing.StartSpan(ctx, "llm.ClassifyInContext", tracing.KindChain)
 	var b strings.Builder
 	defer func() {
@@ -186,7 +194,7 @@ func (o *OpenAICompat) ClassifyInContext(ctx context.Context, text string, c Con
 	fmt.Fprintf(&b, "\nCustomer's message: %q", text)
 	// 256 tokens: the answer is ~10, the rest is headroom for a model that
 	// thinks before the JSON (a 64-token cap truncated GLM in staging).
-	out, _, err := o.completeJSON(ctx, classifyInContextPrompt, b.String(), "intent", classifyInContextSchema(), 256)
+	out, _, err := m.CompleteJSON(ctx, classifyInContextPrompt, b.String(), "intent", classifyInContextSchema(), 256)
 	if err != nil {
 		return IntentToSupporter, fmt.Errorf("classify in context: %w", err)
 	}

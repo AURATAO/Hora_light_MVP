@@ -860,6 +860,11 @@ func (r *Router) routeInContextLabel(ctx context.Context, in Inbound, id Identit
 			// "answer", re-asked as "Reply YES to book").
 			intent = intentDecline
 		}
+		if p.Action == llm.ActionNote && conv.Pending != nil && conv.State == StateAwaitingConfirm {
+			// For whoever runs the pending booking, not for the supporter
+			// on another job: the caller keeps it as a note (notes.go).
+			intent = intentNote
+		}
 		if p.Task >= 0 && p.Task < len(active) {
 			agentTarget = active[p.Task].ID
 		}
@@ -883,7 +888,7 @@ func (r *Router) routeInContextLabel(ctx context.Context, in Inbound, id Identit
 		intent = got
 	}
 	switch intent {
-	case llm.IntentCorrection, llm.IntentAnswer, intentDecline:
+	case llm.IntentCorrection, llm.IntentAnswer, intentDecline, intentNote:
 		return false, intent, nil // the caller's own path: re-draft / re-ask for a plain YES/NO
 	case llm.IntentNewTask:
 		if conv.State != StateIdle {

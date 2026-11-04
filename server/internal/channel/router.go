@@ -37,6 +37,9 @@ type PostOptions struct {
 	// post with a key that already made a task returns that task, and never
 	// places a second hold.
 	BookingKey string
+	// Notes are the person's words for the supporter (notes.go), added to
+	// the task description.
+	Notes []string
 }
 
 type Booker interface {
@@ -671,6 +674,7 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 	if conv.Pending != nil {
 		// A correction re-drafts; the opt-out they already gave stands.
 		p.NoAutoExtend = conv.Pending.NoAutoExtend
+		p.Notes = conv.Pending.Notes
 		p.WhileActive, p.WhileActiveShown = conv.Pending.WhileActive, conv.Pending.WhileActiveShown
 	}
 	p.SetItems(items)
@@ -964,6 +968,11 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 		// "book it please", "ok", "👍": agreeing, but not the plain YES a
 		// booking needs (money rule). Asked again; nothing to re-draft.
 		return r.Reply(ctx, in, CopyConfirmReask, "")
+	case !conv.Pending.NoAutoExtend && IsExtraTimeAck(text, r.AutoExtendMinutes):
+		// "15 mins is fine" to the summary's "up to 15 extra minutes": an
+		// answer to that line, not a new length (extratime.go). The draft
+		// stays as shown; the YES has to be plain.
+		return r.Reply(ctx, in, fmt.Sprintf(CopyExtraTimeAck, r.AutoExtendMinutes), "")
 	case IsBookingYes(text) && (conv.QuestionShownAt == nil || in.ReceivedAt.IsZero() || in.ReceivedAt.Before(*conv.QuestionShownAt)):
 		// (No stamp: a draft shown before R-1 existed — put again once.)
 		// Sent before this summary was (re)shown — the second tap of a
@@ -1056,7 +1065,15 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 				return r.dropDraftWith(ctx, in, conv, CopyDroppedCancelHint)
 			case p.Action == llm.ActionApprove:
 				label = llm.IntentAnswer
+			case p.Action == llm.ActionNote:
+				label = intentNote
 			}
+		}
+		if label == intentNote && !noteCarriesChange(text) {
+			// Words for whoever runs the booking: kept as a note, the
+			// summary shown again with it — time, price and addresses as
+			// they were (notes.go).
+			return r.addNote(ctx, in, conv, text)
 		}
 		if label == intentDecline && !declineCarriesChange(text) {
 			// The agent read a no to the booking (with a supporter on
@@ -1166,7 +1183,7 @@ func (r *Router) claimAndPost(ctx context.Context, ch Channel, id Identity, from
 	booked := 0
 	for i, it := range items {
 		res = r.Booker.Post(ctx, id.UserID, it.Draft, PostOptions{BudgetCents: it.BudgetCents, AutoExtend: !pending.NoAutoExtend,
-			QuotedCents: it.QuoteCents, BookingKey: it.BookingKey})
+			QuotedCents: it.QuoteCents, BookingKey: it.BookingKey, Notes: pending.Notes})
 		log.Printf("[channel] post identity=%s item=%d/%d outcome=%d task=%s", id.ID, i+1, len(items), res.Outcome, res.TaskID)
 		switch res.Outcome {
 		case PostBooked:

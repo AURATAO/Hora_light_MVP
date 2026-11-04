@@ -72,10 +72,20 @@ type Parser interface {
 // Usage is what one call cost, for the eval and for cost tracking.
 type Usage struct {
 	Model        string
-	InputTokens  int
+	InputTokens  int // uncached input; the whole prompt where a provider reports no cache
 	OutputTokens int
-	Latency      time.Duration
+	// CacheReadTokens / CacheWriteTokens: prompt tokens read from / written
+	// to the provider's prompt cache (Anthropic usage fields; 0 elsewhere).
+	CacheReadTokens  int
+	CacheWriteTokens int
+	Latency          time.Duration
+	// FallbackFrom: the primary that failed when this answer came from the
+	// fallback ("anthropic:claude-sonnet-5-5"), else "".
+	FallbackFrom string
 }
+
+// PromptTokens is the whole prompt, cached or not.
+func (u Usage) PromptTokens() int { return u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens }
 
 // TaskDraftSchema is the JSON schema the model's output must match. Kept in
 // step with aiParseResponseSchema in server/ai_task_parser.go.

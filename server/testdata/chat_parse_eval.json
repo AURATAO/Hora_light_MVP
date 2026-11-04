@@ -1,0 +1,42 @@
+{
+ "_readme": [
+  "Live eval of the chat's understanding steps other than the agent (go test -tags liveeval -run TestChatParseEval .; see chat_parse_eval_test.go).",
+  "step: parse (ParseTask, the production prompt aiTaskParserSystemPrompt), split (SplitErrands), purchase (NeedsPurchase), classify (Classify). input is what the router sends: for a re-draft, every line said so far, one per line.",
+  "parse checks: category (any of), loc1 / loc2 (substring, case-insensitive; \"\" = must be empty), scheduled, description (every substring), title_not (no substring). UNSAFE: scheduled wrong (books at the wrong time), a stop invented where none was given, or a status word in the title (read as a withdrawal and dropped, notes.go / statusWordAdded). Anything else wrong is FAIL.",
+  "Phone numbers in production messages are replaced by fictional 555 numbers."
+ ],
+ "cases": [
+  {"n": 1, "step": "parse", "note": "production 2026-11-02 10:08–10:11 NY", "input": "Hi i need someone to pickup a package at 100 Washington St,\nIn Manhattan", "category": ["delivery", "anything_else"], "loc1": "100 Washington", "scheduled": false},
+  {"n": 2, "step": "parse", "note": "production 2026-11-03 15:56 NY", "input": "Hi I need someone to 100 Washington street pick up a cake from my friend and deliver to my office 250 Mercer street.", "category": ["delivery"], "loc1": "100 Washington", "loc2": "250 Mercer", "scheduled": false},
+  {"n": 3, "step": "parse", "note": "production 15:57 NY: the note re-drafted — the stops and time must stay, the instruction must reach the description", "input": "Hi I need someone to 100 Washington street pick up a cake from my friend and deliver to my office 250 Mercer street.\nThis is my number (555) 010-0199 if supporter arrive can call my friend Lily", "category": ["delivery"], "loc1": "100 Washington", "loc2": "250 Mercer", "scheduled": false, "description": ["Lily"]},
+  {"n": 4, "step": "parse", "note": "production 15:56 NY: the extra-time acknowledgement in the source must not change the errand", "input": "Hi I need someone to 100 Washington street pick up a cake from my friend and deliver to my office 250 Mercer street.\n15 mins is fine", "category": ["delivery"], "loc1": "100 Washington", "loc2": "250 Mercer", "scheduled": false},
+  {"n": 5, "step": "parse", "note": "production 15:58 NY: a withdrawal re-drafted as \"(CANCELLED)\" — the title must not carry a status", "input": "Hi I need someone to 100 Washington street pick up a cake from my friend and deliver to my office 250 Mercer street.\nOh sorry I don't need to task anymore thanks", "title_not": ["cancel", "booked", "done", "void"]},
+  {"n": 6, "step": "parse", "note": "production 16:54 NY", "input": "Hi hi can anyone help me to buy a cake ?\nClaude bakery\nYes 20 usd", "category": ["grocery", "delivery", "anything_else"], "loc1": "Claude bakery", "scheduled": false},
+  {"n": 7, "step": "parse", "input": "pick up my laundry at 12 Bedford Ave tomorrow at 3pm", "category": ["laundry"], "loc1": "12 Bedford", "scheduled": true},
+  {"n": 8, "step": "parse", "input": "groceries from whole foods on 3rd ave, about $40, tonight 7pm", "category": ["grocery"], "loc1": "whole foods", "scheduled": true},
+  {"n": 9, "step": "parse", "input": "wait in line for me at Levain Bakery 167 W 74th St", "category": ["queue"], "loc1": "167 W 74th", "scheduled": false},
+  {"n": 10, "step": "parse", "input": "can someone walk my dog", "category": ["anything_else", "companionship"], "loc1": "", "scheduled": false},
+  {"n": 11, "step": "parse", "input": "幫我去 Levain Bakery 排隊買餅乾，地址是 167 W 74th St，明天下午", "category": ["queue", "grocery"], "loc1": "167 W 74th", "scheduled": true},
+  {"n": 12, "step": "parse", "input": "pick up my dry cleaning at 55 Court St Brooklyn and bring it to 200 W 79th St, ring the bell twice the buzzer is broken", "category": ["delivery", "laundry"], "loc1": "55 Court", "loc2": "200 W 79th", "scheduled": false, "description": ["bell"]},
+  {"n": 13, "step": "parse", "input": "pick up my laundry at 12 Bedford Ave\nmake it 4pm", "category": ["laundry"], "loc1": "12 Bedford", "scheduled": true},
+
+  {"n": 20, "step": "split", "note": "production 2026-11-03", "input": "Hi I need someone to 100 Washington street pick up a cake from my friend and deliver to my office 250 Mercer street.", "errands": 1},
+  {"n": 21, "step": "split", "input": "at 2pm pick up my laundry at 12 Bedford Ave, then at 5pm return a package to the UPS store on Court St", "errands": 2},
+  {"n": 22, "step": "split", "input": "Tomorrow 10am pick up my laundry and get groceries from Trader Joe's", "errands": 2},
+  {"n": 23, "step": "split", "input": "pick up my laundry and drop it at my office", "errands": 1},
+  {"n": 24, "step": "split", "note": "production 2026-11-03 16:54 NY", "input": "Hi hi can anyone help me to buy a cake ?", "errands": 1},
+  {"n": 25, "step": "split", "input": "buy flowers at the deli on 5th, pick up my prescription at CVS, and wait in line at the DMV for me", "errands": 3},
+
+  {"n": 30, "step": "purchase", "note": "production 2026-11-03 16:54 NY", "input": "Hi hi can anyone help me to buy a cake ?", "purchase": true},
+  {"n": 31, "step": "purchase", "note": "production 2026-11-03 15:56 NY", "input": "Hi I need someone to 100 Washington street pick up a cake from my friend and deliver to my office 250 Mercer street.", "purchase": false},
+  {"n": 32, "step": "purchase", "input": "pick up my dry cleaning at 55 Court St", "purchase": false},
+  {"n": 33, "step": "purchase", "input": "grab me an iced latte from the place on the corner", "purchase": true},
+  {"n": 34, "step": "purchase", "input": "wait in line at the DMV for me", "purchase": false},
+
+  {"n": 40, "step": "classify", "note": "production 2026-11-03 16:54 NY", "input": "Hi hi can anyone help me to buy a cake ?", "intent": "new_task"},
+  {"n": 41, "step": "classify", "note": "production 2026-11-02 10:08 NY", "input": "Hi i need someone to pickup a package at 100 Washington St,", "intent": "new_task"},
+  {"n": 42, "step": "classify", "input": "hi", "intent": "greeting"},
+  {"n": 43, "step": "classify", "input": "how much does it cost?", "intent": "question"},
+  {"n": 44, "step": "classify", "input": "need help moving a couch tomorrow", "intent": "new_task"}
+ ]
+}

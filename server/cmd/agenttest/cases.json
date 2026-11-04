@@ -2550,6 +2550,453 @@
    ],
    "money": true,
    "note": "Chinese withdrawal"
+  },
+  {
+   "n": 145,
+   "group": "T summary open: extra time and notes (v0.4.5)",
+   "ctx": {
+    "open_question": "booking",
+    "hora_line": {
+     "text": "Pick up cake and deliver to office\nAs soon as possible · about 30 min\n100 Washington St, New York, NY 10006 → 250 Mercer St, New York, NY 10012\nEstimate: $19.50 (you pay for the time actually used)\nIf it runs a little over, up to 15 extra minutes are OK without asking. Say \"no extra time\" to turn that off.\n\nReply YES to book, or tell me what to change.\nBy booking you agree to our Terms: my-hora.com/terms\nTo cancel, reply \"cancel task\".",
+     "minutes_ago": 1
+    },
+    "tasks": []
+   },
+   "msg": "15 mins is fine",
+   "expect": {
+    "action": "approve"
+   },
+   "forbid": [
+    "correction",
+    "decline"
+   ],
+   "money": true,
+   "note": "production 2026-11-03 15:56 NY: read as a new length, 30 → 15 min, $19.50 → $12"
+  },
+  {
+   "n": 146,
+   "group": "T summary open: extra time and notes (v0.4.5)",
+   "ctx": {
+    "open_question": "booking",
+    "hora_line": {
+     "text": "Pick up cake and deliver to office\nAs soon as possible · about 30 min\n100 Washington St, New York, NY 10006 → 250 Mercer St, New York, NY 10012\nEstimate: $19.50 (you pay for the time actually used)\nIf it runs a little over, up to 15 extra minutes are OK without asking. Say \"no extra time\" to turn that off.\n\nReply YES to book, or tell me what to change.\nBy booking you agree to our Terms: my-hora.com/terms\nTo cancel, reply \"cancel task\".",
+     "minutes_ago": 1
+    },
+    "tasks": []
+   },
+   "msg": "the extra 15 is ok",
+   "expect": {
+    "action": "approve"
+   },
+   "forbid": [
+    "correction",
+    "decline"
+   ],
+   "money": true,
+   "note": "agrees to the extra-time line"
+  },
+  {
+   "n": 147,
+   "group": "T summary open: extra time and notes (v0.4.5)",
+   "ctx": {
+    "open_question": "booking",
+    "hora_line": {
+     "text": "Pick up cake and deliver to office\nAs soon as possible · about 30 min\n100 Washington St, New York, NY 10006 → 250 Mercer St, New York, NY 10012\nEstimate: $19.50 (you pay for the time actually used)\nIf it runs a little over, up to 15 extra minutes are OK without asking. Say \"no extra time\" to turn that off.\n\nReply YES to book, or tell me what to change.\nBy booking you agree to our Terms: my-hora.com/terms\nTo cancel, reply \"cancel task\".",
+     "minutes_ago": 1
+    },
+    "tasks": []
+   },
+   "msg": "extra time is fine 👍",
+   "expect": {
+    "action": "approve"
+   },
+   "forbid": [
+    "correction",
+    "decline"
+   ],
+   "money": true,
+   "note": "agrees to the extra-time line"
+  },
+  {
+   "n": 148,
+   "group": "T summary open: extra time and notes (v0.4.5)",
+   "ctx": {
+    "open_question": "booking",
+    "hora_line": {
+     "text": "Pick up cake and deliver to office\nAs soon as possible · about 30 min\n100 Washington St, New York, NY 10006 → 250 Mercer St, New York, NY 10012\nEstimate: $19.50 (you pay for the time actually used)\nIf it runs a little over, up to 15 extra minutes are OK without asking. Say \"no extra time\" to turn that off.\n\nReply YES to book, or tell me what to change.\nBy booking you agree to our Terms: my-hora.com/terms\nTo cancel, reply \"cancel task\".",
+     "minutes_ago": 1
+    },
+    "tasks": []
+   },
+   "msg": "make it 15 minutes",
+   "expect": {
+    "action": "correction"
+   },
+   "forbid": [
+    "approve",
+    "decline",
+    "note"
+   ],
+   "money": true,
+   "note": "a new length for the errand"
+  },
+  {
+   "n": 149,
+   "group": "T summary open: extra time and notes (v0.4.5)",
+   "ctx": {
+    "open_question": "booking",
+    "hora_line": {
+     "text": "Pick up cake and deliver to office\nAs soon as possible · about 30 min\n100 Washington St, New York, NY 10006 → 250 Mercer St, New York, NY 10012\nEstimate: $19.50 (you pay for the time actually used)\nIf it runs a little over, up to 15 extra minutes are OK without asking. Say \"no extra time\" to turn that off.\n\nReply YES to book, or tell me what to change.\nBy booking you agree to our Terms: my-hora.com/terms\nTo cancel, reply \"cancel task\".",
+     "minutes_ago": 1
+    },
+    "tasks": []
+   },
+   "msg": "it only takes 15 min",
+   "expect": {
+    "action": "correction"
+   },
+   "forbid": [
+    "approve",
+    "decline",
+    "note"
+   ],
+   "money": true,
+   "note": "a new length for the errand"
+  },
+  {
+   "n": 150,
+   "group": "T summary open: extra time and notes (v0.4.5)",
+   "ctx": {
+    "open_question": "booking",
+    "hora_line": {
+     "text": "Pick up cake and deliver to office\nAs soon as possible · about 30 min\n100 Washington St, New York, NY 10006 → 250 Mercer St, New York, NY 10012\nEstimate: $19.50 (you pay for the time actually used)\nIf it runs a little over, up to 15 extra minutes are OK without asking. Say \"no extra time\" to turn that off.\n\nReply YES to book, or tell me what to change.\nBy booking you agree to our Terms: my-hora.com/terms\nTo cancel, reply \"cancel task\".",
+     "minutes_ago": 1
+    },
+    "tasks": []
+   },
+   "msg": "This is my number (555) 010-0199 if supporter arrive can call my friend Lily",
+   "expect": {
+    "action": "note"
+   },
+   "forbid": [
+    "approve",
+    "decline",
+    "reply"
+   ],
+   "money": true,
+   "note": "production 2026-11-03 15:57 and 16:46 NY (number replaced): the same summary came back, the instruction was lost"
+  },
+  {
+   "n": 151,
+   "group": "T summary open: extra time and notes (v0.4.5)",
+   "ctx": {
+    "open_question": "booking",
+    "hora_line": {
+     "text": "Pick up cake and deliver to office\nAs soon as possible · about 30 min\n100 Washington St, New York, NY 10006 → 250 Mercer St, New York, NY 10012\nEstimate: $19.50 (you pay for the time actually used)\nIf it runs a little over, up to 15 extra minutes are OK without asking. Say \"no extra time\" to turn that off.\n\nReply YES to book, or tell me what to change.\nBy booking you agree to our Terms: my-hora.com/terms\nTo cancel, reply \"cancel task\".",
+     "minutes_ago": 1
+    },
+    "tasks": []
+   },
+   "msg": "the door code is 4521, ring twice",
+   "expect": {
+    "action": "note"
+   },
+   "forbid": [
+    "approve",
+    "decline",
+    "reply"
+   ],
+   "money": true,
+   "note": "an instruction for the supporter"
+  },
+  {
+   "n": 152,
+   "group": "T summary open: extra time and notes (v0.4.5)",
+   "ctx": {
+    "open_question": "booking",
+    "hora_line": {
+     "text": "Pick up cake and deliver to office\nAs soon as possible · about 30 min\n100 Washington St, New York, NY 10006 → 250 Mercer St, New York, NY 10012\nEstimate: $19.50 (you pay for the time actually used)\nIf it runs a little over, up to 15 extra minutes are OK without asking. Say \"no extra time\" to turn that off.\n\nReply YES to book, or tell me what to change.\nBy booking you agree to our Terms: my-hora.com/terms\nTo cancel, reply \"cancel task\".",
+     "minutes_ago": 1
+    },
+    "tasks": []
+   },
+   "msg": "call Lily when you get there, she has the cake",
+   "expect": {
+    "action": "note"
+   },
+   "forbid": [
+    "approve",
+    "decline",
+    "reply"
+   ],
+   "money": true,
+   "note": "an instruction for the supporter"
+  },
+  {
+   "n": 153,
+   "group": "T summary open: extra time and notes (v0.4.5)",
+   "ctx": {
+    "open_question": "booking",
+    "hora_line": {
+     "text": "Pick up cake and deliver to office\nAs soon as possible · about 30 min\n100 Washington St, New York, NY 10006 → 250 Mercer St, New York, NY 10012\nEstimate: $19.50 (you pay for the time actually used)\nIf it runs a little over, up to 15 extra minutes are OK without asking. Say \"no extra time\" to turn that off.\n\nReply YES to book, or tell me what to change.\nBy booking you agree to our Terms: my-hora.com/terms\nTo cancel, reply \"cancel task\".",
+     "minutes_ago": 1
+    },
+    "tasks": []
+   },
+   "msg": "my friend Lily will hand it over, she's in apartment 3B",
+   "expect": {
+    "action": "note"
+   },
+   "forbid": [
+    "approve",
+    "decline",
+    "reply"
+   ],
+   "money": true,
+   "note": "a detail for the supporter"
+  },
+  {
+   "n": 154,
+   "group": "T summary open: extra time and notes (v0.4.5)",
+   "ctx": {
+    "open_question": "booking",
+    "hora_line": {
+     "text": "Pick up cake and deliver to office\nAs soon as possible · about 30 min\n100 Washington St, New York, NY 10006 → 250 Mercer St, New York, NY 10012\nEstimate: $19.50 (you pay for the time actually used)\nIf it runs a little over, up to 15 extra minutes are OK without asking. Say \"no extra time\" to turn that off.\n\nReply YES to book, or tell me what to change.\nBy booking you agree to our Terms: my-hora.com/terms\nTo cancel, reply \"cancel task\".",
+     "minutes_ago": 1
+    },
+    "tasks": []
+   },
+   "msg": "call my friend Lily when you arrive, and make it 5pm",
+   "expect": {
+    "action_any": [
+     "correction",
+     "note"
+    ]
+   },
+   "forbid": [
+    "approve",
+    "decline",
+    "reply"
+   ],
+   "money": true,
+   "note": "a note with a change: the router re-drafts either way (noteCarriesChange)"
+  },
+  {
+   "n": 155,
+   "group": "T summary open: extra time and notes (v0.4.5)",
+   "ctx": {
+    "open_question": "booking",
+    "hora_line": {
+     "text": "Pick up cake and deliver to office\nAs soon as possible · about 30 min\n100 Washington St, New York, NY 10006 → 250 Mercer St, New York, NY 10012\nEstimate: $19.50 (you pay for the time actually used)\nIf it runs a little over, up to 15 extra minutes are OK without asking. Say \"no extra time\" to turn that off.\n\nReply YES to book, or tell me what to change.\nBy booking you agree to our Terms: my-hora.com/terms\nTo cancel, reply \"cancel task\".",
+     "minutes_ago": 1
+    },
+    "tasks": []
+   },
+   "msg": "actually deliver it to 300 Mercer st instead",
+   "expect": {
+    "action": "correction"
+   },
+   "forbid": [
+    "approve",
+    "decline",
+    "note"
+   ],
+   "money": true,
+   "note": "a change of place is never a note"
+  },
+  {
+   "n": 156,
+   "group": "T summary open: extra time and notes (v0.4.5)",
+   "ctx": {
+    "open_question": "booking",
+    "hora_line": {
+     "text": "Pick up cake and deliver to office\nAs soon as possible · about 30 min\n100 Washington St, New York, NY 10006 → 250 Mercer St, New York, NY 10012\nEstimate: $19.50 (you pay for the time actually used)\nIf it runs a little over, up to 15 extra minutes are OK without asking. Say \"no extra time\" to turn that off.\n\nReply YES to book, or tell me what to change.\nBy booking you agree to our Terms: my-hora.com/terms\nTo cancel, reply \"cancel task\".",
+     "minutes_ago": 1
+    },
+    "tasks": [
+     "T42"
+    ]
+   },
+   "msg": "This is my number (555) 010-0199 if supporter arrive can call my friend Lily",
+   "expect": {
+    "action": "note"
+   },
+   "forbid": [
+    "approve",
+    "decline"
+   ],
+   "money": true,
+   "note": "a supporter on another job: the note is the new booking's, not Alex's"
+  },
+  {
+   "n": 157,
+   "group": "T summary open: extra time and notes (v0.4.5)",
+   "ctx": {
+    "open_question": "booking",
+    "hora_line": {
+     "text": "Pick up cake and deliver to office\nAs soon as possible · about 30 min\n100 Washington St, New York, NY 10006 → 250 Mercer St, New York, NY 10012\nEstimate: $19.50 (you pay for the time actually used)\nIf it runs a little over, up to 15 extra minutes are OK without asking. Say \"no extra time\" to turn that off.\n\nReply YES to book, or tell me what to change.\nBy booking you agree to our Terms: my-hora.com/terms\nTo cancel, reply \"cancel task\".",
+     "minutes_ago": 1
+    },
+    "tasks": [
+     "T42"
+    ]
+   },
+   "msg": "tell Alex to grab some milk too",
+   "expect": {
+    "action": "relay",
+    "task": "t1"
+   },
+   "forbid": [
+    "approve",
+    "decline",
+    "note"
+   ],
+   "money": true,
+   "note": "addressed to the listed supporter: relay (rule 9), not a note"
+  },
+  {
+   "n": 158,
+   "group": "U production 2026-11-02/03 threads",
+   "ctx": {
+    "open_question": "booking",
+    "hora_line": {
+     "text": "Pick up package at 100 Washington St\nAs soon as possible · about 30 min\n100 Washington St, Manhattan\nEstimate: $19.50 (you pay for the time actually used)\nIf it runs a little over, up to 15 extra minutes are OK without asking. Say \"no extra time\" to turn that off.\n\nReply YES to book, or tell me what to change.\nBy booking you agree to our Terms: my-hora.com/terms",
+     "minutes_ago": 1
+    },
+    "tasks": []
+   },
+   "msg": "Well sorry never mind I don’t need that anymore",
+   "expect": {
+    "action": "decline"
+   },
+   "forbid": [
+    "reply",
+    "correction",
+    "approve",
+    "note"
+   ],
+   "money": true,
+   "note": "production 2026-11-02 10:12 NY: the summary was put again"
+  },
+  {
+   "n": 159,
+   "group": "U production 2026-11-02/03 threads",
+   "ctx": {
+    "open_question": "booking",
+    "hora_line": {
+     "text": "Pick up package at 100 Washington St\nAs soon as possible · about 30 min\n100 Washington St, Manhattan\nEstimate: $19.50 (you pay for the time actually used)\nIf it runs a little over, up to 15 extra minutes are OK without asking. Say \"no extra time\" to turn that off.\n\nReply YES to book, or tell me what to change.\nBy booking you agree to our Terms: my-hora.com/terms",
+     "minutes_ago": 1
+    },
+    "tasks": []
+   },
+   "msg": "Cancel the draft",
+   "expect": {
+    "action": "decline"
+   },
+   "forbid": [
+    "reply",
+    "correction",
+    "approve",
+    "note"
+   ],
+   "money": true,
+   "note": "production 2026-11-02 10:12 NY"
+  },
+  {
+   "n": 160,
+   "group": "U production 2026-11-02/03 threads",
+   "ctx": {
+    "open_question": "booking",
+    "hora_line": {
+     "text": "Pick up cake and deliver to office\nAs soon as possible · about 30 min\n100 Washington St, New York, NY 10006 → 250 Mercer St, New York, NY 10012\nEstimate: $19.50 (you pay for the time actually used)\nIf it runs a little over, up to 15 extra minutes are OK without asking. Say \"no extra time\" to turn that off.\n\nReply YES to book, or tell me what to change.\nBy booking you agree to our Terms: my-hora.com/terms\nTo cancel, reply \"cancel task\".",
+     "minutes_ago": 1
+    },
+    "tasks": []
+   },
+   "msg": "Sorry never mind I don’t need this task!",
+   "expect": {
+    "action": "decline"
+   },
+   "forbid": [
+    "reply",
+    "correction",
+    "approve",
+    "note"
+   ],
+   "money": true,
+   "note": "production 2026-11-03 16:46 NY"
+  },
+  {
+   "n": 161,
+   "group": "U production 2026-11-02/03 threads",
+   "ctx": {
+    "open_question": "booking",
+    "hora_line": {
+     "text": "Buy a cake from Claude bakery\nAs soon as possible · about 30 min\nClaude bakery, 187 W 4th St, New York, NY 10014\nShopping budget: $20 (covered by the hold; you pay what the receipt says)\nEstimate: $39.50 (you pay for the time actually used)\nIf it runs a little over, up to 15 extra minutes are OK without asking. Say \"no extra time\" to turn that off.\n\nReply YES to book, or tell me what to change.\nBy booking you agree to our Terms: my-hora.com/terms\nTo cancel, reply \"cancel task\".",
+     "minutes_ago": 1
+    },
+    "tasks": []
+   },
+   "msg": "Cancel task",
+   "expect": {
+    "action": "decline"
+   },
+   "forbid": [
+    "reply",
+    "correction",
+    "approve",
+    "note"
+   ],
+   "money": true,
+   "note": "production 2026-11-03 16:55 NY (the rule answers it first; the agent must agree)"
+  },
+  {
+   "n": 162,
+   "group": "U production 2026-11-02/03 threads",
+   "ctx": {
+    "open_question": "booking",
+    "hora_line": {
+     "text": "Buy a cake from Claude bakery\nAs soon as possible · about 30 min\nClaude bakery, 187 W 4th St, New York, NY 10014\nShopping budget: $20 (covered by the hold; you pay what the receipt says)\nEstimate: $39.50 (you pay for the time actually used)\nIf it runs a little over, up to 15 extra minutes are OK without asking. Say \"no extra time\" to turn that off.\n\nReply YES to book, or tell me what to change.\nBy booking you agree to our Terms: my-hora.com/terms\nTo cancel, reply \"cancel task\".",
+     "minutes_ago": 1
+    },
+    "tasks": []
+   },
+   "msg": "can she pick the chocolate one",
+   "expect": {
+    "action": "note"
+   },
+   "forbid": [
+    "approve",
+    "decline",
+    "reply"
+   ],
+   "money": true,
+   "note": "a preference for the supporter of the pending cake errand"
+  },
+  {
+   "n": 163,
+   "group": "U production 2026-11-02/03 threads",
+   "ctx": {
+    "tasks": [],
+    "hora_line": {
+     "text": "No worries at all, I won't book that. If you meant a task that's already posted, say “cancel task”.",
+     "minutes_ago": 12
+    }
+   },
+   "msg": "You cancel?",
+   "expect": {
+    "action_any": [
+     "reply"
+    ]
+   },
+   "forbid": [
+    "approve",
+    "decline",
+    "correction",
+    "note"
+   ],
+   "money": false,
+   "note": "production 2026-11-03 16:11 NY: a question to HO:RA about what it did"
   }
  ]
 }

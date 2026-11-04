@@ -102,6 +102,10 @@ type PendingDraft struct {
 	// the person (showSummary). A YES books only within Router.SummaryTTL of
 	// it; zero (a draft from before the field) is never fresh.
 	SummaryShownAtUnix int64 `json:"summary_shown_at,omitempty"`
+	// Notes: the person's words for whoever runs this booking — a contact,
+	// an instruction (notes.go). Shown in the summary, kept across a
+	// re-draft, and sent with the booking in the task description.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // DraftItem is one errand with its estimate.

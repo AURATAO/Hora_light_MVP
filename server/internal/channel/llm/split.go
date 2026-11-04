@@ -56,7 +56,11 @@ func splitSchema() map[string]any {
 // SplitErrands asks the model. If the model is unavailable or answers out of
 // schema, the whole message is one errand — the person still gets a draft,
 // just not a split one — and the error is returned for the log.
-func (o *OpenAICompat) SplitErrands(ctx context.Context, text string) (errands []string, u Usage, err error) {
+func (o *OpenAICompat) SplitErrands(ctx context.Context, text string) ([]string, Usage, error) {
+	return splitErrands(ctx, o, text)
+}
+
+func splitErrands(ctx context.Context, m Provider, text string) (errands []string, u Usage, err error) {
 	ctx, sp := tracing.StartSpan(ctx, "llm.SplitErrands", tracing.KindChain)
 	defer func() {
 		sp.Input(text)
@@ -65,7 +69,7 @@ func (o *OpenAICompat) SplitErrands(ctx context.Context, text string) (errands [
 		sp.End()
 	}()
 	single := []string{strings.TrimSpace(text)}
-	out, u, err := o.completeJSON(ctx, splitPrompt, text, "errands", splitSchema(), 512)
+	out, u, err := m.CompleteJSON(ctx, splitPrompt, text, "errands", splitSchema(), 512)
 	if err != nil {
 		return single, u, fmt.Errorf("split errands: %w", err)
 	}
@@ -93,7 +97,11 @@ func (o *OpenAICompat) SplitErrands(ctx context.Context, text string) (errands [
 // NeedsPurchase is the tiebreak for the budget question (budget.go): does
 // this errand involve the supporter paying for something? Used only when the
 // rule saw no purchase word. The answer never sets an amount.
-func (o *OpenAICompat) NeedsPurchase(ctx context.Context, text string) (yes bool, err error) {
+func (o *OpenAICompat) NeedsPurchase(ctx context.Context, text string) (bool, error) {
+	return needsPurchase(ctx, o, text)
+}
+
+func needsPurchase(ctx context.Context, m Provider, text string) (yes bool, err error) {
 	ctx, sp := tracing.StartSpan(ctx, "llm.NeedsPurchase", tracing.KindChain)
 	defer func() {
 		sp.Input(text)
@@ -104,7 +112,7 @@ func (o *OpenAICompat) NeedsPurchase(ctx context.Context, text string) (yes bool
 	// 256: the answer is a few tokens, but a model that thinks first ran past
 	// 32 on staging (2026-10-24) and the check fell back to "no purchase" —
 	// a bagel errand was drafted without the budget question.
-	out, _, err := o.completeJSON(ctx, purchasePrompt, text, "purchase", purchaseSchema(), 256)
+	out, _, err := m.CompleteJSON(ctx, purchasePrompt, text, "purchase", purchaseSchema(), 256)
 	if err != nil {
 		return false, fmt.Errorf("needs purchase: %w", err)
 	}

@@ -40,7 +40,25 @@ type chatMessage struct {
 	Content string `json:"content"`
 }
 
-func (o *OpenAICompat) ParseTask(ctx context.Context, systemPrompt, text string) (d TaskDraft, u Usage, err error) {
+// Name is "baseten:<model>" on Baseten, else "<host>:<model>".
+func (o *OpenAICompat) Name() string {
+	host := providerHost(o.BaseURL)
+	if host == "inference.baseten.co" {
+		host = "baseten"
+	}
+	return host + ":" + o.Model
+}
+
+// CompleteJSON is completeJSON as a Provider.
+func (o *OpenAICompat) CompleteJSON(ctx context.Context, system, user, schemaName string, schema map[string]any, maxTokens int) (string, Usage, error) {
+	return o.completeJSON(ctx, system, user, schemaName, schema, maxTokens)
+}
+
+func (o *OpenAICompat) ParseTask(ctx context.Context, systemPrompt, text string) (TaskDraft, Usage, error) {
+	return parseTask(ctx, o, systemPrompt, text)
+}
+
+func parseTask(ctx context.Context, m Provider, systemPrompt, text string) (d TaskDraft, u Usage, err error) {
 	ctx, sp := tracing.StartSpan(ctx, "llm.ParseTask", tracing.KindChain)
 	defer func() {
 		sp.Input(text)
@@ -48,11 +66,11 @@ func (o *OpenAICompat) ParseTask(ctx context.Context, systemPrompt, text string)
 		sp.Fail(err)
 		sp.End()
 	}()
-	maxTokens := o.MaxTokens
-	if maxTokens == 0 {
-		maxTokens = 2048
+	maxTokens := 2048
+	if o, ok := m.(*OpenAICompat); ok && o.MaxTokens != 0 {
+		maxTokens = o.MaxTokens
 	}
-	out, u, err := o.completeJSON(ctx, systemPrompt, text, "task_draft", TaskDraftSchema(), maxTokens)
+	out, u, err := m.CompleteJSON(withoutPromptCache(ctx), systemPrompt, text, "task_draft", TaskDraftSchema(), maxTokens)
 	if err != nil {
 		return TaskDraft{}, u, fmt.Errorf("llm parse: %w", err)
 	}
@@ -72,6 +90,7 @@ func (o *OpenAICompat) completeJSON(ctx context.Context, system, user, schemaNam
 	})
 	defer func() {
 		sp.LLMResult(out, u.InputTokens, u.OutputTokens)
+		sp.Attr(attribute.Int64("hora.llm.latency_ms", u.Latency.Milliseconds()))
 		sp.Fail(err)
 		sp.End()
 	}()
