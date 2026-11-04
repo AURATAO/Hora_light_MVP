@@ -112,8 +112,9 @@ var humanRequestRE = regexp.MustCompile(`(?i)\b(` +
 	`|not\s+a\s+bot` +
 	`)\b|真人|客服|人工`)
 
-// IsHumanRequest reports an explicit ask for a person. Matched by rule.
-func IsHumanRequest(text string) bool { return humanRequestRE.MatchString(text) }
+// IsHumanRequest reports an explicit ask for a person, or a plea for help
+// ("help me", "help!!" — help.go). Matched by rule.
+func IsHumanRequest(text string) bool { return humanRequestRE.MatchString(text) || IsHelpPlea(text) }
 
 // PhoneHint shows the last four digits, enough for a person to recognise
 // their own number and nothing more.

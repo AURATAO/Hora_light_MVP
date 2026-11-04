@@ -588,6 +588,7 @@ type fakeBooker struct {
 	onPrice       func()        // runs at each draft Quote
 	quoteErr      error         // CancelQuote fails with it when set
 	onOpen        func()        // runs at each OpenTasks
+	openErr       error         // OpenTasks fails with it when set
 	cancelled     []string
 	cancelReasons []string
 	cancelRes     CancelResult
@@ -614,6 +615,9 @@ func (b *fakeBooker) OpenTasks(context.Context, string) ([]TaskRef, error) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.openErr != nil {
+		return nil, b.openErr
+	}
 	return b.open, nil
 }
 func (b *fakeBooker) CancelQuote(_ context.Context, _, taskID string) (CancelQuote, error) {
