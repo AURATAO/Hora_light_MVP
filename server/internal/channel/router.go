@@ -262,6 +262,15 @@ type Router struct {
 	// request (S-32: the setup page's finish step must not wait on
 	// Sendblue/Meta). Default `go f()`; tests run it inline.
 	Go func(f func())
+	// Discovery finds places for an errand (D-23, discovery.go; behind
+	// CHANNEL_DISCOVERY). Places looks a chosen place up again, History
+	// reads the person's own past errands (the usual), DiscoveryStore keeps
+	// the open offer and the daily Places count. Discovery nil = off.
+	Discovery       llm.Discoverer
+	Places          llm.PlaceSearcher
+	DiscoveryStore  DiscoveryStore
+	History         TaskHistory
+	DiscoveryLimits DiscoveryLimits
 	// SummaryTTL: how long a booking summary stays bookable (posting.go).
 	// A YES — or the setup page finishing — after it re-quotes instead of
 	// booking. Zero = DefaultSummaryTTL (CHANNEL_SUMMARY_TTL overrides).
@@ -502,11 +511,21 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 		}
 		return r.Reply(ctx, in, CopyWelcome, "")
 	}
+	// "The usual", a pick from places just shown, or where to look: ours,
+	// unless a supporter has written since (discovery.go).
+	if handled, err := r.routeDiscoveryFirst(ctx, in, id, conv, text); handled {
+		return err
+	}
 	// With a supporter on the job, the thread's context decides (D-17).
 	if handled, err := r.routeInContext(ctx, in, id, conv, text); handled {
 		return err
 	}
 	intent := r.classify(ctx, text)
+	// "Where can I get…", "pharmacy open now", a follow-up to places just
+	// shown: place discovery, which answers or leaves it to the switch.
+	if handled, err := r.routeDiscovery(ctx, in, id, conv, text, intent); handled {
+		return err
+	}
 	switch intent {
 	case llm.IntentNewTask:
 		return r.startDraft(ctx, in, id, conv, text)
@@ -536,29 +555,57 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 // confirmation step. source is everything the person has said about this
 // task so far.
 func (r *Router) startDraft(ctx context.Context, in Inbound, id Identity, conv Conversation, source string) error {
-	return r.startDraftOpts(ctx, in, id, conv, source, "")
+	return r.startDraftOpts(ctx, in, id, conv, source, draftOpts{})
 }
 
 // leadIn is the one-line notice on the first message of a draft started
 // while a supporter was on the job (D-17 P6); "" afterwards.
 func (r *Router) leadIn(p *PendingDraft) string {
-	if p == nil || p.WhileActive == "" || p.WhileActiveShown {
+	if p == nil || (p.WhileActive == "" && p.Intro == "") || p.WhileActiveShown {
 		return ""
 	}
 	p.WhileActiveShown = true
+	if p.WhileActive == "" {
+		return p.Intro + "\n\n" // "Same as last time:" (discovery.go)
+	}
 	return fmt.Sprintf(CopyDraftWhileActive, p.WhileActive) + "\n\n"
 }
 
-// startDraftOpts: whileActive is the supporter's first name when the draft
-// is started with that supporter on the job.
-func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, conv Conversation, source, whileActive string) error {
+// draftOpts: how a draft is started besides the person's words.
+type draftOpts struct {
+	// whileActive is the supporter's first name when the draft is started
+	// with that supporter on the job.
+	whileActive string
+	// places: the place(s) chosen from a discovery answer, in visiting
+	// order (discovery.go) — attached by rule after the parse, never
+	// through the parser's words. check: the errand is to go and look.
+	// Both are kept on the draft and re-applied on every re-draft.
+	places []ChosenPlace
+	check  bool
+	// prebuilt: the errand is already a draft (the usual — discovery.go):
+	// not parsed, priced and checked like any other. intro: said once
+	// before its first question.
+	prebuilt *llm.TaskDraft
+	intro    string
+}
+
+// startDraftOpts parses the request, prices it and moves to the name or
+// confirmation step.
+func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, conv Conversation, source string, o draftOpts) error {
+	whileActive := o.whileActive
 	if r.Parser == nil || r.Prompt == nil || r.Booker == nil {
 		return fmt.Errorf("start draft: router not fully configured")
 	}
+	// A draft from a discovery choice keeps its places through every
+	// re-draft (a correction re-parses the words, not the place).
+	if prev := conv.Pending; prev != nil && len(o.places) == 0 && o.prebuilt == nil {
+		o.places, o.check = prev.Places, prev.Check
+	}
 	// One message may ask for several errands (M3). Each is parsed and priced
-	// on its own; all of them wait on the one YES.
+	// on its own; all of them wait on the one YES. Chosen places make one
+	// errand: one supporter for the whole trip.
 	errands := []string{source}
-	if r.Splitter != nil {
+	if r.Splitter != nil && len(o.places) == 0 && o.prebuilt == nil {
 		got, usage, err := r.Splitter.SplitErrands(ctx, source)
 		if err != nil {
 			// The whole message is one errand (SplitErrands' own fallback).
@@ -588,27 +635,39 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		prev = conv.Pending.Items()
 	}
 	for i, text := range errands {
-		draft, usage, err := r.Parser.ParseTask(ctx, prompt, text)
-		if err != nil {
-			log.Printf("[channel] parse failed model=%s latency=%s: %v", usage.Model, usage.Latency, err)
-			unparsed = append(unparsed, text)
-			continue
+		var draft llm.TaskDraft
+		if o.prebuilt != nil {
+			draft = *o.prebuilt
+		} else {
+			var usage llm.Usage
+			var err error
+			draft, usage, err = r.Parser.ParseTask(ctx, prompt, text)
+			if err != nil {
+				log.Printf("[channel] parse failed model=%s latency=%s: %v", usage.Model, usage.Latency, err)
+				unparsed = append(unparsed, text)
+				continue
+			}
+			log.Printf("[channel] parsed model=%s latency=%s in=%d out=%d category=%s", usage.Model, usage.Latency.Round(time.Millisecond), usage.InputTokens, usage.OutputTokens, draft.Category)
 		}
-		log.Printf("[channel] parsed model=%s latency=%s in=%d out=%d category=%s", usage.Model, usage.Latency.Round(time.Millisecond), usage.InputTokens, usage.OutputTokens, draft.Category)
-		if !namesDuration(text) {
+		if o.prebuilt != nil {
+			// The usual: the past errand's own length stands.
+		} else if !namesDuration(text) {
 			// Default 30 minutes unless the person says otherwise (Arbiter
 			// 2026-10-24 22:48: the model guessed 15 for "a pack of eggs";
 			// the person then had to correct it). The Booker's default.
 			draft.DurationMinutes = 0
 		}
-		if draft.DurationMinutes > 0 && !saidMinutesIn(source, draft.DurationMinutes) {
+		if o.prebuilt == nil && draft.DurationMinutes > 0 && !saidMinutesIn(source, draft.DurationMinutes) {
 			// A length the person never wrote — the model's reading of its
 			// own copy of the errand (gap C, ownwords.go): the default
 			// estimate instead.
 			log.Printf("[channel] draft identity=%s: %d minutes not in the person's words — default estimate", id.ID, draft.DurationMinutes)
 			draft.DurationMinutes = 0
 		}
-		if len(errands) == 1 {
+		if len(o.places) > 0 {
+			applyPlaces(&draft, o.places, o.check, namesDuration(source))
+		}
+		if len(errands) == 1 && o.prebuilt == nil {
 			// The newest line that is only a duration ("15 mins", "ASAP 15
 			// mins", "make it 45 minutes") sets it, whatever the model read
 			// from older lines (review 2026-10-30).
@@ -689,8 +748,9 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 	case AreaUnavailable:
 		return r.Reply(ctx, in, CopyAreaCheckDown, "")
 	}
-	p := &PendingDraft{Source: source, CreatedAtUnix: r.now().Unix(), Unparsed: unparsed, BudgetAskIndex: -1, WhileActive: whileActive}
-	if conv.Pending != nil {
+	p := &PendingDraft{Source: source, CreatedAtUnix: r.now().Unix(), Unparsed: unparsed, BudgetAskIndex: -1, WhileActive: whileActive,
+		Places: o.places, Check: o.check, Intro: o.intro}
+	if conv.Pending != nil && o.prebuilt == nil {
 		// A correction re-drafts; the opt-out they already gave stands.
 		p.NoAutoExtend = conv.Pending.NoAutoExtend
 		p.Notes = conv.Pending.Notes

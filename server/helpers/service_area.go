@@ -297,7 +297,20 @@ func areaParts(res geocodeResult) (country, state, county string) {
 // not a door) is outside rather than unclear; inside the boroughs it must also
 // be a place to stand, by the bar the task's coordinates are held to.
 func classifyArea(res geocodeResult) AreaVerdict {
-	country, state, county := areaParts(res)
+	if v := AreaOfParts(areaParts(res)); v != AreaInside {
+		return v
+	}
+	if !placeable(res) {
+		return AreaUnclear
+	}
+	return AreaInside
+}
+
+// AreaOfParts is the county rule alone, on the parts any Google result
+// names: country and state by short name, county by long name. Places
+// results (places.go) are judged by it, so a place is "in the five boroughs"
+// by exactly the test a task's address is.
+func AreaOfParts(country, state, county string) AreaVerdict {
 	switch {
 	case country != "" && country != "US":
 		return AreaOutside
@@ -309,8 +322,6 @@ func classifyArea(res geocodeResult) AreaVerdict {
 		return AreaUnclear // "New York" the state, "Long Island" the island
 	case !isNYCCounty(county):
 		return AreaOutside
-	case !placeable(res):
-		return AreaUnclear
 	}
 	return AreaInside
 }

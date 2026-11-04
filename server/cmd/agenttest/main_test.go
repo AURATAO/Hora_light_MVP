@@ -31,7 +31,7 @@ func TestServerOutcomesMatchTheRules(t *testing.T) {
 func TestCasesAreWellFormed(t *testing.T) {
 	f := mustLoad(t)
 	known := map[string]bool{}
-	for _, a := range []llm.Action{llm.ActionApprove, llm.ActionDecline, llm.ActionRelay, llm.ActionCorrection, llm.ActionDraftTask, llm.ActionAsk, llm.ActionEscalate, llm.ActionReply, llm.ActionWhere, llm.ActionNote} {
+	for _, a := range []llm.Action{llm.ActionApprove, llm.ActionDecline, llm.ActionRelay, llm.ActionCorrection, llm.ActionDraftTask, llm.ActionAsk, llm.ActionEscalate, llm.ActionReply, llm.ActionWhere, llm.ActionNote, llm.ActionInfo} {
 		known[string(a)] = true
 	}
 	seen := map[int]bool{}

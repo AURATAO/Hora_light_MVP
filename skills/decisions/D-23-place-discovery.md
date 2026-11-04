@@ -1,0 +1,33 @@
+# D-23: Place discovery in the text channel (phase 1)
+
+**Date:** 2026-11-04
+**Status:** Proposed. Built on `feat/discovery`, off unless `CHANNEL_DISCOVERY=1`. Not merged, not deployed.
+**Trigger:** Aura, 2026-11-04: customers should be able to ask HO:RA to find things in NYC, and every answer should lead to an errand HO:RA can do.
+
+## Decision
+A customer can ask the text channel to find something: a place for an errand, what is open now, where to get an item, a gift, a return drop-off, food worth waiting in line for, a route for several errands, someone to go and check, or "the usual". The model proposes and the rules decide, as in D-18:
+
+1. **The model never writes a place.** Sonnet (`LLM_AGENT_MODEL`) runs a tool loop over Google Places (New) Text Search (`search_places`, at most `CHANNEL_PLACES_PER_MESSAGE` calls). It returns one structured answer that names places only by reference (`p1`, `p2`) to this turn's results. The router renders every name, address, rating and opening status from Google's data (`RenderDiscovery`). An "info" answer with no search shows nothing.
+2. **An info reply never sets up a YES.** It never quotes a price and never promises a time. The model's only free text is a one-line lead. `InfoLeadOK` refuses any lead with money words, a question or "yes/book/confirm", a time promise, rating figures, a link or a phone number; a refused lead is replaced with fixed text. The reply ends with "Reply with a number".
+3. **A pick is a normal draft.** "2", "the second one" or "Joe's" is matched by rule, and the model's `choose` handles a pick that comes with more words. The pick goes through `startDraftOpts`: parse, NYC area check, budget rules, summary and plain YES, all unchanged. The chosen place is attached after the parse by rule (`applyPlaces`). The parser reads the person's own words plus Google's address, never the business name. A name can therefore never become a money input (gap C, `ownwords.go`).
+4. **Check errands** ("does Trader Joe's still have X?") book at 15 minutes, the base fee's included time, unless the person names a length. The summary says the supporter will check and text back with a photo. Any purchase still needs a budget.
+5. **"The usual"** only uses the person's own posted or completed tasks. It takes the title that repeats most, otherwise the newest. It is offered as a new draft with no parse; a past budget is never carried (amounts are stripped), and the summary still needs YES.
+6. **Out of scope** (general chat, medical or legal advice, alcohol, tobacco or cannabis, prescriptions, account logins or reservations, price guarantees) gets fixed copy per reason that names what HO:RA can do.
+7. **Failure is fixed copy.** If Anthropic, Places or the daily cap fails, the reply is "I can't search right now, but tell me the store or address and I'll send someone" when the words asked to search by rule. Otherwise the message goes to the usual routing. GLM cannot run the tool loop, so discovery is Anthropic only.
+8. **Only place ids are stored.** `channel_discovery` (RLS on, no grants, no policies) keeps the open offer's place ids, the person's words and the daily count. A chosen place is looked up again (Place Details Pro). Names for matching "Joe's" are read back from the message we sent.
+9. **The requester agent gets an `info` action** (prompt v0.4.6). It is used only with nothing of ours open. With a supporter on another job, `info` runs discovery, and "not discovery" falls back to the supporter (P7).
+
+## Constitution impact
+- Standards added: none
+- Standards modified/retired: none
+- Invariants added/changed: none. The new table follows CLAUDE.md Rule 3; the four queries must still return 3 / 0 / 0 / 0 after `20261104170000_channel_discovery.sql`.
+
+## Context and alternatives
+- **Model-written replies, with places from its own text.** Rejected. A rating or an opening hour the model misremembers is stated as fact, and the reply could carry a price or a YES question.
+- **Storing names and addresses for the pick.** Rejected. Google's Places policy permits storing place ids only, so the pick is looked up again ($0.017 a stop).
+- **Google attribution, as found 2026-11-04** (developers.google.com/maps/documentation/places/web-service/policies). Where Places content is shown without a Google map, the text "Google Maps" must appear, unchanged and untranslated, near the content and visually separate from it. Authors must be credited for any review or photo shown. We show neither reviews nor photos, nor request them. The policy is written for screens and says nothing about SMS. Our reply ends with a separate line: "Places, ratings and hours from Google Maps. Hours can change."
+
+## Evidence
+- `go run ./cmd/agenttest -discovery` (38 cases; Sonnet 5.5; fixture places; 3 runs): 113 PASS, 1 FAIL, 0 UNSAFE, 0 ERROR. The miss is #38.1, "wash and fold near Irving Place", answered with "Where should I look?" (safe). One raw lead in 114 was refused by rule before the rule was narrowed. No reply carried a YES, a price or a forbidden place.
+- Requester agent, prompt v0.4.6, all 171 cases: 165 PASS, 3 SAME, 2 FAIL, 1 UNSAFE. #9, #38 and #105 fail identically on `main` in 3/3 runs: #38 is the known "the $10 is fine", and #9 and #105 are decided by rules in production. All 8 new `info` cases passed.
+- Cost from that run: an answer with options averaged $0.0076 of Sonnet plus 2.08 Text Search Enterprise calls ($0.073). Each other answer averaged $0.0015. A discovery conversation that books is about $0.08 plus $0.017 per chosen stop, before Google's 1,000 free Enterprise searches a month. Latency: 5.9 s on average and 8.3 s at p95 for an answer with options.

@@ -84,6 +84,8 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		router.Agent = steps.Agent
 		log.Printf("[channel] requester agent ON (D-18)")
 	}
+	// Place discovery (channel_discovery.go): only with CHANNEL_DISCOVERY=1.
+	configureDiscovery(router, sqlDB, store)
 	// Chat relay both ways (channel_relay.go) — only with TalkJS REST
 	// credentials; without them a requester's small talk gets the plain
 	// acknowledgement, not "couldn't pass that on".
