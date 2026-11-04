@@ -596,6 +596,13 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 			// the person then had to correct it). The Booker's default.
 			draft.DurationMinutes = 0
 		}
+		if draft.DurationMinutes > 0 && !saidMinutesIn(source, draft.DurationMinutes) {
+			// A length the person never wrote — the model's reading of its
+			// own copy of the errand (gap C, ownwords.go): the default
+			// estimate instead.
+			log.Printf("[channel] draft identity=%s: %d minutes not in the person's words — default estimate", id.ID, draft.DurationMinutes)
+			draft.DurationMinutes = 0
+		}
 		if len(errands) == 1 {
 			// The newest line that is only a duration ("15 mins", "ASAP 15
 			// mins", "make it 45 minutes") sets it, whatever the model read
@@ -621,8 +628,15 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 			case len(prev) > 0 && len(errands) == 1 && latestNamed:
 				it.BudgetCents, it.BudgetAsked = latestCents, true
 			default:
+				// With several errands, text is the splitter's copy: its
+				// amount stands only if the person wrote it (gap C); if not,
+				// the budget question is asked.
 				if cents, ok := LatestAmountCents(text); ok {
-					it.BudgetCents, it.BudgetAsked = cents, true
+					if (cents == 0 && saidNoBudget(source)) || (cents > 0 && saidAmount(source, cents/100)) {
+						it.BudgetCents, it.BudgetAsked = cents, true
+					} else {
+						log.Printf("[channel] draft identity=%s: errand %d's budget not in the person's words — asking", id.ID, i+1)
+					}
 				}
 			}
 			// A budget already given carries over to a correction of the
