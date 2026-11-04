@@ -36,7 +36,10 @@ var (
 	// "up to $30", "around 15 bucks". Whole dollars; cents are rare in chat.
 	amountRE   = regexp.MustCompile(`(?i)(?:\$\s?(\d{1,4})(?:\.\d{1,2})?)|(?:\b(\d{1,4})\s?(?:dollars|bucks|usd)\b)|(?:\b(?:budget|up to|max|maximum|limit)(?: of| is|:)?\s?\$?\s?(\d{1,4})\b)`)
 	noBudgetRE = regexp.MustCompile(`(?i)^\s*(no|none|nothing|0|\$0|zero|nope)[\s!.]*$|\b(no budget|nothing to buy|don'?t need to buy|not buying|already paid|prepaid|it'?s paid)\b`)
-	noAutoRE   = regexp.MustCompile(`(?i)\b(no extra time|no overtime|don'?t go over|do not go over|ask (me )?first|ask before|no auto[- ]?extend|stick to the estimate|not a minute more)\b|不要超時|超時先問`)
+	// Production 2026-11-04 16:08: "No extra mins" with the summary open was
+	// re-drafted by the model and left the extension on. Every way of saying
+	// "no extra time" is read here, by rule, before any model call.
+	noAutoRE = regexp.MustCompile(`(?i)\b(no (?:extra|additional|more) (?:time|mins?|minutes?)|no over ?time|no ot|no extension|no auto[- ]?extend(?:ing|sion)?|(?:don'?t|dont|do not|never) (?:go|run) over|no going over|not over the (?:estimate|time)|no more than (?:the |your )?(?:estimate|estimated time|quote|quoted time)|(?:stick|keep it) to the (?:estimate|time)|just the estimate|ask (me )?first|ask before|not a minute more)\b|不要超時|超時先問|不要加時`)
 )
 
 // LooksLikePurchase is the rule half: the errand involves buying something.
@@ -96,7 +99,7 @@ func IsNoAutoExtend(text string) bool {
 
 // noExtraRE: "no extra" as the whole message, the summary's own words cut
 // short (staging 2026-10-30). Whole-message only: "no extra stops" is not it.
-var noExtraRE = regexp.MustCompile(`(?i)^\s*(?:no,?\s*)?(no extra|no extras|no extension|no overtime)(?:\s*(?:please|pls|thanks|thank you))?[\s.!。！]*$`)
+var noExtraRE = regexp.MustCompile(`(?i)^\s*(?:(?:no|nope|nah),?\s*)?(no extra|no extras|no extension|no overtime|nothing extra|none extra)(?:,?\s*(?:please|pls|plz|thanks|thank you|thx))?[\s.!。！]*$`)
 
 // needsPurchase decides for one errand: an amount already given settles it;
 // the rule says yes; the model is asked only when the rule says no.

@@ -3,6 +3,7 @@ package channel
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -478,5 +479,67 @@ func TestKeyedSerialRunsInOrderPerKey(t *testing.T) {
 	defer mu.Unlock()
 	if len(got) != 3 || got[0] != "b1" || got[1] != "a1" || got[2] != "a2" {
 		t.Fatalf("order %v, want [b1 a1 a2]", got)
+	}
+}
+
+// Production 2026-11-04 16:08: with the summary open, "No extra mins" was
+// re-drafted by the model (13.5 s) and the extension stayed on. Every such
+// variant turns it off by rule, like "no extra time".
+func TestNoExtraTimeWordings(t *testing.T) {
+	for _, s := range []string{
+		"No extra mins", "no extra minutes", "no extra min", "No extra mins please", "no extra time",
+		"no overtime", "No over time", "no extra", "No extra.", "nope, no extra", "nothing extra",
+		"don't go over", "dont go over the estimate", "do not run over", "no more than the estimate",
+		"no more than the estimated time", "no additional time", "no extension please", "stick to the estimate",
+		"keep it to the estimate", "不要超時",
+	} {
+		if !IsNoAutoExtend(s) {
+			t.Errorf("%q should turn off the auto-extension", s)
+		}
+	}
+	for _, s := range []string{
+		"15 mins is fine", "extra time is ok", "no extra stops", "no extra charge for the bag", "no",
+		"make it 15 minutes", "no other errands", "yes", "no more errands",
+	} {
+		if IsNoAutoExtend(s) {
+			t.Errorf("%q must not turn it off", s)
+		}
+	}
+}
+
+// With the summary open: no model call, no re-draft, the same price, and
+// the extension off. "15 mins is fine" still keeps the draft as it is.
+func TestNoExtraMinsWithTheSummaryOpen(t *testing.T) {
+	for _, s := range []string{"No extra mins", "no overtime", "No more than the estimate", "don't go over"} {
+		g, _, _, fa := agentRig(llm.Proposal{Action: llm.ActionCorrection, Task: -1})
+		g.ids.link(me, "user-1")
+		g.parser.draft = cakeDraft
+		before := g.say(t, prodCakeErrand)
+		parses, quotes := len(g.parser.sources), g.booker.quotes
+		got := g.say(t, s)
+		if len(g.parser.sources) != parses || g.booker.quotes != quotes || len(fa.calls) != 0 {
+			t.Errorf("%q: re-parsed %d re-quoted %d agent %d", s, len(g.parser.sources)-parses, g.booker.quotes-quotes, len(fa.calls))
+		}
+		if p := g.pending(t); !p.NoAutoExtend || g.state() != StateAwaitingConfirm {
+			t.Errorf("%q: NoAutoExtend %v state %s", s, p.NoAutoExtend, g.state())
+		}
+		if got == before || !strings.Contains(got, "Reply YES") {
+			t.Errorf("%q: the summary was not re-shown with the extension off:\n%s", s, got)
+		}
+		if g.say(t, "YES"); g.booker.posts != 1 || g.booker.opts[0].AutoExtend {
+			t.Errorf("%q: posts %d auto-extend %v", s, g.booker.posts, g.booker.opts)
+		}
+	}
+
+	g, _, _, fa := agentRig(llm.Proposal{Action: llm.ActionCorrection, Task: -1})
+	g.ids.link(me, "user-1")
+	g.parser.draft = cakeDraft
+	g.say(t, prodCakeErrand)
+	parses := len(g.parser.sources)
+	if got := g.say(t, prodExtraTimeAck); got != fmt.Sprintf(CopyExtraTimeAck, 15) || len(g.parser.sources) != parses || len(fa.calls) != 0 {
+		t.Fatalf("15 mins is fine: %q re-parsed %d", got, len(g.parser.sources)-parses)
+	}
+	if g.pending(t).NoAutoExtend {
+		t.Fatal("15 mins is fine turned the extension off")
 	}
 }
