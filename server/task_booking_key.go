@@ -6,6 +6,8 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"regexp"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
@@ -35,8 +37,27 @@ import (
 //     was refused and the discard did not finish): no hold can exist under
 //     it, so it is discarded and the post goes ahead as new.
 //
-// The key reaches createTask in the gin context, never the JSON body: only
-// the chat sets it (channel_booker.go), so no app client can name a key.
+// The chat's key reaches createTask in the gin context (channel_booker.go).
+// The web form sends its own in the body (booking_key, one per form; fix
+// 2026-11-04): it is stored as "web:<key>", so it can never name a chat
+// key, and the lookup is by requester, so it can only ever find the
+// requester's own task.
+
+// msgPaymentsUncertain: what the person is told when a hold's outcome is
+// unknown. The retry is safe: it repeats the same Stripe call.
+const msgPaymentsUncertain = "Something went wrong, please try again."
+
+// clientBookingKeyRE: a key a client may name — a UUID or similar token.
+var clientBookingKeyRE = regexp.MustCompile(`^[A-Za-z0-9_-]{16,64}$`)
+
+// clientBookingKey namespaces a key sent in the POST /tasks body.
+func clientBookingKey(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if !clientBookingKeyRE.MatchString(raw) {
+		return "", false
+	}
+	return "web:" + raw, true
+}
 
 const (
 	// ctxBookingKey: the errand's idempotency key (tasks.booking_key).
@@ -66,7 +87,7 @@ func resumeBooking(c *gin.Context, ctx context.Context, email, key string) bool 
 	}
 	if status != taskStatusPendingPayment {
 		log.Printf("[createTask] booking key replay task=%s status=%s — no new task", taskID, status)
-		c.JSON(http.StatusCreated, gin.H{"id": taskID, "status": status, "replayed": true})
+		c.JSON(http.StatusCreated, gin.H{"id": taskID, "status": status, "replayed": true, "payment": taskPaymentView(ctx, taskID)})
 		return true
 	}
 
@@ -111,7 +132,7 @@ func resumeBooking(c *gin.Context, ctx context.Context, email, key string) bool 
 		// Without the card the first call used, it cannot be repeated as the
 		// same call; the task is kept (a hold may exist) for a later retry.
 		log.Printf("[createTask][ERROR] booking key task=%s: uncertain hold, card context unavailable: %v", taskID, err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "payments_uncertain"})
+		c.JSON(http.StatusBadGateway, gin.H{"error": "payments_uncertain", "message": msgPaymentsUncertain})
 		return true
 	}
 	in.StripeCustomerID, in.StripePaymentMethodID = payCtx.CustomerID, payCtx.PaymentMethodID
@@ -132,7 +153,7 @@ func resumeBooking(c *gin.Context, ctx context.Context, email, key string) bool 
 		return true
 	case errors.As(err, &pe) && pe.Uncertain:
 		log.Printf("[createTask] booking key task=%s: still uncertain, kept: %v", taskID, err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "payments_uncertain"})
+		c.JSON(http.StatusBadGateway, gin.H{"error": "payments_uncertain", "message": msgPaymentsUncertain})
 		return true
 	default:
 		message := "We couldn't place a hold on your card. Try another card."

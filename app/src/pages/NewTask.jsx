@@ -15,6 +15,7 @@ import { needsCompanionPolicy } from '../lib/companionship'
 import { completeCardAuthentication, readPaymentError, usePaymentGate } from '../hooks/usePaymentGate'
 import { betaSettlementLine } from '../lib/traction'
 import { SCHEDULE_STEP_MINUTES, defaultSchedule, localDateStr, scheduleFields } from '../lib/schedule'
+import { UNCERTAIN_POST_MESSAGE, isUncertainPost, keyAfterPost, newBookingKey } from '../lib/bookingKey'
 
 
 // Display labels for a category arriving by URL or AI prefill. Order is not
@@ -41,6 +42,10 @@ export default function NewTask() {
   const [category, setCategory] = useState('quick_errand')
   const [locs, setLocs] = useState([{ id: 0, result: null }])
   const nextLocId = useRef(1)
+  // One booking key per form, kept across its retries (lib/bookingKey.js):
+  // a resubmit after a Stripe timeout is the same booking, never a second hold.
+  const bookingKey = useRef(null)
+  if (bookingKey.current === null) bookingKey.current = newBookingKey()
   const [minutes, setMinutes] = useState('30')
   const [prepay, setPrepay] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -291,15 +296,24 @@ export default function NewTask() {
       transport_required: transport,
       auto_extend_consent: autoExtend,
       promo_code: promoApplied?.code,
+      booking_key: bookingKey.current,
     }
 
     const posted = await api('/tasks', { method: 'POST', body: payload, noRedirect: true })
     // The hold the server just placed, straight off the 201 — no refetch. Null
     // with payments off, and the success screen then says nothing about money.
+    bookingKey.current = keyAfterPost(bookingKey.current, 'posted')
     setPostedPayment(posted?.payment ?? null)
     setSuccessOpen(true)
     return
   } catch (err) {
+    // The hold may have landed: the task is kept, and a resubmit with this
+    // form's key repeats the same Stripe call. Safe to just try again.
+    if (isUncertainPost(err)) {
+      toast(err.body?.message || UNCERTAIN_POST_MESSAGE, 'error')
+      return
+    }
+
     // The code was refused at the post — expired, or used on another device,
     // since Apply. Nothing was posted. Drop it and say why beside the field;
     // the next estimate is the undiscounted one.
@@ -322,6 +336,7 @@ export default function NewTask() {
     // posts it. Nothing here can post a task on its own — the backend re-reads
     // the intent from Stripe before it believes any of this.
     if (failure.kind === 'authenticate') {
+      bookingKey.current = keyAfterPost(bookingKey.current, 'authenticate')
       try {
         // A task posted through a bank challenge has to confirm its hold in
         // exactly the same words as one that went straight through; the

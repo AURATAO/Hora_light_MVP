@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -173,17 +174,110 @@ func TestChatRetryAfterStripeTimeoutHoldsOnce(t *testing.T) {
 	}
 }
 
-// Without a key (the apps), a timeout still discards the attempt as before.
-func TestAppPostTimeoutUnchanged(t *testing.T) {
+// Without a key (mobile, old clients) an uncertain hold no longer discards
+// the attempt (fix 2026-11-04): the task and its payments row are kept —
+// a hold may exist under them — and the person is told to try again.
+func TestKeylessTimeoutKeepsTheTask(t *testing.T) {
 	uid := setupBookingKeyDB(t)
 	stubStripeWithReplay(t, 1)
-	if r := (&chatBooker{sqlDB: sqldb}).Post(context.Background(), uid, bookingKeyDraft, channel.PostOptions{AutoExtend: true}); r.Outcome != channel.PostDeclined {
+	if r := (&chatBooker{sqlDB: sqldb}).Post(context.Background(), uid, bookingKeyDraft, channel.PostOptions{AutoExtend: true}); r.Outcome != channel.PostFailed {
 		t.Fatalf("post: %+v", r)
 	}
-	if n := countRows(t, `select count(*) from public.tasks`); n != 0 {
-		t.Fatalf("tasks %d", n)
+	if n := countRows(t, `select count(*) from public.tasks where status = 'pending_payment'`); n != 1 {
+		t.Fatalf("parked tasks %d, want the attempt kept", n)
+	}
+	if n := countRows(t, `select count(*) from public.payments where status = 'requires_auth' and stripe_payment_intent_id is null`); n != 1 {
+		t.Fatalf("uncertain payments rows %d, want it kept", n)
 	}
 }
+
+// webTaskBody is the new-task form's post, with its booking key.
+func webTaskBody(key string) string {
+	return `{"title":"Laundry pickup","category":"laundry","location_text":"12 Bedford Ave, Brooklyn, NY 11211","estimated_minutes":30,"is_immediate":true,"booking_key":"` + key + `"}`
+}
+
+// The web form (fix 2026-11-04): a resubmit after a Stripe timeout carries
+// the form's key, finds the first task and repeats its Stripe call — one
+// task, one hold.
+func TestWebRetryAfterStripeTimeoutHoldsOnce(t *testing.T) {
+	uid := setupBookingKeyDB(t)
+	s := stubStripeWithReplay(t, 1)
+	const formKey = "3f1c2a9e-7b4d-4e0a-9c1f-2b6d8e4a5c70"
+
+	code, body := postTaskJSON(t, webTaskBody(formKey))
+	if code != 502 || body["error"] != "payments_uncertain" || body["message"] != "Something went wrong, please try again." {
+		t.Fatalf("first post: %d %v", code, body)
+	}
+	if n := countRows(t, `select count(*) from public.tasks where booking_key = $1 and status = 'pending_payment'`, "web:"+formKey); n != 1 {
+		t.Fatalf("parked tasks %d, want the first attempt kept under web:<key>", n)
+	}
+	if n := countRows(t, `select count(*) from public.payments where status = 'requires_auth' and stripe_payment_intent_id is null`); n != 1 {
+		t.Fatalf("uncertain payments rows %d, want it kept", n)
+	}
+	var firstTask string
+	if err := db.QueryRow(context.Background(), `select id::text from public.tasks`).Scan(&firstTask); err != nil {
+		t.Fatal(err)
+	}
+
+	code, body = postTaskJSON(t, webTaskBody(formKey))
+	if code != 201 || body["id"] != firstTask {
+		t.Fatalf("retry: %d %v, want the first task %s", code, body, firstTask)
+	}
+	if s.holds() != 1 || len(s.keys) != 2 || s.keys[0] != s.keys[1] {
+		t.Fatalf("holds %d, idempotency keys %v: the retry must repeat the first call", s.holds(), s.keys)
+	}
+	if n := countRows(t, `select count(*) from public.tasks where requester_id = $1::uuid`, uid); n != 1 {
+		t.Fatalf("tasks %d", n)
+	}
+	if n := countRows(t, `select count(*) from public.tasks where id = $1::uuid and status = 'open' and payment_id is not null`, firstTask); n != 1 {
+		t.Fatal("the task is not posted on its hold")
+	}
+	if n := countRows(t, `select count(*) from public.payments`); n != 1 {
+		t.Fatalf("payments rows %d", n)
+	}
+
+	// A double-tap after it posted: the same task, Stripe not asked.
+	if code, body = postTaskJSON(t, webTaskBody(formKey)); code != 201 || body["id"] != firstTask {
+		t.Fatalf("replay: %d %v", code, body)
+	}
+	if len(s.keys) != 2 {
+		t.Fatalf("replay reached Stripe (%d calls)", len(s.keys))
+	}
+
+	// A new form is a new key: a new task, a new hold.
+	code, body = postTaskJSON(t, webTaskBody("9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"))
+	if code != 201 || body["id"] == firstTask {
+		t.Fatalf("new form: %d %v", code, body)
+	}
+	if s.holds() != 2 || countRows(t, `select count(*) from public.tasks`) != 2 {
+		t.Fatalf("holds %d", s.holds())
+	}
+}
+
+// A body key is namespaced: it can never name the chat's key, and only a
+// token shape is accepted.
+func TestWebBookingKeyShape(t *testing.T) {
+	uid := setupBookingKeyDB(t)
+	stubStripeWithReplay(t, 0)
+	const shared = "chat_key_1234567890"
+	if r := (&chatBooker{sqlDB: sqldb}).Post(context.Background(), uid, bookingKeyDraft, channel.PostOptions{AutoExtend: true, BookingKey: shared}); r.Outcome != channel.PostBooked {
+		t.Fatalf("chat post: %+v", r)
+	}
+	code, body := postTaskJSON(t, webTaskBody(shared))
+	if code != 201 || body["replayed"] == true {
+		t.Fatalf("web post with the chat's key string: %d %v, want a new task", code, body)
+	}
+	if n := countRows(t, `select count(*) from public.tasks`); n != 2 {
+		t.Fatalf("tasks %d", n)
+	}
+	for _, bad := range []string{"short", "has spaces in it 1234", `quote"1234567890123`} {
+		if code, _ := postTaskJSON(t, strings.Replace(webTaskBody("x"), `"x"`, strconvQuote(bad), 1)); code != 400 {
+			t.Errorf("key %q: %d, want 400", bad, code)
+		}
+	}
+}
+
+func strconvQuote(s string) string { b, _ := json.Marshal(s); return string(b) }
 
 // Gap A.3 at createTask: the estimate the person said YES to is a ceiling.
 func TestChatPostAboveTheAgreedQuoteIsRefused(t *testing.T) {

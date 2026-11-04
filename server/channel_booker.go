@@ -128,7 +128,8 @@ func (b *chatBooker) Post(ctx context.Context, userID string, d llm.TaskDraft, o
 	c.Request.Header.Set("Content-Type", "application/json")
 	c.Set("uid", userID)
 	c.Set("email", email)
-	// Never in the body: only the chat names a key or a ceiling.
+	// In the context, not the body: a body key is the web form's, stored as
+	// "web:<key>" (task_booking_key.go); a ceiling only the chat names.
 	if opts.BookingKey != "" {
 		c.Set(ctxBookingKey, opts.BookingKey)
 	}

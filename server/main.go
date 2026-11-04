@@ -278,6 +278,11 @@ type createTaskInput struct {
 	// (server/promo.go). Empty for nearly every post. Ignored by PATCH — a
 	// discount is a term of the post, not something an edit can add.
 	PromoCode string `json:"promo_code"`
+	// The new-task form's idempotency key (task_booking_key.go): one per
+	// form, kept across its retries, so a post retried after an uncertain
+	// Stripe failure finds the first task and repeats its hold call rather
+	// than placing a second. Stored as "web:<key>"; ignored by PATCH.
+	BookingKey string `json:"booking_key"`
 }
 
 // The closed set behind tasks_created_via_check. Kept in the handler as well as
@@ -1668,9 +1673,18 @@ func createTask(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	// A text booking retried (task_booking_key.go): the task its key already
-	// made answers it — never a second task, never a second hold.
+	// A booking retried (task_booking_key.go): the task its key already made
+	// answers it — never a second task, never a second hold. The chat sets
+	// its key in the context; the web form sends one in the body.
 	bookingKey := strings.TrimSpace(c.GetString(ctxBookingKey))
+	if bookingKey == "" && in.BookingKey != "" {
+		k, ok := clientBookingKey(in.BookingKey)
+		if !ok {
+			c.JSON(400, gin.H{"error": "invalid booking_key"})
+			return
+		}
+		bookingKey = k
+	}
 	if bookingKey != "" && resumeBooking(c, ctx, email, bookingKey) {
 		return
 	}
@@ -1996,14 +2010,20 @@ func createTask(c *gin.Context) {
 			})
 			return
 
-		case bookingKey != "" && pe != nil && pe.Uncertain:
-			// A text booking whose hold may or may not have landed (a timeout).
-			// The task and its requires_auth row are KEPT: the retry YES comes
-			// back with the same key and repeats this exact Stripe call
-			// (resumeBooking), which finds the first hold rather than placing
-			// a second. Discarding here is what used to strand that hold.
-			log.Printf("[createTask] pre-auth uncertain task=%s — kept for its booking key's retry: %v", taskID, err)
-			c.JSON(http.StatusBadGateway, gin.H{"error": "payments_uncertain"})
+		case pe != nil && pe.Uncertain:
+			// A hold that may or may not have landed (a timeout, Stripe's 5xx,
+			// an idempotency error). The task and its requires_auth row are
+			// KEPT, with or without a booking key: discarding them is what
+			// used to strand a live hold with no row naming it. With a key
+			// (the chat, the web form) the retry comes back with it and
+			// repeats this exact Stripe call (resumeBooking), which finds the
+			// first hold rather than placing a second.
+			if bookingKey == "" {
+				log.Printf("[createTask][ERROR] pre-auth uncertain task=%s with no booking key — kept parked for ops: %v", taskID, err)
+			} else {
+				log.Printf("[createTask] pre-auth uncertain task=%s — kept for its booking key's retry: %v", taskID, err)
+			}
+			c.JSON(http.StatusBadGateway, gin.H{"error": "payments_uncertain", "message": msgPaymentsUncertain})
 			return
 
 		default:
