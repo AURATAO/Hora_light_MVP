@@ -74,6 +74,8 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		// STOP / START (optout.go): nothing is texted to a number that
 		// opted out, and ops hear about it.
 		OptOuts: store,
+		// How long a booking summary stays bookable (posting.go).
+		SummaryTTL: channel.SummaryTTLFromEnv(),
 	}
 	// D-18: the requester agent replaces the context classifier only when
 	// CHANNEL_AGENT=1 (off by default; staging first). It proposes; the
@@ -113,7 +115,8 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 	})
 	registerChannelSetupRoutes(r, sqlDB, store, router)
 	registerChannelAdminRoutes(r, sqlDB, store, router)
-	// Hand-offs ops never picked up go back to the bot (D-17, 10 minutes).
+	// Hand-offs ops never picked up go back to the bot (D-17, 10 minutes),
+	// and bookings stuck in flight are settled (posting.go, 3 minutes).
 	go watchHandoffs(context.Background(), store, router, time.Minute)
 	log.Printf("[channel] webhooks enabled: sendblue, whatsapp; model=%s; setup base=%s", model.Model, base)
 }

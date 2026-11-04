@@ -30,6 +30,10 @@ const (
 	HandoffNotUnderstood  HandoffReason = "not_understood"
 	HandoffPayment3DS     HandoffReason = "payment_3ds"
 	HandoffAgentEscalated HandoffReason = "agent_escalated" // D-18: the agent judged a person must handle it
+	// HandoffBookingFailed: a text booking failed or was found stuck in
+	// flight (posting.go). A notice, not a hand-off: the thread stays with
+	// the bot and the person has been told what to do.
+	HandoffBookingFailed HandoffReason = "booking_failed"
 )
 
 // ThreadMessage is one line of the conversation, for ops.
@@ -74,6 +78,9 @@ type HandoffNotice struct {
 	OptedOut         bool
 	OpenTasks        []TaskRef
 	OpenTasksUnknown bool
+	// BookingProblem (Reason HandoffBookingFailed): what went wrong, in
+	// words for ops. Never the person's words or number.
+	BookingProblem string
 }
 
 // OpsNotifier delivers a notice to the people who will take over.
@@ -167,6 +174,7 @@ type handoffOpen struct {
 	optedOut            bool   // the person stopped texts (optout.go)
 	openTasks           []TaskRef
 	openTasksUnknown    bool
+	bookingProblem      string // a text booking failed (posting.go)
 }
 
 func (r *Router) notifyOps(ctx context.Context, id Identity, reason HandoffReason, update bool, open handoffOpen) error {
@@ -175,7 +183,8 @@ func (r *Router) notifyOps(ctx context.Context, id Identity, reason HandoffReaso
 	}
 	n := HandoffNotice{IdentityID: id.ID, Channel: id.Channel, PhoneHint: PhoneHint(id.Address), UserID: id.UserID, Reason: reason, Update: update,
 		OpenRequestID: open.extensionID, OpenRequestTaskID: open.taskID, OpenRequestUnconfirmed: open.unconfirmed, Detail: open.detail,
-		AutoReleased: open.autoReleased, OptedOut: open.optedOut, OpenTasks: open.openTasks, OpenTasksUnknown: open.openTasksUnknown}
+		AutoReleased: open.autoReleased, OptedOut: open.optedOut, OpenTasks: open.openTasks, OpenTasksUnknown: open.openTasksUnknown,
+		BookingProblem: open.bookingProblem}
 	limit := handoffThreadLen
 	if update {
 		limit = 1

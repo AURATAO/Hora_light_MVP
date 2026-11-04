@@ -29,6 +29,14 @@ type PostOptions struct {
 	// AutoExtend: may the supporter run up to the auto-extend window past
 	// the estimate without asking. Always sent explicitly.
 	AutoExtend bool
+	// QuotedCents is the estimate the person said YES to. The post is
+	// refused (PostPriceChanged) if it would now price higher — a surge
+	// window opening since the summary; lower or equal books. 0 = no ceiling.
+	QuotedCents int
+	// BookingKey is the errand's idempotency key (DraftItem.BookingKey): a
+	// post with a key that already made a task returns that task, and never
+	// places a second hold.
+	BookingKey string
 }
 
 type Booker interface {
@@ -60,6 +68,10 @@ type Booker interface {
 	// chose (CancelReasonChoices) — relayed to the supporter exactly as an
 	// app cancel with that reason is.
 	Cancel(ctx context.Context, userID, taskID, reasonCode string) CancelResult
+	// BookedTask is the posted task (not one parked on a payment step) that
+	// a booking key made for userID; "" when none. Recovery of a booking
+	// whose outcome was lost reads it (posting.go).
+	BookedTask(ctx context.Context, userID, bookingKey string) (string, error)
 }
 
 // AreaOutcome is what the service-area check said about a draft. The zero
@@ -164,6 +176,8 @@ const (
 	PostFailed                            // anything else
 	PostOutOfArea                         // 422 outside_service_area
 	PostAddressUnclear                    // 422 address_unclear
+	PostPriceChanged                      // 409 quote_changed — prices above the YES'd estimate; nothing written
+	PostReconfirm                         // not posted: the summary is stale or its time has passed (posting.go)
 )
 
 type PostResult struct {
@@ -172,6 +186,8 @@ type PostResult struct {
 	// Message is the server's own wording for a refusal, when it has one;
 	// for PostAddressUnclear, the address that could not be placed.
 	Message string
+	// QuoteCents: for PostPriceChanged, what the errand prices at now.
+	QuoteCents int
 }
 
 // Router is the conversation state machine (PLAN §6, flow agreed 2026-10-20):
@@ -243,6 +259,10 @@ type Router struct {
 	// request (S-32: the setup page's finish step must not wait on
 	// Sendblue/Meta). Default `go f()`; tests run it inline.
 	Go func(f func())
+	// SummaryTTL: how long a booking summary stays bookable (posting.go).
+	// A YES — or the setup page finishing — after it re-quotes instead of
+	// booking. Zero = DefaultSummaryTTL (CHANNEL_SUMMARY_TTL overrides).
+	SummaryTTL time.Duration
 }
 
 // dispatch runs a reply: inline when routing a webhook message (already off
@@ -354,8 +374,16 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	case StateHandoff:
 		return r.onHandoff(ctx, in, id)
 	case StatePosting:
-		return r.Reply(ctx, in, CopyBookingInFlight, "")
+		// A safety message still reaches ops, and a stuck booking is
+		// recovered — never "one moment" forever (posting.go).
+		return r.onPosting(ctx, in, id, conv, text)
 	}
+	return r.routeMessage(ctx, in, id, conv, text)
+}
+
+// routeMessage routes a message in any state the person's next words are
+// theirs to use (not handed off, no booking in flight).
+func (r *Router) routeMessage(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
 	// Any state where the next message is the person's to use: an explicit
 	// ask for a human wins over the flow (rule-matched, never the model).
 	if IsHumanRequest(text) {
@@ -385,7 +413,7 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 			return err
 		}
 	}
-	err = r.handleState(ctx, in, id, conv, text)
+	err := r.handleState(ctx, in, id, conv, text)
 	if err == nil && (len(conv.Deferred) > 0 || conv.Unconfirmed()) {
 		// A question held while the thread could not take it follows the
 		// reply that left the thread idle (I-O). Any other state means the
@@ -837,8 +865,16 @@ func (r *Router) showSummary(ctx context.Context, in Inbound, conv Conversation)
 		// error: fail the route (retried) rather than misstate exposure.
 		return fmt.Errorf("showSummary: AutoExtendMinutes not configured")
 	}
-	summary := r.leadIn(conv.Pending) + r.Summary(conv.Pending)
+	return r.putSummary(ctx, in, conv, r.leadIn(conv.Pending))
+}
+
+// putSummary shows the draft's summary after lead: the prices it states are
+// what a YES within SummaryTTL agrees to (posting.go).
+func (r *Router) putSummary(ctx context.Context, in Inbound, conv Conversation, lead string) error {
+	ensureBookingKeys(conv.Pending)
+	summary := lead + r.Summary(conv.Pending)
 	conv.Pending.SummaryShown = summary
+	conv.Pending.SummaryShownAtUnix = r.now().Unix()
 	conv.State = StateAwaitingConfirm
 	shown := ShownUnconfirmed // in flight until delivered (R-1)
 	conv.QuestionShownAt = &shown
@@ -1118,13 +1154,19 @@ func (r *Router) claimAndPost(ctx context.Context, ch Channel, id Identity, from
 		return PostResult{Outcome: PostFailed}, true, fmt.Errorf("claimAndPost: %w", err)
 	}
 	conv.Pending = pending
+	// Nothing books on a stale summary, a time already past, or a price
+	// above the one agreed (posting.go): asked again instead.
+	if res, held := r.checkBeforePost(ctx, conv); held {
+		return res, true, r.afterPost(ctx, ch, id, conv, res, 0, len(pending.Items()), async)
+	}
 	// Every errand in order. The first one that does not book stops the run;
 	// it and the ones after it stay pending so a later YES retries exactly
 	// those — never the ones already booked.
 	items := pending.Items()
 	booked := 0
 	for i, it := range items {
-		res = r.Booker.Post(ctx, id.UserID, it.Draft, PostOptions{BudgetCents: it.BudgetCents, AutoExtend: !pending.NoAutoExtend})
+		res = r.Booker.Post(ctx, id.UserID, it.Draft, PostOptions{BudgetCents: it.BudgetCents, AutoExtend: !pending.NoAutoExtend,
+			QuotedCents: it.QuoteCents, BookingKey: it.BookingKey})
 		log.Printf("[channel] post identity=%s item=%d/%d outcome=%d task=%s", id.ID, i+1, len(items), res.Outcome, res.TaskID)
 		switch res.Outcome {
 		case PostBooked:
@@ -1139,10 +1181,16 @@ func (r *Router) claimAndPost(ctx context.Context, ch Channel, id Identity, from
 			} else {
 				conv.Pending = nil
 			}
+		case PostPriceChanged:
+			// Nothing written for this one; it and the rest are priced
+			// again and asked about (afterPost → reconfirm).
+			items[i].QuoteCents = res.QuoteCents
+			pending.SetItems(items[i:])
 		default:
 			// Declined / no card / balance / failure: no task was created
-			// (createTask discards it), so this item and the rest wait for
-			// a retry.
+			// (createTask discards it, or keeps it parked under the item's
+			// booking key when the hold's outcome is unknown), so this item
+			// and the rest wait for a retry — with the same keys.
 			pending.SetItems(items[i:])
 		}
 		break
@@ -1150,7 +1198,10 @@ func (r *Router) claimAndPost(ctx context.Context, ch Channel, id Identity, from
 	return res, true, r.afterPost(ctx, ch, id, conv, res, booked, len(items), async)
 }
 
-// afterPost moves the conversation out of StatePosting and replies.
+// afterPost moves the conversation out of StatePosting and replies. Every
+// outcome is saved through FinishPosting: a thread handed to ops while the
+// post ran stays theirs (handedOff), and the person is told how it went in
+// words that do not ask them for a YES only ops can now act on.
 func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Conversation, res PostResult, booked, total int, async bool) error {
 	out := Outbound{Channel: ch, To: id.Address}
 	// Some of several booked before one failed: say so before the problem.
@@ -1159,21 +1210,26 @@ func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Co
 		partial = fmt.Sprintf(CopyBookedSome, booked, total)
 	}
 	switch res.Outcome {
+	case PostReconfirm, PostPriceChanged:
+		return r.reconfirm(ctx, ch, id, conv, res, partial, async)
 	case PostBooked:
 		conv.Pending = nil
 		conv.State = StateIdle
-		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
-			log.Printf("[channel] save after booking identity=%s: %v", id.ID, err)
-		}
+		handedOff := r.finishPosting(ctx, id, conv)
 		out.Text = CopyBooked
 		if total > 1 {
 			out.Text = fmt.Sprintf(CopyBookedAll, total)
+		}
+		if handedOff {
+			out.Text = CopyBookedHandedOff
 		}
 		return r.dispatch(ctx, async, func(c context.Context) error {
 			if err := r.Send(c, out, res.TaskID); err != nil {
 				return err
 			}
-			r.resumeDeferred(c, id) // a question held while the booking was in flight / setup
+			if !handedOff {
+				r.resumeDeferred(c, id) // a question held while the booking was in flight / setup
+			}
 			return nil
 		})
 	case PostOutOfArea:
@@ -1181,15 +1237,15 @@ func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Co
 		// differently: the draft-time check stops the rest. Nothing is kept.
 		conv.Pending = nil
 		conv.State = StateIdle
-		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
-			log.Printf("[channel] save after post identity=%s: %v", id.ID, err)
-		}
+		handedOff := r.finishPosting(ctx, id, conv)
 		out.Text = partial + CopyOutOfArea
 		return r.dispatch(ctx, async, func(c context.Context) error {
 			if err := r.Send(c, out, ""); err != nil {
 				return err
 			}
-			r.resumeDeferred(c, id)
+			if !handedOff {
+				r.resumeDeferred(c, id)
+			}
 			return nil
 		})
 	case PostAddressUnclear:
@@ -1197,12 +1253,17 @@ func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Co
 		conv.Pending.DetailsAsked = true
 		conv.Pending.AreaStops = nil // the post disagreed with them
 		conv.State = StateAwaitingConfirm
-		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
-			log.Printf("[channel] save after post identity=%s: %v", id.ID, err)
-		}
 		out.Text = partial + detailsQuestion(conv.Pending)
+		if r.finishPosting(ctx, id, conv) {
+			out.Text = partial + CopyPostNotDoneHandedOff
+		}
 		return r.dispatch(ctx, async, func(c context.Context) error { return r.Send(c, out, "") })
 	case PostNeedsCard:
+		conv.State = StateAwaitingSetup
+		if r.finishPosting(ctx, id, conv) {
+			out.Text = partial + CopyPostNotDoneHandedOff
+			return r.dispatch(ctx, async, func(c context.Context) error { return r.Send(c, out, "") })
+		}
 		in := Inbound{Channel: ch, From: id.Address}
 		return r.dispatch(ctx, async, func(c context.Context) error { return r.sendSetupLink(c, in, id, conv, partial+CopyNeedCard) })
 	case PostOwesBalance, PostDeclined:
@@ -1210,24 +1271,25 @@ func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Co
 		conv.State = StateAwaitingConfirm
 		shown := ShownUnconfirmed // the retry prompt is a question of ours (R-1): in flight until delivered
 		conv.QuestionShownAt = &shown
-		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
-			log.Printf("[channel] save after post identity=%s: %v", id.ID, err)
-		}
+		handedOff := r.finishPosting(ctx, id, conv)
 		out.Text = partial + firstNonEmpty(res.Message, CopyCardProblem) + " " + CopyRetryYes
+		if handedOff {
+			out.Text = partial + firstNonEmpty(res.Message, CopyCardProblem) + " " + CopyPostNotDoneHandedOff
+		}
 		return r.dispatch(ctx, async, func(c context.Context) error {
 			if err := r.Send(c, out, ""); err != nil {
 				return err
 			}
-			r.markShown(c, id.ID) // the retry is a question of ours (R-1)
-			r.resumeDeferred(c, id)
+			if !handedOff {
+				r.markShown(c, id.ID) // the retry is a question of ours (R-1)
+				r.resumeDeferred(c, id)
+			}
 			return nil
 		})
 	case PostNeeds3DS:
 		conv.State = StateHandoff
 		conv.PendingExtensionID = ""
-		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
-			log.Printf("[channel] save after post identity=%s: %v", id.ID, err)
-		}
+		r.finishPosting(ctx, id, conv)
 		out.Text = partial + Copy3DSHandoff
 		// Ops notice and the person's reply both off the request path when
 		// the caller is an HTTP request (S-32).
@@ -1242,19 +1304,28 @@ func (r *Router) afterPost(ctx context.Context, ch Channel, id Identity, conv Co
 			return r.Send(c, out, res.TaskID)
 		})
 	default:
+		// A failure on our side (or a hold whose outcome is unknown): the
+		// draft and its booking keys are kept, so the YES that retries it
+		// finds whatever the first attempt made. Ops are told too.
 		conv.State = StateAwaitingConfirm
 		shown := ShownUnconfirmed // as above (R-1)
 		conv.QuestionShownAt = &shown
-		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
-			log.Printf("[channel] save after post identity=%s: %v", id.ID, err)
-		}
+		handedOff := r.finishPosting(ctx, id, conv)
 		out.Text = partial + CopyPostFailed
+		if handedOff {
+			out.Text = partial + CopyPostNotDoneHandedOff
+		}
 		return r.dispatch(ctx, async, func(c context.Context) error {
 			if err := r.Send(c, out, ""); err != nil {
 				return err
 			}
-			r.markShown(c, id.ID) // the retry is a question of ours (R-1)
-			r.resumeDeferred(c, id)
+			if !handedOff {
+				r.markShown(c, id.ID) // the retry is a question of ours (R-1)
+			}
+			r.alertBookingProblem(c, id, "booking failed on our side; the person was asked to reply YES to retry")
+			if !handedOff {
+				r.resumeDeferred(c, id)
+			}
 			return nil
 		})
 	}

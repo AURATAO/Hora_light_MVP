@@ -383,7 +383,16 @@ func (r *Router) resumeLine(ctx context.Context, id Identity, conv Conversation)
 			return CopyBackToDraft + "\n" + detailsQuestion(conv.Pending)
 		}
 		if conv.Pending != nil {
-			return CopyBackToDraft + "\n" + r.Summary(conv.Pending)
+			// Put again with its prices: a YES to it is as fresh as one to
+			// the first showing (posting.go, SummaryTTL). The price itself
+			// is checked again at the YES.
+			p := *conv.Pending
+			ensureBookingKeys(&p)
+			p.SummaryShownAtUnix = r.now().Unix()
+			if ok, err := r.Conversations.StampSummary(ctx, id.ID, p); err != nil || !ok {
+				log.Printf("[channel] stamp summary identity=%s: ok=%v err=%v", id.ID, ok, err)
+			}
+			return CopyBackToDraft + "\n" + r.Summary(&p)
 		}
 	case StateAwaitingTaskChoice:
 		return CopyBackToHold + "\n" + r.taskList(ctx, id, conv.PendingTaskChoices)

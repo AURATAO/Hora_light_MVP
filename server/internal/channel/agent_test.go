@@ -286,9 +286,10 @@ func TestAgentContextHasNoIdentifiers(t *testing.T) {
 	}
 }
 
-// Review r2: an escalation while the booking is posting does not take the
-// thread over, but ops ARE told (with the reason); while already handed
-// off it is the holding line.
+// Review r2, then audit 2026-10-30 (gap B.1): an escalation while the
+// booking is posting hands the thread to ops (with the reason) — ops must be
+// able to answer it; the booking finishes into the handed-off thread. While
+// already handed off it is the holding line.
 func TestAgentEscalationWhilePostingOrHandedOff(t *testing.T) {
 	g, chat, _, fa := agentRig(llm.Proposal{Action: llm.ActionEscalate, Task: -1, Escalation: llm.EscalateSafety}, bagelT)
 	ops := &memOps{}
@@ -305,7 +306,7 @@ func TestAgentEscalationWhilePostingOrHandedOff(t *testing.T) {
 		g.convs.mu.Unlock()
 	}
 	got := g.say(t, "he grabbed my arm")
-	if got != CopyBookingInFlight || g.state() != StatePosting || len(ops.notices) != 1 || ops.notices[0].Detail != "safety" || len(chat.posted) != 0 {
+	if got != CopyHandoffWhileBooking || g.state() != StateHandoff || len(ops.notices) != 1 || ops.notices[0].Detail != "safety" || len(chat.posted) != 0 {
 		t.Fatalf("reply %q state %s notices %+v posted %v", got, g.state(), ops.notices, chat.posted)
 	}
 	g, _, _, fa = agentRig(llm.Proposal{Action: llm.ActionEscalate, Task: -1, Escalation: llm.EscalateDispute}, bagelT)

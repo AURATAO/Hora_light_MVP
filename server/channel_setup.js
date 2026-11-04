@@ -195,7 +195,7 @@
         done("Booked", "Go back to Messages. We'll text you when a supporter accepts.", "");
       } else if (outcome === "needs_card") {
         done("Almost there", "We need a card to book. Check Messages for a link to add one.", "");
-      } else if (outcome === "declined" || outcome === "outstanding_balance" || outcome === "needs_authentication" || outcome === "needs_address") {
+      } else if (outcome === "declined" || outcome === "outstanding_balance" || outcome === "needs_authentication" || outcome === "needs_address" || outcome === "needs_confirm") {
         done("Almost there", "We couldn't place the booking yet. Check Messages for what to do next.", "");
       } else {
         done("You're all set", "Go back to Messages and tell HO:RA what you need.", "");

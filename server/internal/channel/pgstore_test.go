@@ -63,7 +63,7 @@ func testDB(t *testing.T) *sql.DB {
 	if _, err := db.Exec(string(mig2)); err != nil {
 		t.Fatalf("migration e164: %v", err)
 	}
-	for _, f := range []string{"20261022120000_channel_approval_columns.sql", "20261022130000_channel_approval_question_pid.sql", "20261024120000_channel_cancel_by_chat.sql", "20261024210000_channel_handoff_timeout.sql", "20261103150000_channel_identity_opt_out.sql"} {
+	for _, f := range []string{"20261022120000_channel_approval_columns.sql", "20261022130000_channel_approval_question_pid.sql", "20261024120000_channel_cancel_by_chat.sql", "20261024210000_channel_handoff_timeout.sql", "20261103150000_channel_identity_opt_out.sql", "20261104120100_channel_posting_started_at.sql"} {
 		mig, err := os.ReadFile(filepath.Join("..", "..", "..", "supabase", "migrations", f))
 		if err != nil {
 			t.Fatal(err)
@@ -322,15 +322,116 @@ func TestPGConversationRoundTripAndClaim(t *testing.T) {
 	if c2, err := s.GetConversation(ctx, a.ID); err != nil || c2.State != StatePosting {
 		t.Fatalf("state after claim: %s", c2.State)
 	}
-	// A fresh claim is not stealable; a stale one (crash mid-post) is.
+	// A fresh claim is not stealable, by a claim or by recovery.
 	if _, ok, err := s.ClaimForPosting(ctx, a.ID, StateAwaitingConfirm); err != nil || ok {
 		t.Fatal("claimed a conversation that is mid-post")
 	}
-	if _, err := db.Exec(`UPDATE channel_conversations SET updated_at = now() - interval '4 minutes' WHERE identity_id=$1`, a.ID); err != nil {
+	if _, ok, err := s.ReclaimStuckPosting(ctx, a.ID, PostingStuckAfter); err != nil || ok {
+		t.Fatal("recovered a conversation that is mid-post")
+	}
+	// The person texting does not keep a stuck claim young (audit
+	// 2026-10-30: updated_at moves on every inbound message).
+	if _, err := db.Exec(`UPDATE channel_conversations SET posting_started_at = now() - interval '4 minutes' WHERE identity_id=$1`, a.ID); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.TouchConversation(ctx, a.ID, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if stale, err := s.StalePostings(ctx, time.Now().Add(-PostingStuckAfter)); err != nil || len(stale) != 1 || stale[0] != a.ID {
+		t.Fatalf("stale postings %v %v", stale, err)
+	}
+	// A stuck claim is never re-claimed for posting: recovery decides first.
+	if _, ok, err := s.ClaimForPosting(ctx, a.ID, StateAwaitingConfirm); err != nil || ok {
+		t.Fatal("a stuck claim was taken for posting again")
+	}
+	// Exactly one of two recoverers gets it, and the clock restarts.
+	var rwins int32
+	var rwg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		rwg.Add(1)
+		go func() {
+			defer rwg.Done()
+			p, ok, err := s.ReclaimStuckPosting(ctx, a.ID, PostingStuckAfter)
+			if err != nil {
+				t.Errorf("reclaim racer: %v", err)
+				return
+			}
+			if ok && p != nil && p.Draft.Title == "Laundry pickup" {
+				atomic.AddInt32(&rwins, 1)
+			}
+		}()
+	}
+	rwg.Wait()
+	if rwins != 1 {
+		t.Fatalf("%d recoveries won", rwins)
+	}
+	if stale, err := s.StalePostings(ctx, time.Now().Add(-PostingStuckAfter)); err != nil || len(stale) != 0 {
+		t.Fatalf("still stale after the reclaim: %v %v", stale, err)
+	}
+	// FinishPosting ends it; a second one finds nothing to finish.
+	fin, err := s.GetConversation(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fin.PostingStartedAt == nil {
+		t.Fatal("posting_started_at not read back")
+	}
+	fin.State = StateAwaitingConfirm
+	if st, err := s.FinishPosting(ctx, fin); err != nil || st != StateAwaitingConfirm {
+		t.Fatalf("finish posting: %s %v", st, err)
+	}
+	if st, err := s.FinishPosting(ctx, fin); err != nil || st != "" {
+		t.Fatalf("finish posting twice: %q %v", st, err)
+	}
+	if c3, err := s.GetConversation(ctx, a.ID); err != nil || c3.State != StateAwaitingConfirm || c3.PostingStartedAt != nil || c3.Pending == nil {
+		t.Fatalf("after finish: %+v %v", c3, err)
+	}
+	// Handed off mid-post: the post finishes INTO the hand-off.
 	if _, ok, err := s.ClaimForPosting(ctx, a.ID, StateAwaitingConfirm); err != nil || !ok {
-		t.Fatal("a stale claim should be recoverable")
+		t.Fatal("re-claim for the hand-off case")
+	}
+	if ok, err := s.HandOffWhilePosting(ctx, a.ID); err != nil || !ok {
+		t.Fatalf("hand off while posting: %v %v", ok, err)
+	}
+	if ok, err := s.HandOffWhilePosting(ctx, a.ID); err != nil || ok {
+		t.Fatal("handed off twice")
+	}
+	done := fin
+	done.State, done.Pending = StateIdle, nil
+	if st, err := s.FinishPosting(ctx, done); err != nil || st != StateHandoff {
+		t.Fatalf("finish into a hand-off: %s %v", st, err)
+	}
+	if c4, err := s.GetConversation(ctx, a.ID); err != nil || c4.State != StateHandoff || c4.Pending != nil || c4.HandoffActivityAt == nil {
+		t.Fatalf("after finish into hand-off: %+v %v", c4, err)
+	}
+	// StampSummary writes only over the same draft.
+	stamp := *fin.Pending
+	stamp.SummaryShownAtUnix, stamp.BookingKey = 12345, "chat_k"
+	if ok, err := s.StampSummary(ctx, a.ID, stamp); err != nil || ok {
+		t.Fatalf("stamped a thread with no draft: %v %v", ok, err)
+	}
+	// Back to where the rest of this test expects it.
+	c4, err := s.GetConversation(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c4.State, c4.Pending = StateAwaitingConfirm, fin.Pending
+	if err := s.SaveConversation(ctx, c4); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.StampSummary(ctx, a.ID, stamp); err != nil || !ok {
+		t.Fatalf("stamp summary: %v %v", ok, err)
+	}
+	other := stamp
+	other.CreatedAtUnix++
+	if ok, err := s.StampSummary(ctx, a.ID, other); err != nil || ok {
+		t.Fatal("stamped over a different draft")
+	}
+	if c5, err := s.GetConversation(ctx, a.ID); err != nil || c5.Pending.SummaryShownAtUnix != 12345 || c5.Pending.BookingKey != "chat_k" {
+		t.Fatalf("after stamp: %+v %v", c5.Pending, err)
+	}
+	if _, ok, err := s.ClaimForPosting(ctx, a.ID, StateAwaitingConfirm); err != nil || !ok {
+		t.Fatal("claim after the hand-off case")
 	}
 
 	// ConversationsForUser finds it once linked.

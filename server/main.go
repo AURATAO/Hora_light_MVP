@@ -1668,10 +1668,37 @@ func createTask(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
+	// A text booking retried (task_booking_key.go): the task its key already
+	// made answers it — never a second task, never a second hold.
+	bookingKey := strings.TrimSpace(c.GetString(ctxBookingKey))
+	if bookingKey != "" && resumeBooking(c, ctx, email, bookingKey) {
+		return
+	}
+
 	// Every stop inside the five boroughs, before the payments gate: no hold,
 	// no Stripe call, nothing written for a task that cannot run.
 	if refuseTaskArea(c, ctx, c.GetString("uid"), &in.LocationText) {
 		return
+	}
+
+	// THE RATE, RESOLVED ONCE. From the scheduled start for a scheduled task,
+	// from now for an ASAP one — and then stored, so nothing downstream ever
+	// re-derives it. A task posted at 20:50 bills at the standard rate for its
+	// whole run even if it finishes at 22:30. See resolveRateCentsPerMin.
+	rateStart := time.Now()
+	if when != nil {
+		rateStart = *when
+	}
+	rateCents := resolveRateCentsPerMin(rateStart)
+	// The price the requester agreed to, when the caller knows it (a text
+	// booking's YES): a post that now prices above it is refused before
+	// anything is written or held, and the new figure goes back to be asked.
+	if maxQuote := c.GetInt(ctxMaxQuoteCents); maxQuote > 0 {
+		if q := quoteTask(in.Category, in.EstimatedMinutes, in.PrepayAmountCents, rateCents); q.TotalCents > maxQuote {
+			log.Printf("[createTask] quote %d above the agreed %d — refused, to be asked again", q.TotalCents, maxQuote)
+			c.JSON(http.StatusConflict, gin.H{"error": "quote_changed", "quote_cents": q.TotalCents})
+			return
+		}
 	}
 
 	// Payments gate, resolved BEFORE anything is written. A requester with no
@@ -1848,15 +1875,7 @@ func createTask(c *gin.Context) {
 	if in.AutoExtendConsent != nil {
 		autoExtend = *in.AutoExtendConsent
 	}
-	// THE RATE, RESOLVED ONCE. From the scheduled start for a scheduled task,
-	// from now for an ASAP one — and then stored, so nothing downstream ever
-	// re-derives it. A task posted at 20:50 bills at the standard rate for its
-	// whole run even if it finishes at 22:30. See resolveRateCentsPerMin.
-	rateStart := time.Now()
-	if when != nil {
-		rateStart = *when
-	}
-	rateCents := resolveRateCentsPerMin(rateStart)
+	// rateCents: resolved once, above, before the payments gate.
 	if err := tx.QueryRowContext(ctx, `
     INSERT INTO public.tasks
       -- shopping_budget_approved_cents starts as the requester's own ask
@@ -1888,6 +1907,18 @@ func createTask(c *gin.Context) {
 		}
 		c.JSON(500, gin.H{"error": "db error"})
 		return
+	}
+
+	if bookingKey != "" {
+		if conflict, err := setBookingKeyTx(ctx, tx, taskID, bookingKey); err != nil {
+			log.Printf("[createTask] booking key (conflict=%v): %v", conflict, err)
+			if conflict {
+				c.JSON(http.StatusConflict, gin.H{"error": "booking_in_progress"})
+				return
+			}
+			c.JSON(500, gin.H{"error": "db error"})
+			return
+		}
 	}
 
 	// ── The promo ──────────────────────────────────────────────────────────
@@ -1963,6 +1994,16 @@ func createTask(c *gin.Context) {
 				"task_id":           taskID,
 				"publishable_key":   publishableKeyForUser(ctx, c.GetString("uid")),
 			})
+			return
+
+		case bookingKey != "" && pe != nil && pe.Uncertain:
+			// A text booking whose hold may or may not have landed (a timeout).
+			// The task and its requires_auth row are KEPT: the retry YES comes
+			// back with the same key and repeats this exact Stripe call
+			// (resumeBooking), which finds the first hold rather than placing
+			// a second. Discarding here is what used to strand that hold.
+			log.Printf("[createTask] pre-auth uncertain task=%s — kept for its booking key's retry: %v", taskID, err)
+			c.JSON(http.StatusBadGateway, gin.H{"error": "payments_uncertain"})
 			return
 
 		default:

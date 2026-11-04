@@ -149,6 +149,10 @@ func (m *memConversations) SaveConversation(_ context.Context, c Conversation) e
 			c.ApprovalClaimedAt, c.ApprovalQuestionOutAt, c.ApprovalTaskID, c.ApprovalQuestionPID = nil, nil, "", ""
 		}
 		c.LastOutboundAt = old.LastOutboundAt // not in the upsert
+		c.PostingStartedAt = nil              // store-managed, like the SQL CASE
+		if c.State == StatePosting {
+			c.PostingStartedAt = old.PostingStartedAt
+		}
 		// handoff_activity_at: store-managed, like the SQL CASE.
 		switch {
 		case c.State != StateHandoff:
@@ -444,9 +448,84 @@ func (m *memConversations) ClaimForPosting(_ context.Context, iid string, from S
 		return nil, false, nil
 	}
 	c.State = StatePosting
+	now := time.Now()
+	c.PostingStartedAt = &now
 	m.convs[iid] = c
 	p := *c.Pending
 	return &p, true, nil
+}
+
+func (m *memConversations) ReclaimStuckPosting(_ context.Context, iid string, olderThan time.Duration) (*PendingDraft, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.convs[iid]
+	if !ok || c.State != StatePosting || (c.PostingStartedAt != nil && time.Since(*c.PostingStartedAt) < olderThan) {
+		return nil, false, nil
+	}
+	now := time.Now()
+	c.PostingStartedAt = &now
+	m.convs[iid] = c
+	if c.Pending == nil {
+		return nil, true, nil
+	}
+	p := *c.Pending
+	return &p, true, nil
+}
+
+// FinishPosting mirrors the SQL: written only while posting; a thread
+// handed off meanwhile keeps its state and takes only the draft.
+func (m *memConversations) FinishPosting(_ context.Context, c Conversation) (State, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	old, ok := m.convs[c.IdentityID]
+	if !ok || (old.State != StatePosting && old.State != StateHandoff) {
+		return "", nil
+	}
+	if c.Pending != nil {
+		p := *c.Pending
+		c.Pending = &p
+	}
+	if old.State == StateHandoff {
+		old.Pending, old.PostingStartedAt = c.Pending, nil
+		m.convs[c.IdentityID] = old
+		return StateHandoff, nil
+	}
+	old.State, old.Pending, old.PendingExtensionID, old.PostingStartedAt = c.State, c.Pending, c.PendingExtensionID, nil
+	if c.QuestionShownAt != nil && (old.QuestionShownAt == nil || c.QuestionShownAt.After(*old.QuestionShownAt)) {
+		old.QuestionShownAt = c.QuestionShownAt
+	}
+	old.HandoffActivityAt = nil
+	if c.State == StateHandoff {
+		now := time.Now()
+		old.HandoffActivityAt = &now
+	}
+	m.convs[c.IdentityID] = old
+	return old.State, nil
+}
+
+func (m *memConversations) StampSummary(_ context.Context, iid string, p PendingDraft) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.convs[iid]
+	if !ok || c.Pending == nil || c.Pending.CreatedAtUnix != p.CreatedAtUnix {
+		return false, nil
+	}
+	c.Pending = &p
+	m.convs[iid] = c
+	return true, nil
+}
+
+func (m *memConversations) HandOffWhilePosting(_ context.Context, iid string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.convs[iid]
+	if !ok || c.State != StatePosting {
+		return false, nil
+	}
+	now := time.Now()
+	c.State, c.HandoffActivityAt, c.PostingStartedAt = StateHandoff, &now, nil
+	m.convs[iid] = c
+	return true, nil
 }
 
 type fakeParser struct {
@@ -513,6 +592,13 @@ type fakeBooker struct {
 	cancelReasons []string
 	cancelRes     CancelResult
 	area          func(llm.TaskDraft) AreaCheck // CheckArea's answer when set; inside otherwise
+	// booking keys (posting.go): booked[key] is the posted task a key made;
+	// keys records the key and ceiling each Post was sent with.
+	booked    map[string]string
+	bookedErr error
+	keys      []string
+	ceilings  []int
+	price     int // when set, Quote's base price instead of 1200
 }
 
 func (b *fakeBooker) CheckArea(_ context.Context, d llm.TaskDraft) AreaCheck {
@@ -560,8 +646,12 @@ func (b *fakeBooker) Quote(_ context.Context, _ llm.TaskDraft, budgetCents int) 
 	}
 	b.mu.Lock()
 	b.quotes++
+	base := 1200
+	if b.price > 0 {
+		base = b.price
+	}
 	b.mu.Unlock()
-	return 1200 + budgetCents, 30, nil
+	return base + budgetCents, 30, nil
 }
 func (b *fakeBooker) Post(_ context.Context, _ string, d llm.TaskDraft, opts PostOptions) PostResult {
 	time.Sleep(b.delay)
@@ -573,6 +663,8 @@ func (b *fakeBooker) Post(_ context.Context, _ string, d llm.TaskDraft, opts Pos
 	b.posts++
 	b.posted = append(b.posted, d.Title)
 	b.opts = append(b.opts, opts)
+	b.keys = append(b.keys, opts.BookingKey)
+	b.ceilings = append(b.ceilings, opts.QuotedCents)
 	if len(b.results) > 0 {
 		r := b.results[0]
 		b.results = b.results[1:]
@@ -605,6 +697,14 @@ func (b *fakeBooker) ExtensionPending(_ context.Context, _, ext string) (bool, e
 		return true, nil // pending unless a test says otherwise
 	}
 	return b.pendingExt[ext], nil
+}
+func (b *fakeBooker) BookedTask(_ context.Context, _, key string) (string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.bookedErr != nil {
+		return "", b.bookedErr
+	}
+	return b.booked[key], nil
 }
 func (b *fakeBooker) ApplyChatProfile(_ context.Context, user, name string, _ *time.Time) error {
 	b.applied = append(b.applied, user+":"+name)

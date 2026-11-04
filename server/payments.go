@@ -249,7 +249,33 @@ func CreatePreAuth(ctx context.Context, in PreAuthInput) (*Payment, error) {
 	if err != nil {
 		return nil, fmt.Errorf("payments: record intent: %w", err)
 	}
+	return authorizePreAuth(ctx, key, p, in, amount)
+}
 
+// ResumePreAuth repeats the Stripe call of a hold whose first attempt ended
+// Uncertain: the same row, so the same preauth_<payment id> idempotency key
+// and the same parameters, which Stripe answers with the first attempt's
+// intent if it was created — never a second hold. p must be the row the
+// first attempt wrote (requires_auth, no intent); the amount is the one
+// recorded on it, not re-priced. Used by a text booking retried after a
+// timeout (createTask with a booking key).
+func ResumePreAuth(ctx context.Context, p *Payment, in PreAuthInput) (*Payment, error) {
+	if !paymentsEnabled() {
+		return nil, errPaymentsDisabled
+	}
+	if p == nil || p.AuthorizedCents == nil || p.StripePaymentIntentID != "" || p.Status != paymentStatusRequiresAuth {
+		return nil, errors.New("payments: resume needs an unattached requires_auth row")
+	}
+	key, err := stripeKeyForUser(ctx, in.RequesterID)
+	if err != nil {
+		return nil, fmt.Errorf("payments: stripe key for requester %s: %w", in.RequesterID, err)
+	}
+	log.Printf("[payments] pre-auth task=%s payment=%s: repeating an uncertain attempt with its own key", in.TaskID, p.ID)
+	return authorizePreAuth(ctx, key, p, in, *p.AuthorizedCents)
+}
+
+// authorizePreAuth is the Stripe half of a hold, on a row already written.
+func authorizePreAuth(ctx context.Context, key string, p *Payment, in PreAuthInput, amount int) (*Payment, error) {
 	params := &stripe.PaymentIntentParams{
 		Amount:        stripe.Int64(int64(amount)),
 		Currency:      stripe.String(Billing.Currency),
@@ -309,6 +335,13 @@ func CreatePreAuth(ctx context.Context, in PreAuthInput) (*Payment, error) {
 			}
 			log.Printf("[payments] pre-auth task=%s payment=%s intent=%s needs authentication",
 				in.TaskID, p.ID, pe.PaymentIntentID)
+			return nil, pe
+		}
+		if pe.Uncertain && pe.PaymentIntentID == "" {
+			// Maybe held, maybe not: the row stays requires_auth with no
+			// intent — the state ResumePreAuth repeats from. Marking it
+			// failed would let a caller discard the task over a live hold.
+			log.Printf("[payments] pre-auth task=%s payment=%s UNCERTAIN (a hold may exist): %v", in.TaskID, p.ID, err)
 			return nil, pe
 		}
 		// A declined intent still exists at Stripe, in requires_payment_method

@@ -96,6 +96,12 @@ type PendingDraft struct {
 	BudgetCents int  `json:"budget_cents,omitempty"`
 	NeedsBudget bool `json:"needs_budget,omitempty"`
 	BudgetAsked bool `json:"budget_asked,omitempty"`
+	// BookingKey: the first item's; see DraftItem.
+	BookingKey string `json:"booking_key,omitempty"`
+	// SummaryShownAtUnix: when the summary with these prices was last put to
+	// the person (showSummary). A YES books only within Router.SummaryTTL of
+	// it; zero (a draft from before the field) is never fresh.
+	SummaryShownAtUnix int64 `json:"summary_shown_at,omitempty"`
 }
 
 // DraftItem is one errand with its estimate.
@@ -109,13 +115,19 @@ type DraftItem struct {
 	BudgetCents int  `json:"budget_cents,omitempty"`
 	NeedsBudget bool `json:"needs_budget,omitempty"`
 	BudgetAsked bool `json:"budget_asked,omitempty"`
+	// BookingKey is this errand's idempotency key at POST /tasks: set when
+	// its summary is first shown and kept through every retry and re-quote,
+	// so a YES after a crash or a Stripe timeout finds the task (and the
+	// hold) the first attempt made instead of making a second. A re-draft
+	// is a new errand and gets a new key.
+	BookingKey string `json:"booking_key,omitempty"`
 }
 
 // Items is every errand in order, the first included.
 func (p *PendingDraft) Items() []DraftItem {
 	items := make([]DraftItem, 0, 1+len(p.More))
 	items = append(items, DraftItem{Draft: p.Draft, QuoteCents: p.QuoteCents, QuoteMinutes: p.QuoteMinutes,
-		BudgetCents: p.BudgetCents, NeedsBudget: p.NeedsBudget, BudgetAsked: p.BudgetAsked})
+		BudgetCents: p.BudgetCents, NeedsBudget: p.NeedsBudget, BudgetAsked: p.BudgetAsked, BookingKey: p.BookingKey})
 	return append(items, p.More...)
 }
 
@@ -123,6 +135,7 @@ func (p *PendingDraft) Items() []DraftItem {
 func (p *PendingDraft) SetItems(items []DraftItem) {
 	p.Draft, p.QuoteCents, p.QuoteMinutes = items[0].Draft, items[0].QuoteCents, items[0].QuoteMinutes
 	p.BudgetCents, p.NeedsBudget, p.BudgetAsked = items[0].BudgetCents, items[0].NeedsBudget, items[0].BudgetAsked
+	p.BookingKey = items[0].BookingKey
 	p.More = append([]DraftItem(nil), items[1:]...)
 }
 
@@ -199,6 +212,11 @@ type Conversation struct {
 	// HoldApproval/RemoveHold — a full-row save never touches them, so a booking's own
 	// save cannot wipe a question that arrived while it was in flight.
 	Deferred []DeferredApproval
+	// PostingStartedAt: when the booking in flight was claimed (StatePosting
+	// only). Store-managed and read-only here: set by ClaimForPosting and
+	// ReclaimStuckPosting, cleared when the state leaves StatePosting. Not
+	// updated_at — every inbound message moves that one.
+	PostingStartedAt *time.Time
 }
 
 // ResumeState is where a conversation goes once an approval is answered:
@@ -288,6 +306,25 @@ type ConversationStore interface {
 	// caller must not post. This is the double-booking guard — two quick
 	// "YES"es, or the page's finish step racing a YES, book once.
 	ClaimForPosting(ctx context.Context, identityID string, from State) (*PendingDraft, bool, error)
+	// ReclaimStuckPosting takes over a booking claimed more than olderThan
+	// ago (a crash mid-post): the claim time is renewed in the same
+	// statement, so of the sweeper and an inbound message exactly one
+	// recovers it. Returns the draft (nil when the row has none).
+	ReclaimStuckPosting(ctx context.Context, identityID string, olderThan time.Duration) (*PendingDraft, bool, error)
+	// FinishPosting is the save that ends a booking in flight: c is written
+	// only while the thread is still StatePosting. A thread handed off
+	// meanwhile (a safety message during the post) keeps StateHandoff and
+	// takes only c's draft. Returns the state the row is in afterwards; ""
+	// when it was in neither (recovered meanwhile: nothing written).
+	FinishPosting(ctx context.Context, c Conversation) (State, error)
+	// StampSummary records that p's summary was just put again (keys and
+	// shown time) — narrowly, only the draft, and only while the stored
+	// draft is still p (same created_at). False: replaced or gone.
+	StampSummary(ctx context.Context, identityID string, p PendingDraft) (bool, error)
+	// HandOffWhilePosting moves a thread from StatePosting to StateHandoff,
+	// keeping the draft; the post in flight finishes into it (FinishPosting).
+	// False when the thread was not posting any more.
+	HandOffWhilePosting(ctx context.Context, identityID string) (bool, error)
 	// ClaimCancel atomically ends the cancel question for taskID (state
 	// back to idle, pending_cancel cleared) — only if that question is
 	// still the open one. ok=false: another message (a second YES) or an
@@ -566,14 +603,13 @@ func (s *PGStore) AcceptTerms(ctx context.Context, identityID string, at time.Ti
 }
 
 func (s *PGStore) ClaimForPosting(ctx context.Context, identityID string, from State) (*PendingDraft, bool, error) {
+	// A claim left behind by a crash is not reclaimed here: StatePosting is
+	// never `from`, and recovery (ReclaimStuckPosting) decides what the
+	// first attempt did before anything is posted again.
 	var pending []byte
 	err := s.DB.QueryRowContext(ctx, `
-		UPDATE channel_conversations SET state = $3, updated_at = now()
-		WHERE identity_id = $1 AND pending_draft IS NOT NULL
-		  AND (state = $2
-		       -- A claim left behind by a crash mid-post. Routing runs under
-		       -- a 60 s timeout, so a live claim never gets this old.
-		       OR (state = $3 AND updated_at < now() - interval '3 minutes'))
+		UPDATE channel_conversations SET state = $3, posting_started_at = now(), updated_at = now()
+		WHERE identity_id = $1 AND pending_draft IS NOT NULL AND state = $2
 		RETURNING pending_draft
 	`, identityID, string(from), string(StatePosting)).Scan(&pending)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -589,12 +625,133 @@ func (s *PGStore) ClaimForPosting(ctx context.Context, identityID string, from S
 	return &p, true, nil
 }
 
+func (s *PGStore) ReclaimStuckPosting(ctx context.Context, identityID string, olderThan time.Duration) (*PendingDraft, bool, error) {
+	var pending []byte
+	// COALESCE: a claim made by a build from before posting_started_at has
+	// only updated_at to go on.
+	err := s.DB.QueryRowContext(ctx, `
+		UPDATE channel_conversations SET posting_started_at = now(), updated_at = now()
+		WHERE identity_id = $1 AND state = $2
+		  AND COALESCE(posting_started_at, updated_at) < now() - make_interval(secs => $3)
+		RETURNING pending_draft
+	`, identityID, string(StatePosting), olderThan.Seconds()).Scan(&pending)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("reclaim stuck posting: %w", err)
+	}
+	if len(pending) == 0 || string(pending) == "null" {
+		return nil, true, nil
+	}
+	var p PendingDraft
+	if err := json.Unmarshal(pending, &p); err != nil {
+		return nil, false, fmt.Errorf("reclaim stuck posting: decode: %w", err)
+	}
+	return &p, true, nil
+}
+
+func (s *PGStore) FinishPosting(ctx context.Context, c Conversation) (State, error) {
+	var pending any
+	if c.Pending != nil {
+		b, err := json.Marshal(c.Pending)
+		if err != nil {
+			return "", fmt.Errorf("finish posting: marshal: %w", err)
+		}
+		pending = string(b)
+	}
+	var shown any
+	if c.QuestionShownAt != nil {
+		shown = *c.QuestionShownAt
+	}
+	var state string
+	err := s.DB.QueryRowContext(ctx, `
+		UPDATE channel_conversations SET
+		  state = CASE WHEN state = $4 THEN $2 ELSE state END,
+		  pending_draft = $3::jsonb,
+		  pending_extension_id = CASE WHEN state = $4 THEN NULLIF($6, '')::uuid ELSE pending_extension_id END,
+		  question_shown_at = CASE WHEN state = $4 THEN GREATEST(question_shown_at, $7::timestamptz) ELSE question_shown_at END,
+		  -- handoff_activity_at follows the state, as in SaveConversation.
+		  handoff_activity_at = CASE WHEN state = $4 THEN (CASE WHEN $2 = $5 THEN now() END) ELSE handoff_activity_at END,
+		  posting_started_at = NULL,
+		  updated_at = now()
+		WHERE identity_id = $1 AND state IN ($4, $5)
+		RETURNING state
+	`, c.IdentityID, string(c.State), pending, string(StatePosting), string(StateHandoff), c.PendingExtensionID, shown).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("finish posting: %w", err)
+	}
+	return State(state), nil
+}
+
+func (s *PGStore) StampSummary(ctx context.Context, identityID string, p PendingDraft) (bool, error) {
+	b, err := json.Marshal(p)
+	if err != nil {
+		return false, fmt.Errorf("stamp summary: marshal: %w", err)
+	}
+	res, err := s.DB.ExecContext(ctx, `
+		UPDATE channel_conversations SET pending_draft = $2::jsonb, updated_at = now()
+		WHERE identity_id = $1 AND (pending_draft->>'created_at')::bigint = $3`, identityID, string(b), p.CreatedAtUnix)
+	if err != nil {
+		return false, fmt.Errorf("stamp summary: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("stamp summary: %w", err)
+	}
+	return n == 1, nil
+}
+
+func (s *PGStore) HandOffWhilePosting(ctx context.Context, identityID string) (bool, error) {
+	res, err := s.DB.ExecContext(ctx, `
+		UPDATE channel_conversations SET state = $2, handoff_activity_at = now(), posting_started_at = NULL, updated_at = now()
+		WHERE identity_id = $1 AND state = $3`, identityID, string(StateHandoff), string(StatePosting))
+	if err != nil {
+		return false, fmt.Errorf("hand off while posting: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("hand off while posting: %w", err)
+	}
+	return n == 1, nil
+}
+
+// StalePostings lists threads whose booking was claimed before `before`
+// and never finished (a crash mid-post), oldest first. Read by the
+// server's sweeper; Router.RecoverStuckPosting decides each.
+func (s *PGStore) StalePostings(ctx context.Context, before time.Time) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT identity_id::text FROM channel_conversations
+		WHERE state = $1 AND COALESCE(posting_started_at, updated_at) < $2
+		ORDER BY COALESCE(posting_started_at, updated_at) LIMIT 100`, string(StatePosting), before)
+	if err != nil {
+		return nil, fmt.Errorf("stale postings: %w", err)
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			log.Printf("[channel] stale postings: close rows: %v", cerr)
+		}
+	}()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("stale postings: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conversation, error) {
 	c := Conversation{IdentityID: identityID, State: StateIdle}
 	var state string
 	var pending []byte
 	var name, ext, relay sql.NullString
-	var terms, armed, lastIn, claimed, lastOut, qOut, shown, hAct sql.NullTime
+	var terms, armed, lastIn, claimed, lastOut, qOut, shown, hAct, posting sql.NullTime
 	var choicesJSON string
 	var deferred, apTask, qPID, cancel sql.NullString
 	err := s.DB.QueryRowContext(ctx, `
@@ -602,10 +759,10 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 		       COALESCE(array_to_json(pending_task_choices)::text, '[]'), pending_relay_text,
 		       deferred_approval::text, approval_armed_at, last_inbound_at, approval_claimed_at,
 		       approval_task_id::text, last_outbound_at, approval_question_out_at, question_shown_at,
-		       approval_question_pid, pending_cancel::text, handoff_activity_at
+		       approval_question_pid, pending_cancel::text, handoff_activity_at, posting_started_at
 		FROM channel_conversations WHERE identity_id = $1
 	`, identityID).Scan(&state, &pending, &name, &terms, &ext, &choicesJSON, &relay, &deferred, &armed, &lastIn, &claimed,
-		&apTask, &lastOut, &qOut, &shown, &qPID, &cancel, &hAct)
+		&apTask, &lastOut, &qOut, &shown, &qPID, &cancel, &hAct, &posting)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, nil
 	}
@@ -654,7 +811,7 @@ func (s *PGStore) GetConversation(ctx context.Context, identityID string) (Conve
 	for _, f := range []struct {
 		v   sql.NullTime
 		dst **time.Time
-	}{{lastOut, &c.LastOutboundAt}, {qOut, &c.ApprovalQuestionOutAt}, {shown, &c.QuestionShownAt}, {hAct, &c.HandoffActivityAt}} {
+	}{{lastOut, &c.LastOutboundAt}, {qOut, &c.ApprovalQuestionOutAt}, {shown, &c.QuestionShownAt}, {hAct, &c.HandoffActivityAt}, {posting, &c.PostingStartedAt}} {
 		if f.v.Valid {
 			t := f.v.Time
 			*f.dst = &t
@@ -874,6 +1031,9 @@ func (s *PGStore) SaveConversation(ctx context.Context, c Conversation) error {
 		               THEN CASE WHEN channel_conversations.state = 'handoff'
 		                         THEN COALESCE(channel_conversations.handoff_activity_at, now()) ELSE now() END
 		               ELSE NULL END,
+		  -- Store-managed: only a claim sets it; any other state clears it.
+		  posting_started_at = CASE WHEN EXCLUDED.state = 'drafting'
+		               THEN channel_conversations.posting_started_at ELSE NULL END,
 		  updated_at = now()
 	`, c.IdentityID, string(c.State), pending, c.PendingName, terms, c.PendingExtensionID,
 		pgUUIDArray(c.PendingTaskChoices), c.PendingRelayText, armed, c.ApprovalTaskID, shown, cancel)

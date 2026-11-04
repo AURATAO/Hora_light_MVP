@@ -1456,9 +1456,9 @@ func (r *Router) ourLastLineText(ctx context.Context, id Identity) (string, time
 // agent call took seconds: the conversation read before it may be stale (a
 // YES may have booked meanwhile, an approval may have been armed), so it is
 // read again and the hand-off saves THAT — never the snapshot from before
-// the call (review r1). While a booking is being posted the thread is not
-// taken over: ops are notified, the person is told the booking is in
-// flight, and the words are not relayed (they may be about the supporter).
+// the call (review r1). While a booking is being posted the thread is
+// handed off all the same (handOffWhilePosting): ops are told, hold the
+// thread, and the booking finishes into it; the words are not relayed.
 func (r *Router) agentHandOff(ctx context.Context, in Inbound, id Identity, p llm.Proposal) error {
 	fresh, err := r.Conversations.GetConversation(ctx, id.ID)
 	if err != nil {
@@ -1467,15 +1467,9 @@ func (r *Router) agentHandOff(ctx context.Context, in Inbound, id Identity, p ll
 	log.Printf("[channel] agent escalation identity=%s reason=%s state=%s", id.ID, p.Escalation, fresh.State)
 	switch fresh.State {
 	case StatePosting:
-		// Not taken over mid-booking, but ops are told now — a safety or
-		// dispute message must not be lost (review r2).
-		if err := r.notifyOps(ctx, id, HandoffAgentEscalated, false, handoffOpen{detail: string(p.Escalation)}); err != nil {
-			// Said, not swallowed (review 10/24 #7): the message did not
-			// reach a person.
-			log.Printf("[channel] agent escalation identity=%s while posting: %v", id.ID, err)
-			return r.Reply(ctx, in, CopyBookingInFlight+" "+CopyHandoffFailed, "")
-		}
-		return r.Reply(ctx, in, CopyBookingInFlight, "")
+		// Handed off mid-booking: ops are told now and hold the thread; the
+		// booking finishes into it (posting.go).
+		return r.handOffWhilePosting(ctx, in, id, HandoffAgentEscalated, string(p.Escalation))
 	case StateHandoff:
 		return r.onHandoff(ctx, in, id)
 	}

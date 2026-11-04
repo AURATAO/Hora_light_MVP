@@ -96,6 +96,14 @@ type PreAuthError struct {
 	// it up without a second lookup.
 	PaymentID string
 
+	// Uncertain: the call may have reached Stripe and placed the hold — a
+	// timeout or a dropped connection, or Stripe's own 5xx — so nobody knows
+	// whether money is held. The row is left in requires_auth with no intent,
+	// and the only safe next step is the SAME call again with the same
+	// idempotency key (ResumePreAuth), which Stripe answers with the first
+	// call's result instead of a second hold.
+	Uncertain bool
+
 	wrapped error
 }
 
@@ -124,7 +132,15 @@ func classifyPreAuthError(err error) *PreAuthError {
 	var se *stripe.Error
 	if !errors.As(err, &se) {
 		pe.Message = "We couldn't reach your bank just now. Please try again in a moment."
+		pe.Uncertain = true
 		return pe
+	}
+	if se.Type == stripe.ErrorTypeAPI || se.HTTPStatusCode >= 500 || se.Type == stripe.ErrorTypeIdempotency {
+		// Stripe's own failure: whether the intent was created is unknown
+		// (Stripe's guidance is to retry with the same key). An idempotency
+		// error is a repeat that did not match its first call (the card
+		// changed in between): the first call's hold may still be there.
+		pe.Uncertain = true
 	}
 
 	pe.Code = string(se.Code)

@@ -160,6 +160,10 @@ func outcomeName(booked int, last channel.PostResult) string {
 		return "needs_authentication"
 	case channel.PostOutOfArea, channel.PostAddressUnclear:
 		return "needs_address"
+	case channel.PostReconfirm, channel.PostPriceChanged:
+		// The summary was stale, its time had passed, or the price rose:
+		// asked again in the chat, not booked.
+		return "needs_confirm"
 	}
 	return "nothing_to_book"
 }

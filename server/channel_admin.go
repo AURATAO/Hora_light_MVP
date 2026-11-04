@@ -110,6 +110,8 @@ func (o opsEmailNotifier) NotifyOps(ctx context.Context, n channel.HandoffNotice
 		subject = fmt.Sprintf("[HO:RA] Chat handoff — back to the bot (no reply in %s) — %s %s", channel.HandoffTimeout, n.Channel, n.PhoneHint)
 	} else if n.Update {
 		subject = fmt.Sprintf("[HO:RA] Chat handoff — new message — %s %s", n.Channel, n.PhoneHint)
+	} else if n.Reason == channel.HandoffBookingFailed {
+		subject = fmt.Sprintf("[HO:RA] Text booking failed — %s %s", n.Channel, n.PhoneHint)
 	}
 	body := opsNoticeHTML(n, who)
 	// Sent here, not in the background: the router must know whether anyone
@@ -147,6 +149,9 @@ func (o opsEmailNotifier) NotifyOps(ctx context.Context, n channel.HandoffNotice
 		text := fmt.Sprintf("[HO:RA] Chat handoff (%s) — %s %s. Details in the ops email / admin.", reasonLabelOps(n.Reason), n.Channel, n.PhoneHint)
 		if n.OptedOut {
 			text = fmt.Sprintf("[HO:RA] Texts stopped — %s %s opted out%s. Details in the ops email.", n.Channel, n.PhoneHint, optOutTasksShort(n))
+		}
+		if n.Reason == channel.HandoffBookingFailed {
+			text = fmt.Sprintf("[HO:RA] Text booking failed — %s %s. The bot still has the chat. Details in the ops email.", n.Channel, n.PhoneHint)
 		}
 		own, err := o.addressOf(ctx, n.IdentityID)
 		if err != nil {
@@ -223,6 +228,11 @@ func opsNoticeHTML(n channel.HandoffNotice, who string) string {
 	}
 	if n.AutoReleased {
 		heading = fmt.Sprintf("No one replied within %s — the chat went back to the bot and the person was told. Follow up by email if it was a payment or a problem.", channel.HandoffTimeout)
+	}
+	if n.Reason == channel.HandoffBookingFailed {
+		// Not a hand-off: nothing to reply to or release unless ops choose to.
+		heading = "A text booking failed: " + n.BookingProblem + ". The chat is still with the bot. " +
+			"If a card hold may have been placed, check Stripe for this account before they retry."
 	}
 	var lines strings.Builder
 	for _, m := range n.Thread {
@@ -312,6 +322,8 @@ func reasonLabelOps(r channel.HandoffReason) string {
 		return "payment needs authentication"
 	case channel.HandoffOptedOut:
 		return "stopped texts"
+	case channel.HandoffBookingFailed:
+		return "a text booking failed"
 	case channel.HandoffAgentEscalated:
 		return "the assistant judged a person should handle it (safety, dispute, legal/medical or repeated confusion)"
 	}
@@ -443,8 +455,9 @@ func registerChannelAdminRoutes(r *gin.Engine, sqlDB *sql.DB, store *channel.PGS
 }
 
 // watchHandoffs hands stale hand-offs back to the bot every `every`
-// (channel.HandoffTimeout without ops activity). The person's next message
-// does the same on its own; this tells them without waiting for one.
+// (channel.HandoffTimeout without ops activity), and settles bookings stuck
+// in flight (channel.PostingStuckAfter). The person's next message does the
+// same on its own; this tells them without waiting for one.
 func watchHandoffs(ctx context.Context, store *channel.PGStore, router *channel.Router, every time.Duration) {
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
@@ -461,6 +474,14 @@ func watchHandoffs(ctx context.Context, store *channel.PGStore, router *channel.
 					}
 				}()
 				sweepHandoffs(ctx, store, router)
+			}()
+			func() {
+				defer func() {
+					if p := recover(); p != nil {
+						log.Printf("[channel-admin] posting sweep panic: %v", p)
+					}
+				}()
+				sweepPostings(ctx, store, router)
 			}()
 		}
 	}
@@ -485,6 +506,29 @@ func sweepHandoffs(ctx context.Context, store *channel.PGStore, router *channel.
 		c, cancel := context.WithTimeout(ctx, 20*time.Second)
 		if _, err := router.AutoRelease(c, id, false); err != nil {
 			log.Printf("[channel-admin] handoff sweep identity=%s: %v", iid, err)
+		}
+		cancel()
+	}
+}
+
+// sweepPostings settles every booking claimed more than
+// channel.PostingStuckAfter ago: booked if its task was made, otherwise back
+// to awaiting a YES with the person and ops told (Router.RecoverStuckPosting).
+func sweepPostings(ctx context.Context, store *channel.PGStore, router *channel.Router) {
+	ids, err := store.StalePostings(ctx, time.Now().Add(-channel.PostingStuckAfter))
+	if err != nil {
+		log.Printf("[channel-admin] posting sweep: %v", err)
+		return
+	}
+	for _, iid := range ids {
+		id, err := store.IdentityByID(ctx, iid)
+		if err != nil {
+			log.Printf("[channel-admin] posting sweep identity=%s: %v", iid, err)
+			continue
+		}
+		c, cancel := context.WithTimeout(ctx, 20*time.Second)
+		if _, err := router.RecoverStuckPosting(c, id, false); err != nil {
+			log.Printf("[channel-admin] posting sweep identity=%s: %v", iid, err)
 		}
 		cancel()
 	}

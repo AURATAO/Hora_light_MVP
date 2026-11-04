@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 )
 
 // SendblueFromEnv builds the iMessage adapter from environment variables.
@@ -37,6 +38,21 @@ func WhatsAppFromEnv() *WhatsAppAdapter {
 func Enabled() bool { return env("CHANNEL_WEBHOOKS_ENABLED") == "1" }
 
 func env(k string) string { return strings.TrimSpace(os.Getenv(k)) }
+
+// SummaryTTLFromEnv reads CHANNEL_SUMMARY_TTL (a Go duration: "30m",
+// "45m"). Unset, unreadable or not positive: DefaultSummaryTTL, said once.
+func SummaryTTLFromEnv() time.Duration {
+	v := env("CHANNEL_SUMMARY_TTL")
+	if v == "" {
+		return DefaultSummaryTTL
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		log.Printf("[channel] config: CHANNEL_SUMMARY_TTL=%q is not a positive duration; using %s", v, DefaultSummaryTTL)
+		return DefaultSummaryTTL
+	}
+	return d
+}
 
 func normalizedEnv(k string) string {
 	v := env(k)

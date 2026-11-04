@@ -128,21 +128,46 @@ func (b *chatBooker) Post(ctx context.Context, userID string, d llm.TaskDraft, o
 	c.Request.Header.Set("Content-Type", "application/json")
 	c.Set("uid", userID)
 	c.Set("email", email)
+	// Never in the body: only the chat names a key or a ceiling.
+	if opts.BookingKey != "" {
+		c.Set(ctxBookingKey, opts.BookingKey)
+	}
+	if opts.QuotedCents > 0 {
+		c.Set(ctxMaxQuoteCents, opts.QuotedCents)
+	}
 	createTask(c)
 
 	return postResultFrom(w.Code, w.Body.Bytes())
+}
+
+// BookedTask is the posted task a booking key made, if any — how a booking
+// whose outcome was lost (a crash mid-post) is told apart from one that never
+// happened. A task still parked in pending_payment is not posted.
+func (b *chatBooker) BookedTask(ctx context.Context, userID, key string) (string, error) {
+	var id string
+	err := b.sqlDB.QueryRowContext(ctx, `
+		SELECT id::text FROM public.tasks
+		 WHERE requester_id = $1::uuid AND booking_key = $2 AND status <> 'pending_payment'`, userID, key).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("booked task: %w", err)
+	}
+	return id, nil
 }
 
 // postResultFrom reads createTask's response. Exported shape, so it is tested
 // directly against the bodies createTask writes.
 func postResultFrom(status int, raw []byte) channel.PostResult {
 	var r struct {
-		ID      string `json:"id"`
-		Error   string `json:"error"`
-		Message string `json:"message"`
-		TaskID  string `json:"task_id"`
-		Code    string `json:"code"`
-		Stop    string `json:"stop"`
+		ID         string `json:"id"`
+		Error      string `json:"error"`
+		Message    string `json:"message"`
+		TaskID     string `json:"task_id"`
+		Code       string `json:"code"`
+		Stop       string `json:"stop"`
+		QuoteCents int    `json:"quote_cents"`
 	}
 	if err := json.Unmarshal(raw, &r); err != nil {
 		// createTask always answers JSON; anything else is a server fault.
@@ -160,6 +185,8 @@ func postResultFrom(status int, raw []byte) channel.PostResult {
 		return channel.PostResult{Outcome: channel.PostDeclined, Message: r.Message}
 	case status == http.StatusForbidden && r.Error == "outstanding_balance":
 		return channel.PostResult{Outcome: channel.PostOwesBalance, Message: r.Message}
+	case status == http.StatusConflict && r.Error == "quote_changed" && r.QuoteCents > 0:
+		return channel.PostResult{Outcome: channel.PostPriceChanged, QuoteCents: r.QuoteCents}
 	case status == http.StatusUnprocessableEntity && r.Code == areaCodeOutside:
 		return channel.PostResult{Outcome: channel.PostOutOfArea}
 	case status == http.StatusUnprocessableEntity && (r.Code == areaCodeUnclear || r.Code == areaCodeWhichBorough):
