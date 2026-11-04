@@ -223,7 +223,8 @@ func (r *Router) postingStuck(conv Conversation) bool {
 func (r *Router) onPosting(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
 	var reason HandoffReason
 	detail := ""
-	if IsHumanRequest(text) {
+	// A bare HELP here is a plea: a booking is being made (help.go).
+	if IsHumanRequest(text) || IsHelpKeyword(text) {
 		reason = HandoffHumanRequested
 	} else if r.Agent != nil {
 		if p := r.propose(ctx, id, text, nil, conv, "", "", time.Time{}, false); p.Action == llm.ActionEscalate {

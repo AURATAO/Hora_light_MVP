@@ -345,7 +345,7 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	}
 
 	if r.handoffStale(conv) {
-		if IsHumanRequest(text) {
+		if IsHumanRequest(text) || IsHelpKeyword(text) {
 			// Asking for a person again: ops are told afresh and the clock
 			// restarts — not "I'm back" followed by "getting a teammate".
 			if err := r.notifyOps(ctx, id, HandoffHumanRequested, false, handoffOpen{}); err == nil {
@@ -391,6 +391,11 @@ func (r *Router) routeMessage(ctx context.Context, in Inbound, id Identity, conv
 	// ask for a human wins over the flow (rule-matched, never the model).
 	if IsHumanRequest(text) {
 		return r.handOff(ctx, in, id, conv, HandoffHumanRequested)
+	}
+	// HELP / INFO alone: the info line, or ops when a task is under way
+	// (help.go). Rule only, ahead of every reading of the words.
+	if handled, err := r.routeHelp(ctx, in, id, conv, text); handled {
+		return err
 	}
 	// Inline replies (relay.go, routeReply): the bubble decides. A "yes"
 	// swiped on a supporter's words never books; a YES on our prompt does.
