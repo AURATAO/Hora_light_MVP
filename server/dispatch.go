@@ -37,7 +37,9 @@ const (
 	dispatchOpsAfter    = 5 * time.Minute
 	dispatchSweepEvery  = 30 * time.Second
 	availabilityLasts   = 4 * time.Hour
-	dispatchStepTimeout = 20 * time.Second
+	dispatchStepTimeout = 20 * time.Second // the reads and writes of one step
+	dispatchPushTimeout = 10 * time.Second // one supporter's push
+	dispatchPushWorkers = 8
 	// A row older than this is closed by the sweep without acting: a task
 	// nobody took for a day is ops' already.
 	dispatchGiveUpAfter = 24 * time.Hour
@@ -158,39 +160,43 @@ func dispatchRound1(ctx context.Context, taskID string) error {
 		return fmt.Errorf("record dispatch: %w", err)
 	}
 
+	// Who is reached is written BEFORE anyone is pushed (review r1): a crash
+	// between the two can then only miss a push, never repeat one in round 2.
 	if borough == "" {
-		// Nothing to match on: everyone available, now. Round 2 has run.
-		n, err := dispatchPushTo(ctx, t, "", nil)
+		// Nothing to match on: everyone available, now; round 2 has run.
+		ids, err := eligibleSupporters(ctx, t.RequesterID, "", nil)
 		if err != nil {
 			return err
 		}
-		_, err = db.Exec(ctx, `
-			update public.task_dispatches set widened_at = now(), widened_count = $2
-			 where task_id = $1::uuid`, taskID, n)
-		log.Printf("[dispatch] task=%s round=all (no borough) pushed=%d", taskID, n)
-		return err
+		if _, err := db.Exec(ctx, `
+			update public.task_dispatches set widened_at = now(), widened_count = $2,
+			       round1_user_ids = $3::text[]::uuid[]
+			 where task_id = $1::uuid`, taskID, len(ids), nonNil(ids)); err != nil {
+			return fmt.Errorf("record round: %w", err)
+		}
+		dispatchSend(t, "", ids)
+		log.Printf("[dispatch] task=%s round=all (no borough) pushed=%d", taskID, len(ids))
+		return nil
 	}
 	ids, err := eligibleSupporters(ctx, t.RequesterID, borough, nil)
 	if err != nil {
 		return err
 	}
-	sent := dispatchSend(ctx, t, borough, ids)
 	if _, err := db.Exec(ctx, `
 		update public.task_dispatches set round1_user_ids = $2::text[]::uuid[]
-		 where task_id = $1::uuid`, taskID, sent); err != nil {
+		 where task_id = $1::uuid`, taskID, nonNil(ids)); err != nil {
 		return fmt.Errorf("record round 1: %w", err)
 	}
-	log.Printf("[dispatch] task=%s round=1 borough=%s pushed=%d", taskID, borough, len(sent))
+	dispatchSend(t, borough, ids)
+	log.Printf("[dispatch] task=%s round=1 borough=%s pushed=%d", taskID, borough, len(ids))
 	return nil
 }
 
-// dispatchPushTo: round 2, everyone eligible except those already reached.
-func dispatchPushTo(ctx context.Context, t dispatchTask, borough string, except []string) (int, error) {
-	ids, err := eligibleSupporters(ctx, t.RequesterID, "", except)
-	if err != nil {
-		return 0, err
+func nonNil(ids []string) []string {
+	if ids == nil {
+		return []string{}
 	}
-	return len(dispatchSend(ctx, t, borough, ids)), nil
+	return ids
 }
 
 // eligibleSupporters: verified, available now, with a device to push to, not
@@ -246,17 +252,39 @@ func eligibleSupporters(ctx context.Context, requesterID, borough string, except
 	return out, nil
 }
 
-// dispatchSend pushes to each id and returns them (the push itself is best
-// effort and logs its own failures).
-func dispatchSend(ctx context.Context, t dispatchTask, borough string, ids []string) []string {
+// dispatchSend pushes to each id, dispatchPushWorkers at a time, each with
+// its own deadline (review r1: one shared deadline let a slow Expo call
+// starve the rest). The push itself is best effort and logs its failures.
+func dispatchSend(t dispatchTask, borough string, ids []string) {
 	if len(ids) == 0 {
-		return []string{}
+		return
 	}
 	title, body := dispatchCopy(t, borough)
-	for _, id := range ids {
-		dispatchPushFn(ctx, id, t.ID, title, body)
+	work := make(chan string)
+	var wg sync.WaitGroup
+	for w := 0; w < dispatchPushWorkers && w < len(ids); w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for id := range work {
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("[dispatch] task=%s push panic: %v", t.ID, r)
+						}
+					}()
+					pctx, cancel := context.WithTimeout(context.Background(), dispatchPushTimeout)
+					defer cancel()
+					dispatchPushFn(pctx, id, t.ID, title, body)
+				}()
+			}
+		}()
 	}
-	return ids
+	for _, id := range ids {
+		work <- id
+	}
+	close(work)
+	wg.Wait()
 }
 
 // dispatchCopy: "New task near you · ~$14" / "Pick up a box · Manhattan · Now".
@@ -271,7 +299,10 @@ func dispatchCopy(t dispatchTask, borough string) (string, string) {
 			title = fmt.Sprintf("New task near you · ~%s", formatCentsUSD(pay))
 		}
 	}
-	parts := []string{truncateRunes(strings.TrimSpace(t.Title), 60)}
+	// The category, never the requester's title: a title is free text and
+	// often carries the address ("Pick up a package at 350 5th Ave"), and a
+	// push is read on a lock screen (review r1).
+	parts := []string{dispatchCategoryLabel(t.Category)}
 	if borough != "" {
 		parts = append(parts, borough)
 	}
@@ -283,11 +314,23 @@ func dispatchWhen(t dispatchTask) string {
 	if t.Immediate || t.ScheduledAt == nil {
 		return "Now"
 	}
-	loc, err := time.LoadLocation("America/New_York")
-	if err != nil {
-		loc = time.UTC
+	return t.ScheduledAt.In(nycLocation).Format("Mon 3:04 PM")
+}
+
+func dispatchCategoryLabel(category string) string {
+	switch category {
+	case "delivery":
+		return "Pickup & delivery"
+	case "grocery":
+		return "Grocery run"
+	case "laundry":
+		return "Laundry"
+	case "queue":
+		return "Wait in line"
+	case "companionship", "companion":
+		return "Companionship"
 	}
-	return t.ScheduledAt.In(loc).Format("Mon 3:04 PM")
+	return "Errand"
 }
 
 // ── The sweep ──────────────────────────────────────────────────────────────
@@ -308,7 +351,7 @@ func watchDispatches(ctx context.Context, every time.Duration) {
 				}()
 				sctx, cancel := context.WithTimeout(ctx, every)
 				defer cancel()
-				sweepDispatches(sctx, time.Now())
+				sweepDispatches(sctx, 0)
 			}()
 		}
 	}
@@ -316,29 +359,36 @@ func watchDispatches(ctx context.Context, every time.Duration) {
 
 // sweepDispatches runs each step that is due. Every step claims its row with
 // a compare-and-set on its own column first, so two instances (a deploy's
-// overlap) never both widen or both email.
-func sweepDispatches(ctx context.Context, now time.Time) {
+// overlap) never both widen or both email. Claimed before it is performed:
+// a crash in between skips that step rather than repeating it (a push
+// twice is worse than once missed; ops still had "New task posted").
+//
+// Ages come from the database's clock, the one round1_at was written with
+// (review r1: Go's clock against the DB's shifted the marks by any skew).
+// shift adds to every age; only tests pass one.
+func sweepDispatches(ctx context.Context, shift time.Duration) {
 	rows, err := db.Query(ctx, `
-		select d.task_id::text, d.borough, d.round1_user_ids::text[], d.round1_at,
+		select d.task_id::text, d.borough, d.round1_user_ids::text[],
+		       extract(epoch from (now() - d.round1_at))::float8,
 		       d.widened_at is not null, d.ops_alerted_at is not null
 		  from public.task_dispatches d
 		 where d.closed_at is null
 		 order by d.round1_at
 		 limit 200`)
 	if err != nil {
-		log.Printf("[dispatch][sweep] scan: %v", err)
+		dispatchSweepErr(err)
 		return
 	}
 	type due struct {
 		taskID, borough  string
 		round1           []string
-		at               time.Time
+		ageSec           float64
 		widened, alerted bool
 	}
 	var list []due
 	for rows.Next() {
 		var d due
-		if err := rows.Scan(&d.taskID, &d.borough, &d.round1, &d.at, &d.widened, &d.alerted); err != nil {
+		if err := rows.Scan(&d.taskID, &d.borough, &d.round1, &d.ageSec, &d.widened, &d.alerted); err != nil {
 			log.Printf("[dispatch][sweep] row: %v", err)
 			continue
 		}
@@ -352,19 +402,20 @@ func sweepDispatches(ctx context.Context, now time.Time) {
 			log.Printf("[dispatch][sweep] task=%s: %v", d.taskID, err)
 			continue
 		}
-		age := now.Sub(d.at)
+		age := time.Duration(d.ageSec*float64(time.Second)) + shift
 		if !t.Open || age > dispatchGiveUpAfter {
 			closeDispatch(ctx, d.taskID)
 			continue
 		}
 		if !d.widened && age >= dispatchWidenAfter {
 			if claimDispatchStep(ctx, d.taskID, "widened_at") {
-				n, err := dispatchPushTo(ctx, t, d.borough, d.round1)
+				ids, err := eligibleSupporters(ctx, t.RequesterID, "", d.round1)
 				if err != nil {
 					log.Printf("[dispatch] task=%s round 2: %v", d.taskID, err)
 				}
-				_, _ = db.Exec(ctx, `update public.task_dispatches set widened_count = $2 where task_id = $1::uuid`, d.taskID, n)
-				log.Printf("[dispatch] task=%s round=2 pushed=%d", d.taskID, n)
+				_, _ = db.Exec(ctx, `update public.task_dispatches set widened_count = $2 where task_id = $1::uuid`, d.taskID, len(ids))
+				dispatchSend(t, d.borough, ids)
+				log.Printf("[dispatch] task=%s round=2 pushed=%d", d.taskID, len(ids))
 			}
 			d.widened = true
 		}
@@ -388,6 +439,23 @@ func sweepDispatches(ctx context.Context, now time.Time) {
 
 // claimDispatchStep sets col to now() if it is still null and reports whether
 // this call did. col is one of two literals above, never input.
+// dispatchSweepErr logs a failed scan at most every 10 minutes: with the
+// flag on and the migration missing it would otherwise fire every 30 s.
+func dispatchSweepErr(err error) {
+	dispatchSweepErrMu.Lock()
+	defer dispatchSweepErrMu.Unlock()
+	if time.Since(dispatchSweepErrAt) < 10*time.Minute {
+		return
+	}
+	dispatchSweepErrAt = time.Now()
+	log.Printf("[dispatch][sweep][ERROR] scan: %v (is migration 20261106120000 applied?)", err)
+}
+
+var (
+	dispatchSweepErrMu sync.Mutex
+	dispatchSweepErrAt time.Time
+)
+
 func claimDispatchStep(ctx context.Context, taskID, col string) bool {
 	if col != "widened_at" && col != "ops_alerted_at" {
 		return false

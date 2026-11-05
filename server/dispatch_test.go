@@ -214,8 +214,8 @@ func TestDispatchRoundsAndOps(t *testing.T) {
 			t.Errorf("round 1 reached %s", id)
 		}
 	}
-	if p := rec.pushes[0]; !strings.Contains(p, "New task near you · ~$") || !strings.Contains(p, "Pick up a box · Manhattan · Now") ||
-		strings.Contains(p, "Mercer") {
+	if p := rec.pushes[0]; !strings.Contains(p, "New task near you · ~$") || !strings.Contains(p, "Pickup & delivery · Manhattan · Now") ||
+		strings.Contains(p, "Mercer") || strings.Contains(p, "Pick up a box") {
 		t.Errorf("push copy %q: want pay, borough, Now, and no address", p)
 	}
 
@@ -227,14 +227,14 @@ func TestDispatchRoundsAndOps(t *testing.T) {
 	}
 
 	// Before 3 minutes: nothing more.
-	sweepDispatches(ctx, time.Now().Add(2*time.Minute))
+	sweepDispatches(ctx, (2 * time.Minute))
 	if len(rec.pushes) != 1 {
 		t.Fatalf("widened early: %d pushes", len(rec.pushes))
 	}
 
 	// After 3: everyone else available and eligible, once.
-	sweepDispatches(ctx, time.Now().Add(3*time.Minute+time.Second))
-	sweepDispatches(ctx, time.Now().Add(3*time.Minute+2*time.Second))
+	sweepDispatches(ctx, (3*time.Minute + time.Second))
+	sweepDispatches(ctx, (3*time.Minute + 2*time.Second))
 	got = rec.to()
 	if !got[brooklyn] || !got[noChoice] || len(rec.pushes) != 3 {
 		t.Fatalf("round 2 should add Brooklyn and no-choice exactly once: %v (%d pushes)", got, len(rec.pushes))
@@ -244,8 +244,8 @@ func TestDispatchRoundsAndOps(t *testing.T) {
 	}
 
 	// After 5: ops, once; then the row is closed.
-	sweepDispatches(ctx, time.Now().Add(5*time.Minute+time.Second))
-	sweepDispatches(ctx, time.Now().Add(6*time.Minute))
+	sweepDispatches(ctx, (5*time.Minute + time.Second))
+	sweepDispatches(ctx, (6 * time.Minute))
 	if len(rec.ops) != 1 || rec.ops[0] != task {
 		t.Fatalf("ops alerts %v, want exactly one for %s", rec.ops, task)
 	}
@@ -263,7 +263,7 @@ func TestDispatchStopsWhenAccepted(t *testing.T) {
 	if _, err := db.Exec(ctx, `update public.tasks set assigned_to_id = $2::uuid where id = $1::uuid`, task, a); err != nil {
 		t.Fatal(err)
 	}
-	sweepDispatches(ctx, time.Now().Add(10*time.Minute))
+	sweepDispatches(ctx, (10 * time.Minute))
 	if len(rec.pushes) != 1 || len(rec.ops) != 0 {
 		t.Fatalf("an accepted task kept dispatching: %d pushes, %d ops", len(rec.pushes), len(rec.ops))
 	}
@@ -281,7 +281,7 @@ func TestDispatchNoBoroughGoesToEveryone(t *testing.T) {
 	if !got[a] || !got[b] {
 		t.Fatalf("no borough must reach everyone available: %v", got)
 	}
-	sweepDispatches(context.Background(), time.Now().Add(4*time.Minute))
+	sweepDispatches(context.Background(), (4 * time.Minute))
 	if len(rec.pushes) != 2 {
 		t.Fatalf("no-borough task widened again: %d", len(rec.pushes))
 	}
@@ -294,10 +294,10 @@ func TestDispatchScheduledTaskNoOpsAlert(t *testing.T) {
 	task := seedDispatchTask(t, requester, "280 Mercer St", false)
 	startDispatch(task)
 	dispatchWG.Wait()
-	if !strings.Contains(rec.pushes[0], "Pick up a box · Manhattan · ") || strings.HasSuffix(rec.pushes[0], " · Now") {
+	if !strings.Contains(rec.pushes[0], "Pickup & delivery · Manhattan · ") || strings.HasSuffix(rec.pushes[0], " · Now") {
 		t.Errorf("scheduled push should carry the time: %q", rec.pushes[0])
 	}
-	sweepDispatches(context.Background(), time.Now().Add(10*time.Minute))
+	sweepDispatches(context.Background(), (10 * time.Minute))
 	if len(rec.ops) != 0 {
 		t.Fatalf("a scheduled task alerted ops")
 	}
