@@ -105,3 +105,7 @@ The Go backend connects directly as the `postgres` role (bypassing RLS) and
 enforces all permissions in application code. Client-held anon keys hit the
 deny-all wall; identity for business logic is the internal `users.id` UUID,
 obtained via the `/auth/exchange` flow — never a raw Supabase token `sub`.
+## Git rule (Aura, 2026-11-05)
+- NEVER push to main, merge into main, or deploy. main auto-deploys to production on Render.
+- Always work on a feature branch. Commit there. Push the branch only if asked.
+- Only Aura merges to main, after any migration has been applied.
