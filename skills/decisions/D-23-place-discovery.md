@@ -1,7 +1,7 @@
 # D-23: Place discovery in the text channel (phase 1)
 
 **Date:** 2026-11-04
-**Status:** Proposed. Built on `feat/discovery`, off unless `CHANNEL_DISCOVERY=1`. Not merged, not deployed.
+**Status:** Proposed; items 8–11 revised 2026-11-05. Built on `feat/discovery`, off unless `CHANNEL_DISCOVERY=1`. Not merged, not deployed.
 **Trigger:** Aura, 2026-11-04: customers should be able to ask HO:RA to find things in NYC, and every answer should lead to an errand HO:RA can do.
 
 ## Decision
@@ -14,8 +14,11 @@ A customer can ask the text channel to find something: a place for an errand, wh
 5. **"The usual"** only uses the person's own posted or completed tasks. It takes the title that repeats most, otherwise the newest. It is offered as a new draft with no parse; a past budget is never carried (amounts are stripped), and the summary still needs YES.
 6. **Out of scope** (general chat, medical or legal advice, alcohol, tobacco or cannabis, prescriptions, account logins or reservations, price guarantees) gets fixed copy per reason that names what HO:RA can do.
 7. **Failure is fixed copy.** If Anthropic, Places or the daily cap fails, the reply is "I can't search right now, but tell me the store or address and I'll send someone" when the words asked to search by rule. Otherwise the message goes to the usual routing. GLM cannot run the tool loop, so discovery is Anthropic only.
-8. **Only place ids are stored.** `channel_discovery` (RLS on, no grants, no policies) keeps the open offer's place ids, the person's words and the daily count. A chosen place is looked up again (Place Details Pro). Names for matching "Joe's" are read back from the message we sent.
-9. **The requester agent gets an `info` action** (prompt v0.4.6). It is used only with nothing of ours open. With a supporter on another job, `info` runs discovery, and "not discovery" falls back to the supporter (P7).
+8. **Only place ids are stored.** `channel_discovery` (RLS on, no grants, no policies) keeps the open offer's place ids, the person's words and the daily count. A chosen place is looked up again (Place Details Pro). A pick by name ("Joe's", "the bakery") is matched against names looked up again by id (Place Details, `displayName` only), never against the message log. Each name lookup counts against `CHANNEL_PLACES_PER_DAY`. A number or ordinal needs no lookup.
+9. **"Looking that up…"** is sent once, by fixed copy, just before a turn's first Places search (the answer takes 6–8 s). It is never sent for an answer with no search.
+10. **A search while a booking summary is open** runs discovery only when the words can only be a search (`IsClearSearch`: "find me a…", "where can I get…", "any … near", "is there a … open"). The draft is left as it is, and every such reply ends with "Your earlier booking is still waiting." (no YES in it). A pick from those options is not booked over the open draft: the person is asked to answer that one first. "Make it 4pm" still re-drafts. A model answer that is not a search's (not_discovery, a pick, the usual) falls back to the draft path.
+11. **Several errands with no place** ("pick up dry cleaning, buy a birthday card, mail a package"; `IsPlacelessErrandList`, rule only, after the supporter routing) get a fixed question: "Want me to find places for these on one route, or do you have the addresses?" "Find them" (or a yes) runs route planning with the errands as earlier words. A no drops the question. Anything else is taken as the addresses and goes down the normal draft path with the errands.
+12. **The requester agent gets an `info` action** (prompt v0.4.6). It is used only with nothing of ours open. With a supporter on another job, `info` runs discovery, and "not discovery" falls back to the supporter (P7).
 
 ## Constitution impact
 - Standards added: none

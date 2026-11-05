@@ -44,6 +44,8 @@ type Place struct {
 type PlaceSearcher interface {
 	SearchPlaces(ctx context.Context, query string, openNow bool) ([]Place, error)
 	PlaceDetails(ctx context.Context, id string) (Place, error)
+	// PlaceName is the place's name only (the least a pick by name needs).
+	PlaceName(ctx context.Context, id string) (string, error)
 }
 
 // DiscoveryAction is what the model says the message is.
@@ -88,6 +90,9 @@ type DiscoveryRequest struct {
 	// Allow is asked before each search (the per-person daily cap); false
 	// turns the search away and the model answers with what it has.
 	Allow func(ctx context.Context) bool
+	// OnSearch is called once, just before the turn's first search is sent
+	// ("Looking that up…"); never for an answer that needs no search.
+	OnSearch func(ctx context.Context)
 }
 
 // DiscoveryResult: Options hold Google's places, in visiting order. Lead is
@@ -339,6 +344,9 @@ func (d *PlaceDiscovery) Discover(ctx context.Context, req DiscoveryRequest) (re
 				noMore = true
 				results = append(results, anthropic.NewToolResultBlock(tu.ID, `{"error":"search limit reached: answer now with the results you have"}`, true))
 				continue
+			}
+			if res.Searches == 0 && req.OnSearch != nil {
+				req.OnSearch(ctx)
 			}
 			res.Searches++
 			places, err := d.Places.SearchPlaces(ctx, in.Query, in.OpenNow)

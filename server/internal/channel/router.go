@@ -498,6 +498,18 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 	if IsCancelRequest(text) && id.Linked() {
 		return r.startCancel(ctx, in, id, conv)
 	}
+	// A plain "yes" to "find places for these on one route?" asks to find
+	// them, a "no" drops the question (discovery.go) — never a booking.
+	if (IsYes(text) || IsNo(text)) && r.discoveryOn() {
+		if o := r.freshOffer(ctx, id); o != nil && o.Kind == offerRouteAsk {
+			at := time.Unix(o.AtUnix, 0)
+			if !r.supporterSpokeSince(ctx, in, id, &at) {
+				if handled, err := r.answerRouteAsk(ctx, in, id, conv, text, o); handled {
+					return err
+				}
+			}
+		}
+	}
 	if IsYes(text) || IsNo(text) {
 		if id.Linked() {
 			if handled, err := r.answerToSupporter(ctx, in, id, conv, text); handled {
@@ -518,6 +530,11 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 	}
 	// With a supporter on the job, the thread's context decides (D-17).
 	if handled, err := r.routeInContext(ctx, in, id, conv, text); handled {
+		return err
+	}
+	// "Pick up dry cleaning, buy a card, mail a package" with no place for
+	// any: find them on one route, or are there addresses? (discovery.go)
+	if handled, err := r.askRoute(ctx, in, id, text); handled {
 		return err
 	}
 	intent := r.classify(ctx, text)
@@ -1090,6 +1107,12 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 		// person can text again, so a no in words is enough.
 		if IsDraftDecline(text) {
 			return r.dropDraft(ctx, in, conv)
+		}
+		// "Find me a pharmacy open now" with the summary open: a search, not
+		// a change to the booking — discovery answers and the draft stays as
+		// it is (discovery.go). "make it 4pm" goes on below.
+		if handled, err := r.routeDiscoveryWhileDraft(ctx, in, id, conv, text); handled {
+			return err
 		}
 		// A new errand typed while the draft waits joins the draft — it is
 		// not relayed to a supporter (staging 2026-10-24: "buy me a bagel"

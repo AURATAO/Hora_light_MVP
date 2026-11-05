@@ -84,3 +84,27 @@ func TestCleanPlaceText(t *testing.T) {
 		t.Fatalf("%q", got)
 	}
 }
+
+// A name lookup (a pick by name): the place id in the path, the name and
+// nothing else in the field mask, the name made one clean line.
+func TestPlaceName(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Goog-Api-Key") != "k" || r.Header.Get("X-Goog-FieldMask") != "displayName" || r.URL.Path != "/gA" || r.Method != http.MethodGet {
+			http.Error(w, "bad", 400)
+			return
+		}
+		_, _ = w.Write([]byte(`{"displayName":{"text":"Joe's\nLaundromat"}}`))
+	}))
+	defer srv.Close()
+	prev := PlacesDetailsURL
+	PlacesDetailsURL = srv.URL + "/"
+	t.Cleanup(func() { PlacesDetailsURL = prev })
+	t.Setenv("GOOGLE_MAPS_API_KEY", "k")
+	name, err := PlaceName(context.Background(), "gA")
+	if err != nil || name != "Joe's Laundromat" {
+		t.Fatalf("name %q err %v", name, err)
+	}
+	if _, err := PlaceName(context.Background(), "../etc"); err == nil {
+		t.Fatal("bad id accepted")
+	}
+}

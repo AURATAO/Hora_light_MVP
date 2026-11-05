@@ -27,6 +27,7 @@ func (f *fakeSearch) SearchPlaces(_ context.Context, q string, _ bool) ([]Place,
 	return f.byQuery(q), nil
 }
 func (f *fakeSearch) PlaceDetails(context.Context, string) (Place, error) { return Place{}, nil }
+func (f *fakeSearch) PlaceName(context.Context, string) (string, error)   { return "", nil }
 
 func yes() *bool { b := true; return &b }
 
@@ -245,5 +246,48 @@ func TestDiscoverInfoWithoutSearchIsNudged(t *testing.T) {
 	res, err := (&PlaceDiscovery{Model: a, Places: fs}).Discover(context.Background(), DiscoveryRequest{Text: "x", MaxSearches: 3})
 	if err != nil || len(res.Options) != 1 || n != 3 {
 		t.Fatalf("%+v %v calls %d", res, err, n)
+	}
+}
+
+// OnSearch ("Looking that up…") is called once, before the first search
+// reaches Google — not again for a second search, never for an answer that
+// searches nothing, and not for a search the daily cap turns away.
+func TestDiscoverOnSearchOnce(t *testing.T) {
+	answer := `{"action":"info","lead":"","options":[{"places":["p1"]}],"check":false,"reason":"","usual":"","choice":0}`
+	for _, tc := range []struct {
+		name     string
+		searches int
+		allow    bool
+		want     int
+	}{{"two searches", 2, true, 1}, {"no search", 0, true, 0}, {"cap reached", 1, false, 0}} {
+		n := 0
+		a, _ := fakeAnthropic(t, "claude-sonnet-5-5", func(w http.ResponseWriter, body map[string]any) {
+			n++
+			if n <= tc.searches {
+				write(t, w, toolUseReply(t, "tu_"+string(rune('0'+n)), "q"+string(rune('0'+n))))
+				return
+			}
+			out := answer
+			if tc.searches == 0 {
+				out = `{"action":"ask_location","lead":"","options":[],"check":false,"reason":"","usual":"","choice":0}`
+			}
+			write(t, w, anthropicReply(t, out, "end_turn"))
+		})
+		fs := &fakeSearch{byQuery: func(string) []Place { return laundromats[:1] }}
+		calls, googleAtCall := 0, -1
+		_, err := (&PlaceDiscovery{Model: a, Places: fs}).Discover(context.Background(), DiscoveryRequest{
+			Text: "x", MaxSearches: 3,
+			Allow:    func(context.Context) bool { return tc.allow },
+			OnSearch: func(context.Context) { calls++; googleAtCall = len(fs.queries) },
+		})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if calls != tc.want {
+			t.Fatalf("%s: OnSearch called %d times, want %d", tc.name, calls, tc.want)
+		}
+		if calls == 1 && googleAtCall != 0 {
+			t.Fatalf("%s: OnSearch came after %d searches, want before the first", tc.name, googleAtCall)
+		}
 	}
 }

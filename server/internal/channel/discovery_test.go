@@ -31,6 +31,9 @@ func (f *fakeDiscoverer) Discover(ctx context.Context, req llm.DiscoveryRequest)
 		ok := req.Allow(ctx)
 		f.allow = append(f.allow, ok)
 		if ok {
+			if searches == 0 && req.OnSearch != nil {
+				req.OnSearch(ctx)
+			}
 			searches++
 		}
 	}
@@ -51,15 +54,32 @@ func (f *fakeDiscoverer) Discover(ctx context.Context, req llm.DiscoveryRequest)
 }
 
 type fakePlaces struct {
+	mu      sync.Mutex
 	byID    map[string]llm.Place
 	err     error
 	details []string
+	names   []string // ids whose name was looked up (PlaceName)
 }
 
 func (f *fakePlaces) SearchPlaces(context.Context, string, bool) ([]llm.Place, error) {
 	return nil, nil
 }
+func (f *fakePlaces) PlaceName(_ context.Context, id string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.names = append(f.names, id)
+	if f.err != nil {
+		return "", f.err
+	}
+	p, ok := f.byID[id]
+	if !ok {
+		return "", errors.New("no such place")
+	}
+	return p.Name, nil
+}
 func (f *fakePlaces) PlaceDetails(_ context.Context, id string) (llm.Place, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.details = append(f.details, id)
 	if f.err != nil {
 		return llm.Place{}, f.err
@@ -509,5 +529,195 @@ func TestAgentInfoOnlyWithNothingOpen(t *testing.T) {
 	p, err = llm.DecodeProposal(`{"action":"info","task":"t1","escalation":""}`, llm.AgentContext{Tasks: []llm.AgentTask{{Title: "x"}}})
 	if err != nil || p.Action != llm.ActionInfo || p.Task != -1 {
 		t.Fatalf("%+v %v", p, err)
+	}
+}
+
+// ── phase 1b (2026-11-05) ──────────────────────────────────────────────
+
+// A pick by name is matched against names looked up again by id (Place
+// Details, the name only), never read back from the message log; a pick by
+// number needs no lookup. Names that cannot be looked up are no pick by
+// rule (the model reads it instead).
+func TestDiscoveryPickByNameLooksNamesUpAgain(t *testing.T) {
+	g := newDiscoRig(llm.IntentQuestion, infoResult("", false, []llm.Place{joes}, []llm.Place{suds}))
+	g.ids.link(me, "user-1")
+	g.parser.draft = llm.TaskDraft{Title: "Wash and fold drop-off", Category: "laundry", Location1: "12 E 14th St, New York, NY 10003"}
+	g.say(t, "wash and fold near 14th and 3rd")
+	g.r.Thread = nil // no message log to read names from
+	g.say(t, "Joe's")
+	if len(g.places.names) != 2 || g.places.names[0] == g.places.names[1] {
+		t.Fatalf("name lookups %v, want both options once", g.places.names)
+	}
+	if len(g.places.details) != 1 || g.places.details[0] != "gA" || g.state() != StateAwaitingConfirm {
+		t.Fatalf("details %v state %s", g.places.details, g.state())
+	}
+	if n := g.store.calls["id-"+me+"|"+g.r.now().In(g.r.loc()).Format("2006-01-02")]; n != 2 {
+		t.Fatalf("name lookups counted %d against the daily cap, want 2", n)
+	}
+
+	// A number: no name lookup at all.
+	g = newDiscoRig(llm.IntentQuestion, infoResult("", false, []llm.Place{joes}, []llm.Place{suds}))
+	g.ids.link(me, "user-1")
+	g.parser.draft = llm.TaskDraft{Title: "Wash and fold drop-off", Category: "laundry", Location1: "40 3rd Ave, New York, NY 10003"}
+	g.say(t, "wash and fold near 14th and 3rd")
+	g.say(t, "the second one")
+	if len(g.places.names) != 0 || len(g.places.details) != 1 || g.places.details[0] != "gB" {
+		t.Fatalf("names %v details %v", g.places.names, g.places.details)
+	}
+
+	// Lookups down: "Joe's" is no pick by rule; the model reads it.
+	g = newDiscoRig(llm.IntentQuestion, infoResult("", false, []llm.Place{joes}, []llm.Place{suds}),
+		llm.DiscoveryResult{Action: llm.DiscoverNotDiscovery, Usual: -1})
+	g.say(t, "laundromat near 14th?")
+	g.places.err = errors.New("places: http 503")
+	g.say(t, "Joe's")
+	if len(g.places.details) != 0 || len(g.d.reqs) != 2 {
+		t.Fatalf("details %v discovery turns %d", g.places.details, len(g.d.reqs))
+	}
+}
+
+// "Looking that up…" goes out once, before the answer, when the turn is
+// going to search — never for an answer that needs no search.
+func TestDiscoveryLookingUpFirst(t *testing.T) {
+	g := newDiscoRig(llm.IntentQuestion, infoResult("", false, []llm.Place{joes}))
+	g.d.ask = 1
+	g.say(t, "laundromat open now near 14th?")
+	sent := g.sentTexts()
+	if len(sent) != 2 || sent[0] != CopyLookingUp || !strings.Contains(sent[1], "1. Joe's Laundromat") {
+		t.Fatalf("sent %q", sent)
+	}
+	g = newDiscoRig(llm.IntentQuestion, llm.DiscoveryResult{Action: llm.DiscoverAskLocation, Usual: -1})
+	g.say(t, "where can I get a key copied?")
+	if sent := g.sentTexts(); len(sent) != 1 || sent[0] != CopyAskLocation {
+		t.Fatalf("no search, sent %q", sent)
+	}
+}
+
+// A clear search with a booking summary open runs discovery and leaves the
+// draft as it was; the info reply says the booking still waits, with no
+// YES and no price. A real change still re-drafts, and the YES still books
+// the draft that was shown.
+func TestDiscoveryWhileSummaryOpen(t *testing.T) {
+	g := newDiscoRig(llm.IntentNewTask, infoResult("Here are pharmacies open now near 14th St.", false, []llm.Place{joes}, []llm.Place{suds}))
+	g.ids.link(me, "user-1")
+	g.parser.draft = llm.TaskDraft{Title: "Laundry pickup", Category: "laundry", Location1: "12 Bedford Ave, Brooklyn"}
+	g.say(t, "pick up my laundry at 12 Bedford Ave")
+	before := *g.pending(t)
+	parses := len(g.parser.sources)
+
+	for _, s := range []string{"find me a pharmacy open now near 14th", "is there a pharmacy open near 14th st", "where can I get batteries near Union Square", "any laundromats near 14th"} {
+		reply := g.say(t, s)
+		if !strings.HasSuffix(reply, "\n\n"+CopyBookingStillWaiting) || !strings.Contains(reply, "1. Joe's Laundromat") {
+			t.Fatalf("%q:\n%s", s, reply)
+		}
+		noYesNoPrice(t, reply)
+		if p := g.pending(t); g.state() != StateAwaitingConfirm || p.Source != before.Source || p.SummaryShown != before.SummaryShown || len(g.parser.sources) != parses {
+			t.Fatalf("%q: the draft changed (state %s)", s, g.state())
+		}
+	}
+	// A pick from those options does not book over the open draft.
+	if got := g.say(t, "2"); got != CopyPickWhileDraft || len(g.places.details) != 0 {
+		t.Fatalf("pick: %q details %v", got, g.places.details)
+	}
+	// "make it 4pm" is a change to the booking, as before.
+	turns := len(g.d.reqs)
+	g.say(t, "make it 4pm")
+	if len(g.d.reqs) != turns || len(g.parser.sources) != parses+1 || !strings.Contains(g.pending(t).Source, "make it 4pm") {
+		t.Fatalf("correction: discovery turns %d→%d parses %d", turns, len(g.d.reqs), len(g.parser.sources))
+	}
+	g.say(t, "YES")
+	if g.booker.posts != 1 {
+		t.Fatal("YES did not book the open draft")
+	}
+}
+
+// Not discovery after all, with the summary open: the words are read as a
+// change to the booking, as they were before.
+func TestDiscoveryWhileSummaryOpenFallsBack(t *testing.T) {
+	g := newDiscoRig(llm.IntentNewTask, llm.DiscoveryResult{Action: llm.DiscoverNotDiscovery, Usual: -1})
+	g.ids.link(me, "user-1")
+	g.parser.draft = llm.TaskDraft{Title: "Laundry pickup", Category: "laundry", Location1: "12 Bedford Ave, Brooklyn"}
+	g.say(t, "pick up my laundry at 12 Bedford Ave")
+	parses := len(g.parser.sources)
+	g.say(t, "find me a bag for it too")
+	if len(g.d.reqs) != 1 || len(g.parser.sources) != parses+1 {
+		t.Fatalf("discovery %d parses %d", len(g.d.reqs), len(g.parser.sources))
+	}
+}
+
+// Several errands that each need a place and none has one: asked by fixed
+// copy. "Find them" (or a yes) plans the route; addresses go down the
+// normal draft path with the errands.
+func TestRouteAskForPlacelessErrands(t *testing.T) {
+	list := "pick up dry cleaning, buy a birthday card, mail a package"
+	for _, answer := range []string{"find them", "yes", "you find them near Union Square please"} {
+		g := newDiscoRig(llm.IntentNewTask, infoResult("", false, []llm.Place{joes, suds}))
+		g.ids.link(me, "user-1")
+		if got := g.say(t, list); got != CopyRouteAsk || len(g.d.reqs) != 0 || g.booker.quotes != 0 {
+			t.Fatalf("ask: %q", got)
+		}
+		reply := g.say(t, answer)
+		if len(g.d.reqs) != 1 || !strings.Contains(reply, "1. 2 stops, in this order:") {
+			t.Fatalf("%q: turns %d\n%s", answer, len(g.d.reqs), reply)
+		}
+		req := g.d.reqs[0]
+		if len(req.Earlier) != 1 || req.Earlier[0] != list || !strings.HasPrefix(req.Text, routeFindText) {
+			t.Fatalf("%q: request %+v", answer, req)
+		}
+		if answer != "yes" && !strings.Contains(req.Text, answer) {
+			t.Fatalf("%q: the person's words were dropped: %q", answer, req.Text)
+		}
+		if g.booker.posts != 0 || g.state() != StateIdle {
+			t.Fatalf("%q: state %s posts %d", answer, g.state(), g.booker.posts)
+		}
+	}
+
+	// The addresses: the normal draft path, with the errands.
+	g := newDiscoRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.parser.draft = llm.TaskDraft{Title: "Dry cleaning", Category: "anything_else", Location1: "12 Bedford Ave, Brooklyn"}
+	g.say(t, list)
+	g.say(t, "cleaners at 12 Bedford Ave, the post office on 5th Ave")
+	if len(g.d.reqs) != 0 || len(g.parser.sources) == 0 || !strings.Contains(strings.Join(g.parser.sources, "\n"), "12 Bedford Ave") || g.offer() != nil {
+		t.Fatalf("addresses: turns %d sources %q offer %+v", len(g.d.reqs), g.parser.sources, g.offer())
+	}
+
+	// A no: dropped, nothing drafted.
+	g = newDiscoRig(llm.IntentNewTask)
+	g.ids.link(me, "user-1")
+	g.say(t, list)
+	g.say(t, "never mind")
+	if g.offer() != nil || g.booker.quotes != 0 || len(g.d.reqs) != 0 {
+		t.Fatalf("no: offer %+v quotes %d", g.offer(), g.booker.quotes)
+	}
+}
+
+func TestIsPlacelessErrandList(t *testing.T) {
+	for _, s := range []string{"pick up dry cleaning, buy a birthday card, mail a package", "buy a card and mail a package",
+		"I need to pick up my dry cleaning, then return a sweater and get a cake", "grab batteries; print my boarding pass"} {
+		if !IsPlacelessErrandList(s) {
+			t.Errorf("not a placeless list: %q", s)
+		}
+	}
+	for _, s := range []string{"pick up dry cleaning at 12 Bedford Ave, buy a card", "buy milk and eggs", "pick up my laundry",
+		"pick up dry cleaning from Bedford Cleaners and mail a package", "plan my errands: dry cleaning, a card, mail a package",
+		"buy a card, walk my dog", "buy 2 cards, mail a package", "pick up dry cleaning near Union Square and mail a package"} {
+		if IsPlacelessErrandList(s) {
+			t.Errorf("placeless list: %q", s)
+		}
+	}
+}
+
+func TestIsClearSearch(t *testing.T) {
+	for _, s := range []string{"find me a pharmacy open now", "can you find a tailor in Astoria", "where can I get batteries near here",
+		"any laundromats near 14th", "is there a pharmacy open near me", "any good bakery around Park Slope"} {
+		if !IsClearSearch(s) {
+			t.Errorf("not a clear search: %q", s)
+		}
+	}
+	for _, s := range []string{"make it 4pm", "leave it near the door", "where do I meet him", "find the receipt in the bag", "any time is fine", "2"} {
+		if IsClearSearch(s) {
+			t.Errorf("clear search: %q", s)
+		}
 	}
 }

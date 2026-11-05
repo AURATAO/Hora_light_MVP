@@ -133,6 +133,9 @@ func (f *fixtureSearch) SearchPlaces(_ context.Context, q string, openNow bool) 
 func (f *fixtureSearch) PlaceDetails(context.Context, string) (llm.Place, error) {
 	return llm.Place{}, fmt.Errorf("not used by the eval")
 }
+func (f *fixtureSearch) PlaceName(context.Context, string) (string, error) {
+	return "", fmt.Errorf("not used by the eval")
+}
 
 // liveSearch is Google, as production calls it.
 type liveSearch struct {
@@ -158,6 +161,9 @@ func (l *liveSearch) SearchPlaces(ctx context.Context, q string, openNow bool) (
 }
 func (l *liveSearch) PlaceDetails(context.Context, string) (llm.Place, error) {
 	return llm.Place{}, fmt.Errorf("not used by the eval")
+}
+func (l *liveSearch) PlaceName(context.Context, string) (string, error) {
+	return "", fmt.Errorf("not used by the eval")
 }
 
 // Prices for the cost line (USD). Sonnet 5.5: $2 / $10 per million tokens,

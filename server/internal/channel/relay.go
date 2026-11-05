@@ -836,7 +836,7 @@ func (r *Router) routeInContextLabel(ctx context.Context, in Inbound, id Identit
 			// supporter on another job (D-23): discovery answers from
 			// Google's data. Not for discovery after all → the supporter, the
 			// safe default (P7).
-			if handled, err := r.discover(ctx, in, id, conv, text, r.freshOffer(ctx, id), true); handled {
+			if handled, err := r.discover(ctx, in, id, conv, text, r.freshOffer(ctx, id), true, false); handled {
 				return true, "", err
 			}
 		}

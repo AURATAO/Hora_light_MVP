@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -32,7 +33,8 @@ import (
 //     (applyPlaces), never through the parser's words, so a business's name
 //     can never become a money input (ownwords.go).
 //   - Only place ids are stored (Google's caching policy): a chosen place
-//     is looked up again before the draft.
+//     is looked up again before the draft, and a pick by name is matched
+//     against names looked up again by id.
 //   - Anything that fails — Anthropic, Places, a cap — is fixed copy.
 
 // ChosenPlace is a place picked from a discovery answer, as attached to the
@@ -45,7 +47,7 @@ type ChosenPlace struct {
 // DiscoveryOffer is what the last discovery answer left open on a thread.
 // Place ids only (Google's policy): names are never stored.
 type DiscoveryOffer struct {
-	Kind string `json:"kind"` // offerOptions | offerAskLocation
+	Kind string `json:"kind"` // offerOptions | offerAskLocation | offerRouteAsk
 	// Words: the person's own words for this search, oldest first.
 	Words []string `json:"words"`
 	// Options: the place ids of each option shown, in visiting order.
@@ -57,6 +59,10 @@ type DiscoveryOffer struct {
 const (
 	offerOptions     = "options"
 	offerAskLocation = "ask_location"
+	// offerRouteAsk: several errands with no place were asked "find places
+	// for these, or do you have the addresses?" (CopyRouteAsk). Words holds
+	// the errands.
+	offerRouteAsk = "route_ask"
 	// How long an answer can still be picked from / a "Where should I
 	// look?" still answered.
 	offerOptionsTTL  = 2 * time.Hour
@@ -152,6 +158,11 @@ const (
 	descriptionPlaceOne      = "Place (from Google Maps): %s, %s"
 	descriptionPlaceRoute    = "Stops in order (from Google Maps):"
 	descriptionCheck         = "Go and check, then text the requester what you find, with a photo. Buy only what they asked for, within the budget they set."
+	CopyLookingUp            = "Looking that up…"
+	CopyBookingStillWaiting  = "Your earlier booking is still waiting."
+	CopyPickWhileDraft       = "Your earlier booking is still waiting. Reply YES to book it or NO to drop it, then send your pick again."
+	CopyRouteAsk             = "Want me to find places for these on one route, or do you have the addresses?"
+	routeFindText            = "Find a place for each of these errands, on one route."
 	copyOutOfScopeGeneral    = "I'm HO:RA's errand concierge, so I can't help with that one. I can find places in NYC and send a real person to run the errand: laundry, pickups, returns, gifts, waiting in line and more."
 	copyOutOfScopeMedLegal   = "I can't give medical or legal advice. If it's an emergency, call 911. I can send someone to a pharmacy for over-the-counter items or to drop off documents, though."
 	copyOutOfScopeAlcohol    = "Supporters can't buy alcohol, tobacco, vapes or cannabis. I can send someone for groceries, snacks, a gift or a pickup instead."
@@ -213,7 +224,7 @@ func (r *Router) routeDiscoveryFirst(ctx context.Context, in Inbound, id Identit
 	}
 	switch offer.Kind {
 	case offerOptions:
-		if k := pickOption(text, len(offer.Options), r.offerNames(ctx, id)); k > 0 {
+		if k := r.pickFromOffer(ctx, id, text, offer); k > 0 {
 			return true, r.chooseOption(ctx, in, id, conv, offer, k, "")
 		}
 	case offerAskLocation:
@@ -222,9 +233,62 @@ func (r *Router) routeDiscoveryFirst(ctx context.Context, in Inbound, id Identit
 				text = "near " + addr
 			}
 		}
-		return r.discover(ctx, in, id, conv, text, offer, true)
+		return r.discover(ctx, in, id, conv, text, offer, true, false)
+	case offerRouteAsk:
+		return r.answerRouteAsk(ctx, in, id, conv, text, offer)
 	}
 	return false, nil
+}
+
+// pickFromOffer reads a pick among the open offer's options: a number or
+// an ordinal by rule with no lookup; otherwise, when the words could be a
+// name ("Joe's", "the bakery"), the options' names are looked up again by
+// id and matched (only ids are kept — Google's terms). 0 = not a pick.
+func (r *Router) pickFromOffer(ctx context.Context, id Identity, text string, offer *DiscoveryOffer) int {
+	n := len(offer.Options)
+	if k := pickNumber(text, n); k > 0 {
+		return k
+	}
+	if !nameCandidate(text) {
+		return 0
+	}
+	return pickName(text, n, r.offerNames(ctx, id, offer))
+}
+
+// offerNames looks up the name of each single-place option again (Place
+// Details, the name only), in parallel; "" for a route or a failed lookup.
+// Each lookup is a Places call, counted against the daily cap.
+func (r *Router) offerNames(ctx context.Context, id Identity, offer *DiscoveryOffer) []string {
+	if r.Places == nil {
+		return nil
+	}
+	day := r.now().In(r.loc()).Format("2006-01-02")
+	lctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	names := make([]string, len(offer.Options))
+	var wg sync.WaitGroup
+	for i, opt := range offer.Options {
+		if len(opt) != 1 {
+			continue
+		}
+		ok, err := r.DiscoveryStore.TakePlacesCall(lctx, id.ID, day, r.limits().PerDay)
+		if err != nil || !ok {
+			log.Printf("[channel] offer names identity=%s: no lookup (cap or count failed: %v)", id.ID, err)
+			continue
+		}
+		wg.Add(1)
+		go func(i int, pid string) {
+			defer wg.Done()
+			name, err := r.Places.PlaceName(lctx, pid)
+			if err != nil {
+				log.Printf("[channel] offer names identity=%s option=%d: %v", id.ID, i+1, err)
+				return
+			}
+			names[i] = name
+		}(i, opt[0])
+	}
+	wg.Wait()
+	return names
 }
 
 var lastWordRE = regexp.MustCompile(`(?i)^\W*last\W*$`)
@@ -240,7 +304,133 @@ func (r *Router) routeDiscovery(ctx context.Context, in Inbound, id Identity, co
 	if !strong && intent != llm.IntentQuestion && (offer == nil || intent != llm.IntentOther) {
 		return false, nil
 	}
-	return r.discover(ctx, in, id, conv, text, offer, strong)
+	return r.discover(ctx, in, id, conv, text, offer, strong, false)
+}
+
+// routeDiscoveryWhileDraft runs with a booking summary open (onConfirm),
+// before the message is read as a change to the booking. A clear search
+// ("find me a…", "where can I get…", "any … near", "is there a … open")
+// runs discovery and leaves the draft as it is; so does the answer to a
+// "Where should I look?" asked after the summary. A pick from options shown
+// after the summary is not booked over the open draft: the person is asked
+// to settle that one first. Anything else ("make it 4pm") re-drafts as
+// before.
+func (r *Router) routeDiscoveryWhileDraft(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) (bool, error) {
+	if !r.discoveryOn() || conv.Pending == nil {
+		return false, nil
+	}
+	if offer := r.freshOffer(ctx, id); offer != nil && offer.AtUnix >= conv.Pending.SummaryShownAtUnix {
+		at := time.Unix(offer.AtUnix, 0)
+		if !r.supporterSpokeSince(ctx, in, id, &at) {
+			switch offer.Kind {
+			case offerOptions:
+				if r.pickFromOffer(ctx, id, text, offer) > 0 {
+					return true, r.Reply(ctx, in, CopyPickWhileDraft, "")
+				}
+			case offerAskLocation:
+				if handled, err := r.discover(ctx, in, id, conv, text, offer, false, true); handled {
+					return true, err
+				}
+			}
+		}
+	}
+	if !IsClearSearch(text) {
+		return false, nil
+	}
+	return r.discover(ctx, in, id, conv, text, nil, true, true)
+}
+
+// clearSearchRE: words that can only be a search, even with a booking open.
+// Narrower than discoveryRE: "make it 4pm", "near the door", "where do I
+// meet him" never match.
+var clearSearchRE = regexp.MustCompile(`(?i)\b(?:find (?:me |us )?(?:a|an|some|another|places?|somewhere)\b|where (?:can|could|should) (?:i|we) (?:get|buy|find|drop|mail|ship|print|fix|copy|return|take)\b|any (?:good |decent )?[\pL' &-]{2,30}? (?:near|around|nearby|open)\b|is there (?:a|an|any) [\pL' &-]{2,40}? (?:open|near|nearby|around)\b)`)
+
+// IsClearSearch: the words only ask to find a place.
+func IsClearSearch(text string) bool { return clearSearchRE.MatchString(text) }
+
+// ── several errands, no places ──────────────────────────────────────────
+
+// errandStartRE: an errand that needs a place, at the start of one item of
+// a list ("pick up dry cleaning", "buy a birthday card", "mail a package").
+var errandStartRE = regexp.MustCompile(`(?i)^(?:(?:and|also|then|plus|&)\s+)*(?:(?:i need to|i need you to|i have to|i gotta|need to|can you|could you|please|pls)\s+)*(?:pick up|pickup|grab|buy|get|mail|ship|send|post|drop off|drop|return|print|copy|fix|repair|hem|alter)\b`)
+
+// placeGivenRE: something in the words that is (or names) a place: a
+// number (a house number, a zip), or "at / from / on …".
+var placeGivenRE = regexp.MustCompile(`(?i)\d|\b(?:at|from|on|in|near|around)\s+\S`)
+
+var listSplitRE = regexp.MustCompile(`(?i)\s*(?:[,;\n•]|\band then\b|\bthen\b|\s&\s)\s*`)
+
+// IsPlacelessErrandList: one message lists two or more errands that each
+// need a place, and none says where. Rule only.
+func IsPlacelessErrandList(text string) bool {
+	if placeGivenRE.MatchString(text) || LooksLikeDiscovery(text) {
+		return false
+	}
+	var items []string
+	for _, part := range listSplitRE.Split(strings.TrimSpace(text), -1) {
+		// "buy a card and mail a package": split on "and" only where an
+		// errand starts after it.
+		cur := ""
+		for _, w := range strings.Split(part, " and ") {
+			if cur != "" && errandStartRE.MatchString(strings.TrimSpace(w)) {
+				items = append(items, cur)
+				cur = ""
+			}
+			if cur != "" {
+				cur += " and "
+			}
+			cur += w
+		}
+		if strings.TrimSpace(strings.Trim(cur, ".!")) != "" {
+			items = append(items, cur)
+		}
+	}
+	if len(items) < 2 || len(items) > llm.MaxErrands {
+		return false
+	}
+	for _, it := range items {
+		if !errandStartRE.MatchString(strings.TrimSpace(it)) {
+			return false
+		}
+	}
+	return true
+}
+
+// askRoute asks, by fixed copy, whether to find places for a list of
+// errands with none (IsPlacelessErrandList), or whether the person has the
+// addresses. Called in idle with no supporter routing taking the message.
+func (r *Router) askRoute(ctx context.Context, in Inbound, id Identity, text string) (bool, error) {
+	if !r.discoveryOn() || !IsPlacelessErrandList(text) {
+		return false, nil
+	}
+	r.saveOffer(ctx, id, &DiscoveryOffer{Kind: offerRouteAsk, Words: []string{text}, AtUnix: r.now().Unix()})
+	log.Printf("[channel] route ask identity=%s", id.ID)
+	return true, r.Reply(ctx, in, CopyRouteAsk, "")
+}
+
+// findThemRE: "find them", "you find", "yes please find", "search", "one
+// route" — the answer that asks HO:RA to find the places.
+var findThemRE = regexp.MustCompile(`(?i)\b(?:find|search|look (?:them |it )?up|you pick|you choose|one route|route|plan)\b`)
+
+// answerRouteAsk reads the answer to CopyRouteAsk: "find them" (or a plain
+// yes) runs route planning; a decline drops the question; anything else is
+// the addresses, which go with the errands down the normal draft path.
+func (r *Router) answerRouteAsk(ctx context.Context, in Inbound, id Identity, conv Conversation, text string, offer *DiscoveryOffer) (bool, error) {
+	switch {
+	case findThemRE.MatchString(text) || IsYes(text) || IsAffirmation(stripFiller(text)):
+		find := routeFindText
+		if !IsYes(text) && !IsAffirmation(stripFiller(text)) {
+			find += " " + text // "find them near Union Square": where to look
+		}
+		// The offer stays a route ask until discover answers (it saves its
+		// own: options, or "Where should I look?").
+		return r.discover(ctx, in, id, conv, find, offer, true, false)
+	case IsNo(text) || IsDraftDecline(text):
+		r.saveOffer(ctx, id, nil)
+		return true, r.Reply(ctx, in, CopyAck, "")
+	}
+	r.saveOffer(ctx, id, nil)
+	return true, r.startDraft(ctx, in, id, conv, strings.Join(offer.Words, "\n")+"\n"+text)
 }
 
 // freshOffer is the thread's open offer, nil when none or expired.
@@ -254,7 +444,7 @@ func (r *Router) freshOffer(ctx context.Context, id Identity) *DiscoveryOffer {
 		return nil
 	}
 	ttl := offerOptionsTTL
-	if o.Kind == offerAskLocation {
+	if o.Kind == offerAskLocation || o.Kind == offerRouteAsk {
 		ttl = offerLocationTTL
 	}
 	if r.now().Sub(time.Unix(o.AtUnix, 0)) > ttl {
@@ -272,8 +462,17 @@ func (r *Router) saveOffer(ctx context.Context, id Identity, o *DiscoveryOffer) 
 
 // discover runs one discovery turn. strong: the words asked for it by rule,
 // so a failure is answered with CopySearchDown; otherwise a failure leaves
-// the message to the usual routing.
-func (r *Router) discover(ctx context.Context, in Inbound, id Identity, conv Conversation, text string, offer *DiscoveryOffer, strong bool) (bool, error) {
+// the message to the usual routing. draftOpen: a booking summary is open
+// (routeDiscoveryWhileDraft) — every answer ends by saying it still waits,
+// and an answer that is not a search's (a pick, the usual, not discovery)
+// is left to the draft.
+func (r *Router) discover(ctx context.Context, in Inbound, id Identity, conv Conversation, text string, offer *DiscoveryOffer, strong, draftOpen bool) (bool, error) {
+	reply := func(s string) error {
+		if draftOpen {
+			s += "\n\n" + CopyBookingStillWaiting
+		}
+		return r.Reply(ctx, in, s, "")
+	}
 	lim := r.limits()
 	req := llm.DiscoveryRequest{Text: text, Now: r.now().In(r.loc()), MaxSearches: lim.PerMessage}
 	if offer != nil {
@@ -299,6 +498,14 @@ func (r *Router) discover(ctx context.Context, in Inbound, id Identity, conv Con
 		denied = denied || !ok
 		return ok
 	}
+	// The search takes seconds: one fixed line first, once, only when the
+	// model is about to search. A failed send is logged: the answer still
+	// follows.
+	req.OnSearch = func(context.Context) {
+		if err := r.Reply(ctx, in, CopyLookingUp, ""); err != nil {
+			log.Printf("[channel] looking up identity=%s: %v", id.ID, err)
+		}
+	}
 	dctx, cancel := context.WithTimeout(ctx, lim.Timeout)
 	res, err := r.Discovery.Discover(dctx, req)
 	cancel()
@@ -310,23 +517,26 @@ func (r *Router) discover(ctx context.Context, in Inbound, id Identity, conv Con
 		if !strong {
 			return false, nil
 		}
-		return true, r.Reply(ctx, in, CopySearchDown, "")
+		return true, reply(CopySearchDown)
 	}
 	words := append(append([]string{}, req.Earlier...), text)
 	switch res.Action {
 	case llm.DiscoverOutOfScope:
 		r.saveOffer(ctx, id, nil)
-		return true, r.Reply(ctx, in, outOfScopeCopy(res.Reason), "")
+		return true, reply(outOfScopeCopy(res.Reason))
 	case llm.DiscoverAskLocation:
 		r.saveOffer(ctx, id, &DiscoveryOffer{Kind: offerAskLocation, Words: lastWords(words), AtUnix: r.now().Unix()})
 		if req.LastAddress != "" {
-			return true, r.Reply(ctx, in, fmt.Sprintf(CopyAskLocationLast, req.LastAddress), "")
+			return true, reply(fmt.Sprintf(CopyAskLocationLast, req.LastAddress))
 		}
-		return true, r.Reply(ctx, in, CopyAskLocation, "")
+		return true, reply(CopyAskLocation)
 	case llm.DiscoverUsual:
+		if draftOpen {
+			return false, nil
+		}
 		return true, r.startUsual(ctx, in, id, conv, res.Usual)
 	case llm.DiscoverChoose:
-		if offer != nil && offer.Kind == offerOptions && res.Choice <= len(offer.Options) {
+		if !draftOpen && offer != nil && offer.Kind == offerOptions && res.Choice <= len(offer.Options) {
 			return true, r.chooseOption(ctx, in, id, conv, offer, res.Choice, text)
 		}
 		return false, nil
@@ -334,9 +544,9 @@ func (r *Router) discover(ctx context.Context, in Inbound, id Identity, conv Con
 		if len(res.Options) == 0 {
 			r.saveOffer(ctx, id, nil)
 			if denied && res.Searches == 0 {
-				return true, r.Reply(ctx, in, CopySearchLimit, "")
+				return true, reply(CopySearchLimit)
 			}
-			return true, r.Reply(ctx, in, CopyDiscoveryNothing, "")
+			return true, reply(CopyDiscoveryNothing)
 		}
 		o := &DiscoveryOffer{Kind: offerOptions, Words: lastWords(words), Check: res.Check, AtUnix: r.now().Unix()}
 		for _, opt := range res.Options {
@@ -347,7 +557,7 @@ func (r *Router) discover(ctx context.Context, in Inbound, id Identity, conv Con
 			o.Options = append(o.Options, ids)
 		}
 		r.saveOffer(ctx, id, o)
-		return true, r.Reply(ctx, in, RenderDiscovery(res), "")
+		return true, reply(RenderDiscovery(res))
 	}
 	return false, nil // not_discovery
 }
@@ -468,6 +678,14 @@ var pickPunctRE = regexp.MustCompile(`[!.,?;:()"“”]+`)
 // (index i = option i+1; "" for an option with no single name). 0 = not a
 // pick — the model then reads it, with the options in view.
 func pickOption(text string, n int, names []string) int {
+	if k := pickNumber(text, n); k > 0 {
+		return k
+	}
+	return pickName(text, n, names)
+}
+
+// pickWords: the words of a pick, fillers dropped.
+func pickWords(text string) []string {
 	t := strings.ToLower(strings.NewReplacer("’", "'", "‘", "'").Replace(text))
 	t = pickPunctRE.ReplaceAllString(t, " ")
 	var rest []string
@@ -476,6 +694,12 @@ func pickOption(text string, n int, names []string) int {
 			rest = append(rest, w)
 		}
 	}
+	return rest
+}
+
+// pickNumber: a pick by number or ordinal ("2", "the second one", "last").
+func pickNumber(text string, n int) int {
+	rest := pickWords(text)
 	if len(rest) == 1 {
 		if k, ok := ordinals[rest[0]]; ok && k <= n {
 			return k
@@ -484,6 +708,20 @@ func pickOption(text string, n int, names []string) int {
 			return n
 		}
 	}
+	return 0
+}
+
+// nameCandidate: the words could be a place's name (one to four words left
+// after the fillers, three letters or more) — worth looking the names up.
+func nameCandidate(text string) bool {
+	rest := pickWords(text)
+	return len(rest) >= 1 && len(rest) <= 4 && utf8.RuneCountInString(nameKey(strings.Join(rest, " "))) >= 3
+}
+
+// pickName: a pick by name among names (index i = option i+1; "" for an
+// option with no single name). Two names matching is no pick.
+func pickName(text string, n int, names []string) int {
+	rest := pickWords(text)
 	if len(rest) == 0 {
 		return 0
 	}
@@ -512,49 +750,6 @@ var nameKeyRE = regexp.MustCompile(`[^\p{L}\p{N} ]+`)
 func nameKey(s string) string {
 	s = strings.ToLower(strings.NewReplacer("’", "", "'", "", "&", " and ").Replace(s))
 	return strings.Join(strings.Fields(nameKeyRE.ReplaceAllString(s, " ")), " ")
-}
-
-// offerLineRE: an option line of a rendered answer — "2. Joe's Laundromat".
-var offerLineRE = regexp.MustCompile(`^(\d)\. (.+)$`)
-
-// offerNames reads the single-place options' names back from the answer
-// we sent (the thread's record of it), so names are never stored apart
-// from the message itself.
-func (r *Router) offerNames(ctx context.Context, id Identity) []string {
-	if r.Thread == nil {
-		return nil
-	}
-	msgs, err := r.Thread.RecentMessages(ctx, id.Channel, id.Address, 8)
-	if err != nil {
-		log.Printf("[channel] offer names identity=%s: %v", id.ID, err)
-		return nil
-	}
-	for i := len(msgs) - 1; i >= 0; i-- {
-		m := msgs[i]
-		if m.Direction != "outbound" || !strings.Contains(m.Text, CopyDiscoveryFooter) {
-			continue
-		}
-		var names []string
-		for _, line := range strings.Split(m.Text, "\n") {
-			mm := offerLineRE.FindStringSubmatch(line)
-			if mm == nil {
-				continue
-			}
-			k, _ := strconv.Atoi(mm[1])
-			for len(names) < k-1 {
-				names = append(names, "")
-			}
-			if len(names) == k-1 {
-				name := mm[2]
-				if strings.Contains(name, " stops, in this order:") {
-					name = ""
-				}
-				names = append(names, name)
-			}
-		}
-		return names
-	}
-	return nil
 }
 
 // chooseOption turns option k of the open offer into a normal draft. The

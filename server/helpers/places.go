@@ -65,6 +65,9 @@ type Place struct {
 const (
 	searchFields  = "places.id,places.displayName,places.shortFormattedAddress,places.formattedAddress,places.addressComponents,places.businessStatus,places.rating,places.userRatingCount,places.currentOpeningHours"
 	detailsFields = "id,displayName,shortFormattedAddress,formattedAddress,addressComponents"
+	// nameFields: the least a name match needs. displayName is a Pro field,
+	// so this is still Place Details Pro; it asks for nothing else.
+	nameFields = "displayName"
 )
 
 // nycRect is the five boroughs' bounding box (a filter on categorical
@@ -166,6 +169,30 @@ func PlaceDetails(ctx context.Context, id string, loc *time.Location) (p Place, 
 		return Place{}, errors.New("places: no such place")
 	}
 	return w.place(loc), nil
+}
+
+// PlaceName looks one place's name up again by id (Place Details, the
+// displayName field only): what a pick by name ("Joe's") is matched
+// against, since only ids may be stored.
+func PlaceName(ctx context.Context, id string) (name string, err error) {
+	_, sp := tracing.StartSpan(ctx, "places.name", tracing.KindTool)
+	start, httpStatus := time.Now(), 0
+	defer func() {
+		sp.Attr(
+			attribute.Int64("hora.places.latency_ms", time.Since(start).Milliseconds()),
+			attribute.Int("http.status_code", httpStatus),
+		)
+		sp.Fail(err)
+		sp.End()
+	}()
+	if !placeIDOK(id) {
+		return "", errors.New("places: bad place id")
+	}
+	var w placesWire
+	if httpStatus, err = placesCall(ctx, http.MethodGet, PlacesDetailsURL+id, nameFields, nil, &w); err != nil {
+		return "", err
+	}
+	return CleanPlaceText(w.DisplayName.Text, 80), nil
 }
 
 // placeIDOK: a place id is letters, digits, '-' and '_' (it goes into a
