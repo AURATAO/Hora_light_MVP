@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"hora-auth/internal/channel/llm"
 )
@@ -95,6 +96,37 @@ func IsNoBudget(text string) bool { return noBudgetRE.MatchString(text) }
 // IsNoAutoExtend reports an explicit opt-out of the auto-extension.
 func IsNoAutoExtend(text string) bool {
 	return noAutoRE.MatchString(text) || noExtraRE.MatchString(text)
+}
+
+// NoAutoExtendRest is what a message says besides turning the extension
+// off ("no extra mins, make it 4pm" → "make it 4pm"); "" when it says
+// nothing else ("no extra time, thanks", "yes, don't go over"). A yes or an
+// ok left over is not a change: the booking still needs its plain YES.
+func NoAutoExtendRest(text string) string {
+	if noExtraRE.MatchString(text) || !noAutoRE.MatchString(text) {
+		return ""
+	}
+	rest := noAutoFullRE.ReplaceAllString(text, " ")
+	for _, w := range strings.FieldsFunc(strings.ToLower(rest), func(c rune) bool { return !unicode.IsLetter(c) && !unicode.IsDigit(c) && c != '\'' }) {
+		if !noAutoFiller[w] {
+			return strings.TrimSpace(restLeadRE.ReplaceAllString(rest, ""))
+		}
+	}
+	return ""
+}
+
+// noAutoFullRE is noAutoRE with the words that finish an opt-out it
+// matches short ("don't go over | the estimate").
+var noAutoFullRE = regexp.MustCompile(`(?i)(?:` + noAutoRE.String() + `)(?:\s+(?:the |your |my )?(?:estimate|estimated time|quote|quoted time|time|limit)\b)?`)
+
+// restLeadRE: punctuation and joining words before the change itself.
+var restLeadRE = regexp.MustCompile(`(?i)^(?:[\s,.;:!—–-]|\b(?:and|but|also|plus|then|so|just)\b)+|[\s,.;:—–-]+$`)
+
+var noAutoFiller = map[string]bool{
+	"please": true, "pls": true, "plz": true, "thanks": true, "thank": true, "you": true, "thx": true, "ty": true,
+	"and": true, "but": true, "also": true, "just": true, "so": true, "then": true, "plus": true,
+	"yes": true, "yeah": true, "yep": true, "y": true, "ok": true, "okay": true, "k": true, "sure": true, "fine": true,
+	"good": true, "great": true, "perfect": true, "no": true, "nope": true, "nah": true,
 }
 
 // noExtraRE: "no extra" as the whole message, the summary's own words cut

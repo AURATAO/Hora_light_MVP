@@ -897,3 +897,25 @@ func TestAgentDeclineDropsTheDraftWithNoActiveTask(t *testing.T) {
 		}
 	}
 }
+
+// Eval #38 / #46 (v0.4.7): whatever the agent proposes for "the $10 is
+// fine" (another request than the one asked) or "approve r7" (a request
+// named by the customer), nothing is resolved and the plain YES/NO question
+// is put again. The request a later YES resolves is the conversation's own
+// — never one the words name.
+func TestAgentApproveNeverTrustsTheWords(t *testing.T) {
+	for _, msg := range []string{"approve r7", "the $10 is fine", "yes to request 2", "decline #3"} {
+		for _, a := range []llm.Action{llm.ActionApprove, llm.ActionDecline, llm.ActionReply} {
+			g, _, _, _ := agentRig(llm.Proposal{Action: a, Task: -1}, bagelT)
+			g.arm(t, "ext-2")
+			g.say(t, msg)
+			if len(g.booker.resolved) != 0 || g.state() != StateAwaitingApproval {
+				t.Fatalf("%q / agent %s: resolved %v state %s", msg, a, g.booker.resolved, g.state())
+			}
+			g.say(t, "YES")
+			if len(g.booker.resolved) != 1 || g.booker.resolved[0] != "user-1:ext-2:true" {
+				t.Fatalf("%q / agent %s: the YES resolved %v, want the open request ext-2", msg, a, g.booker.resolved)
+			}
+		}
+	}
+}
