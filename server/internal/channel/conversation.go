@@ -92,6 +92,15 @@ type PendingDraft struct {
 	// and "for <name>" relays the words instead.
 	WhileActive      string `json:"while_active,omitempty"`
 	WhileActiveShown bool   `json:"while_active_shown,omitempty"`
+	// Intro is said once before the draft's first question ("Same as last
+	// time:" for the usual — discovery.go); shown with WhileActiveShown.
+	Intro string `json:"intro,omitempty"`
+	// Places: the place(s) chosen from a discovery answer, in visiting
+	// order. Applied to the errand by rule after every parse (applyPlaces)
+	// and named in the summary. Check: the errand is to go, look and
+	// report back (D-23).
+	Places []ChosenPlace `json:"places,omitempty"`
+	Check  bool          `json:"check,omitempty"`
 	// First-item budget fields; see DraftItem. Kept flat for stored rows.
 	BudgetCents int  `json:"budget_cents,omitempty"`
 	NeedsBudget bool `json:"needs_budget,omitempty"`

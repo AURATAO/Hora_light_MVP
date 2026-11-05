@@ -19,6 +19,8 @@
 //	go run ./cmd/agenttest -case 19 -v         # one case, with the raw output
 //	go run ./cmd/agenttest -group "C "         # one group (prefix)
 //	go run ./cmd/agenttest -json cmd/agenttest/report.json   # machine-readable report (git-ignored there)
+//	go run ./cmd/agenttest -discovery          # place discovery cases (discovery.json, fixture places)
+//	go run ./cmd/agenttest -discovery -live-places   # the same, searching Google (billed)
 //
 // Exit codes: 0 all pass; 1 failures (safe); 2 the model proposed approve or
 // decline where forbidden (the prompt is wrong — production re-asks with a
@@ -280,6 +282,8 @@ func grade(c Case, raw string, nTasks int, openQ string) (rawProposal, string, s
 		p.Action, note = "relay", " (correction with no booking question → relay in production)"
 	case p.Action == "note" && openQ != "booking":
 		p.Action, note = "relay", " (note with no booking summary → relay in production)"
+	case p.Action == "info" && openQ != "":
+		p.Action, note = "relay", " (info with a question of ours open → relay in production)"
 	}
 	for _, f := range c.Forbid {
 		if p.Action == f {
@@ -356,6 +360,9 @@ func main() {
 		delay     = flag.Duration("delay", time.Second, "pause between requests, per worker")
 		agentOnly = flag.Bool("agent-only", false, "skip cases the rules decide (the model is not asked there in production)")
 		modelFlag = flag.String("model", "", "provider:model (default LLM_AGENT_MODEL, else anthropic:claude-sonnet-5-5)")
+		discovery = flag.Bool("discovery", false, "run the place discovery cases (discovery.json) instead")
+		dCases    = flag.String("discovery-cases", "cmd/agenttest/discovery.json", "discovery case file")
+		livePlace = flag.Bool("live-places", false, "discovery: send searches to Google (billed) instead of the fixtures")
 	)
 	flag.Parse()
 	f, err := load(*casesPath)
@@ -385,6 +392,9 @@ func main() {
 	if (spec.Provider == "anthropic" && providers.AnthropicKey == "") || (spec.Provider == "baseten" && providers.BasetenKey == "") {
 		fmt.Fprintf(os.Stderr, "set the %s key (ANTHROPIC_API_KEY / LLM_API_KEY; never commit it, never paste it in chat)\n", spec.Provider)
 		os.Exit(1)
+	}
+	if *discovery {
+		os.Exit(runDiscovery(*dCases, spec, providers, *runs, *only, *group, *verbose, *jsonOut, *parallel, *delay, timeout, *livePlace))
 	}
 	model := &llm.Model{Primary: providers.Provider(spec)}
 

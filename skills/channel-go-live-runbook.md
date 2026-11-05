@@ -183,7 +183,9 @@ Nothing here is in the repo; Aura sets them in the dashboard.
 | `CHANNEL_SETUP_WEB_URL` | `https://<webapp host>/channel/setup` | points texted links at the React page; unset = the embedded Go page |
 | `TALKJS_APP_ID` | the live TalkJS app (= the web's `VITE_TALKJS_APP_ID`) | the chat ↔ iMessage relay, both directions. Missing on production until 2026-10-30: the startup log said `chat relay off (both directions)` |
 | `TALKJS_SECRET_KEY` | TalkJS dashboard → live app → Settings | " |
-| `GOOGLE_MAPS_API_KEY` | a production key with the Geocoding API | task coordinates for "where is he?" (D-12) |
+| `GOOGLE_MAPS_API_KEY` | a production key with the Geocoding API (and **Places API (New)** for discovery) | task coordinates for "where is he?" (D-12); place discovery (D-23) |
+| `CHANNEL_DISCOVERY` | optional, `1` — staging first; apply `20261104170000_channel_discovery.sql` before | place discovery (D-23): find places, "the usual", check errands. Needs an Anthropic `LLM_AGENT_MODEL` |
+| `CHANNEL_PLACES_PER_MESSAGE` / `CHANNEL_PLACES_PER_DAY` / `CHANNEL_DISCOVERY_TIMEOUT` | optional, defaults 3 / 25 / `30s` | discovery's cost and time caps |
 | `CHANNEL_SETUP_BASE_URL` | optional, `https://core.horaapp.co` | the host in texted links; unset = `RENDER_EXTERNAL_URL` (`*.onrender.com`) |
 | `APP_ENV` | `production` | already set |
 | `POSTMARK_API_TOKEN` | already set | — |

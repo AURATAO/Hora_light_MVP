@@ -3007,6 +3007,169 @@
    "note": "production 2026-11-03 16:11 NY: a question to HO:RA about what it did"
   },
   {
+   "ctx": {
+    "tasks": [
+     "T43"
+    ]
+   },
+   "msg": "is there a pharmacy open now near 86th and Lex? I need someone to grab Advil",
+   "expect": {
+    "action": "info"
+   },
+   "forbid": [
+    "approve",
+    "decline"
+   ],
+   "note": "a new find request while Bea runs the laundry",
+   "n": 164,
+   "group": "V info (D-23)",
+   "money": false
+  },
+  {
+   "ctx": {
+    "tasks": [
+     "T43"
+    ]
+   },
+   "msg": "where can I get birthday candles and balloons near Park Slope?",
+   "expect": {
+    "action_any": [
+     "info"
+    ]
+   },
+   "forbid": [
+    "approve",
+    "decline"
+   ],
+   "n": 165,
+   "group": "V info (D-23)",
+   "money": false
+  },
+  {
+   "ctx": {
+    "tasks": [
+     "T43"
+    ]
+   },
+   "msg": "does the Trader Joe's on 14th still have pumpkin bread? can someone go check",
+   "expect": {
+    "action_any": [
+     "info",
+     "draft_task"
+    ]
+   },
+   "forbid": [
+    "approve",
+    "decline"
+   ],
+   "note": "info (discovery) or a draft: both reach a booking",
+   "n": 166,
+   "group": "V info (D-23)",
+   "money": false
+  },
+  {
+   "ctx": {
+    "tasks": [
+     "T43"
+    ]
+   },
+   "msg": "any good florist open late near Chelsea?",
+   "expect": {
+    "action": "info"
+   },
+   "forbid": [
+    "approve",
+    "decline"
+   ],
+   "n": 167,
+   "group": "V info (D-23)",
+   "money": false
+  },
+  {
+   "ctx": {
+    "tasks": [
+     "T42"
+    ],
+    "supporter_line": {
+     "task": "t1",
+     "text": "I'm at the store",
+     "minutes_ago": 3
+    }
+   },
+   "msg": "is the store still open late? if so grab ice cream",
+   "expect": {
+    "action": "relay",
+    "task": "t1"
+   },
+   "forbid": [
+    "approve",
+    "decline",
+    "info"
+   ],
+   "note": "rule 12: the errand's own store — for Alex",
+   "n": 168,
+   "group": "V info (D-23)",
+   "money": false
+  },
+  {
+   "ctx": {
+    "tasks": [
+     "T42"
+    ]
+   },
+   "msg": "where should he leave it?",
+   "expect": {
+    "action": "relay",
+    "task": "t1"
+   },
+   "forbid": [
+    "info"
+   ],
+   "n": 169,
+   "group": "V info (D-23)",
+   "money": false
+  },
+  {
+   "ctx": {
+    "tasks": [
+     "T42"
+    ]
+   },
+   "msg": "where is Alex?",
+   "expect": {
+    "action": "where"
+   },
+   "forbid": [
+    "info"
+   ],
+   "n": 170,
+   "group": "V info (D-23)",
+   "money": false
+  },
+  {
+   "ctx": {
+    "tasks": [],
+    "open_question": "booking"
+   },
+   "msg": "actually is there a laundromat open late near Union Square?",
+   "expect": {
+    "action_any": [
+     "relay",
+     "correction",
+     "reply"
+    ]
+   },
+   "forbid": [
+    "approve",
+    "decline",
+    "info"
+   ],
+   "money": true,
+   "note": "a booking question is open: info is not allowed there (decoded to relay)",
+   "n": 171,
+   "group": "V info (D-23)"
+  },
+  {
    "n": 172,
    "group": "F queued requests (server asks one at a time)",
    "money": true,
