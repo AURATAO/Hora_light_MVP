@@ -37,7 +37,7 @@ The push is shown on the lock screen, so it carries no address, no requester nam
 
 ## Residuals (declared)
 - **Notification fatigue.** There is no per-supporter rate cap yet. With 50 supporters and a pilot's volume this is fine; a cap is on the roadmap.
-- **Pushes not tracked per supporter.** Round 2 is "available and not in round 1's borough set", recomputed at widen time. Someone who turned availability on after round 1 gets round 2, which is intended.
+- **Round 2 recipients.** Round 2 is everyone eligible at widen time except the ids round 1 reached (`round1_user_ids`). Someone who turned availability on after round 1 gets round 2, which is intended.
 - **Sweep timing.** The sweep runs every 30 s, so widening happens at 3:00–3:30 and ops are emailed at 5:00–5:30.
 - **The borough costs one lookup.** It is looked up again at dispatch time from the first stop, which already resolves with a city, so it is one Google call. Nothing on the post path changed.
 - **Expo receipts.** Expo push receipts (delivery confirmations) are not polled. That matches today's push.
