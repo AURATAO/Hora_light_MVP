@@ -169,9 +169,9 @@ func dispatchRound1(ctx context.Context, taskID string) error {
 			return err
 		}
 		if _, err := db.Exec(ctx, `
-			update public.task_dispatches set widened_at = now(), widened_count = $2,
-			       round1_user_ids = $3::text[]::uuid[]
-			 where task_id = $1::uuid`, taskID, len(ids), nonNil(ids)); err != nil {
+			update public.task_dispatches set widened_at = now(),
+			       round1_user_ids = $2::text[]::uuid[]
+			 where task_id = $1::uuid`, taskID, nonNil(ids)); err != nil {
 			return fmt.Errorf("record round: %w", err)
 		}
 		dispatchSend(t, "", ids)
@@ -437,8 +437,6 @@ func sweepDispatches(ctx context.Context, shift time.Duration) {
 	}
 }
 
-// claimDispatchStep sets col to now() if it is still null and reports whether
-// this call did. col is one of two literals above, never input.
 // dispatchSweepErr logs a failed scan at most every 10 minutes: with the
 // flag on and the migration missing it would otherwise fire every 30 s.
 func dispatchSweepErr(err error) {
@@ -456,6 +454,8 @@ var (
 	dispatchSweepErrAt time.Time
 )
 
+// claimDispatchStep sets col to now() if it is still null and reports whether
+// this call did. col is one of two literals above, never input.
 func claimDispatchStep(ctx context.Context, taskID, col string) bool {
 	if col != "widened_at" && col != "ops_alerted_at" {
 		return false
