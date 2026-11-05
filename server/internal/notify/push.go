@@ -46,6 +46,13 @@ type expoResponse struct {
 // request path (S-32). On a DeviceNotRegistered ticket the dead token is
 // deleted so the registry self-heals.
 func SendPush(ctx context.Context, db *sql.DB, userID, taskID, notifType, title, body string) {
+	SendPushData(ctx, db, userID, taskID, notifType, title, body, nil)
+}
+
+// SendPushData is SendPush with extra data keys on each message, such as a
+// "url" the app opens on tap (D-24). task_id and type are always set and are
+// not overridden by extra.
+func SendPushData(ctx context.Context, db *sql.DB, userID, taskID, notifType, title, body string, extra map[string]string) {
 	if db == nil || userID == "" {
 		return
 	}
@@ -69,7 +76,7 @@ func SendPush(ctx context.Context, db *sql.DB, userID, taskID, notifType, title,
 			// handler; this drives sound/banner when the app is backgrounded
 			// or the device is locked.
 			Sound: "default",
-			Data:  map[string]string{"task_id": taskID, "type": notifType},
+			Data:  pushData(taskID, notifType, extra),
 		})
 	}
 
@@ -154,4 +161,14 @@ func maskToken(t string) string {
 		return "***"
 	}
 	return t[:12] + "..." + t[len(t)-4:]
+}
+
+func pushData(taskID, notifType string, extra map[string]string) map[string]string {
+	d := map[string]string{}
+	for k, v := range extra {
+		d[k] = v
+	}
+	d["task_id"] = taskID
+	d["type"] = notifType
+	return d
 }

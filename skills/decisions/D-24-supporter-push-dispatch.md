@@ -13,7 +13,7 @@
 ## Decision (Aura, 2026-11-06)
 1. **Round 1.** When a task goes live, it is pushed to every eligible supporter who is available and serves the task's borough.
 2. **Round 2.** After 3 minutes with no accept, it is pushed to every other eligible, available supporter.
-3. **Ops.** After 5 minutes with no accept, ops are emailed. This is PLAN §13b's N.
+3. **Ops.** After 5 minutes with no accept, ops are emailed. This is PLAN §13b's N. It applies to immediate tasks only: a scheduled task has already reached ops as "New task posted", and nothing about it is urgent at minute 5.
 4. **Areas.** Supporters pick their boroughs, from the five NYC boroughs, multi-select. A task's borough is its first stop's, taken from the service-area check. A task with no borough skips round 1.
 5. **Availability.** "I'm available" lasts 4 hours, then turns itself off. There is no separate night rule.
 6. **Claiming.** First accept wins, using the existing claim. Supporters' live location is not used for dispatch.
@@ -39,4 +39,5 @@ The push is shown on the lock screen, so it carries no address, no requester nam
 - **Notification fatigue.** There is no per-supporter rate cap yet. With 50 supporters and a pilot's volume this is fine; a cap is on the roadmap.
 - **Pushes not tracked per supporter.** Round 2 is "available and not in round 1's borough set", recomputed at widen time. Someone who turned availability on after round 1 gets round 2, which is intended.
 - **Sweep timing.** The sweep runs every 30 s, so widening happens at 3:00–3:30 and ops are emailed at 5:00–5:30.
+- **The borough costs one lookup.** It is looked up again at dispatch time from the first stop, which already resolves with a city, so it is one Google call. Nothing on the post path changed.
 - **Expo receipts.** Expo push receipts (delivery confirmations) are not polled. That matches today's push.

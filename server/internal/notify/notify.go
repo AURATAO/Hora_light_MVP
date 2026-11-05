@@ -838,3 +838,30 @@ func nowRome() time.Time {
 	}
 	return time.Now().In(loc)
 }
+
+// NotifyAdminUnclaimed: an immediate task has gone out to supporters and
+// nobody has accepted it (D-24). Same ops list as NotifyAdminNewTask; no
+// requester details, the task link has them.
+func NotifyAdminUnclaimed(taskID, title string, minutes, pushed int) {
+	taskURL := webTaskURL(taskID)
+	card := fmt.Sprintf(`
+<p style="margin:0 0 12px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:11px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:#b23f2c;">Nobody has accepted yet</p>
+<h1 style="margin:0 0 20px;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:400;line-height:1.3;color:#1a1a16;">%s</h1>
+<p style="margin:0 0 24px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#1a1a16;">Live for %d minutes. Sent to %d supporter(s), no accept. Dispatch it by hand.</p>
+<table cellpadding="0" cellspacing="0"><tr>
+  <td style="border-radius:8px;background:#1a1a16;">
+    <a href="%s" style="display:inline-block;padding:14px 28px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;font-weight:500;color:#f4f4f0;text-decoration:none;border-radius:8px;">View task &rarr;</a>
+  </td>
+</tr></table>`, html.EscapeString(title), minutes, pushed, taskURL)
+	subject := fmt.Sprintf("Unclaimed after %d min: %s", minutes, title)
+	page := wrapEmail(subject, card)
+	for _, email := range []string{
+		getenv("ADMIN_EMAIL", "liang.you@horaapp.co"),
+		"daniele@arcodiax.com",
+		"liang.you@arcodiax.com",
+	} {
+		if err := SendEmail(EmailPayload{To: email, Subject: subject, Html: page}); err != nil {
+			log.Printf("[notify] admin unclaimed email failed taskID=%s err=%v", taskID, err)
+		}
+	}
+}

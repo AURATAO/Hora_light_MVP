@@ -27,6 +27,30 @@ type AreaResult struct {
 	Verdict  AreaVerdict
 	Resolved string
 	Boroughs []string
+	// Borough names the borough on Inside ("Manhattan", "the Bronx"), from
+	// the county Google returned; empty when it could not be told. Supporter
+	// dispatch reads it (D-24); nothing decides the area on it.
+	Borough string
+}
+
+// BoroughOfCounty: the borough a NYC county is, by the names in nycBoroughs;
+// "" for any other county.
+func BoroughOfCounty(county string) string {
+	for _, b := range nycBoroughs {
+		if strings.EqualFold(strings.TrimSpace(county), b.county) {
+			return b.name
+		}
+	}
+	return ""
+}
+
+// BoroughNames: the five, as AreaResult.Borough spells them.
+func BoroughNames() []string {
+	out := make([]string, 0, len(nycBoroughs))
+	for _, b := range nycBoroughs {
+		out = append(out, b.name)
+	}
+	return out
 }
 
 // nycBoroughs are the five boroughs by the county Google names them with in
@@ -94,6 +118,8 @@ func asWritten(ctx context.Context, address string, results []geocodeResult) (Ar
 	inside := AreaResult{Verdict: top}
 	if top == AreaInside {
 		inside.Resolved = resolvedAddress(address, results[0])
+		_, _, county := areaParts(results[0])
+		inside.Borough = BoroughOfCounty(county)
 	}
 	// Google offering places on both sides of the line is an ambiguous
 	// address, whichever it ranked first.
@@ -171,7 +197,8 @@ func inTheBoroughs(ctx context.Context, address string) (AreaResult, error) {
 	case len(boroughs) > 1:
 		return AreaResult{Verdict: AreaWhichBorough, Boroughs: boroughs}, nil
 	case len(matches) == 1:
-		return AreaResult{Verdict: AreaInside, Resolved: resolvedAddress(address, matches[0])}, nil
+		_, _, county := areaParts(matches[0])
+		return AreaResult{Verdict: AreaInside, Resolved: resolvedAddress(address, matches[0]), Borough: BoroughOfCounty(county)}, nil
 	}
 	return AreaResult{}, nil // nothing in NYC, or several in one borough: the borough wouldn't help
 }
