@@ -54,8 +54,13 @@ func dispatchEnabled() bool {
 // Seams for tests.
 var (
 	dispatchPushFn = func(ctx context.Context, userID, taskID, title, body string) {
-		notify.SendPushData(ctx, sqldb, userID, taskID, pushTypeNewTaskOffer, title, body,
-			map[string]string{"url": "/task/" + taskID})
+		// Time Sensitive (Aura 2026-11-06): a new task should reach a supporter
+		// through Focus. High priority for immediate delivery.
+		notify.SendPushData(ctx, sqldb, userID, taskID, pushTypeNewTaskOffer, title, body, notify.PushOptions{
+			Extra:             map[string]string{"url": "/task/" + taskID},
+			InterruptionLevel: "time-sensitive",
+			Priority:          "high",
+		})
 	}
 	dispatchOpsFn = func(taskID, title string, minutes, pushed int) {
 		notify.NotifyAdminUnclaimed(taskID, title, minutes, pushed)
@@ -164,7 +169,7 @@ func dispatchRound1(ctx context.Context, taskID string) error {
 	// between the two can then only miss a push, never repeat one in round 2.
 	if borough == "" {
 		// Nothing to match on: everyone available, now; round 2 has run.
-		ids, err := eligibleSupporters(ctx, t.RequesterID, "", nil)
+		ids, err := eligibleSupporters(ctx, t, "", nil)
 		if err != nil {
 			return err
 		}
@@ -178,7 +183,7 @@ func dispatchRound1(ctx context.Context, taskID string) error {
 		log.Printf("[dispatch] task=%s round=all (no borough) pushed=%d", taskID, len(ids))
 		return nil
 	}
-	ids, err := eligibleSupporters(ctx, t.RequesterID, borough, nil)
+	ids, err := eligibleSupporters(ctx, t, borough, nil)
 	if err != nil {
 		return err
 	}
@@ -200,14 +205,16 @@ func nonNil(ids []string) []string {
 }
 
 // eligibleSupporters: verified, available now, with a device to push to, not
-// the requester, neither side blocking the other, and on the requester's
-// side of the App Review sandbox wall. borough != "" keeps those who serve
+// the requester, neither side blocking the other, on the requester's side of
+// the App Review sandbox wall, and not on (or booked for) an overlapping task. borough != "" keeps those who serve
 // it; except drops ids already reached. Payout readiness is checked in Go,
 // the same gate acceptTask applies.
-func eligibleSupporters(ctx context.Context, requesterID, borough string, except []string) ([]string, error) {
+func eligibleSupporters(ctx context.Context, t dispatchTask, borough string, except []string) ([]string, error) {
 	if except == nil {
 		except = []string{}
 	}
+	requesterID := t.RequesterID
+	winStart, winEnd := dispatchWindow(t, time.Now())
 	rows, err := db.Query(ctx, `
 		select u.id::text
 		  from public.users u
@@ -221,8 +228,23 @@ func eligibleSupporters(ctx context.Context, requesterID, borough string, except
 		   and coalesce(u.is_sandbox, false)
 		       = coalesce((select r.is_sandbox from public.users r where r.id = $1::uuid), false)
 		   and not `+usersBlockedSQL("u.id", "$1::uuid")+`
+		   -- No overlapping task (Aura 2026-11-06): nobody already on a job, or
+		   -- booked for one, in this task's window. An ASAP job holds its
+		   -- supporter from now for its estimate; one accepted more than a day
+		   -- ago no longer does (a task left open by mistake must not bench
+		   -- someone forever).
+		   and not exists (
+		     select 1 from public.tasks o
+		      where o.assigned_to_id = u.id and o.status = 'open'
+		        and (not (coalesce(o.is_immediate, false) or o.scheduled_at is null)
+		             or coalesce(o.accepted_at, o.created_at) > now() - interval '1 day')
+		        and tstzrange(
+		              case when coalesce(o.is_immediate, false) or o.scheduled_at is null then now() else o.scheduled_at end,
+		              (case when coalesce(o.is_immediate, false) or o.scheduled_at is null then now() else o.scheduled_at end)
+		                + make_interval(mins => greatest(coalesce(o.estimated_minutes, 0), 30) + 30))
+		            && tstzrange($4::timestamptz, $5::timestamptz))
 		 order by p.available_until desc
-		 limit 200`, requesterID, borough, except)
+		 limit 200`, requesterID, borough, except, winStart, winEnd)
 	if err != nil {
 		return nil, fmt.Errorf("eligible supporters: %w", err)
 	}
@@ -250,6 +272,21 @@ func eligibleSupporters(ctx context.Context, requesterID, borough string, except
 		}
 	}
 	return out, nil
+}
+
+// dispatchWindow: when the new task would occupy a supporter — from now (ASAP)
+// or its start, for its estimate (at least 30 min) plus a 30 min buffer for
+// getting there.
+func dispatchWindow(t dispatchTask, now time.Time) (time.Time, time.Time) {
+	start := now
+	if !t.Immediate && t.ScheduledAt != nil {
+		start = *t.ScheduledAt
+	}
+	m := t.Minutes
+	if m < 30 {
+		m = 30
+	}
+	return start, start.Add(time.Duration(m+30) * time.Minute)
 }
 
 // dispatchSend pushes to each id, dispatchPushWorkers at a time, each with
@@ -409,7 +446,7 @@ func sweepDispatches(ctx context.Context, shift time.Duration) {
 		}
 		if !d.widened && age >= dispatchWidenAfter {
 			if claimDispatchStep(ctx, d.taskID, "widened_at") {
-				ids, err := eligibleSupporters(ctx, t.RequesterID, "", d.round1)
+				ids, err := eligibleSupporters(ctx, t, "", d.round1)
 				if err != nil {
 					log.Printf("[dispatch] task=%s round 2: %v", d.taskID, err)
 				}

@@ -947,6 +947,13 @@ Open, Aura's call before building:
    staging first, and the production flag off until Aura turns it on.
    Aura applies the migration and merges.
 
+**Added the same day (Aura, after aligning with the supporter-only prompt):**
+- **No overlapping task** is required to be pushed (D-24).
+- **iOS Time Sensitive** pushes, with high priority.
+- **"This task was just taken"** when a push is opened too late.
+- **Withdrawing a delivered push** is a stretch goal, researched first.
+- **The borough round stays.** It is NOT "nearest 2–3 within a radius" (ruled 2026-11-06).
+
 **App** (the supporter-only build):
 1. Borough multi-select in supporter-apply and in profile.
 2. An "I'm available" toggle on the Tasks screen, showing "until 6:40 PM"
@@ -955,7 +962,9 @@ Open, Aura's call before building:
 3. A push tap opens `data.url`, a generic route, so later offer types need
    no new build.
 4. Ask for notification permission at onboarding, saying why.
-5. Review notes: the review account is a supporter, its tasks are seeded,
+5. Add the `com.apple.developer.usernotifications.time-sensitive` entitlement (app.json `ios.entitlements`). It must be in this submission's build.
+6. When a push is opened for a task someone else took (acceptTask answers "not available"), say "This task was just taken" and return to the list.
+7. Review notes: the review account is a supporter, its tasks are seeded,
    and the flag is off during review.
 
 **Later, onto the roadmap:**

@@ -22,6 +22,19 @@ type expoMessage struct {
 	Body  string            `json:"body"`
 	Sound string            `json:"sound,omitempty"`
 	Data  map[string]string `json:"data,omitempty"`
+	// iOS: "time-sensitive" breaks through Focus (the app needs the
+	// com.apple.developer.usernotifications.time-sensitive entitlement, or
+	// iOS shows it as an ordinary notification). Empty = Expo's default.
+	InterruptionLevel string `json:"interruptionLevel,omitempty"`
+	// "high" asks for immediate delivery; empty = Expo's default.
+	Priority string `json:"priority,omitempty"`
+}
+
+// PushOptions: delivery hints for SendPushData. The zero value is today's push.
+type PushOptions struct {
+	Extra             map[string]string // data keys beside task_id and type
+	InterruptionLevel string
+	Priority          string
 }
 
 // One ticket per message we sent, returned in the same order.
@@ -46,13 +59,13 @@ type expoResponse struct {
 // request path (S-32). On a DeviceNotRegistered ticket the dead token is
 // deleted so the registry self-heals.
 func SendPush(ctx context.Context, db *sql.DB, userID, taskID, notifType, title, body string) {
-	SendPushData(ctx, db, userID, taskID, notifType, title, body, nil)
+	SendPushData(ctx, db, userID, taskID, notifType, title, body, PushOptions{})
 }
 
-// SendPushData is SendPush with extra data keys on each message, such as a
-// "url" the app opens on tap (D-24). task_id and type are always set and are
-// not overridden by extra.
-func SendPushData(ctx context.Context, db *sql.DB, userID, taskID, notifType, title, body string, extra map[string]string) {
+// SendPushData is SendPush with options: extra data keys on each message,
+// such as a "url" the app opens on tap, and delivery hints (D-24). task_id and
+// type are always set and are not overridden by Extra.
+func SendPushData(ctx context.Context, db *sql.DB, userID, taskID, notifType, title, body string, opts PushOptions) {
 	if db == nil || userID == "" {
 		return
 	}
@@ -75,8 +88,10 @@ func SendPushData(ctx context.Context, db *sql.DB, userID, taskID, notifType, ti
 			// Foreground presentation is governed by the mobile notification
 			// handler; this drives sound/banner when the app is backgrounded
 			// or the device is locked.
-			Sound: "default",
-			Data:  pushData(taskID, notifType, extra),
+			Sound:             "default",
+			Data:              pushData(taskID, notifType, opts.Extra),
+			InterruptionLevel: opts.InterruptionLevel,
+			Priority:          opts.Priority,
 		})
 	}
 

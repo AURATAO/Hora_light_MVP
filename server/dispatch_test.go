@@ -50,6 +50,7 @@ CREATE TABLE public.tasks (
 	rate_cents_per_min integer NOT NULL DEFAULT 50,
 	is_immediate boolean NOT NULL DEFAULT true,
 	scheduled_at timestamptz,
+	accepted_at timestamptz,
 	location_text text,
 	created_at timestamptz NOT NULL DEFAULT now()
 );
@@ -366,5 +367,41 @@ func TestNormalizeBoroughs(t *testing.T) {
 	}
 	if _, ok := normalizeBoroughs([]string{"Jersey City"}); ok {
 		t.Fatal("Jersey City accepted")
+	}
+}
+
+// Aura 2026-11-06: nobody on (or booked for) an overlapping task is pushed.
+func TestDispatchSkipsSupportersWithAnOverlappingTask(t *testing.T) {
+	rec := setupDispatchDB(t)
+	ctx := context.Background()
+	requester := seedPerson(t, false, false, false, false, nil)
+	busy := seedPerson(t, true, true, true, false, []string{"Manhattan"})
+	bookedLater := seedPerson(t, true, true, true, false, []string{"Manhattan"})
+	staleJob := seedPerson(t, true, true, true, false, []string{"Manhattan"})
+	free := seedPerson(t, true, true, true, false, []string{"Manhattan"})
+	other := seedPerson(t, false, false, false, false, nil)
+	// busy: an ASAP job accepted ten minutes ago.
+	if _, err := db.Exec(ctx, `insert into public.tasks (requester_id, assigned_to_id, is_immediate, accepted_at)
+		values ($1::uuid, $2::uuid, true, now() - interval '10 minutes')`, other, busy); err != nil {
+		t.Fatal(err)
+	}
+	// bookedLater: a scheduled job next week — not in this ASAP task's window.
+	if _, err := db.Exec(ctx, `insert into public.tasks (requester_id, assigned_to_id, is_immediate, scheduled_at)
+		values ($1::uuid, $2::uuid, false, now() + interval '7 days')`, other, bookedLater); err != nil {
+		t.Fatal(err)
+	}
+	// staleJob: an ASAP job accepted months ago and never closed.
+	if _, err := db.Exec(ctx, `insert into public.tasks (requester_id, assigned_to_id, is_immediate, accepted_at, created_at)
+		values ($1::uuid, $2::uuid, true, now() - interval '200 days', now() - interval '200 days')`, other, staleJob); err != nil {
+		t.Fatal(err)
+	}
+	startDispatch(seedDispatchTask(t, requester, "280 Mercer St", true))
+	dispatchWG.Wait()
+	got := rec.to()
+	if got[busy] {
+		t.Error("a supporter on an ASAP job now was pushed")
+	}
+	if !got[bookedLater] || !got[staleJob] || !got[free] {
+		t.Errorf("free, booked-next-week and stale-job supporters must be pushed: %v", got)
 	}
 }
