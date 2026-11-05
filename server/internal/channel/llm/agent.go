@@ -37,13 +37,18 @@ const (
 	// in it (production 2026-11-03). The router keeps them on the draft and
 	// sends them with the booking; no time, price or place is the model's.
 	ActionNote Action = "note"
+	// ActionInfo: the customer asks HO:RA to find something in NYC — a
+	// place for an errand, what is open, where to get an item, someone to
+	// go and check (D-23). The router runs place discovery (discovery.go),
+	// whose reply is Google's data; the model never writes a place.
+	ActionInfo Action = "info"
 )
 
-// allActions is the schema's action enum. A new action (place discovery's
-// "info", next) is added here, to the prompt, to DecodeProposal's
-// make-safe switch and to the router's handling of a proposal; ToIntent's
-// default sends an unknown one to the supporter, the safe path.
-var allActions = []Action{ActionApprove, ActionDecline, ActionRelay, ActionCorrection, ActionDraftTask, ActionAsk, ActionEscalate, ActionReply, ActionWhere, ActionNote}
+// allActions is the schema's action enum. A new action is added here, to
+// the prompt, to DecodeProposal's make-safe switch and to the router's
+// handling of a proposal; ToIntent's default sends an unknown one to the
+// supporter, the safe path.
+var allActions = []Action{ActionApprove, ActionDecline, ActionRelay, ActionCorrection, ActionDraftTask, ActionAsk, ActionEscalate, ActionReply, ActionWhere, ActionNote, ActionInfo}
 
 // Escalation is why a person must handle it (logged; never the words).
 type Escalation string
@@ -99,7 +104,7 @@ type Agent interface {
 }
 
 // AgentPromptVersion labels AgentPrompt in test reports.
-const AgentPromptVersion = "v0.4.5"
+const AgentPromptVersion = "v0.4.6"
 
 // AgentPrompt is the system prompt (v0.3.9: proposals only, json_schema;
 // rules 5 and 8–10 from the first baseline, 2026-10-22; 9–10 narrowed and
@@ -120,7 +125,10 @@ const AgentPromptVersion = "v0.4.5"
 // "note" — words for the pending booking's supporter, kept on the booking
 // (production 2026-11-03 15:57: an instruction re-sent the same summary
 // and was lost); rule 13 — agreeing to the summary's extra-time line is
-// not a new length (15:56: "15 mins is fine" made a 30-minute errand 15).
+// not a new length (15:56: "15 mins is fine" made a 30-minute errand 15);
+// v0.4.6: "info" — a request to HO:RA to find a place, an item or what is
+// open, or to send someone to check (D-23, place discovery); rule 12's
+// questions about the errand's own store stay "relay".
 // The test runner (cmd/agenttest) sends this exact text.
 const AgentPrompt = `You read one text message a customer ("requester") sent to HO:RA, an on-demand errand service in New York City where real people ("supporters") run errands. You return ONE JSON object proposing what the message is. You do not act: the HO:RA server decides, by its own rules, and has already applied them before asking you.
 
@@ -135,6 +143,7 @@ Fields:
   - "escalate": a person at HO:RA must handle it: feeling unsafe, harassment, injury, a theft or damage claim, a refund or charge dispute, anything legal or medical, the customer asks for a human, or the same misunderstanding is repeating. Put the reason in "escalation".
   - "reply": a hello, a question about HO:RA itself (pricing, hours, how it works), or a short acknowledgement of hora_last_line ("ok", "never mind", "got it", "forget it", "算了") when HO:RA spoke more recently than the supporter and open_question is not "booking", "budget" or "name" — not words for a supporter.
   - "where": the customer asks HO:RA where a listed supporter is, how far away they are, whether they have arrived or how long until they get there — in any wording or language, also asked to the supporter in the second person ("can you tell me where alex is", "is she close?", "where are you?", "Alex, are you close?", "any news on my supporter?", "has bea made it yet", "她到底到哪了", "¿dónde está?", "dov'è?", "où est-elle ?", "どこ？", "어디야?"). HO:RA answers from the app's live tracking; you never state a place, a distance or a time. Put the errand's label in "task" when the words name or clearly mean one supporter, else "".
+  - "info": ONLY when open_question is "": the customer asks HO:RA itself to FIND something in New York City or to send someone to look — a place for an errand ("is there a laundromat open late near me?", "where can I get birthday candles near Park Slope?", "pharmacy open now near 14th St?"), where to drop a return, a gift or flowers for tonight, food worth a supporter waiting in line for, "does Trader Joe's on 14th still have oat milk?", "how long is the line at Levain?" — not about a listed errand's own store or its supporter. HO:RA searches Google Maps and answers; you never name a place. "task" is "".
   - "note": ONLY when open_question is "booking": words for whoever will run the pending new booking that do not change it — a phone number or a contact, an instruction, a detail for the supporter ("this is my number, when you arrive call my friend Lily", "the door code is 4521", "ring twice", "she's in apartment 3B", "the cake is in a white box"). HO:RA adds them to the booking as a note for the supporter. With open_question "booking", such words are "note", not "relay" — "relay" is for a supporter already on a LISTED errand. A change to the booking's time, place, length, budget or what is done is "correction" — also when it comes with a note.
 - "task": the label ("t1", "t2"…) of the errand the words are about, or "" when none. Never a label that is not listed.
 - "escalation": the reason when action is "escalate", else "".
@@ -153,7 +162,7 @@ Rules:
 
 11. hora_last_line is what HO:RA itself last said to the customer (an answer, a question, "please cancel it in the app"). When it is more recent than supporter_last_line and the message is a bare acknowledgement, a withdrawal or a reaction to it ("ok never mind", "fine", "oh ok", "算了"), that is "reply" — the customer is talking to HO:RA, not to the supporter. EXCEPT when open_question is "booking", "budget" or "name": then a withdrawal ("never mind", "I don't need it anymore", "forget it", "算了") takes back the pending new booking and is "decline", never "reply" — a "reply" there would leave the booking waiting for a YES. A message that gives the supporter something ("ok, tell him to wait") is still "relay".
 
-12. "where" is a question about a listed supporter's own whereabouts or arrival, in any language, also in the second person ("where are you?", "are you close?" — Arbiter 2026-10-30). Words that ask or tell the supporter something about a PLACE are "relay": "where should he leave it?", "where do I meet her?", "tell her to wait where she is", "is the store still open?", "how far is the store from my place?", "dónde está la llave?". A place that is not a listed supporter ("where is Starbucks?") is "relay". When a whereabouts question also carries an instruction or news ("I'll be late, where is she?", "where is he? the door code is 4521"), it is still "where" — HO:RA answers it and passes the whole message to the supporter. Precedence: any reason to escalate (rule 10 and the "escalate" bullet) wins over "where" ("where is she?? I feel unsafe", "where is he, I was charged twice" are "escalate"); a whereabouts question addressed to a listed supporter by name ("Alex, where are you?") is "where" with that errand; "where" wins over rule 2 and rule 5.
+12. "where" is a question about a listed supporter's own whereabouts or arrival, in any language, also in the second person ("where are you?", "are you close?" — Arbiter 2026-10-30). Words that ask or tell the supporter something about a PLACE are "relay": "where should he leave it?", "where do I meet her?", "tell her to wait where she is", "is the store still open?", "how far is the store from my place?", "dónde está la llave?". A place that is not a listed supporter ("where is Starbucks?") is "relay" — unless the customer asks HO:RA to find one for a new errand ("where's the nearest open pharmacy? I need someone to get Advil"), which is "info". When a whereabouts question also carries an instruction or news ("I'll be late, where is she?", "where is he? the door code is 4521"), it is still "where" — HO:RA answers it and passes the whole message to the supporter. Precedence: any reason to escalate (rule 10 and the "escalate" bullet) wins over "where" ("where is she?? I feel unsafe", "where is he, I was charged twice" are "escalate"); a whereabouts question addressed to a listed supporter by name ("Alex, where are you?") is "where" with that errand; "where" wins over rule 2 and rule 5.
 
 13. With open_question "booking", hora_last_line is usually the booking summary, which says how many extra minutes are OK without asking ("up to 15 extra minutes are OK"). A message that only agrees to that line ("15 mins is fine", "the extra 15 is ok", "extra time is fine") is "approve" — it does NOT change the errand's length, so it is never "correction". Only words that clearly give the errand itself a new length ("make it 15 minutes", "it only takes 15 min", "it'll take an hour") are "correction".
 
@@ -297,6 +306,10 @@ func DecodeProposal(out string, c AgentContext) (Proposal, error) {
 		if c.OpenQuestion != "booking" {
 			p.Action = ActionRelay // no summary open: nothing to attach a note to
 		}
+	case ActionInfo:
+		if c.OpenQuestion != "" {
+			p.Action = ActionRelay // a question of ours is open: it is answered first
+		}
 	}
 	return p, nil
 }
@@ -405,10 +418,11 @@ func ToIntent(p Proposal) Intent {
 	case ActionDraftTask:
 		return IntentNewTask
 	}
-	// relay, ask, reply, escalate, where: the router handles escalate first,
+	// relay, ask, reply, escalate, where, info: the router handles escalate first,
 	// a reply that is a short acknowledgement of HO:RA's own last line
-	// (saidToUs), and a where it can answer from the live tracking; any
-	// other reply or where falls to the supporter — the safe default.
+	// (saidToUs), a where it can answer from the live tracking, and an info
+	// place discovery takes; any other reply, where or info falls to the
+	// supporter — the safe default.
 	return IntentToSupporter
 }
 

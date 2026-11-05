@@ -831,6 +831,15 @@ func (r *Router) routeInContextLabel(ctx context.Context, in Inbound, id Identit
 			// for a person (P7). An open question of ours is said again.
 			return true, llm.IntentOther, r.Reply(ctx, in, r.ackWithQuestion(conv), "")
 		}
+		if p.Action == llm.ActionInfo && conv.State == StateIdle && r.discoveryOn() {
+			// A request to find a place, an item or someone to check, with a
+			// supporter on another job (D-23): discovery answers from
+			// Google's data. Not for discovery after all → the supporter, the
+			// safe default (P7).
+			if handled, err := r.discover(ctx, in, id, conv, text, r.freshOffer(ctx, id), true, false); handled {
+				return true, "", err
+			}
+		}
 		if p.Action == llm.ActionWhere && !IsCancelRequest(text) {
 			// A whereabouts question the rule (IsWhereQuestion) did not
 			// match — "can you tell me where aura is" was relayed on
@@ -1193,7 +1202,7 @@ func approvalStillPending(conv Conversation) string {
 // startDraftWhileActive drafts a new errand while a supporter is on the
 // job and marks the draft so the summary offers the way out.
 func (r *Router) startDraftWhileActive(ctx context.Context, in Inbound, id Identity, conv Conversation, text string, active []ActiveTask) error {
-	return r.startDraftOpts(ctx, in, id, conv, text, supporterForms(active))
+	return r.startDraftOpts(ctx, in, id, conv, text, draftOpts{whileActive: supporterForms(active)})
 }
 
 func supporterByName(active []ActiveTask, name string) (ActiveTask, bool) {
