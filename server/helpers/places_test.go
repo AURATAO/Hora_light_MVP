@@ -108,3 +108,29 @@ func TestPlaceName(t *testing.T) {
 		t.Fatal("bad id accepted")
 	}
 }
+
+// An answer about the options shown: the place looked up again by id with
+// rating, reviews, price level and hours — and nothing that costs more
+// (no phone, website, reviews or photos).
+func TestPlaceAbout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Goog-FieldMask") != "id,displayName,shortFormattedAddress,formattedAddress,addressComponents,rating,userRatingCount,priceLevel,currentOpeningHours" || r.URL.Path != "/gN" {
+			http.Error(w, "bad", 400)
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"gN","displayName":{"text":"Nolita Pizza"},"shortFormattedAddress":"68 Kenmare St, New York",
+			"formattedAddress":"68 Kenmare St, New York, NY 10012, USA","rating":4.6,"userRatingCount":1890,"priceLevel":"PRICE_LEVEL_INEXPENSIVE",
+			"addressComponents":[{"longText":"New York County","shortText":"New York County","types":["administrative_area_level_2"]},{"longText":"New York","shortText":"NY","types":["administrative_area_level_1"]},{"longText":"United States","shortText":"US","types":["country"]}],
+			"currentOpeningHours":{"openNow":true,"nextCloseTime":"2026-11-06T04:00:00Z"}}`))
+	}))
+	defer srv.Close()
+	prev := PlacesDetailsURL
+	PlacesDetailsURL = srv.URL + "/"
+	t.Cleanup(func() { PlacesDetailsURL = prev })
+	t.Setenv("GOOGLE_MAPS_API_KEY", "k")
+	nyc, _ := time.LoadLocation("America/New_York")
+	p, err := PlaceAbout(context.Background(), "gN", nyc)
+	if err != nil || p.Name != "Nolita Pizza" || p.Rating != 4.6 || p.RatingCount != 1890 || p.PriceLevel != 1 || p.ClosesAt != "11 PM" || p.Area != AreaInside {
+		t.Fatalf("p %+v err %v", p, err)
+	}
+}

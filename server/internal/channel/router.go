@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 
@@ -500,12 +501,25 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 	}
 	// A plain "yes" to "find places for these on one route?" asks to find
 	// them, a "no" drops the question (discovery.go) — never a booking.
-	if (IsYes(text) || IsNo(text)) && r.discoveryOn() {
-		if o := r.freshOffer(ctx, id); o != nil && o.Kind == offerRouteAsk {
+	// With options shown: a "yes" to "Want me to set that up at …?" starts
+	// that option's draft (its summary still asks YES before any booking);
+	// "no" / "never mind" drops the options.
+	if (IsYes(text) || IsNo(text) || IsDraftDecline(text)) && r.discoveryOn() {
+		if o := r.freshOffer(ctx, id); o != nil {
 			at := time.Unix(o.AtUnix, 0)
 			if !r.supporterSpokeSince(ctx, in, id, &at) {
-				if handled, err := r.answerRouteAsk(ctx, in, id, conv, text, o); handled {
-					return err
+				switch {
+				case o.Kind == offerRouteAsk && (IsYes(text) || IsNo(text)):
+					if handled, err := r.answerRouteAsk(ctx, in, id, conv, text, o); handled {
+						return err
+					}
+				case o.Kind == offerOptions && IsYes(text) && o.Suggest > 0 && o.Suggest <= len(o.Options):
+					return r.chooseOption(ctx, in, id, conv, o, o.Suggest, o.SuggestWords)
+				case o.Kind == offerOptions && (IsNo(text) || IsDraftDecline(text)) && !IsYes(text):
+					// Dropped; the words then go on as before (a supporter
+					// who asked something still gets the "no").
+					r.saveOffer(ctx, id, nil)
+					log.Printf("[channel] discovery options dropped identity=%s", id.ID)
 				}
 			}
 		}
@@ -525,7 +539,8 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 	}
 	// "The usual", a pick from places just shown, or where to look: ours,
 	// unless a supporter has written since (discovery.go).
-	if handled, err := r.routeDiscoveryFirst(ctx, in, id, conv, text); handled {
+	handled, tried, err := r.routeDiscoveryFirst(ctx, in, id, conv, text)
+	if handled {
 		return err
 	}
 	// With a supporter on the job, the thread's context decides (D-17).
@@ -537,11 +552,23 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 	if handled, err := r.askRoute(ctx, in, id, text); handled {
 		return err
 	}
+	// "Where can I get…", "recommend me a pizzeria": a search by rule goes
+	// to discovery before the classifier (production 2026-11-06: 3.7 s of
+	// classifying before a search); not discovery after all, it is
+	// classified as before.
+	if !tried && r.discoveryOn() && LooksLikeDiscovery(text) {
+		tried = true
+		if handled, err := r.discover(ctx, in, id, conv, text, r.freshOffer(ctx, id), true, false); handled {
+			return err
+		}
+	}
 	intent := r.classify(ctx, text)
-	// "Where can I get…", "pharmacy open now", a follow-up to places just
-	// shown: place discovery, which answers or leaves it to the switch.
-	if handled, err := r.routeDiscovery(ctx, in, id, conv, text, intent); handled {
-		return err
+	// A question, or a follow-up to places just shown: place discovery,
+	// which answers or leaves it to the switch.
+	if !tried {
+		if handled, err := r.routeDiscovery(ctx, in, id, conv, text, intent); handled {
+			return err
+		}
 	}
 	switch intent {
 	case llm.IntentNewTask:
@@ -599,6 +626,9 @@ type draftOpts struct {
 	// Both are kept on the draft and re-applied on every re-draft.
 	places []ChosenPlace
 	check  bool
+	// notes: words for the supporter added to the draft's notes (a
+	// question asked with a pick — discovery.go).
+	notes []string
 	// prebuilt: the errand is already a draft (the usual — discovery.go):
 	// not parsed, priced and checked like any other. intro: said once
 	// before its first question.
@@ -772,6 +802,14 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		p.NoAutoExtend = conv.Pending.NoAutoExtend
 		p.Notes = conv.Pending.Notes
 		p.WhileActive, p.WhileActiveShown = conv.Pending.WhileActive, conv.Pending.WhileActiveShown
+	}
+	for _, n := range o.notes {
+		if n = strings.TrimSpace(n); n != "" && len(p.Notes) < MaxNotes {
+			if utf8.RuneCountInString(n) > maxNoteRunes {
+				n = string([]rune(n)[:maxNoteRunes]) + "…"
+			}
+			p.Notes = append(p.Notes, n)
+		}
 	}
 	p.SetItems(items)
 	p.AreaStops = areaStops
