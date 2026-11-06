@@ -51,4 +51,13 @@ func TestPGDiscoveryStore(t *testing.T) {
 	if ok, _ := s.TakePlacesCall(ctx, id.ID, "2026-11-05", 2); ok {
 		t.Fatal("third call of the new day allowed")
 	}
+	// The peek counts nothing.
+	for day, want := range map[string]int{"2026-11-05": 0, "2026-11-04": 2, "2026-11-06": 2} {
+		if n, err := s.PlacesCallsLeft(ctx, id.ID, day, 2); err != nil || n != want {
+			t.Fatalf("left %s: %d %v, want %d", day, n, err, want)
+		}
+	}
+	if n, _ := s.PlacesCallsLeft(ctx, "00000000-0000-0000-0000-000000000000", "2026-11-05", 2); n != 2 {
+		t.Fatalf("no row: %d", n)
+	}
 }

@@ -28,6 +28,7 @@ func (f *fakeSearch) SearchPlaces(_ context.Context, q string, _ bool) ([]Place,
 }
 func (f *fakeSearch) PlaceDetails(context.Context, string) (Place, error) { return Place{}, nil }
 func (f *fakeSearch) PlaceName(context.Context, string) (string, error)   { return "", nil }
+func (f *fakeSearch) AboutDetails(context.Context, string) (Place, error) { return Place{}, nil }
 
 func yes() *bool { b := true; return &b }
 
@@ -289,5 +290,95 @@ func TestDiscoverOnSearchOnce(t *testing.T) {
 		if calls == 1 && googleAtCall != 0 {
 			t.Fatalf("%s: OnSearch came after %d searches, want before the first", tc.name, googleAtCall)
 		}
+	}
+}
+
+// Production 2026-11-06: "pizzeria near 250 Mercer St, Manhattan" ran twice
+// in one turn. The same query (case, punctuation and spacing aside) is
+// answered from the turn's first result — one Places call, one count —
+// and once a round of searches has results, the tool is switched off: the
+// next call answers.
+func TestDiscoverSearchesOnceThenAnswers(t *testing.T) {
+	var bodies []map[string]any
+	a, calls := fakeAnthropic(t, "claude-sonnet-5-5", func(w http.ResponseWriter, body map[string]any) {
+		bodies = append(bodies, body)
+		switch len(bodies) {
+		case 1:
+			b, _ := json.Marshal(map[string]any{
+				"id": "msg_t", "type": "message", "role": "assistant", "model": "claude-sonnet-5-5",
+				"content": []any{
+					map[string]any{"type": "tool_use", "id": "tu_1", "name": "search_places", "input": map[string]any{"query": "pizzeria near 250 Mercer St, Manhattan", "open_now": false}},
+					map[string]any{"type": "tool_use", "id": "tu_2", "name": "search_places", "input": map[string]any{"query": "Pizzeria  near 250 Mercer St Manhattan", "open_now": false}},
+				},
+				"stop_reason": "tool_use", "usage": map[string]any{"input_tokens": 300, "output_tokens": 30},
+			})
+			write(t, w, b)
+		default:
+			write(t, w, anthropicReply(t, `{"action":"info","lead":"","options":[{"places":["p1"]}],"check":false,"reason":"","usual":"","choice":0,"topic":"","item":""}`, "end_turn"))
+		}
+	})
+	fs := &fakeSearch{byQuery: func(string) []Place { return laundromats[:1] }}
+	allowed := 0
+	res, err := (&PlaceDiscovery{Model: a, Places: fs}).Discover(context.Background(), DiscoveryRequest{
+		Text: "my office is 250 Mercer street can you recommend me few nice pizzeria?", MaxSearches: 3,
+		Allow: func(context.Context) bool { allowed++; return true },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fs.queries) != 1 || res.Searches != 1 || allowed != 1 || calls.Load() != 2 || res.Calls != 2 {
+		t.Fatalf("google %v searches %d allowed %d model calls %d/%d", fs.queries, res.Searches, allowed, calls.Load(), res.Calls)
+	}
+	if tc, _ := json.Marshal(bodies[1]["tool_choice"]); !strings.Contains(string(tc), `"none"`) {
+		t.Fatalf("results in, the tool must be off: tool_choice %s", tc)
+	}
+	if len(res.Options) != 1 || res.Options[0][0].ID != "gA" {
+		t.Fatalf("options %+v", res.Options)
+	}
+	if NormalizeQuery("Pizzeria  near 250 Mercer St, Manhattan.", false) != NormalizeQuery("pizzeria near 250 mercer st manhattan", false) ||
+		NormalizeQuery("x", true) == NormalizeQuery("x", false) {
+		t.Fatal("NormalizeQuery")
+	}
+}
+
+// A search that found nothing may be followed by another (a better query).
+func TestDiscoverSearchesAgainAfterNothing(t *testing.T) {
+	var bodies []map[string]any
+	a, _ := fakeAnthropic(t, "claude-sonnet-5-5", func(w http.ResponseWriter, body map[string]any) {
+		bodies = append(bodies, body)
+		switch len(bodies) {
+		case 1:
+			write(t, w, toolUseReply(t, "tu_1", "artisanal key copy kiosk near Mercer St, Manhattan"))
+		case 2:
+			write(t, w, toolUseReply(t, "tu_2", "key copy near Mercer St, Manhattan"))
+		default:
+			write(t, w, anthropicReply(t, `{"action":"info","lead":"","options":[{"places":["p1"]}],"check":false,"reason":"","usual":"","choice":0,"topic":"","item":""}`, "end_turn"))
+		}
+	})
+	fs := &fakeSearch{byQuery: func(q string) []Place {
+		if strings.Contains(q, "artisanal") {
+			return nil
+		}
+		return laundromats[:1]
+	}}
+	res, err := (&PlaceDiscovery{Model: a, Places: fs}).Discover(context.Background(), DiscoveryRequest{Text: "key copy near Mercer", MaxSearches: 3})
+	if err != nil || len(fs.queries) != 2 || res.Searches != 2 || len(res.Options) != 1 {
+		t.Fatalf("err %v google %v options %d", err, fs.queries, len(res.Options))
+	}
+	if tc, _ := json.Marshal(bodies[1]["tool_choice"]); strings.Contains(string(tc), `"none"`) {
+		t.Fatalf("after an empty search the tool must stay on: %s", tc)
+	}
+}
+
+// "about": a question about the options shown — the option and topic are
+// kept, an unknown topic is "other", and nothing is searched.
+func TestDecodeDiscoveryAbout(t *testing.T) {
+	res, err := decodeDiscovery(`{"action":"about","lead":"x","options":[],"check":false,"reason":"","usual":"","choice":2,"topic":"menu","item":"pizza"}`, nil, nil, 0, DiscoveryResult{Usual: -1})
+	if err != nil || res.Action != DiscoverAbout || res.Choice != 2 || res.Topic != "menu" || res.Item != "pizza" || res.Lead != "" {
+		t.Fatalf("%+v %v", res, err)
+	}
+	res, _ = decodeDiscovery(`{"action":"about","lead":"","options":[],"check":false,"reason":"","usual":"","choice":0,"topic":"weird","item":""}`, nil, nil, 0, DiscoveryResult{Usual: -1})
+	if res.Topic != "other" || res.Choice != 0 {
+		t.Fatalf("%+v", res)
 	}
 }

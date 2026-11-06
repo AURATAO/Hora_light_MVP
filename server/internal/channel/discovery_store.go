@@ -63,3 +63,19 @@ func (s *PGStore) TakePlacesCall(ctx context.Context, identityID, day string, pe
 	}
 	return n <= perDay, nil
 }
+
+// PlacesCallsLeft reads, without counting one, how many Places calls
+// identityID has left on day ("Looking that up…" is sent only when the
+// turn can search).
+func (s *PGStore) PlacesCallsLeft(ctx context.Context, identityID, day string, perDay int) (int, error) {
+	var n int
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT places_calls FROM channel_discovery WHERE identity_id = $1 AND places_day = $2::date`, identityID, day).Scan(&n)
+	if errors.Is(err, sql.ErrNoRows) {
+		return perDay, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("places calls left: %w", err)
+	}
+	return max(0, perDay-n), nil
+}

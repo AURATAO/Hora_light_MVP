@@ -64,6 +64,7 @@ type dCase struct {
 		Usual      []string `json:"usual"`
 		MinOptions int      `json:"min_options"`
 		MinStops   int      `json:"min_stops"`
+		Topic      []string `json:"topic"`
 	} `json:"expect"`
 	ForbidPlaces []string `json:"forbid_places"`
 	Note         string   `json:"note"`
@@ -87,6 +88,7 @@ type dResult struct {
 	Options   int      `json:"options"`
 	MaxStops  int      `json:"max_stops"`
 	Searches  int      `json:"searches"`
+	Calls     int      `json:"model_calls"`
 	Queries   []string `json:"queries,omitempty"`
 	Lead      string   `json:"lead,omitempty"`
 	LeadOK    bool     `json:"lead_ok"`
@@ -133,6 +135,9 @@ func (f *fixtureSearch) SearchPlaces(_ context.Context, q string, openNow bool) 
 func (f *fixtureSearch) PlaceDetails(context.Context, string) (llm.Place, error) {
 	return llm.Place{}, fmt.Errorf("not used by the eval")
 }
+func (f *fixtureSearch) AboutDetails(context.Context, string) (llm.Place, error) {
+	return llm.Place{}, fmt.Errorf("not used by the eval")
+}
 func (f *fixtureSearch) PlaceName(context.Context, string) (string, error) {
 	return "", fmt.Errorf("not used by the eval")
 }
@@ -160,6 +165,9 @@ func (l *liveSearch) SearchPlaces(ctx context.Context, q string, openNow bool) (
 	return out, nil
 }
 func (l *liveSearch) PlaceDetails(context.Context, string) (llm.Place, error) {
+	return llm.Place{}, fmt.Errorf("not used by the eval")
+}
+func (l *liveSearch) AboutDetails(context.Context, string) (llm.Place, error) {
 	return llm.Place{}, fmt.Errorf("not used by the eval")
 }
 func (l *liveSearch) PlaceName(context.Context, string) (string, error) {
@@ -292,7 +300,7 @@ func runDiscoveryOne(d *llm.PlaceDiscovery, c dCase, run int, now time.Time, tim
 		backoff *= 2
 	}
 	u := res.Usage
-	r.In, r.CacheRead, r.CacheW, r.Out, r.Searches = u.InputTokens, u.CacheReadTokens, u.CacheWriteTokens, u.OutputTokens, res.Searches
+	r.In, r.CacheRead, r.CacheW, r.Out, r.Searches, r.Calls = u.InputTokens, u.CacheReadTokens, u.CacheWriteTokens, u.OutputTokens, res.Searches, res.Calls
 	r.CostUSD = float64(u.InputTokens)*usdIn + float64(u.OutputTokens)*usdOut + float64(u.CacheReadTokens)*usdCacheRead +
 		float64(u.CacheWriteTokens)*usdCacheWrite + float64(res.Searches)*usdSearch
 	if err != nil {
@@ -346,7 +354,10 @@ func runDiscoveryOne(d *llm.PlaceDiscovery, c dCase, run int, now time.Time, tim
 	if res.Action == llm.DiscoverOutOfScope && len(c.Expect.Reason) > 0 && !contains(c.Expect.Reason, res.Reason) {
 		fail(fmt.Sprintf("reason %s, want %v", res.Reason, c.Expect.Reason))
 	}
-	if res.Action == llm.DiscoverChoose && c.Expect.Choice > 0 && res.Choice != c.Expect.Choice {
+	if res.Action == llm.DiscoverAbout && len(c.Expect.Topic) > 0 && !contains(c.Expect.Topic, res.Topic) {
+		fail(fmt.Sprintf("topic %s, want %v", res.Topic, c.Expect.Topic))
+	}
+	if (res.Action == llm.DiscoverChoose || res.Action == llm.DiscoverAbout) && c.Expect.Choice > 0 && res.Choice != c.Expect.Choice {
 		fail(fmt.Sprintf("choice %d, want %d", res.Choice, c.Expect.Choice))
 	}
 	if res.Action == llm.DiscoverUsual && len(c.Expect.Usual) > 0 && !contains(c.Expect.Usual, fmt.Sprintf("u%d", res.Usual+1)) {
@@ -368,13 +379,13 @@ func discoveryReport(results []dResult, verbose bool) int {
 	count := map[string]int{}
 	code, badLeads := 0, 0
 	var cost, infoCost float64
-	var infos, searches int
-	var lat []int64
+	var infos, searches, infoCalls, infoSearches int
+	var lat, infoLat []int64
 	for _, r := range results {
 		count[r.Grade]++
 		mark := map[string]string{"PASS": "  ", "FAIL": "✗ ", "UNSAFE": "!!", "ERROR": "? "}[r.Grade]
 		if r.Grade != "PASS" || verbose {
-			fmt.Printf("%s #%d.%d [%s] %q → %s opts=%d stops=%d searches=%d  %s\n", mark, r.Case, r.Run, r.Group, r.Msg, r.Action, r.Options, r.MaxStops, r.Searches, r.Why)
+			fmt.Printf("%s #%d.%d [%s] %q → %s opts=%d stops=%d searches=%d calls=%d %dms  %s\n", mark, r.Case, r.Run, r.Group, r.Msg, r.Action, r.Options, r.MaxStops, r.Searches, r.Calls, r.LatencyMS, r.Why)
 			if verbose {
 				fmt.Printf("      queries: %q\n", r.Queries)
 				if r.Lead != "" {
@@ -402,6 +413,9 @@ func discoveryReport(results []dResult, verbose bool) int {
 		if r.Action == string(llm.DiscoverInfo) && r.Options > 0 {
 			infos++
 			infoCost += r.CostUSD
+			infoCalls += r.Calls
+			infoSearches += r.Searches
+			infoLat = append(infoLat, r.LatencyMS)
 		}
 	}
 	fmt.Printf("\n%d results: %d PASS, %d FAIL, %d UNSAFE, %d ERROR; %d raw leads refused by rule\n", len(results), count["PASS"], count["FAIL"], count["UNSAFE"], count["ERROR"], badLeads)
@@ -412,6 +426,15 @@ func discoveryReport(results []dResult, verbose bool) int {
 			sum += l
 		}
 		fmt.Printf("latency: avg %dms, p95 %dms, max %dms\n", sum/int64(len(lat)), lat[(len(lat)*95+99)/100-1], lat[len(lat)-1])
+	}
+	if len(infoLat) > 0 {
+		sort.Slice(infoLat, func(i, k int) bool { return infoLat[i] < infoLat[k] })
+		var sum int64
+		for _, l := range infoLat {
+			sum += l
+		}
+		fmt.Printf("answers with options: %.2f model calls and %.2f searches each; latency avg %dms, median %dms, p95 %dms\n",
+			float64(infoCalls)/float64(len(infoLat)), float64(infoSearches)/float64(len(infoLat)), sum/int64(len(infoLat)), infoLat[len(infoLat)/2], infoLat[(len(infoLat)*95+99)/100-1])
 	}
 	if len(results) > 0 {
 		fmt.Printf("cost: $%.4f over %d results ($%.4f each, %d Places searches)", cost, len(results), cost/float64(len(results)), searches)

@@ -20,12 +20,17 @@ type fakeDiscoverer struct {
 	reqs  []llm.DiscoveryRequest
 	allow []bool // what req.Allow said, when the fake asked it
 	ask   int    // how many searches to ask Allow for
+	// before runs as each turn starts (what was sent by then).
+	before func()
 }
 
 func (f *fakeDiscoverer) Discover(ctx context.Context, req llm.DiscoveryRequest) (llm.DiscoveryResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reqs = append(f.reqs, req)
+	if f.before != nil {
+		f.before()
+	}
 	searches := 0
 	for i := 0; i < f.ask; i++ {
 		ok := req.Allow(ctx)
@@ -59,6 +64,21 @@ type fakePlaces struct {
 	err     error
 	details []string
 	names   []string // ids whose name was looked up (PlaceName)
+	about   []string // ids looked up for an answer about them (AboutDetails)
+}
+
+func (f *fakePlaces) AboutDetails(_ context.Context, id string) (llm.Place, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.about = append(f.about, id)
+	if f.err != nil {
+		return llm.Place{}, f.err
+	}
+	p, ok := f.byID[id]
+	if !ok {
+		return llm.Place{}, errors.New("no such place")
+	}
+	return p, nil
 }
 
 func (f *fakePlaces) SearchPlaces(context.Context, string, bool) ([]llm.Place, error) {
@@ -123,6 +143,12 @@ func (m *memDiscovery) TakePlacesCall(_ context.Context, iid, day string, perDay
 	return true, nil
 }
 
+func (m *memDiscovery) PlacesCallsLeft(_ context.Context, iid, day string, perDay int) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return max(0, perDay-m.calls[iid+"|"+day]), nil
+}
+
 type fakeHistory struct{ tasks []PastTask }
 
 func (f fakeHistory) PastTasks(context.Context, string, int) ([]PastTask, error) { return f.tasks, nil }
@@ -154,7 +180,7 @@ func newDiscoRig(intent llm.Intent, res ...llm.DiscoveryResult) *discoRig {
 	g := newRig(intent)
 	g.r.Thread = memThread{st: g.st}
 	d := &fakeDiscoverer{res: res}
-	p := &fakePlaces{byID: map[string]llm.Place{joes.ID: joes, suds.ID: suds, evil.ID: evil}}
+	p := &fakePlaces{byID: map[string]llm.Place{joes.ID: joes, suds.ID: suds, evil.ID: evil, nolita.ID: nolita, joesPizza.ID: joesPizza, princeSt.ID: princeSt}}
 	st := &memDiscovery{offers: map[string]*DiscoveryOffer{}, calls: map[string]int{}}
 	g.r.Discovery, g.r.Places, g.r.DiscoveryStore = d, p, st
 	return &discoRig{rig: g, d: d, places: p, store: st}
