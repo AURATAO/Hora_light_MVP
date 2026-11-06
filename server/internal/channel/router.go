@@ -272,6 +272,17 @@ type Router struct {
 	DiscoveryStore  DiscoveryStore
 	History         TaskHistory
 	DiscoveryLimits DiscoveryLimits
+	// Errand playbooks (D-24, answers.go; behind CHANNEL_PLAYBOOKS).
+	// Playbooks nil = off. Facts looks an option up again with what an
+	// answer may use; Answerer writes an answer from Google's summaries or
+	// web excerpts (checked by rule); Web searches the web (nil = off);
+	// Geocode places the customer's address for "which is closest".
+	Playbooks *llm.PlaybookSet
+	Facts     llm.FactSource
+	Answerer  llm.Answerer
+	Web       llm.WebSearcher
+	WebLimits WebLimits
+	Geocode   func(ctx context.Context, addr string) (lat, lng float64, err error)
 	// SummaryTTL: how long a booking summary stays bookable (posting.go).
 	// A YES — or the setup page finishing — after it re-quotes instead of
 	// booking. Zero = DefaultSummaryTTL (CHANNEL_SUMMARY_TTL overrides).
@@ -513,6 +524,9 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 					if handled, err := r.answerRouteAsk(ctx, in, id, conv, text, o); handled {
 						return err
 					}
+				case o.Kind == offerOptions && IsYes(text) && o.Suggest > 0 && o.Suggest <= len(o.Options) && (len(o.SuggestItems) > 0 || o.SuggestCheck):
+					// "Want your supporter to get a Margherita…?" (answers.go)
+					return r.chooseSuggested(ctx, in, id, conv, o)
 				case o.Kind == offerOptions && IsYes(text) && o.Suggest > 0 && o.Suggest <= len(o.Options):
 					return r.chooseOption(ctx, in, id, conv, o, o.Suggest, o.SuggestWords)
 				case o.Kind == offerOptions && (IsNo(text) || IsDraftDecline(text)) && !IsYes(text):
@@ -634,6 +648,8 @@ type draftOpts struct {
 	// before its first question.
 	prebuilt *llm.TaskDraft
 	intro    string
+	// playbook: the errand type discovery recognised (D-24), "" none.
+	playbook string
 }
 
 // startDraftOpts parses the request, prices it and moves to the name or
@@ -672,6 +688,10 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		return r.Reply(ctx, in, fmt.Sprintf(CopyTooManyErrands, llm.MaxErrands), "")
 	}
 	prompt := r.Prompt(r.now().In(r.loc()))
+	pb := r.draftPlaybook(o, conv.Pending, source)
+	if len(errands) > 1 {
+		pb = nil // several errands: no one type's questions
+	}
 	var items []DraftItem
 	var unparsed []string
 	// A correction re-drafts from everything said; a budget the person
@@ -714,6 +734,7 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		if len(o.places) > 0 {
 			applyPlaces(&draft, o.places, o.check, namesDuration(source))
 		}
+		applyPlaybookNotes(&draft, pb)
 		if len(errands) == 1 && o.prebuilt == nil {
 			// The newest line that is only a duration ("15 mins", "ASAP 15
 			// mins", "make it 45 minutes") sets it, whatever the model read
@@ -811,6 +832,12 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 			p.Notes = append(p.Notes, n)
 		}
 	}
+	if pb != nil {
+		p.Playbook = pb.ID
+		if prev := conv.Pending; prev != nil && prev.Playbook == pb.ID {
+			p.PlaybookAsked = prev.PlaybookAsked
+		}
+	}
 	p.SetItems(items)
 	p.AreaStops = areaStops
 	unclear := area.Outcome == AreaUnclear || area.Outcome == AreaWhichBorough
@@ -866,6 +893,27 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 			return err
 		}
 		return r.Reply(ctx, in, lead+detailsQuestion(p), "")
+	}
+	if pb != nil && !p.PlaybookAsked {
+		// The type's questions, once per draft, before the summary
+		// (playbooks.json asks): only the ones the words have not answered.
+		words := source + "\n" + strings.Join(p.Notes, "\n")
+		if asks := pb.AsksFor(words); len(asks) > 0 {
+			p.PlaybookAsked = true
+			for _, a := range asks {
+				p.PlaybookAsk = append(p.PlaybookAsk, a.Key)
+			}
+			conv.State = StateAwaitingConfirm
+			lead := r.leadIn(p)
+			if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+				return fmt.Errorf("startDraft: %w", err)
+			}
+			if done, err := r.preempted(ctx, in, conv.IdentityID, p); done {
+				return err
+			}
+			log.Printf("[channel] draft identity=%s: playbook %s asks %v", id.ID, pb.ID, p.PlaybookAsk)
+			return r.Reply(ctx, in, lead+playbookAsksText(asks), "")
+		}
 	}
 	if !id.Linked() && conv.PendingName == "" {
 		conv.State = StateAwaitingName
@@ -1065,6 +1113,10 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 			return fmt.Errorf("onConfirm: %w", err)
 		}
 		return r.onIdle(ctx, in, id, conv, text)
+	}
+	if len(conv.Pending.PlaybookAsk) > 0 {
+		// The answer to the type's questions (answers.go).
+		return r.answerPlaybookAsk(ctx, in, id, conv, text)
 	}
 	if conv.Pending.DetailsAsked {
 		switch {

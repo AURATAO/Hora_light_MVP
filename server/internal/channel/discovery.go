@@ -60,6 +60,15 @@ type DiscoveryOffer struct {
 	// it to the parser ("Get their most popular pizza."). 0 none.
 	Suggest      int    `json:"suggest,omitempty"`
 	SuggestWords string `json:"suggest_words,omitempty"`
+	// SuggestItems: what an answer from sources offered the supporter to
+	// get ("Margherita", "spicy vodka slice") — the person's order once they
+	// say YES; item names only, never Google's text (D-24). SuggestCheck /
+	// SuggestAsk: the offer was to go and check, or ask there.
+	SuggestItems []string `json:"suggest_items,omitempty"`
+	SuggestCheck bool     `json:"suggest_check,omitempty"`
+	SuggestAsk   string   `json:"suggest_ask,omitempty"`
+	// Playbook: the errand type discovery recognised, "" none.
+	Playbook string `json:"playbook,omitempty"`
 }
 
 const (
@@ -253,6 +262,17 @@ func (r *Router) routeDiscoveryFirst(ctx context.Context, in Inbound, id Identit
 	case offerOptions:
 		p := r.pickFromOffer(ctx, id, text, offer)
 		switch {
+		case p.k > 0 && p.question != "" && r.answersOn():
+			// "Ok nolita pizza, what is the best flavor?": answered from
+			// sources (D-24) — the model reads which question it is.
+			if p.facts != nil {
+				ctx = context.WithValue(ctx, factsPrefetchKey{}, p.facts)
+			}
+			handled, err := r.discover(ctx, in, id, conv, text, offer, false, false)
+			if handled {
+				return true, true, err
+			}
+			return true, true, r.chooseOptionWith(ctx, in, id, conv, offer, p.k, p.details, []string{p.question}, fmt.Sprintf(CopyPickAsked, p.name))
 		case p.k > 0 && p.question != "":
 			// "Ok nolita pizza, what is the best flavor?": that option,
 			// with the question kept as a note for the supporter (no menu
@@ -268,6 +288,9 @@ func (r *Router) routeDiscoveryFirst(ctx context.Context, in Inbound, id Identit
 			// Looked up for the name match: an answer about the options
 			// uses the same lookups, not a second set.
 			ctx = context.WithValue(ctx, aboutPrefetchKey{}, p.looked)
+		}
+		if p.facts != nil {
+			ctx = context.WithValue(ctx, factsPrefetchKey{}, p.facts)
 		}
 		handled, err := r.discover(ctx, in, id, conv, text, offer, false, false)
 		return handled, true, err
@@ -295,9 +318,14 @@ type offerPick struct {
 	name              string
 	details, question string
 	// looked: the options looked up for a long message (AboutDetails), by
-	// index — reused by an answer about them.
+	// index — reused by an answer about them. facts: the same, with
+	// answers on (Place Details Enterprise + Atmosphere).
 	looked map[int]llm.Place
+	facts  map[int]llm.PlaceFacts
 }
+
+// factsPrefetchKey carries pickFromOffer's facts to answerFromSources.
+type factsPrefetchKey struct{}
 
 // aboutPrefetchKey carries pickFromOffer's lookups to answerAbout within
 // one message.
@@ -329,11 +357,29 @@ func (r *Router) pickFromOffer(ctx context.Context, id Identity, text string, of
 		// pick: one lookup per option with what an answer needs (names
 		// included), shared with that answer — one set per message against
 		// the daily cap.
-		looked = r.aboutDetails(ctx, id, offer, singleOptions(offer), nil)
+		var facts map[int]llm.PlaceFacts
+		if r.answersOn() {
+			facts = r.factsFor(ctx, id, offer, singleOptions(offer))
+			looked = map[int]llm.Place{}
+			for i, f := range facts {
+				looked[i] = f.Place
+			}
+		} else {
+			looked = r.aboutDetails(ctx, id, offer, singleOptions(offer), nil)
+		}
 		names = make([]string, n)
 		for i, pl := range looked {
 			names[i] = pl.Name
 		}
+		k, rest := pickNameIn(text, n, names)
+		if k == 0 {
+			return offerPick{looked: looked, facts: facts}
+		}
+		p := offerPick{k: k, name: names[k-1], facts: facts}
+		if len(pickWords(rest)) > 0 {
+			p.details, p.question = splitQuestion(text)
+		}
+		return p
 	}
 	k, rest := pickNameIn(text, n, names)
 	if k == 0 {
@@ -649,6 +695,9 @@ func (r *Router) discover(ctx context.Context, in Inbound, id Identity, conv Con
 		if draftOpen || offer == nil || offer.Kind != offerOptions {
 			return false, nil // nothing shown to ask about: the usual routing
 		}
+		if r.answersOn() {
+			return true, r.answerFromSources(ctx, in, id, offer, res, text)
+		}
 		return true, r.answerAbout(ctx, in, id, offer, res, text)
 	case llm.DiscoverInfo:
 		if len(res.Options) == 0 {
@@ -658,7 +707,7 @@ func (r *Router) discover(ctx context.Context, in Inbound, id Identity, conv Con
 			}
 			return true, reply(CopyDiscoveryNothing)
 		}
-		o := &DiscoveryOffer{Kind: offerOptions, Words: lastWords(words), Check: res.Check, AtUnix: r.now().Unix()}
+		o := &DiscoveryOffer{Kind: offerOptions, Words: lastWords(words), Check: res.Check, Playbook: res.Playbook, AtUnix: r.now().Unix()}
 		for _, opt := range res.Options {
 			var ids []string
 			for _, p := range opt {
@@ -911,7 +960,7 @@ func (r *Router) chooseOptionWith(ctx context.Context, in Inbound, id Identity, 
 		lines = append(lines, "Stops in order: "+strings.Join(stops, "; "))
 	}
 	log.Printf("[channel] discovery choice identity=%s option=%d stops=%d check=%t", id.ID, k, len(chosen), offer.Check)
-	return r.startDraftOpts(ctx, in, id, conv, strings.Join(lines, "\n"), draftOpts{places: chosen, check: offer.Check, notes: notes, intro: intro})
+	return r.startDraftOpts(ctx, in, id, conv, strings.Join(lines, "\n"), draftOpts{places: chosen, check: offer.Check, notes: notes, intro: intro, playbook: offer.Playbook})
 }
 
 // applyPlaces attaches the chosen place(s) to a parsed errand by rule: the

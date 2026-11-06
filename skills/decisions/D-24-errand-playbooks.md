@@ -1,0 +1,52 @@
+# D-24: Errand playbooks for the text channel
+
+**Date:** 2026-11-06
+**Status:** Proposed. Built on `feat/errand-playbooks` (off `fix/discovery-followups`, which must merge first). Off unless `CHANNEL_PLAYBOOKS=1`, and only with discovery (D-23) on. Not merged, not deployed.
+**Trigger:** Aura, 2026-11-06: HO:RA should answer customers' questions with real information and turn the answer into a well-specified errand. Example: "Ok nolita pizza, what is the best flavor?" → "Reviews mention their spicy vodka slice and Margherita" → "Want your supporter to get a Margherita and a Spicy Vodka slice at Nolita Pizza?" → the draft note "Get: 1 Margherita, 1 Spicy Vodka slice".
+
+## Decision
+Every errand type follows one pattern: the customer asks, HO:RA answers with real data only, asks what the supporter will need, drafts, and then shows the summary and asks for YES as before.
+
+1. **One config file, no code per type.** `server/internal/channel/llm/playbooks.json` (embedded) has one entry per type: `match` (the words that recognise it by rule), `typical_questions`, `sources` (allowed, in order), `guidance` and `limits` (what the model is told), `asks` (questions before the summary), `supporter_notes`, `summary_lines` and `evals`. Adding a type means adding an entry and its eval cases. The discovery prompt's type list and the schema's enum are generated from the file. `scope_rules` (people, homes, refusals) is an empty, marked slot that a separate prompt fills. Once filled, its rules go to the model ahead of each entry's limits (`PromptBlock`). Pilot types: food, groceries, laundry, packages, check / lines, gifts, small services, friend, repeat & multi-stop.
+2. **Recognition.** Discovery's model names the type (`playbook`, prompt d0.4), and the router checks the name against the file. A draft from words gets its type by rule: the first entry in file order whose `match` words appear. Specific types come before generic ones. A repeat or a route is `repeat_multi`, and a re-draft keeps its type.
+3. **Answers come from sources, in this order. Nothing is invented.**
+   - Google's fields, rendered by rule: hours for the day asked, price level and range, vegetarian, takeout and delivery, groups and kids, wheelchair entrance, payment, and "closest" by straight-line distance from the customer's own address (geocoded; the origin must be their words). No model writes these.
+   - Google's summaries (review, generative, editorial). The model (`llm.PlaceAnswerer`, prompt a0.1, JSON, no tools) writes one or two sentences plus the items to get. It does this for "what's good", what to order, compare, and other.
+   - Web search, only when the type allows it (food, for now) and Google had nothing relevant. It runs on the place's own domain (`websiteUri`) and `web_sources.well_known`, and the reply names the domain. Only cited text is kept, and only when it is from the place's own site or names the place.
+   - Nothing found: the reply says so honestly ("I couldn't find that for X on Google Maps or their website") and offers to send a supporter to ask there.
+   - A live question ("is there a line right now?", "in stock?"): fixed copy, and a check errand is offered.
+4. **The rule check (`AnswerOK`).** Every price, number, rating and capitalised name in the model's sentence must appear in a source, a place's name or the question. Every item must be in a source. The sentence may not contain a question, YES, book or confirm, HO:RA or a fee, a time promise, an in-stock or allergy claim, a link or a phone number. Any failure gets fixed wording. A source that reads as an instruction (in a review or on a web page) is dropped before the model sees it.
+5. **Allergies are never promised.** Any allergy word gets "For allergies, your supporter can ask staff, but I can't guarantee it." No order is proposed; the offer is to ask staff.
+6. **The offer becomes the draft.** "Want your supporter to get a Margherita and a spicy vodka slice at Nolita Pizza?" A YES drafts that option with the note "Get: 1 Margherita, 1 spicy vodka slice". A check or ask-there offer drafts a check errand with "Ask there: …". The draft is a normal one (parse, area, budget, summary, YES), and nothing books before the summary's own YES.
+7. **Asks before the summary.** These are the type's questions that the person's words have not answered (`skip_if`). They go out once per draft, in one message, ending "Or reply SKIP." A `note` answer is kept as a supporter note ("Substitution preference: …"). A `redraft` answer is re-parsed, so a time or an address lands in the booking. SKIP, "no" or "none" goes on, and a YES re-asks. Groceries asks one optional question and does not change the out-of-stock or budget flows.
+8. **Fixed supporter notes and summary lines per type.** Laundry: check pockets, no valuables. Packages: no hazardous items. Check: never photograph people or private property. Small services: never sign anything. Gifts and friend: the details are used only for this errand. Repeat: stops in the order listed (an old budget is still always asked again).
+9. **Safety is unchanged.** An answer never books, never quotes HO:RA's price and never promises a time. The summary, YES and all money rules are as before.
+10. **Nothing from Google or the web is stored.** Summaries and excerpts are looked up fresh for each question. The open offer stores place ids, plus the item names the person can say YES to (at most 3 names, for the offer's 2-hour life). This is a judgment call: item names are not review text. To be strict, re-ask instead of storing them.
+
+## Places fields, SKUs, cost (checked 2026-11-06)
+- `helpers.PlaceFactsLookup` makes one Place Details (New) request with `reviewSummary.{text,disclosureText,flagContentUri,reviewsUri}`, `generativeSummary.{overview,disclosureText}`, `editorialSummary`, `priceLevel`, `priceRange`, `regularOpeningHours`, `currentOpeningHours`, `servesVegetarianFood`, `takeout`, `delivery`, `dineIn`, `goodForGroups`, `goodForChildren`, `accessibilityOptions`, `paymentOptions`, `websiteUri`, `location`, rating and address fields. The Atmosphere fields put it in **Place Details Enterprise + Atmosphere: $25 / 1,000, 1,000 free a month**. Pro, Essentials and Enterprise fields in the same request cost nothing more. No reviews, photos or phone numbers are requested.
+- Review and generative summaries are English in the United States, among other regions, and are "not guaranteed for all places". Attribution: "Summarized with Gemini" (Google's `disclosureText`) is shown, with the link to the place's reviews (`reviewsUri`) for a review summary. "Google Maps" is shown as before.
+- An answer looks up the option asked about, or all options for pick and compare: $0.025 each. "Ok nolita pizza, what…?" looks all three up once for the name match and reuses those lookups. Each lookup counts against `CHANNEL_PLACES_PER_DAY`.
+- **Live Places is still untested**: `server/.env` has no `GOOGLE_MAPS_API_KEY`. The wire shapes are written from Google's docs and tested against a fake.
+
+## Web search
+- `llm.AnthropicWeb` uses Anthropic's `web_search_20250305` with `allowed_domains`, `max_uses = CHANNEL_WEB_SEARCH_PER_QUESTION` (default 1, 0 = off) and a per-person daily cap `CHANNEL_WEB_SEARCH_PER_DAY` (default 5; migration `20261106120000_channel_web_search_quota.sql`).
+- `web_search_20260209` was rejected. With a JSON answer it ran dynamic filtering through code execution (15.4 s), and its results came back encrypted with no cited text, so nothing could be checked against a source.
+- **Domains:** a listed domain that refuses Anthropic's crawler fails the whole request with a 400. Refused on 2026-11-06: eater.com, nytimes.com, nymag.com, grubstreet.com, seriouseats.com, newyorker.com, thrillist.com, bonappetit.com, foodandwine.com, nypost.com. Accepted and listed: theinfatuation.com, timeout.com, ny.eater.com, guide.michelin.com, gothamist.com, amny.com. If a place's own domain is refused, the search is retried once without it. A test fails if a refused domain is added back.
+- **Measured live** (`agenttest -playbooks -web-live`, 4 real places: Joe's Pizza, Levain, Katz's, Russ & Daughters): 1 search each, 1–4 excerpts kept, **5.0–5.6 s**, 11.6k–16.9k input tokens, **$0.036–0.047 a lookup ($0.040 average)**: $0.01 for the search plus the result tokens.
+
+## Tracing (Phoenix)
+- `places.facts`: source, SKU, cost estimate, latency, whether each summary came back.
+- `web.search`: source, domains, searches, excerpts, retried, latency, cost estimate.
+- `agent.answer`: prompt version, topic, source kinds, found, items, latency, tokens, cost estimate.
+- Existing Places spans now carry source, SKU and cost too. Span text is redacted (`tracing.Redact`), and a test checks a phone number in the question never reaches a span.
+
+## Constitution impact
+- Standards added or modified: none.
+- Invariants: no new table, grant or policy. The migration adds two columns to `channel_discovery`. The four CLAUDE.md Rule 3 queries must still return 3 / 0 / 0 / 0.
+
+## Evidence
+- `go run ./cmd/agenttest -playbooks -runs 3` (Sonnet 5.5; discovery d0.4, answer a0.1; 27 cases from the file: 13 discover, 14 answer, including allergy, "line right now", an injection in a review and one on a web page; fixture facts): **81 PASS, 0 FAIL, 0 UNSAFE, 0 ERROR**. No model answer was refused by the rule in those runs. During development the rule refused one sound answer ("Levain Bakery's"); the possessive is now accepted, with a test.
+- Answers: 33 of 42 were rendered by rule with no model call. The 9 model answers took a **median 1.95 s, p95 2.24 s**. Cost per answer: $0.027 by rule (the lookup), $0.039 with the model, before the discovery call ($0.005, 1.1 calls). Add about 5.3 s and $0.04 when web search runs.
+- Asks: 17 `asks` cases run by rule in `go test` (TestPlaybookAsksEvals). Their first run caught four recognition bugs (a street number read as an order quantity; "Amazon return at Whole Foods" read as groceries; "check if Levain … cookie" read as food; "copies of my house key" unrecognised), all fixed in the file.
+- Discovery regression, `agenttest -discovery -runs 3` (53 D-23 cases, d0.4): 156 PASS, 3 FAIL, 0 UNSAFE. The three misses were all #50, "do they do delivery?": the case expected d0.3's topic name `delivery`, which d0.4 renamed `takeout_delivery` (the old name is still decoded). With the expectation updated, #50 gets 3/3. An answer with options: 2.01 model calls, 1.26 searches, median 4.4 s, p95 5.8 s (d0.3: 2.14 calls, 4.6 s median).

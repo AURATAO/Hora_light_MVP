@@ -45,6 +45,38 @@ func configureDiscovery(router *channel.Router, sqlDB *sql.DB, store *channel.PG
 	router.Discovery = d
 	l := router.DiscoveryLimits
 	log.Printf("[channel] place discovery ON (D-23): model=%s places/message=%d places/day=%d timeout=%s", d.Model.Name(), l.PerMessage, l.PerDay, l.Timeout)
+	configurePlaybooks(router, d.Model)
+}
+
+// configurePlaybooks turns on errand playbooks (D-24, internal/channel/
+// answers.go): answers from Google's data and the web, the type's
+// questions before the summary, its supporter notes. Off unless
+// CHANNEL_PLAYBOOKS=1, and only with discovery running on Anthropic.
+//
+//	CHANNEL_PLAYBOOKS=1                 turn it on
+//	CHANNEL_WEB_SEARCH_PER_QUESTION     web searches per question (default 1; 0 = no web search)
+//	CHANNEL_WEB_SEARCH_PER_DAY          web searches per person per NY day (default 5)
+//
+// Needs migration 20261106120000_channel_web_search_quota.sql for the web
+// count; without it no web search runs.
+func configurePlaybooks(router *channel.Router, model *llm.Anthropic) {
+	if os.Getenv("CHANNEL_PLAYBOOKS") != "1" {
+		return
+	}
+	pbs, err := llm.Playbooks()
+	if err != nil {
+		log.Printf("[channel] WARNING: playbooks off: %v", err)
+		return
+	}
+	router.Playbooks = pbs
+	router.Facts = placesSearcher{}
+	router.Answerer = &llm.PlaceAnswerer{Model: model}
+	router.WebLimits = channel.WebLimitsFromEnv()
+	if router.WebLimits.PerQuestion > 0 && router.WebLimits.PerDay > 0 {
+		router.Web = &llm.AnthropicWeb{Model: model}
+	}
+	router.Geocode = helpers.GeocodeAddress
+	log.Printf("[channel] errand playbooks ON (D-24): %s, %d types, web search %d/question %d/day", pbs.Version, len(pbs.Playbooks), router.WebLimits.PerQuestion, router.WebLimits.PerDay)
 }
 
 func firstNonEmptyEnv(k, def string) string {
@@ -91,6 +123,24 @@ func (placesSearcher) AboutDetails(ctx context.Context, id string) (llm.Place, e
 		return llm.Place{}, err
 	}
 	return llmPlace(p), nil
+}
+
+func (placesSearcher) PlaceFacts(ctx context.Context, id string) (llm.PlaceFacts, error) {
+	f, err := helpers.PlaceFactsLookup(ctx, id, nycLocation)
+	if err != nil {
+		return llm.PlaceFacts{}, err
+	}
+	out := llm.PlaceFacts{Place: llmPlace(f.Place), PriceRange: f.PriceRange, WeekdayHours: f.WeekdayHours, Editorial: f.Editorial,
+		Takeout: f.Takeout, Delivery: f.Delivery, DineIn: f.DineIn, Vegetarian: f.Vegetarian, GoodForGroups: f.GoodForGroups,
+		GoodForChildren: f.GoodForChildren, WheelchairEntrance: f.WheelchairEntrance, AcceptsCards: f.AcceptsCards,
+		AcceptsNFC: f.AcceptsNFC, CashOnly: f.CashOnly, Website: f.Website, Lat: f.Lat, Lng: f.Lng}
+	if s := f.ReviewSummary; s != nil {
+		out.ReviewSummary = &llm.Summary{Text: s.Text, Disclosure: s.Disclosure, ReviewsURI: s.ReviewsURI}
+	}
+	if s := f.GenerativeSummary; s != nil {
+		out.GenerativeSummary = &llm.Summary{Text: s.Text, Disclosure: s.Disclosure}
+	}
+	return out, nil
 }
 
 func (placesSearcher) PlaceName(ctx context.Context, id string) (string, error) {
