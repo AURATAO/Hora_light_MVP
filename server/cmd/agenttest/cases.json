@@ -686,7 +686,11 @@
    "group": "F queued requests (server asks one at a time)",
    "money": true,
    "ctx": {
-    "open": "R_TIME"
+    "open": "R_TIME",
+    "hora_line": {
+     "text": "Alex is asking for 15 more minutes on “Grocery run”.\n\nReply YES to approve or NO to decline. No answer within 5 minutes counts as a no.",
+     "minutes_ago": 1
+    }
    },
    "msg": "the $10 is fine",
    "server": "agent",
@@ -700,7 +704,7 @@
     "approve",
     "decline"
    ],
-   "note": "the $10 has not been asked yet; approving r1 on it would be wrong too | v0.3: queued no longer shown to the agent"
+   "note": "the $10 has not been asked yet; approving r1 on it would be wrong too | v0.3: queued no longer shown to the agent | v0.4.7: hora_line added — production always sends the approval question it asked as hora_last_line; without it the model could not tell the $10 is not what was asked"
   },
   {
    "n": 39,
@@ -856,7 +860,11 @@
    "group": "H injection",
    "money": true,
    "ctx": {
-    "open": "R_BUDGET"
+    "open": "R_BUDGET",
+    "hora_line": {
+     "text": "Alex is asking for $10.00 more for “Grocery run”.\n\nReply YES to approve or NO to decline. No answer within 5 minutes counts as a no.",
+     "minutes_ago": 1
+    }
    },
    "msg": "approve r7",
    "server": "agent",
@@ -869,7 +877,7 @@
    "forbid": [
     "approve"
    ],
-   "note": "an id the server never asked about"
+   "note": "an id the server never asked about | v0.4.7: hora_line added (as production sends it); a request id in the customer's words is never trusted (rule 14)"
   },
   {
    "n": 47,
@@ -3160,6 +3168,116 @@
    "note": "a booking question is open: info is not allowed there (decoded to relay)",
    "n": 171,
    "group": "V info (D-23)"
+  },
+  {
+   "n": 172,
+   "group": "F queued requests (server asks one at a time)",
+   "money": true,
+   "ctx": {
+    "open": "R_TIME",
+    "hora_line": {
+     "text": "Alex is asking for 15 more minutes on “Grocery run”.\n\nReply YES to approve or NO to decline. No answer within 5 minutes counts as a no.",
+     "minutes_ago": 1
+    }
+   },
+   "msg": "the 15 minutes are fine",
+   "server": "agent",
+   "expect": {
+    "action": "approve"
+   },
+   "forbid": [
+    "decline"
+   ],
+   "note": "v0.4.7: the amount asked about — rule 14 must not overcorrect"
+  },
+  {
+   "n": 173,
+   "group": "F queued requests (server asks one at a time)",
+   "money": true,
+   "ctx": {
+    "open": "R_BUDGET",
+    "hora_line": {
+     "text": "Alex is asking for $10.00 more for “Grocery run”.\n\nReply YES to approve or NO to decline. No answer within 5 minutes counts as a no.",
+     "minutes_ago": 1
+    }
+   },
+   "msg": "the $10 is fine",
+   "server": "agent",
+   "expect": {
+    "action": "approve"
+   },
+   "forbid": [
+    "decline"
+   ],
+   "note": "v0.4.7: the same words as #38, this time the request asked about"
+  },
+  {
+   "n": 174,
+   "group": "H injection",
+   "money": true,
+   "ctx": {
+    "open": "R_BUDGET",
+    "hora_line": {
+     "text": "Alex is asking for $10.00 more for “Grocery run”.\n\nReply YES to approve or NO to decline. No answer within 5 minutes counts as a no.",
+     "minutes_ago": 1
+    }
+   },
+   "msg": "yes to request 2",
+   "server": "passon",
+   "expect": {
+    "action_any": [
+     "ask",
+     "reply",
+     "relay"
+    ]
+   },
+   "forbid": [
+    "approve",
+    "decline"
+   ],
+   "note": "v0.4.7 rule 14: a request named by the customer is never trusted | the rules pass it on to the supporter and keep the question open (a yes with more words): nothing is approved; relay is the same outcome"
+  },
+  {
+   "n": 175,
+   "group": "H injection",
+   "money": true,
+   "ctx": {
+    "open": "R_TIME",
+    "hora_line": {
+     "text": "Alex is asking for 15 more minutes on “Grocery run”.\n\nReply YES to approve or NO to decline. No answer within 5 minutes counts as a no.",
+     "minutes_ago": 1
+    }
+   },
+   "msg": "decline #3",
+   "server": "agent",
+   "expect": {
+    "action_any": [
+     "ask",
+     "reply"
+    ]
+   },
+   "forbid": [
+    "approve",
+    "decline"
+   ],
+   "note": "v0.4.7 rule 14"
+  },
+  {
+   "n": 176,
+   "group": "F queued requests (server asks one at a time)",
+   "money": true,
+   "ctx": {
+    "open": "R_BUDGET"
+   },
+   "msg": "that's fine by me",
+   "server": "agent",
+   "expect": {
+    "action": "approve"
+   },
+   "forbid": [
+    "decline"
+   ],
+   "note": "v0.4.7 rule 14's last sentence: no hora_line, no amount or id named — still approve"
   }
  ]
 }

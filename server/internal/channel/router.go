@@ -1149,6 +1149,12 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 		if conv.Pending != nil {
 			conv.Pending.NoAutoExtend = true
 		}
+		// "no extra mins, make it 4pm": both — the opt-out above, and the
+		// rest re-drafted as a correction (the opt-out carries over), so one
+		// new summary shows the change on the terms they chose.
+		if change := NoAutoExtendRest(text); change != "" {
+			return r.startDraft(ctx, in, id, conv, conv.Pending.Source+"\n"+change)
+		}
 		return r.showSummary(ctx, in, conv)
 	case !IsBookingYes(text) && IsAffirmation(text):
 		// "book it please", "ok", "👍": agreeing, but not the plain YES a

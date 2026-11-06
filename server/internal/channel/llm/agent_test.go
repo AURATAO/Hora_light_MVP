@@ -160,3 +160,19 @@ func TestNoteOnlyAtTheBookingSummary(t *testing.T) {
 		t.Error("an unhandled note must fall to the supporter path")
 	}
 }
+
+// v0.4.7: a proposal cannot name a request — the schema has no field for
+// one, and a field the model adds is ignored. Rule 14 is in the prompt.
+func TestProposalCannotNameARequest(t *testing.T) {
+	props := AgentSchema(1)["properties"].(map[string]any)
+	if len(props) != 3 || props["action"] == nil || props["task"] == nil || props["escalation"] == nil {
+		t.Fatalf("schema fields %v: only action, task and escalation", props)
+	}
+	p, err := DecodeProposal(`{"action":"approve","task":"","escalation":"","request":"r7","extension_id":"ext-9"}`, AgentContext{OpenQuestion: "approval"})
+	if err != nil || p.Action != ActionApprove || p.Task != -1 || ToIntent(p) != IntentAnswer {
+		t.Fatalf("%+v %v", p, err)
+	}
+	if !strings.Contains(AgentPrompt, `"approve r7"`) || !strings.Contains(AgentPrompt, "14. With open_question \"approval\"") {
+		t.Fatal("rule 14 is not in the prompt")
+	}
+}

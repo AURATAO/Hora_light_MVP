@@ -13,3 +13,5 @@ node_modules/
 .env
 server/.env
 supabase/.temp/
+server/app
+server/hora-auth
