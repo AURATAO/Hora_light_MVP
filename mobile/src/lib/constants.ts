@@ -13,3 +13,6 @@ export const LEGAL_URLS = {
   terms: "https://www.my-hora.com/terms",
   privacy: "https://www.my-hora.com/privacy",
 } as const;
+
+/** Where requesters book now that the app is supporter-only (PLAN §13b-3). */
+export const BOOKING_URL = "https://horaapp.co";

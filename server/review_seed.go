@@ -87,10 +87,7 @@ var reviewSeedTasks = []reviewSeedTask{
 // One top-up at a time: two kicks racing would otherwise both see "1 open"
 // and both post two. The server is a single instance, so a mutex is the lock;
 // TryLock, because a second kick while one runs has nothing to add.
-var (
-	reviewSeedMu sync.Mutex
-	reviewSeedWG sync.WaitGroup
-)
+var reviewSeedMu sync.Mutex
 
 // kickReviewBoard tops the review account's board up in the background.
 // Best-effort and never blocks the caller.
@@ -98,10 +95,16 @@ func kickReviewBoard(uid, email string) {
 	if !reviewSeedMu.TryLock() {
 		return
 	}
-	reviewSeedWG.Add(1)
 	go func() {
-		defer reviewSeedWG.Done()
 		defer reviewSeedMu.Unlock()
+		// Off the request goroutine there is no gin recovery: a panic here
+		// would take the whole server down for every real user. Runs first
+		// (defers are LIFO), the unlock still runs after it.
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[review-seed] panic: %v", r)
+			}
+		}()
 		ctx, cancel := context.WithTimeout(context.Background(), reviewSeedTimeout)
 		defer cancel()
 		seedReviewBoard(ctx, uid, email)

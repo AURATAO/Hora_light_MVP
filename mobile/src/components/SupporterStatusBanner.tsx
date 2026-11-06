@@ -1,7 +1,7 @@
 import { Alert, Linking, Text, View } from "react-native";
 import { CircleX, Clock } from "lucide-react-native";
 import { Badge, Button, PressableScale } from "./ui";
-import { SUPPORT_EMAIL } from "../lib/constants";
+import { BOOKING_URL, SUPPORT_EMAIL } from "../lib/constants";
 import type { SupporterStatus } from "../lib/types";
 import { color, size } from "../theme/tokens";
 
@@ -18,8 +18,6 @@ async function contactSupport() {
     Alert.alert("No mail app", `Write to us at ${SUPPORT_EMAIL}.`);
   }
 }
-
-const BOOKING_URL = "https://horaapp.co";
 
 async function openBookingSite() {
   try {

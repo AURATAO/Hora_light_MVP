@@ -40,7 +40,12 @@ export function AvailabilityCard() {
   // flip the card back.
   const seq = useRef(0);
 
+  // A toggle in flight owns the card: a read started meanwhile may have been
+  // served before the write landed, so it is not taken at all.
+  const toggling = useRef(false);
+
   const load = useCallback(async () => {
+    if (toggling.current) return;
     const ticket = ++seq.current;
     try {
       const s = await getDispatchSettings();
@@ -66,6 +71,7 @@ export function AvailabilityCard() {
   async function toggle() {
     if (busy || !settings) return;
     const turningOn = !settings.available;
+    toggling.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -87,6 +93,7 @@ export function AvailabilityCard() {
     } catch {
       setError(turningOn ? "Couldn't go available. Try again in a moment." : "Couldn't go offline. Try again in a moment.");
     } finally {
+      toggling.current = false;
       setBusy(false);
     }
   }
