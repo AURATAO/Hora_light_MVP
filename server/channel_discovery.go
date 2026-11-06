@@ -85,13 +85,21 @@ func (placesSearcher) PlaceDetails(ctx context.Context, id string) (llm.Place, e
 	return llmPlace(p), nil
 }
 
+func (placesSearcher) AboutDetails(ctx context.Context, id string) (llm.Place, error) {
+	p, err := helpers.PlaceAbout(ctx, id, nycLocation)
+	if err != nil {
+		return llm.Place{}, err
+	}
+	return llmPlace(p), nil
+}
+
 func (placesSearcher) PlaceName(ctx context.Context, id string) (string, error) {
 	return helpers.PlaceName(ctx, id)
 }
 
 func llmPlace(p helpers.Place) llm.Place {
 	return llm.Place{ID: p.ID, Name: p.Name, Address: p.Address, FullAddress: p.FullAddress, Rating: p.Rating,
-		RatingCount: p.RatingCount, OpenNow: p.OpenNow, ClosesAt: p.ClosesAt, OpensAt: p.OpensAt,
+		RatingCount: p.RatingCount, PriceLevel: p.PriceLevel, OpenNow: p.OpenNow, ClosesAt: p.ClosesAt, OpensAt: p.OpensAt,
 		InNYC: p.Area == helpers.AreaInside}
 }
 

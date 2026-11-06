@@ -25,8 +25,11 @@ import (
 // Billing (Google Maps Platform price list, checked 2026-11-04): a request
 // is billed at the highest SKU any field in its mask belongs to. rating,
 // userRatingCount and currentOpeningHours make every search Text Search
-// Enterprise ($35 / 1,000, 1,000 free a month); a details lookup with
-// displayName is Place Details Pro ($17 / 1,000, 5,000 free). No phone
+// Enterprise ($35 / 1,000, 1,000 free a month; priceLevel is in the same
+// SKU, so it costs nothing more); a details lookup with displayName is
+// Place Details Pro ($17 / 1,000, 5,000 free), and with rating and hours
+// (PlaceAbout, an answer about the options shown) Place Details
+// Enterprise ($20 / 1,000, 1,000 free). No phone
 // number, website, review or photo is ever requested: they cost more and
 // the chat shows none of them (reviews and photos would also need their
 // authors credited).
@@ -53,6 +56,8 @@ type Place struct {
 	FullAddress string // formattedAddress, without ", USA": what a task is booked at
 	Rating      float64
 	RatingCount int
+	// PriceLevel: 0 unknown or free, 1 inexpensive … 4 very expensive.
+	PriceLevel int
 	// OpenNow: nil when Google gives no hours.
 	OpenNow  *bool
 	ClosesAt string // local time the place next closes ("11 PM"), "" unknown
@@ -63,8 +68,10 @@ type Place struct {
 }
 
 const (
-	searchFields  = "places.id,places.displayName,places.shortFormattedAddress,places.formattedAddress,places.addressComponents,places.businessStatus,places.rating,places.userRatingCount,places.currentOpeningHours"
+	searchFields  = "places.id,places.displayName,places.shortFormattedAddress,places.formattedAddress,places.addressComponents,places.businessStatus,places.rating,places.userRatingCount,places.priceLevel,places.currentOpeningHours"
 	detailsFields = "id,displayName,shortFormattedAddress,formattedAddress,addressComponents"
+	// aboutFields: what an answer about the options shown is made from.
+	aboutFields = detailsFields + ",rating,userRatingCount,priceLevel,currentOpeningHours"
 	// nameFields: the least a name match needs. displayName is a Pro field,
 	// so this is still Place Details Pro; it asks for nothing else.
 	nameFields = "displayName"
@@ -91,6 +98,7 @@ type placesWire struct {
 	BusinessStatus      string  `json:"businessStatus"`
 	Rating              float64 `json:"rating"`
 	UserRatingCount     int     `json:"userRatingCount"`
+	PriceLevel          string  `json:"priceLevel"`
 	CurrentOpeningHours *struct {
 		OpenNow       *bool  `json:"openNow"`
 		NextCloseTime string `json:"nextCloseTime"`
@@ -163,6 +171,36 @@ func PlaceDetails(ctx context.Context, id string, loc *time.Location) (p Place, 
 	}
 	var w placesWire
 	if httpStatus, err = placesCall(ctx, http.MethodGet, PlacesDetailsURL+id, detailsFields, nil, &w); err != nil {
+		return Place{}, err
+	}
+	if w.ID == "" {
+		return Place{}, errors.New("places: no such place")
+	}
+	return w.place(loc), nil
+}
+
+// priceLevels: Google's PriceLevel enum; FREE and UNSPECIFIED are 0.
+var priceLevels = map[string]int{"PRICE_LEVEL_INEXPENSIVE": 1, "PRICE_LEVEL_MODERATE": 2, "PRICE_LEVEL_EXPENSIVE": 3, "PRICE_LEVEL_VERY_EXPENSIVE": 4}
+
+// PlaceAbout looks one place up again by id with its rating, reviews,
+// price level and hours (Place Details Enterprise): an answer about the
+// options shown ("which one should I pick?") is made from these.
+func PlaceAbout(ctx context.Context, id string, loc *time.Location) (p Place, err error) {
+	_, sp := tracing.StartSpan(ctx, "places.about", tracing.KindTool)
+	start, httpStatus := time.Now(), 0
+	defer func() {
+		sp.Attr(
+			attribute.Int64("hora.places.latency_ms", time.Since(start).Milliseconds()),
+			attribute.Int("http.status_code", httpStatus),
+		)
+		sp.Fail(err)
+		sp.End()
+	}()
+	if !placeIDOK(id) {
+		return Place{}, errors.New("places: bad place id")
+	}
+	var w placesWire
+	if httpStatus, err = placesCall(ctx, http.MethodGet, PlacesDetailsURL+id, aboutFields, nil, &w); err != nil {
 		return Place{}, err
 	}
 	if w.ID == "" {
@@ -259,6 +297,7 @@ func (w placesWire) place(loc *time.Location) Place {
 		FullAddress: CleanPlaceText(strings.TrimSuffix(strings.TrimSpace(w.FormattedAddress), ", USA"), 160),
 		Rating:      w.Rating,
 		RatingCount: w.UserRatingCount,
+		PriceLevel:  priceLevels[w.PriceLevel],
 	}
 	if p.Address == "" {
 		p.Address = p.FullAddress
