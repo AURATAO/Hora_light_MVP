@@ -154,8 +154,6 @@ const ACCEPT_LOST_ERROR = "not available";
 // an error — and it points somewhere useful rather than just reporting.
 const ACCEPT_LOST_COPY = "Someone just grabbed this one — check out the other tasks.";
 
-// Long enough to read one sentence before the screen goes away.
-const ACCEPT_LOST_LEAVE_MS = 1500;
 
 const TRANSPORT_LABELS: Record<string, string> = {
   none: "No transport needed",
@@ -298,6 +296,7 @@ export default function TaskDetail() {
   const load = useCallback(async () => {
     try {
       const [me, t] = await Promise.all([getMe(), getTask(id)]);
+      setNoLongerOpen(false);
       if (!me.auth) {
         router.replace("/(auth)/login");
         return;
@@ -462,9 +461,11 @@ export default function TaskDetail() {
       if (e instanceof ApiError && e.message === ACCEPT_LOST_ERROR) {
         // Someone else won. Say so plainly, refetch so this screen stops
         // offering a task that is gone, then hand them back to the feed.
+        // The refetch now answers 403 to a non-participant, so the screen
+        // becomes the "no longer open" state carrying ACCEPT_LOST_COPY, with
+        // its own way out — no timed navigation racing the person's tap.
         setAcceptLost(true);
         await load();
-        acceptLostTimeoutRef.current = setTimeout(leaveToWorkList, ACCEPT_LOST_LEAVE_MS);
       } else {
         setAcceptError(e instanceof Error ? e.message : "Couldn't accept this task.");
       }
@@ -1033,7 +1034,7 @@ export default function TaskDetail() {
         <EmptyState
           icon={CircleAlert}
           title="This task is no longer open"
-          caption="Someone else took it, or it was cancelled. New tasks come in throughout the day."
+          caption={acceptLost ? ACCEPT_LOST_COPY : "Someone else took it, or it was cancelled. New tasks come in throughout the day."}
           actionLabel="See open tasks"
           onAction={() => router.replace("/(tabs)/work")}
         />

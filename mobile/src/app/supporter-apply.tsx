@@ -4,7 +4,7 @@ import { useRouter } from "expo-router";
 import { CircleCheck, ChevronLeft } from "lucide-react-native";
 import { Button, Input, PressableScale, Screen, Skeleton } from "../components/ui";
 import { SupporterStatusBanner } from "../components/SupporterStatusBanner";
-import { ApiError, applySupporter, getDispatchSettings, getProfile, saveDispatchBoroughs, updateProfile } from "../lib/api";
+import { ApiError, applySupporter, getAppConfig, getDispatchSettings, getProfile, saveDispatchBoroughs, updateProfile } from "../lib/api";
 import { BoroughPicker } from "../components/BoroughPicker";
 import type { SupporterStatus } from "../lib/types";
 import { color, size } from "../theme/tokens";
@@ -68,7 +68,10 @@ export default function SupporterApply() {
       setEmail(p.email ?? "");
       setStatus(p.supporter_status);
       setLoadError(null);
-      getDispatchSettings()
+      // Asked only while task offers are on: with dispatch off the areas do
+      // nothing, and the copy below would promise what isn't happening.
+      getAppConfig()
+        .then((cfg) => (cfg.dispatch ? getDispatchSettings() : Promise.reject(new Error("dispatch off"))))
         .then((d) => {
           setAllBoroughs(d.all_boroughs);
           setBoroughs(d.boroughs);

@@ -107,13 +107,22 @@ export async function askForPushInContext(context: PushAskContext): Promise<void
 // Going available is the one moment notifications are the whole point (D-24):
 // an offer that cannot reach the phone is no offer. So unlike the in-context
 // ask above, this one is NOT once-per-device — the supporter just asked for
-// offers. Resolves true when this device can receive them (permission granted
-// and a token registered). Never throws.
-export async function ensurePushForOffers(): Promise<boolean> {
+// offers. "ok" when this device can receive them; "denied" when notification
+// permission is off (the fix is Settings); "failed" when permission is on but
+// no token could be registered (offline, no EAS project id) — a retry, not
+// Settings. Never throws.
+export type OffersPushResult = "ok" | "denied" | "failed";
+
+export async function ensurePushForOffers(): Promise<OffersPushResult> {
+  const registered = async (request: boolean): Promise<OffersPushResult> => {
+    if ((await registerPush({ request })) !== null) return "ok";
+    const perm = await Notifications.getPermissionsAsync().catch(() => null);
+    return perm?.granted ? "failed" : "denied";
+  };
   try {
     const perm = await Notifications.getPermissionsAsync();
-    if (perm.granted) return (await registerPush({ request: false })) !== null;
-    if (!perm.canAskAgain) return false;
+    if (perm.granted) return await registered(false);
+    if (!perm.canAskAgain) return "denied";
     const { title, body } = pushAskCopy("available");
     const turnOn = await new Promise<boolean>((resolve) => {
       Alert.alert(title, body, [
@@ -121,12 +130,12 @@ export async function ensurePushForOffers(): Promise<boolean> {
         { text: "Turn on", onPress: () => resolve(true) },
       ]);
     });
-    if (!turnOn) return false;
+    if (!turnOn) return "denied";
     await SecureStore.setItemAsync(PUSH_ASKED_KEY, "1").catch(() => {});
-    return (await registerPush({ request: true })) !== null;
+    return await registered(true);
   } catch (e) {
     if (__DEV__) console.warn("[push] offers ask failed:", e);
-    return false;
+    return "failed";
   }
 }
 

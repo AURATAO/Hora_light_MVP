@@ -192,8 +192,12 @@ export default function Work() {
       ) : tasks.length === 0 ? (
         <EmptyState
           icon={Briefcase}
-          title="No open tasks right now"
-          caption="Check back soon — new tasks post throughout the day."
+          title={dispatchOn ? "Go available to get offers" : "New tasks post throughout the day"}
+          caption={
+            dispatchOn
+              ? "Nothing open right now. While you're available, new tasks come straight to your phone."
+              : "Nothing open right now. Pull down to check again."
+          }
         />
       ) : (
         <View>

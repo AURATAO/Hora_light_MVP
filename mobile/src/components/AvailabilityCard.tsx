@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Linking, Text, View } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { BellRing, MapPin } from "lucide-react-native";
@@ -35,12 +35,20 @@ export function AvailabilityCard() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pushBlocked, setPushBlocked] = useState(false);
+  // Every read and write takes a ticket; only the latest one may set state,
+  // so a focus refetch that started before a toggle cannot land after it and
+  // flip the card back.
+  const seq = useRef(0);
 
   const load = useCallback(async () => {
+    const ticket = ++seq.current;
     try {
-      setSettings(await getDispatchSettings());
+      const s = await getDispatchSettings();
+      if (ticket !== seq.current) return;
+      setSettings(s);
       setError(null);
     } catch {
+      if (ticket !== seq.current) return;
       // The card is an extra on the feed: a failed read hides it rather than
       // putting an error above the tasks.
       setSettings(null);
@@ -62,14 +70,20 @@ export function AvailabilityCard() {
     setError(null);
     try {
       if (turningOn) {
-        const canReceive = await ensurePushForOffers();
-        if (!canReceive) {
+        const push = await ensurePushForOffers();
+        if (push === "denied") {
           setPushBlocked(true);
           return;
         }
         setPushBlocked(false);
+        if (push === "failed") {
+          setError("Couldn't set up notifications on this phone. Check your connection and try again.");
+          return;
+        }
       }
-      setSettings(await setAvailability(turningOn));
+      const ticket = ++seq.current;
+      const next = await setAvailability(turningOn);
+      if (ticket === seq.current) setSettings(next);
     } catch {
       setError(turningOn ? "Couldn't go available. Try again in a moment." : "Couldn't go offline. Try again in a moment.");
     } finally {

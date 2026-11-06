@@ -19,6 +19,16 @@ async function contactSupport() {
   }
 }
 
+const BOOKING_URL = "https://horaapp.co";
+
+async function openBookingSite() {
+  try {
+    await Linking.openURL(BOOKING_URL);
+  } catch {
+    // No browser to open: the label already names the address.
+  }
+}
+
 // Mirrors web's SupporterStatusBanner semantics (approved renders nothing, the
 // other three states each get a card) in the mobile design system. The status
 // itself is derived server-side (S-05); this only chooses what to show.
@@ -64,6 +74,11 @@ export function SupporterStatusBanner({ status, onApply }: SupporterStatusBanner
         </Text>
       </View>
       <Button label="Apply now" onPress={onApply} />
+      {/* The app is for supporters only now (PLAN §13b-3). Somebody who used
+          it to book help lands here; tell them where booking went. */}
+      <PressableScale onPress={openBookingSite} hitSlop={8} className="min-h-11 items-center justify-center">
+        <Text className="text-caption font-semibold text-brand">Looking to book help? Go to horaapp.co</Text>
+      </PressableScale>
     </View>
   );
 }

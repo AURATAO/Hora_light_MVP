@@ -2845,6 +2845,14 @@ func listAvailableTasks(c *gin.Context) {
 		return
 	}
 
+	// The App Review account's board refills itself: the supporter-only app
+	// cannot post, so a reviewer who worked through the demo tasks (or whose
+	// login seed failed) gets new ones on the next pull to refresh. First page
+	// only; background; a no-op for every real account (review_seed.go).
+	if c.Query("before_id") == "" && meEmail != "" && canSelfAccept(c.Request.Context(), meUID) {
+		kickReviewBoard(meUID, meEmail)
+	}
+
 	limit := parseLimit(c.Query("limit"), 10, 50)
 	var beforeCreatedAt *time.Time
 	var beforeID *string

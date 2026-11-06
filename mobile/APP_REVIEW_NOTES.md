@@ -8,7 +8,7 @@ HO:RA is the supporter app for HO:RA, a service for short, in-person tasks in Ne
 
 Walkthrough
 1. Sign in: tick the Terms/Privacy checkbox, tap "Send code", enter the code above.
-2. Tasks tab → open any demo task → "Accept task". (If the tab is empty, pull down to refresh.)
+2. Tasks tab → open any demo task → "Accept task". (If the tab is empty, wait a few seconds and pull down to refresh — new demo tasks are added automatically.)
 3. Tap "On my way". iOS asks for location permission here (see note c).
 4. Tap "Clock in" (timer starts), wait a moment, then "Clock out".
 5. Tap "Complete task" → choose any photo from the library (or take one) as the completion photo → confirm. An itemized summary appears.

@@ -24,9 +24,20 @@ package main
 // Not announced and not dispatched: the only possible recipient is the
 // reviewer, who is the requester, and the dispatch excludes the requester.
 //
+// WHEN IT RUNS. In the background, never on the request: from the review login
+// and again from every first-page board read by a sandbox account
+// (listAvailableTasks), so a seed that failed at sign-in (a Stripe blip) or a
+// board the reviewer has worked through refills on the next pull to refresh,
+// without signing out. A run already in flight makes later kicks no-ops.
+//
 // Holds expire after about a week, so an open seed older than
 // reviewSeedMaxAge is released and cancelled on the next login and replaced,
 // rather than left to fail at capture on the reviewer's completion.
+//
+// Known gap: a seed the reviewer ACCEPTED and then abandoned for over a week
+// keeps its lapsed hold, and completing it later fails at capture as any such
+// task would. Retiring accepted work out from under somebody is worse; the
+// board still refills, so the reviewer can take a fresh one.
 
 import (
 	"context"
@@ -73,20 +84,32 @@ var reviewSeedTasks = []reviewSeedTask{
 	},
 }
 
-// One top-up at a time: two logins racing would otherwise both see "1 open"
-// and both post two. The server is a single instance, so a mutex is the lock.
-var reviewSeedMu sync.Mutex
+// One top-up at a time: two kicks racing would otherwise both see "1 open"
+// and both post two. The server is a single instance, so a mutex is the lock;
+// TryLock, because a second kick while one runs has nothing to add.
+var (
+	reviewSeedMu sync.Mutex
+	reviewSeedWG sync.WaitGroup
+)
 
-// seedReviewBoard is best-effort and never fails the login: the worst case is
-// a board with fewer tasks, which the reviewer can still pull to refresh.
-func seedReviewBoard(parent context.Context, uid, email string) {
-	reviewSeedMu.Lock()
-	defer reviewSeedMu.Unlock()
+// kickReviewBoard tops the review account's board up in the background.
+// Best-effort and never blocks the caller.
+func kickReviewBoard(uid, email string) {
+	if !reviewSeedMu.TryLock() {
+		return
+	}
+	reviewSeedWG.Add(1)
+	go func() {
+		defer reviewSeedWG.Done()
+		defer reviewSeedMu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), reviewSeedTimeout)
+		defer cancel()
+		seedReviewBoard(ctx, uid, email)
+	}()
+}
 
-	// Detached from the request: a reviewer's slow network closing the login
-	// request must not leave a hold half-placed. Bounded instead.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), reviewSeedTimeout)
-	defer cancel()
+// seedReviewBoard does one top-up. Callers hold reviewSeedMu.
+func seedReviewBoard(ctx context.Context, uid, email string) {
 
 	if !paymentsEnabled() {
 		log.Printf("[review-seed] skipped: Stripe not configured, and sandbox tasks need a test hold")
@@ -95,11 +118,16 @@ func seedReviewBoard(parent context.Context, uid, email string) {
 
 	retireStaleReviewSeeds(ctx, uid)
 
+	// A seed parked in pending_payment (an uncertain hold, below) holds its
+	// slot for a day, so a Stripe outage cannot pile up parked tasks login
+	// after login.
 	var open int
 	if err := db.QueryRow(ctx, `
 		select count(*) from public.tasks
-		 where requester_id = $1::uuid and status = 'open' and assigned_to_id is null
-	`, uid).Scan(&open); err != nil {
+		 where requester_id = $1::uuid and assigned_to_id is null
+		   and (status = 'open'
+		        or (status = $2 and created_at > now() - interval '1 day'))
+	`, uid, taskStatusPendingPayment).Scan(&open); err != nil {
 		log.Printf("[review-seed] count open: %v", err)
 		return
 	}

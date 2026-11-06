@@ -21,6 +21,7 @@ import { SupporterStatusRow } from "../../components/SupporterStatusBanner";
 import { Avatar, Card, EmptyState, PressableScale, Screen, Skeleton } from "../../components/ui";
 import {
   ApiError,
+  getAppConfig,
   getMe,
   getProfile,
   getSupporterReviews,
@@ -66,6 +67,8 @@ export default function Profile() {
   const router = useRouter();
 
   const [profile, setProfile] = useState<Profile | null>(null);
+  // Task areas only mean something while task offers are on (D-24).
+  const [dispatchOn, setDispatchOn] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -91,6 +94,9 @@ export default function Profile() {
       const p = await getProfile();
       setProfile(p);
       setError(null);
+      getAppConfig()
+        .then((cfg) => setDispatchOn(cfg.dispatch === true))
+        .catch(() => setDispatchOn(false));
 
       // The supporter's own star average and review list. Deliberately the
       // very same GET /profiles/:id/reviews the public profile uses, called
@@ -380,7 +386,7 @@ export default function Profile() {
           areas decide who hears about a new task first. Payment methods used
           to live here; the app no longer posts tasks, so it holds no card, and
           Earnings has its own tab. */}
-      {profile.supporter_status === "approved" ? (
+      {profile.supporter_status === "approved" && dispatchOn ? (
         <View className="mb-6">
           <Text className="mb-2 text-title font-semibold text-ink">Work</Text>
           <Card>
