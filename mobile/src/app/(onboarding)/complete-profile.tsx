@@ -87,7 +87,7 @@ export default function CompleteProfile() {
     try {
       await updateProfile({ name: name.trim(), phone: phone.trim() });
       await refresh();
-      router.replace("/(tabs)/home");
+      router.replace("/(tabs)/work");
     } catch (e) {
       if (handleAuthError(e)) return;
       setError(e instanceof Error ? e.message : "Couldn't save your profile. Try again.");

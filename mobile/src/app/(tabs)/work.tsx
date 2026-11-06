@@ -1,10 +1,11 @@
 import { useCallback, useState } from "react";
 import { RefreshControl, Text, View } from "react-native";
-import { Redirect, useFocusEffect, useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { Briefcase, MapPin } from "lucide-react-native";
+import { AvailabilityCard } from "../../components/AvailabilityCard";
 import { SupporterStatusBanner } from "../../components/SupporterStatusBanner";
 import { Card, EmptyState, Screen, Skeleton } from "../../components/ui";
-import { ApiError, getAvailableTasks, getProfile } from "../../lib/api";
+import { ApiError, getAppConfig, getAvailableTasks, getProfile } from "../../lib/api";
 import { getCategoryMeta } from "../../lib/categories";
 import { formatCost, formatMinutes, formatScheduledAt } from "../../lib/task-utils";
 import type { Profile, Task } from "../../lib/types";
@@ -60,6 +61,9 @@ export default function Work() {
   const [tasksError, setTasksError] = useState<string | null>(null);
 
   const [refreshing, setRefreshing] = useState(false);
+  // Whether the server pushes new tasks (D-24). Off, or unreadable, means the
+  // availability card stays hidden and the feed is the whole screen.
+  const [dispatchOn, setDispatchOn] = useState(false);
 
   function handleAuthError(e: unknown): boolean {
     if (e instanceof ApiError && e.isAuthError) {
@@ -90,6 +94,9 @@ export default function Work() {
       setProfile(p);
       setProfileError(null);
       if (p.supporter_status === "approved") {
+        getAppConfig()
+          .then((cfg) => setDispatchOn(cfg.dispatch === true))
+          .catch(() => setDispatchOn(false));
         await loadTasks();
       } else {
         setTasksLoading(false);
@@ -117,7 +124,7 @@ export default function Work() {
 
   if (profileLoading) {
     return (
-      <Screen insetForTabBar headline="Earn">
+      <Screen insetForTabBar headline="Tasks">
         <View className="gap-3">
           <Skeleton className="h-[84px]" />
           <Skeleton className="h-[84px]" />
@@ -128,7 +135,7 @@ export default function Work() {
 
   if (profileError && !profile) {
     return (
-      <Screen insetForTabBar headline="Earn">
+      <Screen insetForTabBar headline="Tasks">
         <EmptyState
           icon={Briefcase}
           title="Couldn't load this page"
@@ -142,21 +149,10 @@ export default function Work() {
 
   const status = profile?.supporter_status ?? "none";
 
-  // THE ROUTE GUARD. The tab is hidden for non-supporters (see (tabs)/_layout),
-  // but a push notification deep link, a saved URL or a stale navigation stack
-  // can still aim at this route — and landing a requester on a screen of other
-  // people's jobs is the confusion the gating exists to remove.
-  //
-  // Redirect Home rather than render a refusal: there is nothing here for
-  // them, and a dead end they have to back out of is worse than simply being
-  // somewhere that makes sense.
-  //
-  // An APPLIED or REJECTED supporter is NOT redirected — they have a live
-  // application and the banner is how they learn where it stands, which is
-  // exactly what this screen is for while they wait.
-  if (status === "none") {
-    return <Redirect href="/(tabs)/home" />;
-  }
+  // The app is supporter-only (PLAN §13b-3): every account that is not yet an
+  // approved supporter lands here and sees where it stands — "none" gets the
+  // apply card, applied/rejected get their status. There is no requester home
+  // to send anyone to any more.
 
   // Every non-approved state is one banner (web parity — see
   // SupporterStatusBanner); the tasks feed below is approved-only.
@@ -164,7 +160,7 @@ export default function Work() {
     return (
       <Screen
         insetForTabBar
-        headline="Earn"
+        headline="Tasks"
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={color.muted} />}
       >
         <SupporterStatusBanner status={status} onApply={() => router.push("/supporter-apply")} />
@@ -175,9 +171,10 @@ export default function Work() {
   return (
     <Screen
       insetForTabBar
-      headline="Available tasks"
+      headline="Tasks"
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={color.muted} />}
     >
+      {dispatchOn ? <AvailabilityCard /> : null}
       {tasksLoading ? (
         <View className="gap-3">
           <Skeleton className="h-[84px]" />

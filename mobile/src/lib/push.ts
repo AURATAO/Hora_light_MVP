@@ -53,10 +53,16 @@ export async function registerPushIfAlreadyGranted(): Promise<string | null> {
 // the system prompt once; this guards OUR pre-prompt.
 const PUSH_ASKED_KEY = "hora_push_asked";
 
-export type PushAskContext = "task_posted" | "task_accepted";
+export type PushAskContext = "task_posted" | "task_accepted" | "available";
 
 /** The one-line explanation shown before the system prompt. */
 export function pushAskCopy(context: PushAskContext): { title: string; body: string } {
+  if (context === "available") {
+    return {
+      title: "Turn on notifications?",
+      body: "Task offers arrive as notifications. Without them, going available won't bring you any tasks.",
+    };
+  }
   if (context === "task_accepted") {
     return {
       title: "Turn on notifications?",
@@ -95,6 +101,32 @@ export async function askForPushInContext(context: PushAskContext): Promise<void
     if (turnOn) await registerPush({ request: true });
   } catch (e) {
     if (__DEV__) console.warn("[push] in-context ask failed:", e);
+  }
+}
+
+// Going available is the one moment notifications are the whole point (D-24):
+// an offer that cannot reach the phone is no offer. So unlike the in-context
+// ask above, this one is NOT once-per-device — the supporter just asked for
+// offers. Resolves true when this device can receive them (permission granted
+// and a token registered). Never throws.
+export async function ensurePushForOffers(): Promise<boolean> {
+  try {
+    const perm = await Notifications.getPermissionsAsync();
+    if (perm.granted) return (await registerPush({ request: false })) !== null;
+    if (!perm.canAskAgain) return false;
+    const { title, body } = pushAskCopy("available");
+    const turnOn = await new Promise<boolean>((resolve) => {
+      Alert.alert(title, body, [
+        { text: "Not now", style: "cancel", onPress: () => resolve(false) },
+        { text: "Turn on", onPress: () => resolve(true) },
+      ]);
+    });
+    if (!turnOn) return false;
+    await SecureStore.setItemAsync(PUSH_ASKED_KEY, "1").catch(() => {});
+    return (await registerPush({ request: true })) !== null;
+  } catch (e) {
+    if (__DEV__) console.warn("[push] offers ask failed:", e);
+    return false;
   }
 }
 

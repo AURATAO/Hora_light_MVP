@@ -13,7 +13,6 @@ import {
   MapPin,
   MessageCircle,
   Navigation,
-  Pencil,
   ShieldAlert,
 } from "lucide-react-native";
 import { BudgetIncreaseSheet, type BudgetIncreaseSubmit } from "../../components/BudgetIncreaseSheet";
@@ -261,6 +260,10 @@ export default function TaskDetail() {
   // team took this one down while the screen was open, and removal detaches the
   // supporter, so the person looking at it may no longer be allowed to read it.
   const [removedGone, setRemovedGone] = useState(false);
+  // An offer push opened after somebody else accepted, or after the requester
+  // cancelled: the server answers a non-participant "forbidden" once a task is
+  // no longer open (main.go getTask). Said as what happened, not as an error.
+  const [noLongerOpen, setNoLongerOpen] = useState(false);
   const gpsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const acceptLostTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -360,6 +363,12 @@ export default function TaskDetail() {
         // Terminal. The render effect below can't see this one — `task` is
         // null, which it reads as "still loading" — so it is said here.
         endTaskTracking(id, "removed").catch(() => {});
+        return;
+      }
+      if (e instanceof ApiError && (e.status === 403 || e.status === 404)) {
+        setTask(null);
+        setNoLongerOpen(true);
+        setError(null);
         return;
       }
       setError(e instanceof Error ? e.message : "Couldn't load this task");
@@ -1017,6 +1026,21 @@ export default function TaskDetail() {
     );
   }
 
+  if (noLongerOpen) {
+    return (
+      <Screen scroll={false}>
+        <HeaderRow onBack={leaveToWorkList} />
+        <EmptyState
+          icon={CircleAlert}
+          title="This task is no longer open"
+          caption="Someone else took it, or it was cancelled. New tasks come in throughout the day."
+          actionLabel="See open tasks"
+          onAction={() => router.replace("/(tabs)/work")}
+        />
+      </Screen>
+    );
+  }
+
   if (error && !task) {
     return (
       <Screen scroll={false}>
@@ -1054,11 +1078,6 @@ export default function TaskDetail() {
     supporterName: supporter?.name || task.assignee_name,
     requesterName: requester?.name || task.requester_name,
   });
-  // Editing stays open-only: changing the terms of a job somebody has already
-  // accepted is a renegotiation, and that belongs in chat. deriveTaskStatus
-  // only returns "open" while assigned_to_id is null, and the server enforces
-  // the same rule (main.go updateTask).
-  const editable = isRequester && status === "open";
 
   // CANCELLING DOES NOT. It used to share `editable`, which meant that the
   // moment a supporter accepted, the requester had no way out of their own
@@ -1077,7 +1096,6 @@ export default function TaskDetail() {
   // "Post again" — my own finished task, completed or cancelled. Same rule as
   // My Tasks' swipe action (isRepostable there): never on a `removed` task, and
   // never for a supporter, who sees this screen for tasks they only worked on.
-  const canRepost = isRequester && (task.status === "completed" || task.status === "cancelled");
   // The requester sees their own words; everyone else sees the preset's label
   // or nothing at all. cancel_reason is free text and may have been typed by
   // an ops admin about the person reading it.
@@ -1178,7 +1196,6 @@ export default function TaskDetail() {
     >
       <HeaderRow
         onBack={() => router.back()}
-        onEdit={editable ? () => router.push(`/task/${id}/edit`) : undefined}
         safety={
           counterpart ? (
             <UserSafetyMenu
@@ -1738,19 +1755,6 @@ export default function TaskDetail() {
               className="mb-4"
             />
           )
-        ) : null}
-
-        {/* Post again. Placed with the other requester actions, and it is the
-            only one a finished task offers: `cancellable` is open-only, so this
-            and the cancel button below never appear together. Secondary, like
-            every action in this stack — the screen's solid CTA is Accept. */}
-        {canRepost ? (
-          <Button
-            label="Post again"
-            variant="secondary"
-            onPress={() => router.push(`/post-task?duplicate=${task.id}`)}
-            className="mb-4"
-          />
         ) : null}
 
         {/* Cancel. Secondary throughout — it is an exit, never this screen's
@@ -2465,15 +2469,13 @@ function SettlementCard({
   );
 }
 
-// `onEdit` is passed only for a task the signed-in requester can still change,
-// so the pencil is absent — not disabled — the moment someone accepts it.
+// No edit control: the app is supporter-only, and requesters change their
+// task where they booked it (iMessage, WhatsApp or the web).
 function HeaderRow({
   onBack,
-  onEdit,
   safety,
 }: {
   onBack: () => void;
-  onEdit?: () => void;
   /** Report / Block for the other party on this task (UserSafetyMenu). */
   safety?: ReactNode;
 }) {
@@ -2483,7 +2485,7 @@ function HeaderRow({
         <PressableScale
           onPress={onBack}
           // Labelled like every other back control in the app (tasks/history,
-          // profile/earnings-history) and like the Edit button beside it. It
+          // profile/earnings-history) and like every other control here. It
           // was the one unlabeled chevron on the most-used screen: a screen
           // reader landed on it and said nothing, and the build 12 simulator
           // driver could not find it by name for the same reason.
@@ -2497,17 +2499,6 @@ function HeaderRow({
         <Text className="ml-1 text-title font-semibold text-ink">Task</Text>
       </View>
       <View className="flex-row items-center gap-2">
-        {onEdit ? (
-          <PressableScale
-            onPress={onEdit}
-            className="h-11 w-11 items-center justify-center rounded-pill"
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel="Edit task"
-          >
-            <Pencil color={color.ink} size={20} strokeWidth={size.iconStroke} />
-          </PressableScale>
-        ) : null}
         {safety}
       </View>
     </View>

@@ -272,6 +272,9 @@ func ensureReviewAccount(ctx context.Context, sdb *sql.DB, ra reviewAccount) (st
 	// Best-effort, and never fatal to the login: a reviewer without the seeded
 	// card can still add Stripe's test card from Profile → Payment methods.
 	seedReviewTestCard(ctx, internalID, ra.Email)
+	// The supporter-only app has no Post screen: keep a few open tasks on
+	// the reviewer's board (review_seed.go). Best-effort, like the card.
+	seedReviewBoard(ctx, internalID, ra.Email)
 	return internalID, nil
 }
 

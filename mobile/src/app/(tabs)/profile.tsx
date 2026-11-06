@@ -6,9 +6,8 @@ import * as SecureStore from "expo-secure-store";
 import * as WebBrowser from "expo-web-browser";
 import Constants from "expo-constants";
 import {
-  Banknote,
+  MapPin,
   ChevronRight,
-  CreditCard,
   FileText,
   MessageCircle,
   ShieldCheck,
@@ -377,35 +376,18 @@ export default function Profile() {
         </Card>
       </View>
 
-      {/* Cards on file. Its own section rather than a row inside "Contact &
-          about": it is the only thing on this tab that moves money, and it is
-          where a declined post sends the requester. Always shown — a backend
-          with no Stripe configured says so on the screen itself, which is more
-          useful than a row that silently isn't there. */}
-      <View className="mb-6">
-        <Text className="mb-2 text-title font-semibold text-ink">Payments</Text>
-        <Card>
-          <ListRow
-            icon={CreditCard}
-            label="Payment methods"
-            onPress={() => router.push("/profile/payment-methods")}
-          />
-          {/* Getting paid, for approved supporters only. Below payment methods
-              because the two are opposite directions of the same tab — money
-              leaving, then money arriving — and a payouts row on a requester's
-              profile is an invitation to a flow that does not apply to them. */}
-          {profile.supporter_status === "approved" ? (
-            <>
-              <View className="h-px bg-line" />
-              <ListRow
-                icon={Banknote}
-                label="Earnings"
-                onPress={() => router.push("/profile/earnings")}
-              />
-            </>
-          ) : null}
-        </Card>
-      </View>
+      {/* Where task offers come from (D-24). Approved supporters only — the
+          areas decide who hears about a new task first. Payment methods used
+          to live here; the app no longer posts tasks, so it holds no card, and
+          Earnings has its own tab. */}
+      {profile.supporter_status === "approved" ? (
+        <View className="mb-6">
+          <Text className="mb-2 text-title font-semibold text-ink">Work</Text>
+          <Card>
+            <ListRow icon={MapPin} label="Task areas" onPress={() => router.push("/profile/areas")} />
+          </Card>
+        </View>
+      ) : null}
 
       <View className="mb-6">
         <Text className="mb-2 text-title font-semibold text-ink">Contact & about</Text>

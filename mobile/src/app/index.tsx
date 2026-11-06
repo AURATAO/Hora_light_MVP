@@ -47,5 +47,5 @@ export default function Index() {
     return <Redirect href="/(onboarding)/complete-profile" />;
   }
 
-  return <Redirect href="/(tabs)/home" />;
+  return <Redirect href="/(tabs)/work" />;
 }

@@ -49,7 +49,17 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
   });
 
   const text = await response.text();
-  const data = text ? JSON.parse(text) : null;
+  // A proxy's HTML error page (a 502 during a deploy) is not JSON: read it as
+  // no body, so the caller gets an ApiError with the status instead of a red
+  // "JSON Parse error" (runbook, deferred mobile item).
+  let data: unknown = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      if (response.ok) throw new ApiError(response.status, { error: "Unexpected response from the server" });
+    }
+  }
 
   if (!response.ok) {
     throw new ApiError(response.status, data);
@@ -323,6 +333,42 @@ export interface ApplySupporterPayload {
   first_name?: string;
   last_name?: string;
 }
+
+// ── Supporter dispatch (D-24) ──────────────────────────────────────────────
+
+export interface AppConfig {
+  /** Whether new tasks are pushed to available supporters; the app shows the
+   *  "I'm available" control only when this is on. */
+  dispatch: boolean;
+}
+
+export function getAppConfig(): Promise<AppConfig> {
+  return apiFetch<AppConfig>("/config");
+}
+
+export interface DispatchSettings {
+  boroughs: string[];
+  available: boolean;
+  available_until: string | null;
+  enabled: boolean;
+  all_boroughs: string[];
+}
+
+export function getDispatchSettings(): Promise<DispatchSettings> {
+  return apiFetch<DispatchSettings>("/me/dispatch");
+}
+
+export function saveDispatchBoroughs(boroughs: string[]): Promise<DispatchSettings> {
+  return apiFetch<DispatchSettings>("/me/dispatch", { method: "PUT", body: { boroughs } });
+}
+
+export function setAvailability(on: boolean): Promise<DispatchSettings> {
+  return apiFetch<DispatchSettings>("/me/availability", { method: "POST", body: { on } });
+}
+
+/** The five boroughs as the server spells them, for screens that render
+ *  before /me/dispatch answers. */
+export const NYC_BOROUGHS = ["Manhattan", "Brooklyn", "Queens", "the Bronx", "Staten Island"] as const;
 
 export function applySupporter(payload: ApplySupporterPayload): Promise<{ ok: true }> {
   return apiFetch<{ ok: true }>("/supporter/apply", { method: "POST", body: payload });

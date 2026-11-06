@@ -11,6 +11,9 @@
       "supportsTablet": false,
       "bundleIdentifier": "co.horaapp.app",
       "usesAppleSignIn": true,
+      "entitlements": {
+        "com.apple.developer.usernotifications.time-sensitive": true
+      },
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "LSApplicationQueriesSchemes": ["mailto"],
@@ -172,7 +175,6 @@
           "faceIDPermission": "HO:RA does not use Face ID. Your sign-in is kept in the iOS keychain without biometrics."
         }
       ],
-      "@react-native-community/datetimepicker",
       [
         "expo-location",
         {
@@ -212,13 +214,6 @@
           "image": "./assets/splash.png",
           "resizeMode": "cover",
           "enableFullScreenImage_legacy": true
-        }
-      ],
-      [
-        "@stripe/stripe-react-native",
-        {
-          "merchantIdentifier": "merchant.co.horaapp.app",
-          "enableGooglePay": false
         }
       ],
       "expo-status-bar",

@@ -81,6 +81,12 @@ const SANDBOX_COPY = {
 
 
 export default function EarningsScreen() {
+  return <EarningsView />;
+}
+
+// The Earnings tab mounts the same view without a Back control
+// ((tabs)/earnings.tsx, supporter-only app, 2026-11-06).
+export function EarningsView({ asTab = false }: { asTab?: boolean }) {
   const router = useRouter();
 
   const [data, setData] = useState<Earnings | null>(null);
@@ -164,18 +170,21 @@ export default function EarningsScreen() {
 
   return (
     <Screen
+      insetForTabBar={asTab}
       refreshControl={
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={color.muted} />
       }
     >
-      <PressableScale
-        onPress={() => router.back()}
-        hitSlop={8}
-        className="mb-4 mt-2 min-h-11 flex-row items-center"
-      >
-        <ChevronLeft color={color.ink} size={20} strokeWidth={size.iconStroke} />
-        <Text className="text-body text-ink">Back</Text>
-      </PressableScale>
+      {asTab ? null : (
+        <PressableScale
+          onPress={() => router.back()}
+          hitSlop={8}
+          className="mb-4 mt-2 min-h-11 flex-row items-center"
+        >
+          <ChevronLeft color={color.ink} size={20} strokeWidth={size.iconStroke} />
+          <Text className="text-body text-ink">Back</Text>
+        </PressableScale>
+      )}
 
       <Text className="mb-6 text-display text-ink">Earnings</Text>
 
