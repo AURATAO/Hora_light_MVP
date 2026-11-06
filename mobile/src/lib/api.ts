@@ -352,6 +352,9 @@ export interface DispatchSettings {
   available_until: string | null;
   enabled: boolean;
   all_boroughs: string[];
+  /** The task this supporter is on right now; offers that clash with it are
+   *  held back by the server, so the card says so. */
+  on_task_id?: string | null;
 }
 
 export function getDispatchSettings(): Promise<DispatchSettings> {

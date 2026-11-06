@@ -358,6 +358,27 @@ func TestDispatchSettingsEndpoints(t *testing.T) {
 	if code, body := call("", "GET", "/config", ""); code != 200 || !strings.Contains(body, `"dispatch":true`) {
 		t.Fatalf("config: %d %s", code, body)
 	}
+
+	// "You're on a task": none yet, then an ASAP job accepted just now; a
+	// scheduled job next week does not count.
+	if code, body := call(supporter, "GET", "/me/dispatch", ""); code != 200 || !strings.Contains(body, `"on_task_id":null`) {
+		t.Fatalf("on_task_id before any job: %d %s", code, body)
+	}
+	if _, err := db.Exec(context.Background(), `insert into public.tasks (requester_id, assigned_to_id, is_immediate, scheduled_at)
+		values ($1::uuid, $2::uuid, false, now() + interval '7 days')`, plain, supporter); err != nil {
+		t.Fatal(err)
+	}
+	if _, body := call(supporter, "GET", "/me/dispatch", ""); !strings.Contains(body, `"on_task_id":null`) {
+		t.Fatalf("a job next week counted as on a task: %s", body)
+	}
+	var jobID string
+	if err := db.QueryRow(context.Background(), `insert into public.tasks (requester_id, assigned_to_id, is_immediate, accepted_at)
+		values ($1::uuid, $2::uuid, true, now() - interval '5 minutes') returning id::text`, plain, supporter).Scan(&jobID); err != nil {
+		t.Fatal(err)
+	}
+	if _, body := call(supporter, "GET", "/me/dispatch", ""); !strings.Contains(body, `"on_task_id":"`+jobID+`"`) {
+		t.Fatalf("on_task_id want %s: %s", jobID, body)
+	}
 }
 
 func TestNormalizeBoroughs(t *testing.T) {

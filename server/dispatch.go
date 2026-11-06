@@ -521,6 +521,11 @@ type dispatchSettings struct {
 	AvailableUntil *time.Time `json:"available_until"`
 	Enabled        bool       `json:"enabled"`
 	AllBoroughs    []string   `json:"all_boroughs"`
+	// The task this supporter is on right now, if any: offers that clash
+	// with it are not sent (eligibleSupporters), and the app says so rather
+	// than "You're available" while nothing arrives. Same window rule as the
+	// overlap check, evaluated at now.
+	OnTaskID *string `json:"on_task_id"`
 }
 
 func readDispatchSettings(ctx context.Context, uid string) (dispatchSettings, error) {
@@ -538,6 +543,25 @@ func readDispatchSettings(ctx context.Context, uid string) (dispatchSettings, er
 	s.Available = s.AvailableUntil != nil && s.AvailableUntil.After(time.Now())
 	if !s.Available {
 		s.AvailableUntil = nil
+	}
+	var onTask string
+	err = db.QueryRow(ctx, `
+		select o.id::text from public.tasks o
+		 where o.assigned_to_id = $1::uuid and o.status = 'open'
+		   and (
+		     ((coalesce(o.is_immediate, false) or o.scheduled_at is null)
+		       and coalesce(o.accepted_at, o.created_at) > now() - interval '1 day')
+		     or (not (coalesce(o.is_immediate, false) or o.scheduled_at is null)
+		       and now() <@ tstzrange(o.scheduled_at,
+		             o.scheduled_at + make_interval(mins => greatest(coalesce(o.estimated_minutes, 0), 30) + 30)))
+		   )
+		 order by coalesce(o.accepted_at, o.created_at) desc
+		 limit 1`, uid).Scan(&onTask)
+	if err == nil {
+		s.OnTaskID = &onTask
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		// The badge is a courtesy: a failed read shows the plain card.
+		log.Printf("[dispatch] read on-task: %v", err)
 	}
 	return s, nil
 }

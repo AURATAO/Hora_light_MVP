@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { Linking, Text, View } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
-import { BellRing, MapPin } from "lucide-react-native";
+import { BellRing, Briefcase, MapPin } from "lucide-react-native";
 import { Button, Card, PressableScale } from "./ui";
 import { getDispatchSettings, setAvailability, type DispatchSettings } from "../lib/api";
 import { ensurePushForOffers } from "../lib/push";
@@ -102,21 +102,37 @@ export function AvailabilityCard() {
 
   const on = settings.available;
   const until = formatUntil(settings.available_until);
+  // Available, but on a job: the server holds back offers that clash with
+  // it, so "You're available" alone would promise notifications that don't
+  // come.
+  const onTask = on && settings.on_task_id ? settings.on_task_id : null;
+  const Icon = onTask ? Briefcase : BellRing;
 
   return (
     <View className="mb-6">
       <Card>
         <View className="flex-row items-start gap-3">
-          <BellRing color={on ? color.brand : color.muted} size={18} strokeWidth={size.iconStroke} />
+          <Icon color={on ? color.brand : color.muted} size={18} strokeWidth={size.iconStroke} />
           <View className="flex-1">
             <Text className="text-body font-semibold text-ink">
-              {on ? "You're available" : "Get task offers"}
+              {onTask ? "You're on a task" : on ? "You're available" : "Get task offers"}
             </Text>
             <Text className="mt-0.5 text-caption text-muted">
-              {on
-                ? `New tasks come to you as notifications until ${until || "later today"}.`
-                : "Go available and new tasks come to you as notifications. It turns off after 4 hours."}
+              {onTask
+                ? "Offers that clash with it are paused. You'll get them again when it's done."
+                : on
+                  ? `New tasks come to you as notifications until ${until || "later today"}.`
+                  : "Go available and new tasks come to you as notifications. It turns off after 4 hours."}
             </Text>
+            {onTask ? (
+              <PressableScale
+                onPress={() => router.push(`/task/${onTask}`)}
+                hitSlop={8}
+                className="mt-2 min-h-11 justify-center"
+              >
+                <Text className="text-caption font-semibold text-brand">Open task</Text>
+              </PressableScale>
+            ) : null}
             <PressableScale
               onPress={() => router.push("/profile/areas")}
               hitSlop={8}
