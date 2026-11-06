@@ -48,7 +48,7 @@ func configureDiscovery(router *channel.Router, sqlDB *sql.DB, store *channel.PG
 	configurePlaybooks(router, d.Model)
 }
 
-// configurePlaybooks turns on errand playbooks (D-24, internal/channel/
+// configurePlaybooks turns on errand playbooks (D-25, internal/channel/
 // answers.go): answers from Google's data and the web, the type's
 // questions before the summary, its supporter notes. Off unless
 // CHANNEL_PLAYBOOKS=1, and only with discovery running on Anthropic.
@@ -57,7 +57,7 @@ func configureDiscovery(router *channel.Router, sqlDB *sql.DB, store *channel.PG
 //	CHANNEL_WEB_SEARCH_PER_QUESTION     web searches per question (default 1; 0 = no web search)
 //	CHANNEL_WEB_SEARCH_PER_DAY          web searches per person per NY day (default 5)
 //
-// Needs migration 20261106120000_channel_web_search_quota.sql for the web
+// Needs migration 20261106130000_channel_web_search_quota.sql for the web
 // count; without it no web search runs.
 func configurePlaybooks(router *channel.Router, model *llm.Anthropic) {
 	if os.Getenv("CHANNEL_PLAYBOOKS") != "1" {
@@ -76,7 +76,7 @@ func configurePlaybooks(router *channel.Router, model *llm.Anthropic) {
 		router.Web = &llm.AnthropicWeb{Model: model}
 	}
 	router.Geocode = helpers.GeocodeAddress
-	log.Printf("[channel] errand playbooks ON (D-24): %s, %d types, web search %d/question %d/day", pbs.Version, len(pbs.Playbooks), router.WebLimits.PerQuestion, router.WebLimits.PerDay)
+	log.Printf("[channel] errand playbooks ON (D-25): %s, %d types, web search %d/question %d/day", pbs.Version, len(pbs.Playbooks), router.WebLimits.PerQuestion, router.WebLimits.PerDay)
 }
 
 func firstNonEmptyEnv(k, def string) string {

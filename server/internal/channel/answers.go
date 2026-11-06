@@ -17,7 +17,7 @@ import (
 	"hora-auth/internal/channel/llm"
 )
 
-// Answers from real sources (D-24). A question about the options shown
+// Answers from real sources (D-25). A question about the options shown
 // ("Ok nolita pizza, what is the best flavor?", "are they open Sunday?") is
 // answered with real data only, then turned into an errand:
 //

@@ -1,6 +1,6 @@
 package main
 
-// Errand playbook evals (D-24): `go run ./cmd/agenttest -playbooks`.
+// Errand playbook evals (D-25): `go run ./cmd/agenttest -playbooks`.
 //
 // The cases live in the playbook file itself (internal/channel/llm/
 // playbooks.json, evals[] of each entry). Every case runs through the

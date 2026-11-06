@@ -1,4 +1,4 @@
--- Errand playbooks (D-24, 2026-11-06): the per-person daily count of web
+-- Errand playbooks (D-25, 2026-11-06): the per-person daily count of web
 -- searches the text channel makes to answer a question about a place
 -- (CHANNEL_WEB_SEARCH_PER_DAY). Two columns on the existing
 -- channel_discovery row, counted like places_calls.

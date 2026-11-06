@@ -9,7 +9,7 @@ import (
 	"sync"
 )
 
-// Errand playbooks (D-24): one config file, playbooks.json, with one entry
+// Errand playbooks (D-25): one config file, playbooks.json, with one entry
 // per errand type — what it is recognised by, the questions customers ask,
 // which sources an answer may use, what HO:RA asks before the booking
 // summary, fixed notes for the supporter, the limits, and eval cases.
@@ -64,6 +64,7 @@ type Playbook struct {
 	ID               string         `json:"id"`
 	Name             string         `json:"name"`
 	Match            []string       `json:"match"`
+	Unless           []string       `json:"unless"`
 	TypicalQuestions []string       `json:"typical_questions"`
 	Sources          []string       `json:"sources"`
 	Guidance         string         `json:"guidance"`
@@ -73,6 +74,7 @@ type Playbook struct {
 	Limits           []string       `json:"limits"`
 	Evals            []PlaybookEval `json:"evals"`
 	match            *regexp.Regexp
+	unless           *regexp.Regexp
 }
 
 // ScopeRules is the section a separate prompt fills (people, homes,
@@ -194,6 +196,13 @@ func ParsePlaybooks(b []byte) (*PlaybookSet, error) {
 			}
 			p.match = re
 		}
+		if len(p.Unless) > 0 {
+			re, err := regexp.Compile(`(?i)\b(?:` + strings.Join(p.Unless, "|") + `)\b`)
+			if err != nil {
+				return nil, fmt.Errorf("playbooks: %s: unless: %w", p.ID, err)
+			}
+			p.unless = re
+		}
 		keys := map[string]bool{}
 		for j := range p.Asks {
 			a := &p.Asks[j]
@@ -249,13 +258,14 @@ func (s *PlaybookSet) ByID(id string) *Playbook {
 }
 
 // Match is the first entry whose match words appear in the errand's words
-// (file order decides between two), nil when none. Rule only.
+// and whose unless words do not (file order decides between two), nil
+// when none. Rule only.
 func (s *PlaybookSet) Match(text string) *Playbook {
 	if s == nil {
 		return nil
 	}
 	for i := range s.Playbooks {
-		if p := &s.Playbooks[i]; p.match != nil && p.match.MatchString(text) {
+		if p := &s.Playbooks[i]; p.match != nil && p.match.MatchString(text) && (p.unless == nil || !p.unless.MatchString(text)) {
 			return p
 		}
 	}

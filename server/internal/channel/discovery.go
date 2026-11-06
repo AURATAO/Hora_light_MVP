@@ -62,7 +62,7 @@ type DiscoveryOffer struct {
 	SuggestWords string `json:"suggest_words,omitempty"`
 	// SuggestItems: what an answer from sources offered the supporter to
 	// get ("Margherita", "spicy vodka slice") — the person's order once they
-	// say YES; item names only, never Google's text (D-24). SuggestCheck /
+	// say YES; item names only, never Google's text (D-25). SuggestCheck /
 	// SuggestAsk: the offer was to go and check, or ask there.
 	SuggestItems []string `json:"suggest_items,omitempty"`
 	SuggestCheck bool     `json:"suggest_check,omitempty"`
@@ -264,7 +264,7 @@ func (r *Router) routeDiscoveryFirst(ctx context.Context, in Inbound, id Identit
 		switch {
 		case p.k > 0 && p.question != "" && r.answersOn():
 			// "Ok nolita pizza, what is the best flavor?": answered from
-			// sources (D-24) — the model reads which question it is.
+			// sources (D-25) — the model reads which question it is.
 			if p.facts != nil {
 				ctx = context.WithValue(ctx, factsPrefetchKey{}, p.facts)
 			}

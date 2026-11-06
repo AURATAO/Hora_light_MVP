@@ -15,7 +15,7 @@ import (
 	"hora-auth/internal/tracing"
 )
 
-// Answers from real sources (D-24). A customer asks about a place shown
+// Answers from real sources (D-25). A customer asks about a place shown
 // ("what is the best flavor?", "are they open Sunday?") and HO:RA answers
 // with real data only, then offers the errand. The facts Google gives as
 // fields (hours, takeout, payment…) are rendered by rule in the router;

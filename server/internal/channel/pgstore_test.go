@@ -63,7 +63,7 @@ func testDB(t *testing.T) *sql.DB {
 	if _, err := db.Exec(string(mig2)); err != nil {
 		t.Fatalf("migration e164: %v", err)
 	}
-	for _, f := range []string{"20261022120000_channel_approval_columns.sql", "20261022130000_channel_approval_question_pid.sql", "20261024120000_channel_cancel_by_chat.sql", "20261024210000_channel_handoff_timeout.sql", "20261103150000_channel_identity_opt_out.sql", "20261104120100_channel_posting_started_at.sql", "20261104150000_channel_opted_out_forward.sql", "20261104170000_channel_discovery.sql", "20261106120000_channel_web_search_quota.sql"} {
+	for _, f := range []string{"20261022120000_channel_approval_columns.sql", "20261022130000_channel_approval_question_pid.sql", "20261024120000_channel_cancel_by_chat.sql", "20261024210000_channel_handoff_timeout.sql", "20261103150000_channel_identity_opt_out.sql", "20261104120100_channel_posting_started_at.sql", "20261104150000_channel_opted_out_forward.sql", "20261104170000_channel_discovery.sql", "20261106130000_channel_web_search_quota.sql"} {
 		mig, err := os.ReadFile(filepath.Join("..", "..", "..", "supabase", "migrations", f))
 		if err != nil {
 			t.Fatal(err)

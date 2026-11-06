@@ -1,8 +1,8 @@
 {
  "_readme": [
-  "Errand playbooks for the text channel (D-24). ONE file, no code per type: adding a type is a new entry here plus its eval cases.",
+  "Errand playbooks for the text channel (D-25). ONE file, no code per type: adding a type is a new entry here plus its eval cases.",
   "Each entry: id, name, match (rule words that recognise the type in an errand's own words), typical_questions, sources (which sources an answer may use, in order), guidance (what the model is told when it recognises the type), asks (what HO:RA asks before the booking summary), supporter_notes (fixed lines added to the task the supporter reads), summary_lines (fixed lines shown in the summary), limits (what HO:RA never does or promises for this type), evals.",
-  "Recognition by rule: the FIRST entry (in file order) whose match words appear wins, so specific types (friend, check, packages, small services) come before the generic ones (food, groceries). The model names the type itself in discovery answers.",
+  "Recognition by rule: the FIRST entry (in file order) whose match words appear, and whose unless words do not, wins. Gifts come first: buying something for someone ('send flowers to my mom', 'get a cake for my friend') is a gift; friend is only for picking up or dropping off an existing item. Then the specific types (check, packages, small services) before the generic ones (food, groceries). The model names the type itself in discovery answers.",
   "asks[].skip_if: a Go regexp on the person's words; when it matches, the question is not asked (already answered). asks[].answer: 'redraft' (the answer is errand words: re-parsed, so a time or address lands in the booking) or 'note' (kept as a supporter note with asks[].note as its prefix). All remaining questions go out in ONE message; any 'redraft' among them makes the answer a redraft.",
   "sources: places_facts (Google's structured fields, rendered by rule), places_summary (Google's review / generative / editorial summaries, read by the model, checked by rule), web (Anthropic web search on web_sources, used only when Google has nothing relevant), none.",
   "evals[].kind: 'asks' (rule only: which asks fire for these words; run by go test), 'discover' (the discovery model reads a message with options open; run by agenttest -playbooks), 'answer' (the answer path on fixture facts from eval_places; run by agenttest -playbooks). Grades: no invented facts, no booking, no HO:RA price.",
@@ -28,6 +28,119 @@
   ]
  },
  "playbooks": [
+  {
+   "id": "gifts",
+   "name": "Gifts & occasions",
+   "match": [
+    "gifts?",
+    "presents?",
+    "flowers",
+    "bouquet",
+    "roses",
+    "balloons",
+    "birthday (?:present|gift|card|cake|balloons)",
+    "anniversary",
+    "card for",
+    "gift[- ]?wrap(?:ped)?",
+    "(?:buy|get|order|grab|pick out|send)\\b[^.\\n]{1,40}?\\bfor (?:my|our|his|her|their|a) (?:friend|mom|mother|dad|father|sister|brother|wife|husband|partner|girlfriend|boyfriend|son|daughter|kids?|aunt|uncle|grandma|grandmother|grandpa|grandfather|boss|colleague|coworker|neighbou?r|roommate|teacher)\\b"
+   ],
+   "typical_questions": [
+    "where can I get flowers delivered?",
+    "what's a good gift shop near Union Square?",
+    "do they wrap gifts?"
+   ],
+   "sources": [
+    "places_facts",
+    "places_summary"
+   ],
+   "guidance": "Gifts and occasions. The budget, the card message, the recipient's name and address, and when it must arrive are the person's. The recipient's details are used only for this errand.",
+   "asks": [
+    {
+     "key": "recipient",
+     "question": "Who is it for? Their name and the address to deliver to.",
+     "answer": "redraft",
+     "skip_if": "(?i)\\bdeliver (?:it )?to\\b.*\\d|\\bto [A-Z][a-z]+ at \\d|\\bfor [A-Z][a-z]+ at \\d"
+    },
+    {
+     "key": "card",
+     "question": "What should the card say?",
+     "optional": true,
+     "answer": "note",
+     "note": "Card message: ",
+     "skip_if": "(?i)card (?:says?|saying|message|reading|that says)|no card|\\\""
+    },
+    {
+     "key": "deliver_by",
+     "question": "When does it need to arrive?",
+     "answer": "redraft",
+     "skip_if": "(?i)\\b(?:today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\\b|\\b\\d{1,2}(?::\\d\\d)?\\s*(?:am|pm)\\b|\\bby \\d"
+    }
+   ],
+   "supporter_notes": [
+    "The recipient's name and address are for this errand only."
+   ],
+   "summary_lines": [
+    "The recipient's details are used only for this errand."
+   ],
+   "limits": [
+    "Recipient details are used only for this errand.",
+    "Never promise a delivery time for a shop."
+   ],
+   "evals": [
+    {
+     "kind": "asks",
+     "msg": "send flowers to my mom at 40 Bond St tomorrow",
+     "expect_asks": [
+      "recipient",
+      "card"
+     ]
+    },
+    {
+     "kind": "asks",
+     "msg": "get a cake for my friend from the bakery at 120 E 7th St, budget $40",
+     "expect_asks": [
+      "recipient",
+      "card",
+      "deliver_by"
+     ]
+    },
+    {
+     "kind": "asks",
+     "msg": "order a birthday cake for my sister from 120 E 7th St and deliver it to Maya at 40 Bond St by 5pm, card says Happy birthday",
+     "expect_asks": []
+    },
+    {
+     "kind": "asks",
+     "msg": "pick up flowers from the florist at 120 E 7th St for my mom",
+     "expect_asks": [
+      "recipient",
+      "card",
+      "deliver_by"
+     ]
+    },
+    {
+     "kind": "asks",
+     "msg": "buy a bouquet of flowers at the florist at 120 E 7th St, budget $60",
+     "expect_asks": [
+      "recipient",
+      "card",
+      "deliver_by"
+     ]
+    },
+    {
+     "kind": "asks",
+     "msg": "buy flowers at 120 E 7th St and deliver them to Maya at 40 Bond St tomorrow by 5pm, no card",
+     "expect_asks": []
+    }
+   ],
+   "unless": [
+    "return(?:s|ing)?",
+    "refund",
+    "exchange",
+    "check (?:if|whether|on)",
+    "(?:pick(?:ing)? up|collect|grab|drop(?:ping)? off|leave|bring|take)\\b[^.\\n]{0,40}\\b(?:from|at|with) (?:my|our|his|her|their) (?:friend|neighbou?r|sister|brother|mom|mother|dad|father|roommate|colleague|coworker)"
+   ]
+  },
   {
    "id": "friend",
    "name": "Pick up from / drop off with a friend",
@@ -79,6 +192,19 @@
      "kind": "asks",
      "msg": "pick up my keys from my friend Dana at 50 W 10th St today at 3pm and bring them to 12 Bedford Ave",
      "expect_asks": []
+    },
+    {
+     "kind": "asks",
+     "msg": "drop off my jacket with my neighbor Sam at 12 Bedford Ave tonight",
+     "expect_asks": []
+    },
+    {
+     "kind": "asks",
+     "msg": "pick up the flowers I left at my friend's place",
+     "expect_asks": [
+      "who_where",
+      "when"
+     ]
     }
    ]
   },
@@ -261,6 +387,15 @@
        "Google Maps"
       ]
      }
+    },
+    {
+     "kind": "asks",
+     "msg": "return the birthday present from my aunt at the UPS Store at 30 E 14th St",
+     "expect_asks": [
+      "label",
+      "box",
+      "receipt"
+     ]
     }
    ]
   },
@@ -350,79 +485,6 @@
        "Google Maps"
       ]
      }
-    }
-   ]
-  },
-  {
-   "id": "gifts",
-   "name": "Gifts & occasions",
-   "match": [
-    "gift",
-    "present",
-    "flowers",
-    "bouquet",
-    "birthday",
-    "anniversary",
-    "balloons",
-    "card for",
-    "wrapped"
-   ],
-   "typical_questions": [
-    "where can I get flowers delivered?",
-    "what's a good gift shop near Union Square?",
-    "do they wrap gifts?"
-   ],
-   "sources": [
-    "places_facts",
-    "places_summary"
-   ],
-   "guidance": "Gifts and occasions. The budget, the card message, the recipient's name and address, and when it must arrive are the person's. The recipient's details are used only for this errand.",
-   "asks": [
-    {
-     "key": "recipient",
-     "question": "Who is it for? Their name and the address to deliver to.",
-     "answer": "redraft",
-     "skip_if": "(?i)\\bdeliver (?:it )?to\\b.*\\d|\\bto [A-Z][a-z]+ at \\d|\\bfor [A-Z][a-z]+ at \\d"
-    },
-    {
-     "key": "card",
-     "question": "What should the card say?",
-     "optional": true,
-     "answer": "note",
-     "note": "Card message: ",
-     "skip_if": "(?i)card (?:says?|saying|message|reading|that says)|no card|\\\""
-    },
-    {
-     "key": "deliver_by",
-     "question": "When does it need to arrive?",
-     "answer": "redraft",
-     "skip_if": "(?i)\\b(?:today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\\b|\\b\\d{1,2}(?::\\d\\d)?\\s*(?:am|pm)\\b|\\bby \\d"
-    }
-   ],
-   "supporter_notes": [
-    "The recipient's name and address are for this errand only."
-   ],
-   "summary_lines": [
-    "The recipient's details are used only for this errand."
-   ],
-   "limits": [
-    "Recipient details are used only for this errand.",
-    "Never promise a delivery time for a shop."
-   ],
-   "evals": [
-    {
-     "kind": "asks",
-     "msg": "buy a bouquet of flowers at the florist at 120 E 7th St, budget $60",
-     "expect_asks": [
-      "recipient",
-      "card",
-      "deliver_by"
-     ]
-    },
-    {
-     "kind": "asks",
-     "msg": "buy flowers at 120 E 7th St and deliver them to Maya at 40 Bond St tomorrow by 5pm, no card",
-     "expect_asks": []
     }
    ]
   },

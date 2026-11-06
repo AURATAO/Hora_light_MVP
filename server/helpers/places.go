@@ -378,7 +378,7 @@ func CleanPlaceText(s string, max int) string {
 	return b.String()
 }
 
-// ── answers about a place (D-24) ────────────────────────────────────────
+// ── answers about a place (D-25) ────────────────────────────────────────
 
 // factsFields: what an answer about a place may use. reviewSummary,
 // generativeSummary, editorialSummary, takeout, delivery, dineIn,

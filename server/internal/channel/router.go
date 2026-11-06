@@ -272,7 +272,7 @@ type Router struct {
 	DiscoveryStore  DiscoveryStore
 	History         TaskHistory
 	DiscoveryLimits DiscoveryLimits
-	// Errand playbooks (D-24, answers.go; behind CHANNEL_PLAYBOOKS).
+	// Errand playbooks (D-25, answers.go; behind CHANNEL_PLAYBOOKS).
 	// Playbooks nil = off. Facts looks an option up again with what an
 	// answer may use; Answerer writes an answer from Google's summaries or
 	// web excerpts (checked by rule); Web searches the web (nil = off);
@@ -648,7 +648,7 @@ type draftOpts struct {
 	// before its first question.
 	prebuilt *llm.TaskDraft
 	intro    string
-	// playbook: the errand type discovery recognised (D-24), "" none.
+	// playbook: the errand type discovery recognised (D-25), "" none.
 	playbook string
 }
 

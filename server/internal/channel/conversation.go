@@ -101,7 +101,7 @@ type PendingDraft struct {
 	// report back (D-23).
 	Places []ChosenPlace `json:"places,omitempty"`
 	Check  bool          `json:"check,omitempty"`
-	// Playbook: the errand type (D-24, playbooks.json), "" none.
+	// Playbook: the errand type (D-25, playbooks.json), "" none.
 	// PlaybookAsk: its questions asked before the summary and not yet
 	// answered (no YES books the draft while set); PlaybookAsked: they were
 	// asked once — a re-draft does not ask again.

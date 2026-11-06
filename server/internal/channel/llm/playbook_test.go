@@ -14,7 +14,7 @@ func TestPlaybooksFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"friend", "check", "packages", "small_services", "gifts", "laundry", "food", "groceries", "repeat_multi"}
+	want := []string{"gifts", "friend", "check", "packages", "small_services", "laundry", "food", "groceries", "repeat_multi"}
 	if got := s.IDs(); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("ids %v", got)
 	}
