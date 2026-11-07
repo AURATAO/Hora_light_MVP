@@ -53,25 +53,22 @@ export async function registerPushIfAlreadyGranted(): Promise<string | null> {
 // the system prompt once; this guards OUR pre-prompt.
 const PUSH_ASKED_KEY = "hora_push_asked";
 
-export type PushAskContext = "task_posted" | "task_accepted" | "available";
+export type PushAskContext = "task_accepted" | "available" | "supporter_ready";
 
 /** The one-line explanation shown before the system prompt. */
 export function pushAskCopy(context: PushAskContext): { title: string; body: string } {
-  if (context === "available") {
-    return {
-      title: "Turn on notifications?",
-      body: "Task offers arrive as notifications. Without them, going available won't bring you any tasks.",
-    };
-  }
   if (context === "task_accepted") {
     return {
       title: "Turn on notifications?",
       body: "We'll let you know when the requester messages you, approves a request, or cancels — and remind you to clock out.",
     };
   }
+  // "supporter_ready" (first look at the board as an approved supporter) and
+  // "available" (going available): the same one line, because it is the
+  // same reason (App Review notes, 2026-11-07).
   return {
     title: "Turn on notifications?",
-    body: "We'll let you know when a supporter accepts your task, when they're arriving, and when something needs your approval.",
+    body: "Turn on notifications so you don't miss jobs near you.",
   };
 }
 
@@ -79,7 +76,13 @@ export function pushAskCopy(context: PushAskContext): { title: string; body: str
 // our own explanatory alert first; the system prompt follows only on "Turn
 // on". Asked at most once per device by this path; a later change of mind
 // goes through iOS Settings. Never throws.
+// One ask at a time: the board asks on every focus, and two focuses before
+// the first answer must not stack two alerts.
+let askInFlight = false;
+
 export async function askForPushInContext(context: PushAskContext): Promise<void> {
+  if (askInFlight) return;
+  askInFlight = true;
   try {
     const perm = await Notifications.getPermissionsAsync();
     if (perm.granted) {
@@ -101,6 +104,8 @@ export async function askForPushInContext(context: PushAskContext): Promise<void
     if (turnOn) await registerPush({ request: true });
   } catch (e) {
     if (__DEV__) console.warn("[push] in-context ask failed:", e);
+  } finally {
+    askInFlight = false;
   }
 }
 

@@ -6,6 +6,7 @@ import * as SecureStore from "expo-secure-store";
 import * as WebBrowser from "expo-web-browser";
 import Constants from "expo-constants";
 import {
+  Hand,
   MapPin,
   ChevronRight,
   FileText,
@@ -386,11 +387,16 @@ export default function Profile() {
           areas decide who hears about a new task first. Payment methods used
           to live here; the app no longer posts tasks, so it holds no card, and
           Earnings has its own tab. */}
-      {profile.supporter_status === "approved" && dispatchOn ? (
+      {profile.supporter_status === "approved" ? (
         <View className="mb-6">
           <Text className="mb-2 text-title font-semibold text-ink">Work</Text>
           <Card>
-            <ListRow icon={MapPin} label="Task areas" onPress={() => router.push("/profile/areas")} />
+            <ListRow icon={Hand} label="Supporter rules" onPress={() => router.push("/profile/rules")} />
+            {/* Task areas only mean something while task offers are on (D-24). */}
+            {dispatchOn ? <View className="h-px bg-line" /> : null}
+            {dispatchOn ? (
+              <ListRow icon={MapPin} label="Task areas" onPress={() => router.push("/profile/areas")} />
+            ) : null}
           </Card>
         </View>
       ) : null}

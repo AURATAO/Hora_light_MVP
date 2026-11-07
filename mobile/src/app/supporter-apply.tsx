@@ -6,6 +6,7 @@ import { Button, Input, PressableScale, Screen, Skeleton } from "../components/u
 import { SupporterStatusBanner } from "../components/SupporterStatusBanner";
 import { ApiError, applySupporter, getAppConfig, getDispatchSettings, getProfile, saveDispatchBoroughs, updateProfile } from "../lib/api";
 import { BoroughPicker } from "../components/BoroughPicker";
+import { SupporterRules } from "../components/SupporterRules";
 import type { SupporterStatus } from "../lib/types";
 import { color, size } from "../theme/tokens";
 
@@ -242,6 +243,14 @@ export default function SupporterApply() {
                 <Text className="text-body text-muted">{email || "—"}</Text>
               </View>
             </View>
+          </View>
+
+          {/* The rules, before they apply: what they may always do and what
+              they never do (App Review notes; Profile → Supporter rules has
+              the same list). */}
+          <View className="mt-6">
+            <Text className="mb-3 text-caption text-muted">Supporter rules</Text>
+            <SupporterRules />
           </View>
 
           {allBoroughs ? (

@@ -3,6 +3,7 @@ import { RefreshControl, Text, View } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { Briefcase, MapPin } from "lucide-react-native";
 import { AvailabilityCard } from "../../components/AvailabilityCard";
+import { askForPushInContext } from "../../lib/push";
 import { SupporterStatusBanner } from "../../components/SupporterStatusBanner";
 import { Card, EmptyState, Screen, Skeleton } from "../../components/ui";
 import { ApiError, getAppConfig, getAvailableTasks, getProfile } from "../../lib/api";
@@ -94,6 +95,10 @@ export default function Work() {
       setProfile(p);
       setProfileError(null);
       if (p.supporter_status === "approved") {
+        // The permission prompt's first moment: supporter onboarding is done
+        // and this is the board the notifications are about. Never at launch,
+        // asked once per device by this path (push.ts askForPushInContext).
+        askForPushInContext("supporter_ready");
         getAppConfig()
           .then((cfg) => setDispatchOn(cfg.dispatch === true))
           .catch(() => setDispatchOn(false));
