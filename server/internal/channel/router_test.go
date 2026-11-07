@@ -565,7 +565,7 @@ func (f fakeClassifier) Classify(context.Context, string) (llm.Intent, error) { 
 
 type fakeBooker struct {
 	mu         sync.Mutex
-	pendingExt map[string]bool // ExtensionPending answers
+	pendingExt map[string]bool            // ExtensionPending answers
 	items      map[string]PendingApproval // ItemQuestion answers: item questions by extension id
 	pendingErr error
 	during     func() // runs inside Post, while the thread is "posting"

@@ -219,12 +219,12 @@ const extensionSelect = `
 	       requested_cents, requested_minutes,
 	       coalesce(reason,''), coalesce(fallback,''), coalesce(fallback_note,''),
 	       status, created_at, resolved_at,
-	       `+extensionItemCols+`
+	       ` + extensionItemCols + `
 	  from public.extension_requests
 `
 
 // extensionItemCols are the item-problem columns (kind='item'), read by every
-// query scanExtension scans. '' / null on the other kinds.
+// query scanExtension scans. ” / null on the other kinds.
 const extensionItemCols = `coalesce(item_name,''), coalesce(store_name,''), coalesce(alternative_name,''),
 	       alternative_cents, coalesce(alternative_photo_url,'')`
 

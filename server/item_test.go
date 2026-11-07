@@ -170,8 +170,8 @@ func TestItemProblemGuards(t *testing.T) {
 
 func TestSubstitutionPreference(t *testing.T) {
 	for in, want := range map[string]string{
-		"":                                        "",
-		"Pick up groceries":                       "",
+		"":                  "",
+		"Pick up groceries": "",
 		"x\nNote from the requester: Substitution preference: ask me first\nNote from the requester: ring twice": "ask me first",
 	} {
 		if got := substitutionPreference(in); got != want {
