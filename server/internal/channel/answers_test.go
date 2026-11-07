@@ -191,8 +191,8 @@ func TestBuildAnswerInjectionInGoogleText(t *testing.T) {
 
 // No editorial summary: one web search of the place's own domain only,
 // counted against the daily cap; its excerpts are the only sources and the
-// reply says where it came from, with no domain (a texted domain is a
-// link). Over the cap: no search, the honest "no menu" fallback.
+// reply ends with the cited page (Anthropic's terms: shown and
+// clickable). Over the cap: no search, the honest "no menu" fallback.
 func TestBuildAnswerWebFallback(t *testing.T) {
 	f := llm.PlaceFacts{Place: princeSt, Website: "https://www.princestreetpizza.example/menu"}
 	web := &fakeWeb{out: []llm.Source{{Kind: llm.SourceWeb, Place: princeSt.Name, Label: "princestreetpizza.example", Text: "Prince Street Pizza: the Spicy Spring square is the one to get."}}}
@@ -203,7 +203,7 @@ func TestBuildAnswerWebFallback(t *testing.T) {
 	if len(web.reqs) != 1 || web.reqs[0].OwnDomain != "princestreetpizza.example" || len(web.reqs[0].Domains) != 0 || web.reqs[0].MaxUses != 1 {
 		t.Fatalf("web %+v", web.reqs)
 	}
-	if want := "Their website points to the Spicy Spring square.\n\nWant your supporter to get a Spicy Spring square at Prince Street Pizza?\nFrom their website."; rep.Source != "web" || rep.WebSearches != 1 || rep.Text != want {
+	if want := "Their website points to the Spicy Spring square.\n\nWant your supporter to get a Spicy Spring square at Prince Street Pizza?\nFrom princestreetpizza.example"; rep.Source != "web" || rep.WebSearches != 1 || rep.Text != want {
 		t.Fatalf("%+v\n%s", rep, rep.Text)
 	}
 	// Second question today: the cap says no — the honest fallback, the
@@ -467,7 +467,8 @@ func TestPlaybookAskSkipAndRedraft(t *testing.T) {
 // and a vodka". Google's AI summaries are no longer used. The three paths,
 // each as the exact message: the editorial summary names items; it names
 // none, so the place's own site is searched once; neither has a menu, so
-// the honest fallback. One or two sentences, the offer, no links.
+// the honest fallback. One or two sentences and the offer; the only link
+// is the cited page of a web answer, in its shortest form.
 func TestBuildAnswerPizzaRecommendationsMessage(t *testing.T) {
 	pbs, _ := llm.Playbooks()
 	ask := func(joes llm.PlaceFacts, a *fakeAnswerer, web *fakeWeb) AnswerReply {
@@ -479,7 +480,7 @@ func TestBuildAnswerPizzaRecommendationsMessage(t *testing.T) {
 		}
 		rep := BuildAnswer(context.Background(), d, q)
 		noBookingNoHoraPrice(t, rep.Text)
-		for _, bad := range []string{"http", "www.", ".com", "Gemini", "review"} {
+		for _, bad := range []string{"http", "www.", "Gemini", "review"} {
 			if strings.Contains(strings.ToLower(rep.Text), strings.ToLower(bad)) {
 				t.Fatalf("carries %q:\n%s", bad, rep.Text)
 			}
@@ -506,7 +507,7 @@ func TestBuildAnswerPizzaRecommendationsMessage(t *testing.T) {
 
 	// 2. It names no item: one search of Joe's own site, its menu answers.
 	joes = llm.PlaceFacts{Place: joesPizza, Editorial: "Longtime counter-serve spot for New York-style slices.", Website: "https://www.joespizzanyc.com/"}
-	web := &fakeWeb{out: []llm.Source{{Kind: llm.SourceWeb, Place: joesPizza.Name, Label: "joespizzanyc.com", Text: "Joe's Pizza menu: Cheese slice, Fresh Mozzarella slice, Pepperoni slice."}}}
+	web := &fakeWeb{out: []llm.Source{{Kind: llm.SourceWeb, Place: joesPizza.Name, Label: "joespizzanyc.com", URL: "https://www.joespizzanyc.com/menu/", Text: "Joe's Pizza menu: Cheese slice, Fresh Mozzarella slice, Pepperoni slice."}}}
 	a = &fakeAnswerer{res: []llm.AnswerResult{
 		{Found: true, Answer: "It's a longtime spot for New York-style slices.", Sources: []string{"s1"}},
 		{Found: true, Answer: "Their menu lists a cheese slice and a pepperoni slice.", Items: []string{"cheese slice", "pepperoni slice"}, Sources: []string{"s2"}}}} // the excerpt follows the editorial (s1)
@@ -516,7 +517,7 @@ func TestBuildAnswerPizzaRecommendationsMessage(t *testing.T) {
 	}
 	if want := "Their menu lists a cheese slice and a pepperoni slice.\n\n" +
 		"Want your supporter to get a cheese slice and a pepperoni slice at Joe's Pizza - Broadway?\n" +
-		"From their website."; rep.Text != want || rep.Source != "web" {
+		"From joespizzanyc.com/menu"; rep.Text != want || rep.Source != "web" {
 		t.Fatalf("web: got:\n%s\nwant:\n%s", rep.Text, want)
 	}
 
@@ -529,6 +530,34 @@ func TestBuildAnswerPizzaRecommendationsMessage(t *testing.T) {
 	}
 	if !rep.Check || rep.Ask != "what their most popular slice is, and get that" || len(rep.Items) != 0 || rep.Suggest != 1 {
 		t.Fatalf("%+v", rep)
+	}
+}
+
+// The cited page, shortest form: the domain, or domain/path below the
+// home page; nothing that is not a plain web address.
+func TestCitedPages(t *testing.T) {
+	for _, c := range []struct{ url, label, want string }{
+		{"https://www.joespizzanyc.com/", "joespizzanyc.com", "joespizzanyc.com"},
+		{"https://www.joespizzanyc.com/menu?utm_source=x#top", "joespizzanyc.com", "joespizzanyc.com/menu"},
+		{"https://order.joespizzanyc.com/menu/lunch", "order.joespizzanyc.com", "order.joespizzanyc.com/menu/lunch"},
+		{"https://joespizzanyc.com/pages/menu.html", "joespizzanyc.com", "joespizzanyc.com/pages/menu.html"},
+		{"https://joespizzanyc.com/a/very/long/path/that/goes/on/and/on", "joespizzanyc.com", "joespizzanyc.com"},
+		{"https://joespizzanyc.com/menu%20page", "joespizzanyc.com", "joespizzanyc.com"},
+		{"", "joespizzanyc.com", "joespizzanyc.com"},
+		{"javascript:alert(1)", "not a host", ""},
+	} {
+		got := citedPages([]string{"s1"}, []llm.Source{{Ref: "s1", Kind: llm.SourceWeb, URL: c.url, Label: c.label}})
+		if strings.Join(got, "|") != c.want {
+			t.Errorf("%q: got %v, want %q", c.url, got, c.want)
+		}
+	}
+	two := []llm.Source{{Ref: "s1", Kind: llm.SourceWeb, URL: "https://joespizzanyc.com/menu"}, {Ref: "s2", Kind: llm.SourceWeb, URL: "https://joespizzanyc.com/about"},
+		{Ref: "s3", Kind: llm.SourceWeb, URL: "https://joespizzanyc.com/catering"}}
+	if got := citedPages([]string{"s1", "s2"}, two); len(got) != 1 || got[0] != "joespizzanyc.com" {
+		t.Fatalf("two pages of one site: %v", got)
+	}
+	if got := citedPages([]string{"s3"}, two); len(got) != 1 || got[0] != "joespizzanyc.com/catering" {
+		t.Fatalf("only the page used: %v", got)
 	}
 }
 

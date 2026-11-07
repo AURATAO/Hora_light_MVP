@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -84,7 +86,7 @@ const (
 	CopyAllergy        = "For allergies, your supporter can ask staff, but I can't guarantee it."
 	CopyNoMenu         = "I don't have their menu, but your supporter can get their most popular %s. Want me to set that up at %s?"
 	CopyFromGoogle     = "From Google Maps."
-	CopyFromTheirSite  = "From their website." // no domain: a texted domain becomes a link
+	CopyFromSite       = "From %s" // the cited page, shortest form ("joespizzanyc.com/menu"); no period, so the phone's link ends at the URL
 	CopyHoursChange    = "Hours can change."
 	CopyHoursNone      = "Google Maps doesn't list %s's hours."
 	CopyPriceLevel     = "Google Maps lists %s as %s."
@@ -171,6 +173,7 @@ func BuildAnswer(ctx context.Context, d AnswerDeps, q AnswerQuestion) AnswerRepl
 	p := q.Facts[k]
 	rep.Suggest = k
 	var lines []string
+	var cited []string // web: the cited pages, shortest form
 	allergy := allergyRE.MatchString(q.Text)
 	usedGoogleData := false
 
@@ -259,6 +262,9 @@ func BuildAnswer(ctx context.Context, d AnswerDeps, q AnswerQuestion) AnswerRepl
 		switch {
 		case ok:
 			lines = append(lines, res.Answer)
+			if rep.Source == "web" {
+				cited = citedPages(res.Sources, sources)
+			}
 			if len(places) == 1 {
 				rep.Items = completeItems(res.Items, sources) // an order is for one place only
 			}
@@ -321,7 +327,7 @@ func BuildAnswer(ctx context.Context, d AnswerDeps, q AnswerQuestion) AnswerRepl
 			fmt.Fprintf(&b, CopyAboutAsk, p.Name)
 		}
 	}
-	if a := attributionLine(rep.Source == "web", usedGoogleData || len(shown) > 0, len(shown) > 0 || q.Topic == "hours"); a != "" {
+	if a := attributionLine(cited, usedGoogleData || len(shown) > 0, len(shown) > 0 || q.Topic == "hours"); a != "" {
 		b.WriteString("\n" + a)
 	}
 	rep.Text = b.String()
@@ -505,14 +511,15 @@ func normText(s string) string {
 	return strings.Join(strings.Fields(nameKeyRE.ReplaceAllString(strings.ReplaceAll(s, "'", ""), " ")), " ")
 }
 
-// attributionLine: "From Google Maps." when Google's data is shown
-// ("Hours can change." after hours), "From their website." for an answer
-// from the place's own site, "" when the message shows neither.
-func attributionLine(web, google, hours bool) string {
+// attributionLine: "From joespizzanyc.com/menu" for an answer from the
+// place's own site (Anthropic's web search terms: the cited source shown
+// and clickable — a phone links a texted URL), else "From Google Maps."
+// when Google's data is shown ("Hours can change." after hours), else "".
+func attributionLine(cited []string, google, hours bool) string {
 	var parts []string
 	switch {
-	case web:
-		parts = append(parts, CopyFromTheirSite)
+	case len(cited) > 0:
+		parts = append(parts, fmt.Sprintf(CopyFromSite, joinAnd(cited)))
 	case google:
 		parts = append(parts, CopyFromGoogle)
 	}
@@ -521,6 +528,69 @@ func attributionLine(web, google, hours bool) string {
 	}
 	return strings.Join(parts, " ")
 }
+
+// citedPages: the web pages the answer used, each in its shortest form —
+// the domain, or domain/path for a page below the home page. Two pages
+// of one site are that site's domain.
+func citedPages(used []string, sources []llm.Source) []string {
+	want := map[string]bool{}
+	for _, r := range used {
+		want[r] = true
+	}
+	var hosts []string
+	pages := map[string][]string{}
+	for _, s := range sources {
+		if s.Kind != llm.SourceWeb || !want[s.Ref] {
+			continue
+		}
+		host, page := shortURL(s.URL, s.Label)
+		if host == "" {
+			continue
+		}
+		if _, ok := pages[host]; !ok {
+			hosts = append(hosts, host)
+		}
+		if !slices.Contains(pages[host], page) {
+			pages[host] = append(pages[host], page)
+		}
+	}
+	var out []string
+	for _, h := range hosts {
+		if len(pages[h]) == 1 {
+			out = append(out, pages[h][0])
+		} else {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// sitePathRE: a path short and plain enough to text ("/menu", "/menu/lunch").
+var sitePathRE = regexp.MustCompile(`^(?:/[A-Za-z0-9._~-]+){1,3}$`)
+
+// shortURL: a cited URL as host ("joespizzanyc.com", no scheme or www.)
+// and page ("joespizzanyc.com/menu"; the host for the home page, or for a
+// path too long or odd to text). No query or fragment.
+func shortURL(raw, label string) (host, page string) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
+		if h := strings.ToLower(strings.TrimPrefix(label, "www.")); hostRE.MatchString(h) {
+			return h, h
+		}
+		return "", ""
+	}
+	host = strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")
+	if !hostRE.MatchString(host) {
+		return "", ""
+	}
+	p := strings.TrimSuffix(u.EscapedPath(), "/")
+	if p == "" || len(p) > 30 || !sitePathRE.MatchString(p) {
+		return host, host
+	}
+	return host, host + p
+}
+
+var hostRE = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$`)
 
 // popularWord: what "their most popular …" is — the customer's own word
 // for it, a slice for pizza, else "item".

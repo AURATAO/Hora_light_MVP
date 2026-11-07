@@ -763,11 +763,11 @@
       ],
       "source": "web",
       "contains": [
-       "From their website."
+       "From kenmarenoodle.com"
       ],
       "forbid": [
-       "kenmarenoodle.com",
-       "http"
+       "http",
+       "www."
       ]
      }
     },
@@ -832,13 +832,12 @@
       "source": "web",
       "offer": true,
       "contains": [
-       "From their website."
+       "From joespizzanyc.example"
       ],
       "forbid": [
        "Gemini",
        "review",
-       "http",
-       "joespizzanyc"
+       "http"
       ]
      }
     },
