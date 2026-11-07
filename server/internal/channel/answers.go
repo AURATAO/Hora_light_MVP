@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -81,9 +82,11 @@ const (
 	CopyLiveUnknown    = "I can't see that from here: Google Maps doesn't show it live."
 	CopyNothingFound   = "I couldn't find that for %s on Google Maps or their website."
 	CopyAllergy        = "For allergies, your supporter can ask staff, but I can't guarantee it."
-	CopyFromWeb        = "From %s (web search)."
-	CopyGeminiReviews  = "Review summary: %s, from Google Maps reviews: %s"
-	CopyGemini         = "Place summary: %s, from Google Maps."
+	CopyAnswerFrom     = "From %s."        // "From Google Maps." / "From Google Maps and x.com (web search)."
+	CopyFromWebSite    = "%s (web search)" // one web page's domain
+	CopyHoursChange    = "Hours can change."
+	CopyReviewsLink    = "Reviews: %s" // Google's reviewsUri — always the very last thing
+	CopyGeminiDefault  = "Summarized with Gemini"
 	CopyHoursNone      = "Google Maps doesn't list %s's hours."
 	CopyPriceLevel     = "Google Maps lists %s as %s."
 	CopyPriceRange     = "Google Maps lists %s as %s, about %s a person."
@@ -167,7 +170,8 @@ func BuildAnswer(ctx context.Context, d AnswerDeps, q AnswerQuestion) AnswerRepl
 	}
 	p := q.Facts[k]
 	rep.Suggest = k
-	var lines, attribution []string
+	var lines []string
+	var attribution sourceCredits
 	allergy := allergyRE.MatchString(q.Text)
 	usedGoogleData := false
 
@@ -244,9 +248,9 @@ func BuildAnswer(ctx context.Context, d AnswerDeps, q AnswerQuestion) AnswerRepl
 		case ok:
 			lines = append(lines, res.Answer)
 			if len(places) == 1 {
-				rep.Items = res.Items // an order is for one place only
+				rep.Items = completeItems(res.Items, sources) // an order is for one place only
 			}
-			attribution = append(attribution, sourceAttribution(res.Sources, sources, places)...)
+			attribution = sourceAttribution(res.Sources, sources, places)
 		case q.Topic == "compare" && len(places) > 1:
 			rep.Source, usedGoogleData = "places_facts", true
 			lines = append(lines, CopyCompareFacts)
@@ -271,20 +275,25 @@ func BuildAnswer(ctx context.Context, d AnswerDeps, q AnswerQuestion) AnswerRepl
 		rep.Items, rep.Check, rep.Ask = nil, true, strings.TrimSpace(q.Text)
 	}
 
+	// The message: the answer, the option lines only where they add
+	// something (several places, or hours and distance), the offer, then
+	// one attribution line with Google's reviews link last.
 	var b strings.Builder
 	b.WriteString(strings.Join(lines, " ") + "\n\n")
-	shown := []int{k}
-	if q.Topic == "compare" || (q.Topic == "pick" && q.Asked < 0) {
+	var shown []int
+	switch {
+	case q.Topic == "compare" || (q.Topic == "pick" && q.Asked < 0):
 		shown = idx
+	case q.Topic == "hours" || q.Topic == "live" || q.Topic == "closest":
+		shown = []int{k}
 	}
 	for _, i := range shown {
 		fmt.Fprintf(&b, "%d. %s\n", i+1, aboutFacts(q.Facts[i].Place))
 	}
-	b.WriteString("\n" + CopyDiscoveryFooter + "\n")
-	_ = usedGoogleData
-	for _, a := range attribution {
-		b.WriteString(a + "\n")
+	if len(shown) > 0 {
+		b.WriteString("\n")
 	}
+	_ = usedGoogleData
 	switch {
 	case len(rep.Items) > 0:
 		fmt.Fprintf(&b, CopyOfferItems, joinItems(rep.Items), p.Name)
@@ -297,6 +306,7 @@ func BuildAnswer(ctx context.Context, d AnswerDeps, q AnswerQuestion) AnswerRepl
 	default:
 		fmt.Fprintf(&b, CopyAboutAsk, p.Name)
 	}
+	b.WriteString("\n" + attributionLine(attribution, len(shown) > 0 || q.Topic == "hours"))
 	rep.Text = b.String()
 	return rep
 }
@@ -478,10 +488,16 @@ func normText(s string) string {
 	return strings.Join(strings.Fields(nameKeyRE.ReplaceAllString(strings.ReplaceAll(s, "'", ""), " ")), " ")
 }
 
-// sourceAttribution: the lines the sources used require — Google's Gemini
-// disclosure (with the link to the reviews for a review summary) and the
-// web pages' domains.
-func sourceAttribution(used []string, sources []llm.Source, places []llm.PlaceFacts) []string {
+// sourceCredits: what the sources used require to be shown — Google's
+// Gemini disclosure (once, however many summaries were used), the links to
+// the reviews for a review summary, and the web pages' domains.
+type sourceCredits struct {
+	Disclosure  string
+	ReviewLinks []string
+	WebSites    []string
+}
+
+func sourceAttribution(used []string, sources []llm.Source, places []llm.PlaceFacts) sourceCredits {
 	byRef := map[string]llm.Source{}
 	for _, s := range sources {
 		byRef[s.Ref] = s
@@ -491,13 +507,14 @@ func sourceAttribution(used []string, sources []llm.Source, places []llm.PlaceFa
 			used = append(used, s.Ref)
 		}
 	}
-	var out []string
+	var c sourceCredits
 	seen := map[string]bool{}
-	add := func(l string) {
-		if !seen[l] {
-			seen[l] = true
-			out = append(out, l)
+	once := func(l string) bool {
+		if l == "" || seen[l] {
+			return false
 		}
+		seen[l] = true
+		return true
 	}
 	for _, ref := range used {
 		s, ok := byRef[ref]
@@ -513,17 +530,114 @@ func sourceAttribution(used []string, sources []llm.Source, places []llm.PlaceFa
 		switch s.Kind {
 		case llm.SourceReviewSummary:
 			if f != nil && f.ReviewSummary != nil {
-				add(fmt.Sprintf(CopyGeminiReviews, firstNonEmpty(f.ReviewSummary.Disclosure, "Summarized with Gemini"), firstNonEmpty(f.ReviewSummary.ReviewsURI, "Google Maps")))
+				c.Disclosure = firstNonEmpty(c.Disclosure, firstNonEmpty(f.ReviewSummary.Disclosure, CopyGeminiDefault))
+				if u := f.ReviewSummary.ReviewsURI; once(u) {
+					c.ReviewLinks = append(c.ReviewLinks, u)
+				}
 			}
 		case llm.SourceGenerativeSummary:
 			if f != nil && f.GenerativeSummary != nil {
-				add(fmt.Sprintf(CopyGemini, firstNonEmpty(f.GenerativeSummary.Disclosure, "Summarized with Gemini")))
+				c.Disclosure = firstNonEmpty(c.Disclosure, firstNonEmpty(f.GenerativeSummary.Disclosure, CopyGeminiDefault))
 			}
 		case llm.SourceWeb:
-			add(fmt.Sprintf(CopyFromWeb, s.Label))
+			if once("web:" + s.Label) {
+				c.WebSites = append(c.WebSites, fmt.Sprintf(CopyFromWebSite, s.Label))
+			}
 		}
 	}
+	return c
+}
+
+// attributionLine: the one line at the end of an answer — "From Google
+// Maps. Summarized with Gemini. Reviews: https://…". Google's disclosure is
+// shown as Google words it; the reviews link goes last, as Google gives it
+// (its policy names reviewsUri and allows no other link in its place).
+func attributionLine(c sourceCredits, hours bool) string {
+	parts := []string{fmt.Sprintf(CopyAnswerFrom, joinAnd(append([]string{"Google Maps"}, c.WebSites...)))}
+	if hours {
+		parts = append(parts, CopyHoursChange)
+	}
+	if c.Disclosure != "" {
+		d := strings.TrimSpace(c.Disclosure)
+		if !strings.HasSuffix(d, ".") {
+			d += "."
+		}
+		parts = append(parts, d)
+	}
+	if len(c.ReviewLinks) > 0 {
+		parts = append(parts, fmt.Sprintf(CopyReviewsLink, strings.Join(c.ReviewLinks, " ")))
+	}
+	return strings.Join(parts, " ")
+}
+
+// joinAnd: "a", "a and b", "a, b and c".
+func joinAnd(w []string) string {
+	switch len(w) {
+	case 0:
+		return ""
+	case 1:
+		return w[0]
+	}
+	return strings.Join(w[:len(w)-1], ", ") + " and " + w[len(w)-1]
+}
+
+// itemKinds: the words that say what kind of thing an item is, plural to
+// singular — "vodka" is a flavor, "vodka slice" is what a supporter asks for.
+var itemKinds = map[string]string{
+	"slice": "slice", "slices": "slice", "pie": "pie", "pies": "pie", "square": "square", "squares": "square",
+	"pizza": "pizza", "pizzas": "pizza", "roll": "roll", "rolls": "roll", "bagel": "bagel", "bagels": "bagel",
+	"sandwich": "sandwich", "sandwiches": "sandwich", "taco": "taco", "tacos": "taco", "burrito": "burrito", "burritos": "burrito",
+	"dumpling": "dumpling", "dumplings": "dumpling", "bun": "bun", "buns": "bun", "cookie": "cookie", "cookies": "cookie",
+	"croissant": "croissant", "croissants": "croissant", "donut": "donut", "donuts": "donut", "doughnut": "doughnut", "doughnuts": "doughnut",
+	"muffin": "muffin", "muffins": "muffin", "scone": "scone", "scones": "scone", "cupcake": "cupcake", "cupcakes": "cupcake",
+	"cake": "cake", "cakes": "cake", "bowl": "bowl", "bowls": "bowl", "burger": "burger", "burgers": "burger", "wrap": "wrap", "wraps": "wrap",
+	"latte": "latte", "lattes": "latte", "smoothie": "smoothie", "smoothies": "smoothie",
+}
+
+var itemKindAlt = func() string {
+	var w []string
+	for k := range itemKinds {
+		w = append(w, k)
+	}
+	sort.Slice(w, func(i, j int) bool { return len(w[i]) > len(w[j]) })
+	return strings.Join(w, "|")
+}()
+
+// completeItems gives a bare item the kind word its source uses for it:
+// "plain, spinach and vodka slices" → "plain slice", "spinach slice",
+// "vodka slice". Only through a list ("x, y and z slices"), never across
+// a sentence; an item that already names a kind, or ends in s ("garlic
+// knots"), is kept as it is.
+func completeItems(items []string, sources []llm.Source) []string {
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		out = append(out, completeItem(it, sources))
+	}
 	return out
+}
+
+func completeItem(it string, sources []llm.Source) string {
+	f := strings.Fields(strings.ToLower(it))
+	if len(f) == 0 || len(f) > 3 {
+		return it
+	}
+	last := f[len(f)-1]
+	if _, ok := itemKinds[last]; ok || strings.HasSuffix(last, "s") {
+		return it
+	}
+	word := `[\pL'’-]+`
+	sep := `(?:\s*,\s*(?:(?:and|or)\s+)?|\s+(?:and|or|&)\s+)`
+	re, err := regexp.Compile(`(?i)(?:^|[^\pL])` + regexp.QuoteMeta(strings.Join(f, " ")) + `(?:` + sep + word + `(?:\s+` + word + `)?)*?\s+(` + itemKindAlt + `)(?:[^\pL]|$)`)
+	if err != nil {
+		return it
+	}
+	for _, s := range sources {
+		text := strings.Join(strings.Fields(s.Text), " ")
+		if m := re.FindStringSubmatch(text); m != nil {
+			return strings.TrimSpace(it) + " " + itemKinds[strings.ToLower(m[1])]
+		}
+	}
+	return it
 }
 
 // joinItems: "a Margherita and a spicy vodka slice".
@@ -532,15 +646,7 @@ func joinItems(items []string) string {
 	for _, it := range items {
 		w = append(w, withArticle(it))
 	}
-	switch len(w) {
-	case 0:
-		return ""
-	case 1:
-		return w[0]
-	case 2:
-		return w[0] + " and " + w[1]
-	}
-	return strings.Join(w[:len(w)-1], ", ") + " and " + w[len(w)-1]
+	return joinAnd(w)
 }
 
 func withArticle(it string) string {

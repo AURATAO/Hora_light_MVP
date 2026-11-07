@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"hora-auth/internal/channel/llm"
 )
@@ -142,14 +143,15 @@ func TestBuildAnswerMenuFromReviewSummary(t *testing.T) {
 	rep := BuildAnswer(context.Background(), AnswerDeps{Answerer: a}, q1("menu", "Ok nolita pizza, what is the best flavor?", nolitaFacts()))
 	for _, want := range []string{
 		"Reviews mention their spicy vodka slice and the Margherita.",
-		"1. Nolita Pizza · ★ 4.6",
-		CopyDiscoveryFooter,
-		"Review summary: Summarized with Gemini, from Google Maps reviews: https://maps.google.com/?cid=1",
-		"Want your supporter to get a Margherita and a spicy vodka slice at Nolita Pizza?",
+		"Want your supporter to get a Margherita and a spicy vodka slice at Nolita Pizza?\n",
+		"From Google Maps. Summarized with Gemini. Reviews: https://maps.google.com/?cid=1",
 	} {
 		if !strings.Contains(rep.Text, want) {
 			t.Fatalf("missing %q:\n%s", want, rep.Text)
 		}
+	}
+	if strings.Contains(rep.Text, "1. Nolita Pizza") || !strings.HasSuffix(rep.Text, "https://maps.google.com/?cid=1") {
+		t.Fatalf("one place: no option line again; the reviews link last:\n%s", rep.Text)
 	}
 	noBookingNoHoraPrice(t, rep.Text)
 	if rep.Source != "places_summary" || len(rep.Items) != 2 || rep.Suggest != 0 || rep.Check {
@@ -205,7 +207,7 @@ func TestBuildAnswerWebFallback(t *testing.T) {
 	if len(web.reqs) != 1 || web.reqs[0].OwnDomain != "princestreetpizza.example" || web.reqs[0].Domains[0] != "timeout.com" || web.reqs[0].MaxUses != 1 {
 		t.Fatalf("web %+v", web.reqs)
 	}
-	if rep.Source != "web" || rep.WebSearches != 1 || !strings.Contains(rep.Text, "From princestreetpizza.example (web search).") ||
+	if rep.Source != "web" || rep.WebSearches != 1 || !strings.HasSuffix(rep.Text, "From Google Maps and princestreetpizza.example (web search).") ||
 		!strings.Contains(rep.Text, "Want your supporter to get a Spicy Spring square at Prince Street Pizza?") {
 		t.Fatalf("%+v\n%s", rep, rep.Text)
 	}
@@ -457,5 +459,71 @@ func TestPlaybookAskSkipAndRedraft(t *testing.T) {
 	parses = len(g.parser.sources)
 	if sum := g.say(t, "skip"); len(g.parser.sources) != parses || !strings.Contains(sum, "YES") {
 		t.Fatalf("skip:\n%s", sum)
+	}
+}
+
+// The production test of 2026-11-07 11:45: "2 are there any pizza
+// recommendations?" with both of Google's summaries used. It came back as
+// 614 characters (about 5 SMS segments): two Gemini lines, the option line
+// and footer again, and "a plain, a spinach and a vodka". Now the
+// disclosure is shown once, attribution is one line at the end with
+// Google's reviews link last, and each item keeps its source's kind word.
+func TestBuildAnswerPizzaRecommendationsMessage(t *testing.T) {
+	const reviewsURI = "https://www.google.com/maps/place//data=!4m4!3m3!1s0x89c259ab3c1ef289:0x3b67a41175949f55!9m1!1b1"
+	joes := llm.PlaceFacts{Place: joesPizza,
+		ReviewSummary:     &llm.Summary{Text: "People love the classic thin-crust plain, spinach and vodka slices, and say the line moves fast.", Disclosure: "Summarized with Gemini", ReviewsURI: reviewsURI},
+		GenerativeSummary: &llm.Summary{Text: "Longtime counter-serve spot for New York-style slices.", Disclosure: "Summarized with Gemini"}}
+	a := &fakeAnswerer{res: []llm.AnswerResult{{Found: true,
+		Answer:  "Reviews recommend their plain, spinach and vodka slices.",
+		Items:   []string{"plain", "spinach", "vodka"},
+		Sources: []string{"s1", "s2"}}}}
+	pbs, _ := llm.Playbooks()
+	q := AnswerQuestion{Text: "2 are there any pizza recommendations?", Topic: "menu", Playbook: pbs.ByID("food"),
+		Facts: map[int]llm.PlaceFacts{0: nolitaFacts(), 1: joes}, Asked: 1, Now: time.Date(2026, 11, 7, 11, 45, 0, 0, time.UTC)}
+	rep := BuildAnswer(context.Background(), AnswerDeps{Answerer: a}, q)
+
+	want := "Reviews recommend their plain, spinach and vodka slices.\n\n" +
+		"Want your supporter to get a plain slice, a spinach slice and a vodka slice at Joe's Pizza - Broadway?\n" +
+		"From Google Maps. Summarized with Gemini. Reviews: " + reviewsURI
+	if rep.Text != want {
+		t.Fatalf("got (%d chars):\n%s\n\nwant (%d chars):\n%s", len(rep.Text), rep.Text, len(want), want)
+	}
+	if n := strings.Count(rep.Text, "Summarized with Gemini"); n != 1 {
+		t.Fatalf("disclosure shown %d times", n)
+	}
+	if !strings.HasSuffix(rep.Text, reviewsURI) {
+		t.Fatal("reviews link is not last")
+	}
+	// Without Google's link (fixed, unavoidable ~95 chars) it fits 320.
+	if n := utf8.RuneCountInString(strings.TrimSuffix(rep.Text, reviewsURI)); n > 320 {
+		t.Fatalf("%d characters before the link", n)
+	}
+	if got := ItemsNote(rep.Items); got != "Get: 1 plain slice, 1 spinach slice, 1 vodka slice" {
+		t.Fatal(got)
+	}
+	noBookingNoHoraPrice(t, rep.Text)
+}
+
+func TestCompleteItems(t *testing.T) {
+	src := func(s string) []llm.Source { return []llm.Source{{Ref: "s1", Text: s}} }
+	for _, c := range []struct {
+		items []string
+		text  string
+		want  string
+	}{
+		{[]string{"plain", "spinach", "vodka"}, "the plain, spinach and vodka slices", "plain slice|spinach slice|vodka slice"},
+		{[]string{"Grandma", "Sicilian"}, "Their Grandma and Sicilian squares sell out.", "Grandma square|Sicilian square"},
+		{[]string{"white"}, "Try the white pie.", "white pie"},
+		{[]string{"Margherita", "spicy vodka slice"}, "The spicy vodka slice and the Margherita come up again and again.", "Margherita|spicy vodka slice"},
+		{[]string{"plain"}, "The plain is great, but the vodka slice wins.", "plain"}, // never across a clause
+		{[]string{"garlic knots"}, "garlic knots and vodka slices", "garlic knots"},   // already a thing
+		{[]string{"vodka"}, "Vodka slices. Also pies.", "vodka slice"},
+	} {
+		if got := strings.Join(completeItems(c.items, src(c.text)), "|"); got != c.want {
+			t.Errorf("%v in %q: got %q, want %q", c.items, c.text, got, c.want)
+		}
+	}
+	if got := joinItems([]string{"plain slice", "spinach slice", "vodka slice"}); got != "a plain slice, a spinach slice and a vodka slice" {
+		t.Fatal(got)
 	}
 }
