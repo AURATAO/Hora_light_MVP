@@ -253,6 +253,9 @@ type Router struct {
 	// InContext labels a message when a supporter is on the job (D-17 P2);
 	// nil = the plain Classifier with "to the supporter" as the default.
 	InContext llm.ContextClassifier
+	// QuestionReader tells an answer to a draft's question from a question
+	// asked back, when the rules cannot (answers.go). Nil: rules only.
+	QuestionReader llm.QuestionReader
 	// Agent, when set, replaces InContext (D-18, behind CHANNEL_AGENT): it
 	// proposes what a message is; the rules decide. nil = today's routing.
 	Agent llm.Agent
@@ -487,16 +490,27 @@ func awaitingAnswer(s State) bool {
 	return false
 }
 
-func (r *Router) classify(ctx context.Context, text string) llm.Intent {
-	intent := llm.HeuristicIntent(text)
+// classify reads what an idle message is for, on the configured small
+// model (LLM_SMALL_MODEL), with the errand type when the classifier gives
+// one. Rules run before it (the search and errand fast paths); this is
+// what decides when they do not match.
+func (r *Router) classify(ctx context.Context, text string) llm.Classification {
+	c := llm.Classification{Intent: llm.HeuristicIntent(text)}
+	if dc, ok := r.Classifier.(llm.DetailClassifier); ok {
+		got, err := dc.ClassifyDetail(ctx, text)
+		if err != nil {
+			log.Printf("[channel] classify (using fallback %q): %v", got.Intent, err)
+		}
+		return got
+	}
 	if r.Classifier != nil {
 		got, err := r.Classifier.Classify(ctx, text)
 		if err != nil {
 			log.Printf("[channel] classify (using fallback %q): %v", got, err)
 		}
-		intent = got
+		c.Intent = got
 	}
-	return intent
+	return c
 }
 
 func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
@@ -576,7 +590,33 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 			return err
 		}
 	}
-	intent := r.classify(ctx, text)
+	// "Pick up my dry cleaning at…", "buy and bring me…": an errand by rule,
+	// drafted without the classifier (the errand fast path; a search never
+	// matches it). Anything the rules cannot place, the model reads.
+	if !tried && IsClearErrand(text) {
+		return r.startDraft(ctx, in, id, conv, text)
+	}
+	// The classifier takes a second or two: the split and the parse of the
+	// same words start alongside it, so an errand's draft does not wait for
+	// both in turn (the 6 s budget). They read words, they decide nothing;
+	// used only if the classifier says it is an errand.
+	if len(strings.Fields(text)) >= 3 {
+		ctx = r.prefetchDraft(ctx, text)
+	}
+	c := r.classify(ctx, text)
+	intent := c.Intent
+	// "Help me find…", "is there a … open until 9?" in words no rule knows:
+	// the classifier's find_place is a search (production 2026-11-07: GLM's
+	// new_task drafted them as errands). Not a search after all (the
+	// discovery model says not_discovery): an errand, as the words were.
+	if intent == llm.IntentFind {
+		if !tried && r.discoveryOn() {
+			if handled, err := r.discover(ctx, in, id, conv, text, r.freshOffer(ctx, id), true, false); handled {
+				return err
+			}
+		}
+		intent = llm.IntentNewTask
+	}
 	// A question, or a follow-up to places just shown: place discovery,
 	// which answers or leaves it to the switch.
 	if !tried {
@@ -586,7 +626,7 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 	}
 	switch intent {
 	case llm.IntentNewTask:
-		return r.startDraft(ctx, in, id, conv, text)
+		return r.startDraftOpts(ctx, in, id, conv, text, draftOpts{playbookHint: c.Playbook})
 	case llm.IntentQuestion:
 		// With a supporter on the job, "where are you?" is for them.
 		if id.Linked() {
@@ -650,6 +690,9 @@ type draftOpts struct {
 	intro    string
 	// playbook: the errand type discovery recognised (D-25), "" none.
 	playbook string
+	// playbookHint: the type the classifier named, used only when no
+	// playbook rule matches the words (rules first, the model otherwise).
+	playbookHint string
 }
 
 // startDraftOpts parses the request, prices it and moves to the name or
@@ -668,8 +711,15 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 	// on its own; all of them wait on the one YES. Chosen places make one
 	// errand: one supporter for the whole trip.
 	errands := []string{source}
+	var pre *draftPrefetch
+	if o.prebuilt == nil {
+		// The parse of the whole words runs alongside the split: one errand
+		// (the common case) is parsed from everything said anyway.
+		pre = r.prefetched(ctx, source, len(o.places) == 0)
+	}
 	if r.Splitter != nil && len(o.places) == 0 && o.prebuilt == nil {
-		got, usage, err := r.Splitter.SplitErrands(ctx, source)
+		sr := pre.splitResult()
+		got, usage, err := sr.errands, sr.usage, sr.err
 		if err != nil {
 			// The whole message is one errand (SplitErrands' own fallback).
 			log.Printf("[channel] split fell back to one errand model=%s: %v", usage.Model, err)
@@ -708,7 +758,12 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		} else {
 			var usage llm.Usage
 			var err error
-			draft, usage, err = r.Parser.ParseTask(ctx, prompt, text)
+			if len(errands) == 1 && pre != nil && text == pre.source {
+				pr := pre.parseResult() // started with the split
+				draft, usage, err = pr.draft, pr.usage, pr.err
+			} else {
+				draft, usage, err = r.Parser.ParseTask(ctx, prompt, text)
+			}
 			if err != nil {
 				log.Printf("[channel] parse failed model=%s latency=%s: %v", usage.Model, usage.Latency, err)
 				unparsed = append(unparsed, text)
@@ -1122,6 +1177,16 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 		switch {
 		case IsNo(text) || IsDraftDecline(text):
 			return r.dropDraft(ctx, in, conv)
+		case IsCancelRequest(text) || IsWithdrawal(text):
+			// "No cancel the draft" to "what are the details?" (production
+			// 2026-11-07): dropped by rule — it was re-parsed as details,
+			// still had none, and the second try handed off.
+			return r.dropDraftWith(ctx, in, conv, CopyDroppedCancelHint)
+		case IsClearSearch(text) && r.discoveryOn():
+			// A search while we wait on details: answered, the draft waits.
+			if handled, err := r.routeDiscoveryWhileDraft(ctx, in, id, conv, text); handled {
+				return err
+			}
 		case IsYes(text):
 			// Nothing to say yes to yet.
 			return r.Reply(ctx, in, detailsQuestion(conv.Pending), "")
@@ -1231,6 +1296,13 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 			p := r.propose(ctx, id, text, nil, conv, "", "", time.Time{}, false)
 			if p.Action == llm.ActionEscalate {
 				return r.agentHandOff(ctx, in, id, p) // re-reads the conversation itself
+			}
+			if p.Action == llm.ActionInfo && r.discoveryOn() {
+				// A search in words the rules did not know: answered, the
+				// draft stays as it is (never re-drafted as a correction).
+				if handled, err := r.discover(ctx, in, id, conv, text, nil, true, true); handled {
+					return err
+				}
 			}
 			// The model took seconds: a parallel YES may have booked the
 			// draft, or a newer message replaced it (review r1). Act on
@@ -1924,3 +1996,80 @@ func IsDraftDecline(text string) bool {
 // number, a time, a place or an errand verb. An agent "decline" on one of
 // these is read as the correction it carries.
 var changeWordsRE = regexp.MustCompile(`(?i)\d|\b(?:make it|instead|change|but|rather|tomorrow|tonight|today|later|morning|afternoon|evening|pm|am|o'?clock|at|bring|deliver|drop|pick|buy|get|address|street|ave|min|mins|minutes?|hours?|bags?|budget|one|two|three|four|five|other|different|wrong|from|to|for|use|send|put|blue|red|black|white|office|home|store|shop)\b|[一二三四五六七八九十兩點分時明今晚早午改換送拿買到色]|不是`)
+
+// ── the draft's model calls, side by side ───────────────────────────────
+
+// draftPrefetch: the split and the parse of source, started together.
+type draftPrefetch struct {
+	source string
+	split  chan splitResult
+	parse  chan parseResult
+	// Each result is received once and kept: a second read never blocks.
+	splitOnce, parseOnce sync.Once
+	splitGot             splitResult
+	parseGot             parseResult
+}
+
+func (p *draftPrefetch) splitResult() splitResult {
+	p.splitOnce.Do(func() { p.splitGot = <-p.split })
+	return p.splitGot
+}
+
+func (p *draftPrefetch) parseResult() parseResult {
+	p.parseOnce.Do(func() { p.parseGot = <-p.parse })
+	return p.parseGot
+}
+
+type splitResult struct {
+	errands []string
+	usage   llm.Usage
+	err     error
+}
+
+type parseResult struct {
+	draft llm.TaskDraft
+	usage llm.Usage
+	err   error
+}
+
+type prefetchKey struct{}
+
+// prefetchDraft starts the split and the parse of text and carries them in
+// the returned context, for startDraftOpts.
+func (r *Router) prefetchDraft(ctx context.Context, text string) context.Context {
+	if r.Parser == nil || r.Prompt == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, prefetchKey{}, r.startPrefetch(ctx, text, true))
+}
+
+// prefetched is the prefetch started for exactly these words, else a new
+// one (split only when a split is wanted).
+func (r *Router) prefetched(ctx context.Context, source string, split bool) *draftPrefetch {
+	if p, ok := ctx.Value(prefetchKey{}).(*draftPrefetch); ok && p.source == source && split {
+		return p
+	}
+	return r.startPrefetch(ctx, source, split)
+}
+
+func (r *Router) startPrefetch(ctx context.Context, source string, split bool) *draftPrefetch {
+	p := &draftPrefetch{source: source, split: make(chan splitResult, 1), parse: make(chan parseResult, 1)}
+	run := r.Go
+	if run == nil {
+		run = func(fn func()) { go fn() }
+	}
+	prompt := r.Prompt(r.now().In(r.loc()))
+	if split && r.Splitter != nil {
+		run(func() {
+			e, u, err := r.Splitter.SplitErrands(ctx, source)
+			p.split <- splitResult{e, u, err}
+		})
+	} else {
+		p.split <- splitResult{}
+	}
+	run(func() {
+		d, u, err := r.Parser.ParseTask(ctx, prompt, source)
+		p.parse <- parseResult{d, u, err}
+	})
+	return p
+}

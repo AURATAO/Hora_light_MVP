@@ -84,6 +84,7 @@ const (
 	CopyLiveUnknown    = "I can't see that from here: Google Maps doesn't show it live."
 	CopyNothingFound   = "I couldn't find that for %s on Google Maps or their website."
 	CopyAllergy        = "For allergies, your supporter can ask staff, but I can't guarantee it."
+	CopyNoMenuDraft    = "I don't have %s's menu. You can ask your supporter to get their most popular %s."
 	CopyNoMenu         = "I don't have their menu, but your supporter can get their most popular %s. Want me to set that up at %s?"
 	CopyFromGoogle     = "From Google Maps."
 	CopyFromSite       = "From %s" // the cited page, shortest form ("joespizzanyc.com/menu"); no period, so the phone's link ends at the URL
@@ -114,6 +115,9 @@ type AnswerQuestion struct {
 	Asked   int
 	Compare []int
 	Now     time.Time
+	// NoOffer: no "Want me to set that up…?" — a draft is already open and
+	// its own question follows (a question asked back, 2026-11-07).
+	NoOffer bool
 }
 
 // AnswerDeps are what an answer may call.
@@ -275,6 +279,9 @@ func BuildAnswer(ctx context.Context, d AnswerDeps, q AnswerQuestion) AnswerRepl
 		case q.Topic == "pick" && len(places) > 1:
 			rep.Source, usedGoogleData = "places_facts", true
 			lines = append(lines, fmt.Sprintf(CopyAboutPick, p.Name))
+		case q.Topic == "menu" && !allergy && q.NoOffer:
+			rep.Source = "none"
+			lines = append(lines, fmt.Sprintf(CopyNoMenuDraft, p.Name, popularWord(q.Item)))
 		case q.Topic == "menu" && !allergy:
 			rep.Source = "none"
 			item := popularWord(q.Item)
@@ -312,7 +319,9 @@ func BuildAnswer(ctx context.Context, d AnswerDeps, q AnswerQuestion) AnswerRepl
 	for _, i := range shown {
 		fmt.Fprintf(&b, "\n%d. %s", i+1, aboutFacts(q.Facts[i].Place))
 	}
-	if !rep.OfferIn {
+	if q.NoOffer {
+		rep.Suggest, rep.Items, rep.Check, rep.Ask = -1, nil, false, ""
+	} else if !rep.OfferIn {
 		b.WriteString("\n\n")
 		switch {
 		case len(rep.Items) > 0:
@@ -967,7 +976,10 @@ func (r *Router) draftPlaybook(o draftOpts, prev *PendingDraft, source string) *
 	case prev != nil && prev.Playbook != "":
 		return r.Playbooks.ByID(prev.Playbook)
 	}
-	return r.Playbooks.Match(source)
+	if pb := r.Playbooks.Match(source); pb != nil {
+		return pb // the rule, when it matches
+	}
+	return r.Playbooks.ByID(o.playbookHint) // else the classifier's reading
 }
 
 // applyPlaybookNotes adds the type's fixed supporter notes to the task the
@@ -1025,17 +1037,37 @@ var skipRE = regexp.MustCompile(`(?i)^\W*(?:skip|no|nope|nah|none|nothing|no tha
 func (r *Router) answerPlaybookAsk(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
 	p := conv.Pending
 	asked := p.PlaybookAsk
+	askText := playbookAsksText(r.pendingAsks(p))
 	p.PlaybookAsk = nil
 	pb := r.Playbooks.ByID(p.Playbook)
 	switch {
 	case IsDraftDecline(text):
 		return r.dropDraft(ctx, in, conv)
+	case IsCancelRequest(text) || IsWithdrawal(text):
+		// "cancel the draft": dropped by rule, never read as the answer.
+		return r.dropDraftWith(ctx, in, conv, CopyDroppedCancelHint)
 	case skipRE.MatchString(text) || pb == nil:
 		return r.afterAsks(ctx, in, id, conv)
 	case IsBookingYes(text) || IsAffirmation(text):
 		// Nothing to say yes to yet: the questions again (state unchanged).
 		p.PlaybookAsk = asked
-		return r.Reply(ctx, in, playbookAsksText(r.pendingAsks(p)), "")
+		return r.Reply(ctx, in, askText, "")
+	}
+	// Options shown for a question asked back (below): a pick makes the
+	// draft at that place, with the type's questions asked afresh.
+	if o := r.optionsSince(ctx, in, id, p); o != nil {
+		if k := r.pickFromOffer(ctx, id, text, o).k; k > 0 {
+			conv.Pending = nil
+			return r.chooseOption(ctx, in, id, conv, o, k, "")
+		}
+	}
+	// "What kind of pizza can I get? Any recommendations?" to "what should
+	// they order?" asks for help with the question; it is not the answer
+	// (production 2026-11-07: it was drafted as the order). Answered from
+	// the draft's place, and the question is put again.
+	if r.asksBack(ctx, askText, text) {
+		p.PlaybookAsk = asked
+		return r.answerAskedBack(ctx, in, id, conv, text, askText)
 	}
 	noteOnly, prefix := true, ""
 	for _, a := range pb.Asks {
@@ -1092,4 +1124,85 @@ func (r *Router) afterAsks(ctx context.Context, in Inbound, id Identity, conv Co
 		return r.Reply(ctx, in, fmt.Sprintf(CopyAskName, conv.Pending.Headline()), "")
 	}
 	return r.continueDraft(ctx, in, id, conv)
+}
+
+// ── a question asked back (2026-11-07) ──────────────────────────────────
+
+// orderQuestionRE: a reply that asks for help choosing what to get, by
+// rule ("any recommendations?", "what kind of pizza can I get?", "what's
+// good there?"). Anything else with a "?" is the model's to read.
+var orderQuestionRE = regexp.MustCompile(`(?i)\b(?:recommend\w*|suggest\w*|what(?:'s| is| are) (?:good|best|popular|the best|on the menu)|what (?:kind|kinds|type|types|sort) of|what (?:do|would|should) (?:you|i|we|people) (?:get|order|recommend|suggest|usually)|what can (?:i|we|they) (?:get|order)|what do they (?:have|sell|serve|make)|(?:any|some) (?:ideas|picks|favou?rites)|(?:see|send|show) (?:me )?the menu|which (?:one|pizza|flavou?r|dish|item)s? (?:is|are|should|do))\b`)
+
+// OrderQuestion: the rule alone (the eval runner reads it too).
+func OrderQuestion(text string) bool { return orderQuestionRE.MatchString(text) }
+
+// asksBack: the reply asks HO:RA for help with its question. The rule
+// first; with a "?" the rule does not know, the configured model reads it.
+func (r *Router) asksBack(ctx context.Context, asked, text string) bool {
+	if OrderQuestion(text) {
+		return true
+	}
+	if !strings.Contains(text, "?") || r.QuestionReader == nil {
+		return false
+	}
+	yes, err := r.QuestionReader.ReadsAsQuestion(ctx, asked, text)
+	if err != nil {
+		log.Printf("[channel] reads as question: %v", err)
+		return false // read as the answer, as before
+	}
+	return yes
+}
+
+// answerAskedBack answers a question asked back while the draft's own
+// questions wait: from the draft's place when it has one (its Google data,
+// with no offer of a new booking), else a search near the draft's words.
+// The draft's question follows either way; nothing is booked.
+func (r *Router) answerAskedBack(ctx context.Context, in Inbound, id Identity, conv Conversation, text, askText string) error {
+	p := conv.Pending
+	if len(p.Places) == 1 && p.Places[0].ID != "" && r.answersOn() {
+		offer := &DiscoveryOffer{Kind: offerOptions, Options: [][]string{{p.Places[0].ID}}, Words: []string{p.Source}, Playbook: p.Playbook}
+		pb := r.Playbooks.ByID(p.Playbook)
+		facts := r.factsFor(ctx, id, offer, []int{0})
+		deps := AnswerDeps{Answerer: r.Answerer, Web: r.Web, WebPerQuestion: r.WebLimits.PerQuestion,
+			ScopeAndRules: r.Playbooks.PromptBlock(pb), Geocode: r.Geocode}
+		day := r.now().In(r.loc()).Format("2006-01-02")
+		if q, ok := r.DiscoveryStore.(WebQuota); ok && r.WebLimits.PerDay > 0 {
+			deps.AllowWeb = func(c context.Context) bool {
+				ok, err := q.TakeWebSearch(c, id.ID, day, r.WebLimits.PerDay)
+				return err == nil && ok
+			}
+		}
+		rep := BuildAnswer(ctx, deps, AnswerQuestion{Text: text, Topic: "menu", Playbook: pb, Facts: facts, Asked: 0, Now: r.now().In(r.loc()), NoOffer: true})
+		log.Printf("[channel] asked back identity=%s place=draft source=%s model_calls=%d", id.ID, rep.Source, rep.ModelCalls)
+		return r.Reply(ctx, in, rep.Text+"\n\n"+askText, "")
+	}
+	if r.discoveryOn() {
+		// No place yet: a search near what the draft says, its words as the
+		// earlier words. Options shown can be picked (optionsSince).
+		log.Printf("[channel] asked back identity=%s place=search", id.ID)
+		if handled, err := r.discoverTail(ctx, in, id, conv, text, &DiscoveryOffer{Words: []string{p.Source}}, true, true, askText); handled {
+			return err
+		}
+	}
+	return r.Reply(ctx, in, CopyAskedBackNoAnswer+"\n\n"+askText, "")
+}
+
+// CopyAskedBackNoAnswer: a question asked back that cannot be looked up.
+const CopyAskedBackNoAnswer = "I can't look that up for this errand right now."
+
+// optionsSince: options shown after the draft was made (a question asked
+// back), still fresh and with no supporter writing since; nil none.
+func (r *Router) optionsSince(ctx context.Context, in Inbound, id Identity, p *PendingDraft) *DiscoveryOffer {
+	if !r.discoveryOn() {
+		return nil
+	}
+	o := r.freshOffer(ctx, id)
+	if o == nil || o.Kind != offerOptions || o.AtUnix < p.CreatedAtUnix {
+		return nil
+	}
+	at := time.Unix(o.AtUnix, 0)
+	if r.supporterSpokeSince(ctx, in, id, &at) {
+		return nil
+	}
+	return o
 }

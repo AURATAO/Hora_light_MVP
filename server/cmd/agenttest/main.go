@@ -21,6 +21,7 @@
 //	go run ./cmd/agenttest -json cmd/agenttest/report.json   # machine-readable report (git-ignored there)
 //	go run ./cmd/agenttest -discovery          # place discovery cases (discovery.json, fixture places)
 //	go run ./cmd/agenttest -discovery -live-places   # the same, searching Google (billed)
+//	go run ./cmd/agenttest -routing            # search vs errand: rules, then LLM_SMALL_MODEL (routing.go)
 //
 // Exit codes: 0 all pass; 1 failures (safe); 2 the model proposed approve or
 // decline where forbidden (the prompt is wrong — production re-asks with a
@@ -365,6 +366,7 @@ func main() {
 		livePlace = flag.Bool("live-places", false, "discovery: send searches to Google (billed) instead of the fixtures")
 		playbooks = flag.Bool("playbooks", false, "run the errand playbook cases (evals in internal/channel/llm/playbooks.json) instead")
 		webLive   = flag.Bool("web-live", false, "playbooks: measure Anthropic web search on real places (billed; no grading)")
+		routing   = flag.Bool("routing", false, "search vs errand: rules, then the classifier on LLM_SMALL_MODEL (internal/channel/testdata/routing_paraphrases.json)")
 	)
 	flag.Parse()
 	f, err := load(*casesPath)
@@ -378,7 +380,11 @@ func main() {
 		}
 		os.Exit(3)
 	}
-	spec, err := llm.ParseSpec(orDefault(*modelFlag, orDefault(os.Getenv("LLM_AGENT_MODEL"), "anthropic:"+llm.DefaultAnthropicModel)))
+	defModel := orDefault(os.Getenv("LLM_AGENT_MODEL"), "anthropic:"+llm.DefaultAnthropicModel)
+	if *routing {
+		defModel = orDefault(os.Getenv("LLM_SMALL_MODEL"), "anthropic:"+llm.DefaultAnthropicModel)
+	}
+	spec, err := llm.ParseSpec(orDefault(*modelFlag, defModel))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -394,6 +400,9 @@ func main() {
 	if (spec.Provider == "anthropic" && providers.AnthropicKey == "") || (spec.Provider == "baseten" && providers.BasetenKey == "") {
 		fmt.Fprintf(os.Stderr, "set the %s key (ANTHROPIC_API_KEY / LLM_API_KEY; never commit it, never paste it in chat)\n", spec.Provider)
 		os.Exit(1)
+	}
+	if *routing {
+		os.Exit(runRouting(spec, providers, *delay/4))
 	}
 	if *playbooks {
 		os.Exit(runPlaybooks(*dCases, spec, providers, *runs, *group, *verbose, *jsonOut, *parallel, *delay, timeout, *webLive))

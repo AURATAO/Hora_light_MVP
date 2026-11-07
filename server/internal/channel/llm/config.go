@@ -13,11 +13,15 @@ import (
 //
 //	LLM_AGENT_MODEL  Propose (the requester agent)          default anthropic:claude-sonnet-5-5
 //	LLM_PARSE_MODEL  ParseTask and SplitErrands             default anthropic:claude-sonnet-5-5
-//	LLM_SMALL_MODEL  NeedsPurchase, Classify, ClassifyInContext  default baseten:zai-org/GLM-5.3-Flash
+//	LLM_SMALL_MODEL  NeedsPurchase, Classify, ClassifyInContext, ReadsAsQuestion  default anthropic:claude-sonnet-5-5
 //
 // Each value is "anthropic:<model>" or "baseten:<model>". An Anthropic step
 // falls back, call by call, to the Baseten model (LLM_MODEL, default
-// zai-org/GLM-5.3-Flash) when Anthropic errors or times out.
+// zai-org/GLM-5.3-Flash) when Anthropic errors or times out. GLM is that
+// fallback only: no step defaults to it, because every step that reads
+// what a message means (classify, in context, the parse) decides on the
+// configured model (2026-11-07: GLM's "new_task" turned searches into
+// errands).
 type Steps struct {
 	Agent, Parse, Small *Model
 }
@@ -116,6 +120,6 @@ func StepsFromEnv(p Providers, warn func(string)) Steps {
 	return Steps{
 		Agent: p.Step(get("LLM_AGENT_MODEL", "anthropic:"+DefaultAnthropicModel), warn),
 		Parse: p.Step(get("LLM_PARSE_MODEL", "anthropic:"+DefaultAnthropicModel), warn),
-		Small: p.Step(get("LLM_SMALL_MODEL", "baseten:"+DefaultBasetenModel), warn),
+		Small: p.Step(get("LLM_SMALL_MODEL", "anthropic:"+DefaultAnthropicModel), warn),
 	}
 }

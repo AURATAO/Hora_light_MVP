@@ -290,13 +290,13 @@ func TestStepsFromEnv(t *testing.T) {
 	p := Providers{AnthropicKey: "a", BasetenKey: "b", BasetenModel: DefaultBasetenModel, BasetenBaseURL: DefaultBasetenBaseURL}
 	s := StepsFromEnv(p, warn)
 	if s.Agent.Name() != "anthropic:claude-sonnet-5-5 (fallback baseten:zai-org/GLM-5.3-Flash)" ||
-		s.Parse.Name() != s.Agent.Name() || s.Small.Name() != "baseten:zai-org/GLM-5.3-Flash" || len(warned) != 0 {
+		s.Parse.Name() != s.Agent.Name() || s.Small.Name() != s.Agent.Name() || len(warned) != 0 {
 		t.Fatalf("defaults: %s / %s / %s %v", s.Agent.Name(), s.Parse.Name(), s.Small.Name(), warned)
 	}
 	t.Setenv("LLM_AGENT_MODEL", "anthropic:claude-opus-5-5")
 	t.Setenv("LLM_SMALL_MODEL", "openai:gpt") // malformed: default kept, said so
 	s = StepsFromEnv(p, warn)
-	if s.Agent.Name() != "anthropic:claude-opus-5-5 (fallback baseten:zai-org/GLM-5.3-Flash)" || s.Small.Name() != "baseten:zai-org/GLM-5.3-Flash" || len(warned) != 1 {
+	if s.Agent.Name() != "anthropic:claude-opus-5-5 (fallback baseten:zai-org/GLM-5.3-Flash)" || s.Small.Name() != "anthropic:claude-sonnet-5-5 (fallback baseten:zai-org/GLM-5.3-Flash)" || len(warned) != 1 {
 		t.Fatalf("override: %s / %s %v", s.Agent.Name(), s.Small.Name(), warned)
 	}
 	warned = nil

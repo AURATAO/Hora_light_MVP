@@ -32,7 +32,7 @@ var (
 		`but|and|then|anyway|anyways|after all|for now|right now|now|today|anymore|any more|either|at all|all|in the end|` +
 		`i'?m good|all good|it'?s fine|that'?s fine|it'?s ok(?:ay)?|that'?s ok(?:ay)?)`
 	// withdrawObject: what is being taken back — the draft, however named.
-	withdrawObject = `(?:(?:the|this|that|my|your|a)\s+)?(?:it|that|this|them|one|this one|that one|thing|task|errand|booking|order|request|job|help|service|pickup|delivery|ride|supporter|someone|anyone|anything|you)`
+	withdrawObject = `(?:(?:the|this|that|my|your|a)\s+)?(?:it|that|this|them|one|this one|that one|thing|task|errand|draft|drafts|booking|order|request|job|help|service|pickup|delivery|ride|supporter|someone|anyone|anything|you)`
 	// withdrawCore: the withdrawal itself.
 	withdrawCore = `(?:` +
 		`never ?mind|nvm|forget (?:about )?(?:it|that|this|the whole thing|everything|` + withdrawObject + `)|forget it|` +

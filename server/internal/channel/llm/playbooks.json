@@ -221,6 +221,13 @@
     "still have",
     "sold out"
    ],
+   "unless": [
+    "open (?:until|till|til|now|late|tonight|past|after|at)",
+    "(?:opening |business )?hours",
+    "still open",
+    "closes?",
+    "closing"
+   ],
    "typical_questions": [
     "is there a line right now?",
     "do they still have the cronut?",

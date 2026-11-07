@@ -6,7 +6,7 @@ package main
 // playbooks.json, evals[] of each entry). Every case runs through the
 // PRODUCTION code:
 //
-//   - discover: llm.PlaceDiscovery (prompt d0.4) reads a message with the
+//   - discover: llm.PlaceDiscovery (prompt d0.5) reads a message with the
 //     options open; graded on action / topic / choice / playbook.
 //   - answer: channel.BuildAnswer — the reply the person would get — with
 //     llm.PlaceAnswerer (real Sonnet) on fixture facts (eval_places), and

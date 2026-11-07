@@ -105,10 +105,13 @@ func TestSplitterFailureStillDrafts(t *testing.T) {
 	}
 }
 
+// Refused before any errand is parsed: the one parse is the whole
+// message's, started alongside the split (the draft's latency), unused.
 func TestTooManyErrandsIsRefusedBeforeParsing(t *testing.T) {
 	g := multiRig(t)
-	got := g.say(t, strings.Repeat("pick up my laundry and then ", llm.MaxErrands)+"get groceries")
-	if !strings.Contains(got, "more than I can book in one go") || len(g.parser.sources) != 0 || g.state() != StateIdle {
+	msg := strings.Repeat("pick up my laundry and then ", llm.MaxErrands) + "get groceries"
+	got := g.say(t, msg)
+	if !strings.Contains(got, "more than I can book in one go") || len(g.parser.sources) > 1 || (len(g.parser.sources) == 1 && g.parser.sources[0] != msg) || g.state() != StateIdle {
 		t.Fatalf("%q parsed %d state %s", got, len(g.parser.sources), g.state())
 	}
 }

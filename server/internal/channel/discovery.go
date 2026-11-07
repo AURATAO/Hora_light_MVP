@@ -40,6 +40,9 @@ import (
 // ChosenPlace is a place picked from a discovery answer, as attached to the
 // draft: Google's name and full address at the time of the choice.
 type ChosenPlace struct {
+	// ID: Google's place id (ids may be kept — Google's policy), so a
+	// question about the draft's place is answered from its own data.
+	ID      string `json:"id,omitempty"`
 	Name    string `json:"name"`
 	Address string `json:"address"`
 }
@@ -221,7 +224,20 @@ func outOfScopeCopy(reason string) string {
 // reading by rule (a model or Places failure then gets CopySearchDown, not
 // the generic answer). Weaker wordings reach discovery through the
 // classifier's "question".
-var discoveryRE = regexp.MustCompile(`(?i)\b(?:where (?:can|could|do|should|would) (?:i|we|you|someone|somebody)|where(?:'s| is) (?:the |a )?(?:nearest|closest|best|good)|find (?:me |us )?(?:a|an|some|the)|(?:any|a) good .{1,30} (?:near|around|in)|nearest|closest|near me|nearby|around here|open (?:now|late|till|until|at|tonight|24)|still open|24 ?(?:hours?|hr|/7)|recommend|suggest(?:ion)?|plan (?:my|a|the|some)|in one trip|on (?:the|one) route|best route|does .{1,40} (?:still )?(?:have|carry|sell)|how long is the line|how busy is|line at|(?:go |someone to |send someone to )check (?:if|whether|on|the)|drop (?:off )?(?:an?|my) (?:amazon |ups |fedex )?return)\b|附近|哪裡可以|哪里可以`)
+var discoveryRE = regexp.MustCompile(`(?i)\b(?:where (?:can|could|do|should|would) (?:i|we|you|someone|somebody)|where(?:'s| is) (?:the |a )?(?:nearest|closest|best|good)|find (?:me |us )?(?:a|an|some|the)|` + searchAskRE + `|(?:any|a) good .{1,30} (?:near|around|in)|nearest|closest|near me|nearby|around here|open (?:now|late|till|until|at|tonight|past|after|24)|still open|24 ?(?:hours?|hr|/7)|recommend\w*|suggest(?:ion)?s?|plan (?:my|a|the|some)|in one trip|on (?:the|one) route|best route|does .{1,40} (?:still )?(?:have|carry|sell)|how long is the line|how busy is|(?:is there|any|how long|how bad|how busy)[^.?!\n]{0,12} line (?:at|for|outside)|(?:go |someone to |send someone to )check (?:if|whether|on|the)|(?:where|how) (?:can|do|should|could) (?:i|we) drop (?:off )?(?:an?|my|this) (?:amazon |ups |fedex )?return)\b|附近|哪裡可以|哪里可以`)
+
+// searchAskRE: asking HO:RA to look places up (production 2026-11-07:
+// "Hi can you help me to find pizzeria around 250 Mercer street?" and
+// "…find pizzeria around soho" have no article after "find" and were
+// drafted as errands). Shared by the idle rule and the with-a-draft rule.
+const searchAskRE = `help (?:me |us )?(?:to )?(?:find|look for|locate|search for)|(?:can|could|would|will) you (?:please |pls )?(?:find|look for|locate|search for|look up)|` +
+	`find (?:me |us )?(?:a |an |some |any |good |nice )?(?:[\pL'&-]+ )?[\pL'&-]+ (?:near|around|close to|open)|` +
+	`find (?:me |us )?(?:a|an|some|any|good|nice) [\pL'&-]+(?: [\pL'&-]+)? in|` +
+	`(?:i'?m |we'?re |i am |we are )?looking for (?:a|an|some|good|the best|any|places?|somewhere)|` +
+	`(?:do you |you )?know (?:of )?(?:any|a|some) (?:good|nice|decent|great|cheap|place|places|spot|spots)|` +
+	`what(?:'s| is| are) (?:near|around|close to|nearby|open)|` +
+	`is there (?:a|an|any|the|some) [\pL' &-]{2,40}? (?:open|near|nearby|around|close)|` +
+	`best [\pL' &-]{2,30}? (?:near|around|in)`
 
 // LooksLikeDiscovery: the words ask HO:RA to find, plan or check.
 func LooksLikeDiscovery(text string) bool { return discoveryRE.MatchString(text) }
@@ -480,10 +496,24 @@ func (r *Router) routeDiscoveryWhileDraft(ctx context.Context, in Inbound, id Id
 // clearSearchRE: words that can only be a search, even with a booking open.
 // Narrower than discoveryRE: "make it 4pm", "near the door", "where do I
 // meet him" never match.
-var clearSearchRE = regexp.MustCompile(`(?i)\b(?:find (?:me |us )?(?:a|an|some|another|places?|somewhere)\b|where (?:can|could|should) (?:i|we) (?:get|buy|find|drop|mail|ship|print|fix|copy|return|take)\b|any (?:good |decent )?[\pL' &-]{2,30}? (?:near|around|nearby|open)\b|is there (?:a|an|any) [\pL' &-]{2,40}? (?:open|near|nearby|around)\b)`)
+var clearSearchRE = regexp.MustCompile(`(?i)\b(?:find (?:me |us )?(?:a|an|some|another|places?|somewhere)\b|where (?:can|could|should) (?:i|we) (?:get|buy|find|drop|mail|ship|print|fix|copy|return|take)\b|any (?:good |decent )?[\pL' &-]{2,30}? (?:near|around|nearby|open)\b|` + searchAskRE + `|open (?:until|till|past|after|late|now|tonight)\b)`)
 
 // IsClearSearch: the words only ask to find a place.
 func IsClearSearch(text string) bool { return clearSearchRE.MatchString(text) }
+
+// clearErrandRE: words that ask a supporter to do something (2026-11-07):
+// pick up, buy and bring, deliver, drop off, wait in line, get me … from ….
+// The errand fast path: matched (and not a search), the message is drafted
+// without asking the classifier.
+var clearErrandRE = regexp.MustCompile(`(?i)^\W*(?:(?:hi|hey|hello|ok|okay|so|please|pls)\W+)*(?:(?:can|could|would|will) (?:you|someone|somebody|a supporter) (?:please |pls )?|(?:i|we) (?:need|want|would like) (?:you |someone |somebody |a supporter )?(?:to )?|(?:i'?d|we'?d) like (?:you |someone )?to |need (?:someone )?to |please |pls )?` +
+	`(?:pick (?:up|\S+ up)|pickup|buy (?:and|&) (?:bring|deliver)|bring me|deliver|drop (?:off|\S+ off)|wait in (?:the )?line|stand in (?:the )?line|queue (?:up )?(?:at|for)|` +
+	`(?:get|grab|buy) (?:me |us )?[^.?!\n]{1,40}? (?:from|at) |run to|go to [^.?!\n]{1,40}? (?:and|to) (?:get|buy|pick))`)
+
+// IsClearErrand: the words ask a supporter to do something, and are not a
+// search. Rule only; anything else is the classifier's to read.
+func IsClearErrand(text string) bool {
+	return clearErrandRE.MatchString(text) && !LooksLikeDiscovery(text)
+}
 
 // ── several errands, no places ──────────────────────────────────────────
 
@@ -604,9 +634,20 @@ func (r *Router) saveOffer(ctx context.Context, id Identity, o *DiscoveryOffer) 
 // and an answer that is not a search's (a pick, the usual, not discovery)
 // is left to the draft.
 func (r *Router) discover(ctx context.Context, in Inbound, id Identity, conv Conversation, text string, offer *DiscoveryOffer, strong, draftOpen bool) (bool, error) {
+	tail := ""
+	if draftOpen {
+		tail = CopyBookingStillWaiting
+	}
+	return r.discoverTail(ctx, in, id, conv, text, offer, strong, draftOpen, tail)
+}
+
+// discoverTail is discover with the line every reply ends on while a draft
+// is open: "Your earlier booking is still waiting", or the draft's own
+// question again (answers.go, a question asked back).
+func (r *Router) discoverTail(ctx context.Context, in Inbound, id Identity, conv Conversation, text string, offer *DiscoveryOffer, strong, draftOpen bool, tail string) (bool, error) {
 	reply := func(s string) error {
-		if draftOpen {
-			s += "\n\n" + CopyBookingStillWaiting
+		if tail != "" {
+			s += "\n\n" + tail
 		}
 		return r.Reply(ctx, in, s, "")
 	}
@@ -940,7 +981,7 @@ func (r *Router) chooseOptionWith(ctx context.Context, in Inbound, id Identity, 
 			r.saveOffer(ctx, id, nil)
 			return r.Reply(ctx, in, CopyOutOfArea, "")
 		}
-		chosen = append(chosen, ChosenPlace{Name: p.Name, Address: firstNonEmpty(p.FullAddress, p.Address)})
+		chosen = append(chosen, ChosenPlace{ID: pid, Name: p.Name, Address: firstNonEmpty(p.FullAddress, p.Address)})
 	}
 	if len(chosen) == 0 {
 		return r.Reply(ctx, in, CopyPlaceLookupDown, "")

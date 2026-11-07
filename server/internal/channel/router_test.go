@@ -529,6 +529,7 @@ func (m *memConversations) HandOffWhilePosting(_ context.Context, iid string) (b
 }
 
 type fakeParser struct {
+	mu      sync.Mutex
 	draft   llm.TaskDraft
 	err     error
 	sources []string
@@ -538,6 +539,8 @@ type fakeParser struct {
 }
 
 func (f *fakeParser) ParseTask(_ context.Context, _ string, text string) (llm.TaskDraft, llm.Usage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.sources = append(f.sources, text)
 	if f.byText != nil {
 		d, ok := f.byText[text]

@@ -56,8 +56,10 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		Splitter:      steps.Parse,
 		Classifier:    steps.Small,
 		InContext:     steps.Small,
-		Booker:        &chatBooker{sqlDB: sqlDB, model: steps.Small},
-		Purchases:     steps.Small,
+		// An answer to a draft's question, or a question asked back.
+		QuestionReader: steps.Small,
+		Booker:         &chatBooker{sqlDB: sqlDB, model: steps.Small},
+		Purchases:      steps.Small,
 		// The over-run window the summary states is the billing config's
 		// own value (S-11/5: the YES is to the real exposure).
 		AutoExtendMinutes: Billing.AutoExtendMinutes,

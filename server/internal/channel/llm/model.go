@@ -93,6 +93,14 @@ func (m *Model) Classify(ctx context.Context, text string) (Intent, error) {
 	return classify(ctx, m.provider(), text)
 }
 
+func (m *Model) ClassifyDetail(ctx context.Context, text string) (Classification, error) {
+	return classifyDetail(ctx, m.provider(), text)
+}
+
+func (m *Model) ReadsAsQuestion(ctx context.Context, asked, reply string) (bool, error) {
+	return readsAsQuestion(ctx, m.provider(), asked, reply)
+}
+
 func (m *Model) ClassifyInContext(ctx context.Context, text string, c Context) (Intent, error) {
 	return classifyInContext(ctx, m.provider(), text, c)
 }
