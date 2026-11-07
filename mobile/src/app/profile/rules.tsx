@@ -16,7 +16,7 @@ export default function SupporterRulesScreen() {
         hitSlop={8}
         accessibilityRole="button"
         accessibilityLabel="Back"
-        className="mb-4 mt-2 min-h-11 flex-row items-center"
+        className="mb-4 mt-2 min-h-[44px] flex-row items-center"
       >
         <ChevronLeft color={color.ink} size={20} strokeWidth={size.iconStroke} />
         <Text className="text-body text-ink">Back</Text>
@@ -30,8 +30,12 @@ export default function SupporterRulesScreen() {
       <Text className="mt-6 text-caption text-muted">
         To report someone, use the ⋯ menu on the task or in the chat. In an emergency, call 911.
       </Text>
-      <PressableScale onPress={() => Linking.openURL("tel:911")} hitSlop={8} className="mt-2 min-h-11 justify-center">
-        <Text className="text-caption font-semibold text-danger">Call 911</Text>
+      <PressableScale
+        onPress={() => Linking.openURL("tel:911").catch(() => {})}
+        hitSlop={8}
+        className="mt-2 min-h-[44px] justify-center"
+      >
+        <Text className="text-caption font-semibold text-brand">Call 911</Text>
       </PressableScale>
     </Screen>
   );

@@ -308,6 +308,9 @@ export function cancelGraceCountdown(
  */
 export function extensionAskLabel(request?: ExtensionRecord | null): string {
   if (!request) return "";
+  // An item question asks for no money and no time; its reason_label says
+  // what was swapped ("Out of oat milk… Alternative: …").
+  if (request.kind === "item") return "Out-of-stock item";
   if (request.kind === "budget") {
     return `${formatCost(request.requested_cents ?? 0)} more budget`;
   }

@@ -192,7 +192,11 @@ func DecideApproval(f ApprovalFacts) ApprovalVerdict {
 func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
 	// An item question (kind=item) is answered 1 or 2 and nothing else;
 	// every other armed question keeps YES/NO (DecideItemChoice).
-	item, isItem := r.armedItem(ctx, id, conv)
+	item, isItem, lookupFailed := r.armedItem(ctx, id, conv)
+	if lookupFailed {
+		// Which kind of question is armed is unknown: decide nothing.
+		return r.Reply(ctx, in, CopyApprovalTryAgain, "")
+	}
 	reask := approvalReask(conv)
 	if isItem {
 		reask = itemReask(conv, item)
@@ -321,9 +325,9 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 		if isItem {
 			who := firstNonEmpty(r.supporterFirstName(ctx, id, conv.ApprovalTaskID), "Your supporter")
 			if approve {
-				reply = fmt.Sprintf(CopyItemChoseAlternative, who, item.Alternative)
+				reply = fmt.Sprintf(CopyItemChoseAlternative, who, inlineText(item.Alternative, 80))
 			} else {
-				reply = fmt.Sprintf(CopyItemChoseSkip, who, item.Item)
+				reply = fmt.Sprintf(CopyItemChoseSkip, who, inlineText(item.Item, 80))
 			}
 			break
 		}
@@ -333,10 +337,12 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 			reply = fmt.Sprintf(CopyDeclined, res.Ask)
 		}
 	case ExtAlready:
-		switch res.Status {
-		case "expired":
+		switch {
+		case isItem && res.Status == "expired":
+			reply = CopyItemExpired
+		case res.Status == "expired":
 			reply = CopyApprovalExpired
-		case "approved", "denied":
+		case res.Status == "approved" || res.Status == "denied":
 			reply = fmt.Sprintf(CopyApprovalAlready, res.Status)
 		default:
 			reply = CopyApprovalGone

@@ -72,7 +72,7 @@ export default function TaskAreas() {
         hitSlop={8}
         accessibilityRole="button"
         accessibilityLabel="Back"
-        className="mb-4 mt-2 min-h-11 flex-row items-center"
+        className="mb-4 mt-2 min-h-[44px] flex-row items-center"
       >
         <ChevronLeft color={color.ink} size={20} strokeWidth={size.iconStroke} />
         <Text className="text-body text-ink">Back</Text>

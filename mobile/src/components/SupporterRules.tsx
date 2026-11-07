@@ -39,7 +39,7 @@ export function SupporterRules() {
             <r.icon color={color.ink} size={18} strokeWidth={size.iconStroke} />
             <View className="flex-1">
               <Text className="text-body font-semibold text-ink">{r.title}</Text>
-              <Text className="mt-0.5 text-caption text-muted">{r.body}</Text>
+              <Text className="mt-1 text-caption text-muted">{r.body}</Text>
             </View>
           </View>
         ))}

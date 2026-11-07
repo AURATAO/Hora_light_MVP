@@ -189,7 +189,7 @@
         "expo-image-picker",
         {
           "photosPermission": "HO:RA uses your photo library when you choose a profile photo, a task completion photo or a receipt photo.",
-          "cameraPermission": "HO:RA uses the camera when you take a profile photo, a task completion photo or a receipt photo.",
+          "cameraPermission": "HO:RA uses the camera when you take a profile photo, a task completion photo, a receipt photo or a photo of a substitute item for the customer.",
           "microphonePermission": "HO:RA only takes photos and never records audio, so it does not use the microphone."
         }
       ],

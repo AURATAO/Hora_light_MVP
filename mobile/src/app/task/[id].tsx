@@ -1206,7 +1206,7 @@ export default function TaskDetail() {
         </PressableScale>
         <PressableScale
           onPress={() => router.push(`/task/${id}/chat`)}
-          className="min-h-11 justify-center border-t border-line p-4"
+          className="min-h-[44px] justify-center border-t border-line p-4"
         >
           <View className="flex-row items-center gap-2">
             <MessageCircle color={color.muted} size={18} strokeWidth={size.iconStroke} />
@@ -1332,7 +1332,7 @@ export default function TaskDetail() {
                   onPress={() => openAddressInMaps(loc)}
                   accessibilityRole="link"
                   accessibilityLabel={`Open ${loc} in maps`}
-                  className="min-h-11 flex-row items-center gap-2"
+                  className="min-h-[44px] flex-row items-center gap-2"
                 >
                   <MapPin color={color.brand} size={16} strokeWidth={size.iconStroke} />
                   <Text className="flex-1 text-caption text-brand">
@@ -1347,7 +1347,7 @@ export default function TaskDetail() {
                 <PressableScale
                   onPress={() => openRouteInMaps(locations)}
                   accessibilityRole="button"
-                  className="mt-1 min-h-11 flex-row items-center gap-2 border-t border-line pt-2"
+                  className="mt-1 min-h-[44px] flex-row items-center gap-2 border-t border-line pt-2"
                 >
                   <Navigation color={color.brand} size={16} strokeWidth={size.iconStroke} />
                   <Text className="text-caption text-brand">
@@ -1367,7 +1367,7 @@ export default function TaskDetail() {
 
           <View className="flex-row items-center justify-between">
             <Text className="text-caption text-muted">Transport</Text>
-            <View className="flex-row items-center gap-1.5">
+            <View className="flex-row items-center gap-1">
               {TransportIcon ? (
                 <TransportIcon color={color.muted} size={14} strokeWidth={size.iconStroke} />
               ) : null}
@@ -1456,7 +1456,7 @@ export default function TaskDetail() {
             </PressableScale>
             <PressableScale
               onPress={() => router.push(`/task/${id}/chat`)}
-              className="min-h-11 justify-center border-t border-line p-4"
+              className="min-h-[44px] justify-center border-t border-line p-4"
             >
               <View className="flex-row items-center gap-2">
                 <MessageCircle color={color.muted} size={18} strokeWidth={size.iconStroke} />
@@ -1733,7 +1733,7 @@ export default function TaskDetail() {
               >
                 <Image
                   source={{ uri: task.completion_photo_url }}
-                  className="h-40 w-full rounded-sm"
+                  className="h-[160px] w-full rounded-sm"
                   resizeMode="cover"
                   accessibilityIgnoresInvertColors
                 />
@@ -1835,7 +1835,7 @@ export default function TaskDetail() {
                 <PressableScale
                   onPress={() => setPayoutsGate(null)}
                   hitSlop={8}
-                  className="min-h-11 justify-center"
+                  className="min-h-[44px] justify-center"
                 >
                   <Text className="text-caption font-semibold text-brand">Not now</Text>
                 </PressableScale>
@@ -1961,7 +1961,7 @@ function ApprovalCard({
         <Text className="text-caption font-semibold text-muted">Out of stock</Text>
         <Text className="text-body text-ink">{request.reason_label}</Text>
         {request.alternative_photo_url ? (
-          <Image source={{ uri: request.alternative_photo_url }} className="h-40 w-full rounded-sm" resizeMode="cover" />
+          <Image source={{ uri: request.alternative_photo_url }} className="h-[160px] w-full rounded-sm" resizeMode="cover" />
         ) : null}
         <Text className="text-caption text-muted">
           {formatCountdown(request.expires_at, nowMs)} — no answer: {supporterName} decides.
@@ -2558,7 +2558,7 @@ function SettlementCard({
       ) : null}
 
       {isRequester ? (
-        <PressableScale onPress={onReportProblem} hitSlop={8} className="min-h-11 justify-center">
+        <PressableScale onPress={onReportProblem} hitSlop={8} className="min-h-[44px] justify-center">
           <Text className="text-caption font-semibold text-brand">Report a problem</Text>
         </PressableScale>
       ) : null}

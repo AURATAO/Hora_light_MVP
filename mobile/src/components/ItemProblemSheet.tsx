@@ -186,15 +186,15 @@ export function ItemProblemSheet({
                   />
                   {photo ? (
                     <View className="flex-row items-center gap-3">
-                      <Image source={{ uri: photo.uri }} className="h-16 w-16 rounded-sm" />
+                      <Image source={{ uri: photo.uri }} className="h-[64px] w-[64px] rounded-sm" />
                       <Button label="Remove photo" variant="text" onPress={() => setPhoto(null)} />
                     </View>
                   ) : (
                     <Button label="Add a photo (optional)" variant="secondary" onPress={takePhoto} />
                   )}
                   <Text className="text-caption text-muted">
-                    They reply 1 for the alternative or 2 to skip it. No answer in {timeoutMinutes} minutes: it&apos;s your
-                    call, using what they asked for.
+                    They reply 1 for the alternative or 2 to skip it. No answer in {timeoutMinutes || 5} minutes: it&apos;s
+                    your call, using what they asked for.
                   </Text>
                 </View>
               ) : null}

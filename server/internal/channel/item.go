@@ -29,9 +29,13 @@ import (
 // itemChoiceRE: "1", "2", "1.", "2)", the keycap emoji, with spaces.
 var itemChoiceRE = regexp.MustCompile(`^\s*([12])\s*(?:\x{FE0F}?\x{20E3})?\s*[.)!]?\s*$`)
 
+// fullwidth folds the CJK fullwidth digits and punctuation a Chinese or
+// Japanese keyboard sends ("１", "２。") to ASCII.
+var fullwidth = strings.NewReplacer("\uFF11", "1", "\uFF12", "2", "\uFF0E", ".", "\u3002", ".", "\uFF09", ")", "\uFF01", "!", "\u3000", " ")
+
 // ItemChoice is 1 or 2 for a message that is exactly that answer, else 0.
 func ItemChoice(text string) int {
-	m := itemChoiceRE.FindStringSubmatch(text)
+	m := itemChoiceRE.FindStringSubmatch(fullwidth.Replace(text))
 	if m == nil {
 		return 0
 	}
@@ -126,18 +130,17 @@ func itemReask(conv Conversation, item PendingApproval) string {
 	return fmt.Sprintf(CopyItemReask, alt)
 }
 
-// armedItem is the armed question when it is an item question.
-func (r *Router) armedItem(ctx context.Context, id Identity, conv Conversation) (PendingApproval, bool) {
+// armedItem is the armed question when it is an item question. failed: the
+// kind could not be read, and the caller decides nothing (fail closed — a
+// YES must never answer "1 or 2?", and a digit must never answer YES/NO).
+func (r *Router) armedItem(ctx context.Context, id Identity, conv Conversation) (q PendingApproval, isItem, failed bool) {
 	if r.Booker == nil || conv.PendingExtensionID == "" {
-		return PendingApproval{}, false
+		return PendingApproval{}, false, false
 	}
 	q, ok, err := r.Booker.ItemQuestion(ctx, id.UserID, conv.PendingExtensionID)
 	if err != nil {
-		// Unknown kind: treated as a YES/NO question, which can only re-ask
-		// or decline — and a decline of an item question is "skip it",
-		// which spends nothing.
 		log.Printf("[channel] approval identity=%s ext=%s: item lookup: %v", id.ID, conv.PendingExtensionID, err)
-		return PendingApproval{}, false
+		return PendingApproval{}, false, true
 	}
-	return q, ok
+	return q, ok, false
 }

@@ -18,7 +18,7 @@ Walkthrough
 4. Tap "Clock in" (timer starts), wait a moment, then "Clock out".
 5. Tap "Complete task" → choose any photo from the library (or take one) as the completion photo → confirm. An itemized summary appears.
 6. Earnings tab shows the payout for the same task. My jobs lists active and finished tasks.
-7. Profile → Supporter rules shows the safety rules every supporter agrees to (also shown on the application form): decline any task if you feel unsafe; enter a home only for a specific errand with the customer or a named adult present, or with clear access instructions; never alone with minors; companionship only in public places.
+7. Profile → Supporter rules shows the safety rules for supporters (also shown on the application form before applying): decline any task if you feel unsafe; enter a home only for a specific errand with the customer or a named adult present, or with clear access instructions; never alone with minors; companionship only in public places.
 8. From the task or the chat, the "⋯" menu offers Report user / Block user (Guideline 1.2).
 9. Account deletion is available in-app under Profile (Guideline 5.1.1(v)).
 

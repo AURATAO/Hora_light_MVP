@@ -2,6 +2,7 @@ package channel
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -129,5 +130,23 @@ func TestDigitsDoNotAnswerAYesNoQuestion(t *testing.T) {
 	g.say(t, "1")
 	if len(g.booker.resolved) != 0 {
 		t.Fatalf("a digit answered a YES/NO question: %v", g.booker.resolved)
+	}
+}
+
+func TestItemChoiceFullwidth(t *testing.T) {
+	if ItemChoice("１") != 1 || ItemChoice("２。") != 2 {
+		t.Fatal("fullwidth digits not read")
+	}
+}
+
+// The armed question's kind cannot be read: nothing is decided, even a YES.
+func TestItemLookupFailureDecidesNothing(t *testing.T) {
+	g := approvalRig(t)
+	askItem(t, g)
+	g.booker.mu.Lock()
+	g.booker.itemErr = errors.New("db down")
+	g.booker.mu.Unlock()
+	if reply := g.say(t, "yes"); reply != CopyApprovalTryAgain || len(g.booker.resolved) != 0 {
+		t.Fatalf("%q %v", reply, g.booker.resolved)
 	}
 }

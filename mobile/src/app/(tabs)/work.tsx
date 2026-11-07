@@ -4,6 +4,10 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { Briefcase, MapPin } from "lucide-react-native";
 import { AvailabilityCard } from "../../components/AvailabilityCard";
 import { askForPushInContext } from "../../lib/push";
+
+// The board asks (or re-registers a granted device) once per app session, not
+// on every focus.
+let pushAskedThisSession = false;
 import { SupporterStatusBanner } from "../../components/SupporterStatusBanner";
 import { Card, EmptyState, Screen, Skeleton } from "../../components/ui";
 import { ApiError, getAppConfig, getAvailableTasks, getProfile } from "../../lib/api";
@@ -98,7 +102,10 @@ export default function Work() {
         // The permission prompt's first moment: supporter onboarding is done
         // and this is the board the notifications are about. Never at launch,
         // asked once per device by this path (push.ts askForPushInContext).
-        askForPushInContext("supporter_ready");
+        if (!pushAskedThisSession) {
+          pushAskedThisSession = true;
+          askForPushInContext("supporter_ready");
+        }
         getAppConfig()
           .then((cfg) => setDispatchOn(cfg.dispatch === true))
           .catch(() => setDispatchOn(false));

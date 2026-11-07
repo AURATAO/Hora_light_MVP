@@ -268,8 +268,11 @@ func (b *chatBooker) ResolveExtension(ctx context.Context, userID, extensionID s
 // announcements phrase it: "15 more minutes on “Laundry pickup”".
 func (b *chatBooker) extensionAsk(ctx context.Context, e ExtensionRequest) string {
 	ask := fmt.Sprintf("%d more minutes", derefInt(e.RequestedMinutes))
-	if e.Kind == extensionKindBudget {
+	switch e.Kind {
+	case extensionKindBudget:
 		ask = formatCentsUSD(derefInt(e.RequestedCents)) + " more budget"
+	case extensionKindItem:
+		ask = e.AlternativeName + " instead of " + e.ItemName
 	}
 	var title string
 	if err := b.sqlDB.QueryRowContext(ctx,

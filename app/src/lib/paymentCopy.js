@@ -303,6 +303,7 @@ export function cancelGraceCountdown(graceEndsAt, nowMs = Date.now()) {
  */
 export function extensionAskLabel(request) {
   if (!request) return ''
+  if (request.kind === 'item') return 'Out-of-stock item'
   if (request.kind === 'budget') {
     return `${formatCents(request.requested_cents || 0)} more budget`
   }

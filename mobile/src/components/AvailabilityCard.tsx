@@ -117,7 +117,7 @@ export function AvailabilityCard() {
             <Text className="text-body font-semibold text-ink">
               {onTask ? "You're on a task" : on ? "You're available" : "Get task offers"}
             </Text>
-            <Text className="mt-0.5 text-caption text-muted">
+            <Text className="mt-1 text-caption text-muted">
               {onTask
                 ? "Offers that clash with it are paused. You'll get them again when it's done."
                 : on
@@ -128,7 +128,7 @@ export function AvailabilityCard() {
               <PressableScale
                 onPress={() => router.push(`/task/${onTask}`)}
                 hitSlop={8}
-                className="mt-2 min-h-11 justify-center"
+                className="mt-2 min-h-[44px] justify-center"
               >
                 <Text className="text-caption font-semibold text-brand">Open task</Text>
               </PressableScale>
@@ -136,7 +136,7 @@ export function AvailabilityCard() {
             <PressableScale
               onPress={() => router.push("/profile/areas")}
               hitSlop={8}
-              className="mt-2 min-h-11 flex-row items-center gap-1.5"
+              className="mt-2 min-h-[44px] flex-row items-center gap-1"
             >
               <MapPin color={color.brand} size={14} strokeWidth={size.iconStroke} />
               <Text className="flex-1 text-caption font-semibold text-brand" numberOfLines={1}>
@@ -157,7 +157,7 @@ export function AvailabilityCard() {
       </View>
 
       {pushBlocked ? (
-        <PressableScale onPress={() => Linking.openSettings()} hitSlop={8} className="mt-2 min-h-11 justify-center">
+        <PressableScale onPress={() => Linking.openSettings()} hitSlop={8} className="mt-2 min-h-[44px] justify-center">
           <Text className="text-caption text-danger">
             Notifications are off, so offers can't reach you. Turn them on in Settings.
           </Text>

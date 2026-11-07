@@ -321,7 +321,7 @@ func TestRelayDuringPendingApprovalIsDisambiguated(t *testing.T) {
 	if err := g.r.RelayToChat(context.Background(), "user-1", "task-1", "Maya", "Laundry pickup", "ok if I take 15 more?", ""); err != nil {
 		t.Fatal(err)
 	}
-	if got := g.ad.last(); !strings.Contains(got, "To answer me about Maya’s request, send YES or NO on its own") {
+	if got := g.ad.last(); !strings.Contains(got, "To answer my question about Maya’s request, send just your answer on its own") {
 		t.Fatalf("%q", got)
 	}
 }

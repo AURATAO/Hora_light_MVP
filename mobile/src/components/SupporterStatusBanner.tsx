@@ -74,7 +74,7 @@ export function SupporterStatusBanner({ status, onApply }: SupporterStatusBanner
       <Button label="Apply now" onPress={onApply} />
       {/* The app is for supporters only now (PLAN §13b-3). Somebody who used
           it to book help lands here; tell them where booking went. */}
-      <PressableScale onPress={openBookingSite} hitSlop={8} className="min-h-11 items-center justify-center">
+      <PressableScale onPress={openBookingSite} hitSlop={8} className="min-h-[44px] items-center justify-center">
         <Text className="text-caption font-semibold text-brand">Looking to book help? Go to horaapp.co</Text>
       </PressableScale>
     </View>

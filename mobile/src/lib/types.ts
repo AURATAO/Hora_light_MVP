@@ -402,7 +402,7 @@ export interface TimeCapState {
  */
 export interface ExtensionRecord {
   id: string;
-  kind: "budget" | "time";
+  kind: "budget" | "time" | "item";
   requested_cents?: number | null;
   requested_minutes?: number | null;
   reason_label?: string;

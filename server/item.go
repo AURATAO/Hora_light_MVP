@@ -32,6 +32,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"unicode"
 
 	"github.com/gin-gonic/gin"
 
@@ -68,8 +69,8 @@ func reportItemProblem(c *gin.Context) {
 	defer span.End()
 	span.Metadata(map[string]any{"hora.task_id": taskID, "hora.item_outcome": in.Outcome})
 
-	item := truncateRunes(strings.Join(strings.Fields(in.ItemName), " "), maxItemNameLength)
-	store := truncateRunes(strings.Join(strings.Fields(in.StoreName), " "), maxStoreLength)
+	item := cleanItemText(in.ItemName, maxItemNameLength)
+	store := cleanItemText(in.StoreName, maxStoreLength)
 	if item == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "item_required", "message": "Say which item is out of stock."})
 		return
@@ -115,7 +116,7 @@ func reportItemProblem(c *gin.Context) {
 		return
 	}
 
-	alt := truncateRunes(strings.Join(strings.Fields(in.AlternativeName), " "), maxItemNameLength)
+	alt := cleanItemText(in.AlternativeName, maxItemNameLength)
 	if alt == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "alternative_required", "message": "Name the alternative you found."})
 		return
@@ -155,6 +156,20 @@ func reportItemProblem(c *gin.Context) {
 		AlternativePhotoURL: photo,
 	})
 	span.Output(fmt.Sprintf("status %d", c.Writer.Status()))
+}
+
+// cleanItemText is a supporter's free text made fit for sentences HO:RA sends
+// in its own voice (push, email, text): one line, printable characters only,
+// no quotation marks or angle brackets, capped. Cleaned once, at intake, so
+// every later message reads the same safe value.
+func cleanItemText(s string, max int) string {
+	var b strings.Builder
+	for _, r := range strings.Join(strings.Fields(s), " ") {
+		if unicode.IsPrint(r) && !strings.ContainsRune("\"\u201c\u201d<>", r) {
+			b.WriteRune(r)
+		}
+	}
+	return truncateRunes(strings.TrimSpace(b.String()), max)
 }
 
 func approvedBudgetCents(ctx context.Context, taskID string) (int, error) {
