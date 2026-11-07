@@ -63,3 +63,40 @@ func (s *PGStore) TakePlacesCall(ctx context.Context, identityID, day string, pe
 	}
 	return n <= perDay, nil
 }
+
+// PlacesCallsLeft reads, without counting one, how many Places calls
+// identityID has left on day ("Looking that up…" is sent only when the
+// turn can search).
+func (s *PGStore) PlacesCallsLeft(ctx context.Context, identityID, day string, perDay int) (int, error) {
+	var n int
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT places_calls FROM channel_discovery WHERE identity_id = $1 AND places_day = $2::date`, identityID, day).Scan(&n)
+	if errors.Is(err, sql.ErrNoRows) {
+		return perDay, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("places calls left: %w", err)
+	}
+	return max(0, perDay-n), nil
+}
+
+// TakeWebSearch counts one web search (WebQuota), as TakePlacesCall does:
+// a new day starts at 1, a search over perDay is neither counted nor made.
+func (s *PGStore) TakeWebSearch(ctx context.Context, identityID, day string, perDay int) (bool, error) {
+	var n int
+	err := s.DB.QueryRowContext(ctx, `
+		INSERT INTO channel_discovery (identity_id, web_day, web_calls, updated_at) VALUES ($1, $2::date, 1, now())
+		ON CONFLICT (identity_id) DO UPDATE SET
+		  web_calls = CASE WHEN channel_discovery.web_day IS DISTINCT FROM EXCLUDED.web_day THEN 1
+		                   ELSE channel_discovery.web_calls + 1 END,
+		  web_day = EXCLUDED.web_day, updated_at = now()
+		WHERE channel_discovery.web_day IS DISTINCT FROM EXCLUDED.web_day OR channel_discovery.web_calls < $3
+		RETURNING web_calls`, identityID, day, perDay).Scan(&n)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("take web search: %w", err)
+	}
+	return n <= perDay, nil
+}

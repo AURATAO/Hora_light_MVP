@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 
@@ -271,6 +272,17 @@ type Router struct {
 	DiscoveryStore  DiscoveryStore
 	History         TaskHistory
 	DiscoveryLimits DiscoveryLimits
+	// Errand playbooks (D-25, answers.go; behind CHANNEL_PLAYBOOKS).
+	// Playbooks nil = off. Facts looks an option up again with what an
+	// answer may use; Answerer writes an answer from Google's summaries or
+	// web excerpts (checked by rule); Web searches the web (nil = off);
+	// Geocode places the customer's address for "which is closest".
+	Playbooks *llm.PlaybookSet
+	Facts     llm.FactSource
+	Answerer  llm.Answerer
+	Web       llm.WebSearcher
+	WebLimits WebLimits
+	Geocode   func(ctx context.Context, addr string) (lat, lng float64, err error)
 	// SummaryTTL: how long a booking summary stays bookable (posting.go).
 	// A YES — or the setup page finishing — after it re-quotes instead of
 	// booking. Zero = DefaultSummaryTTL (CHANNEL_SUMMARY_TTL overrides).
@@ -500,12 +512,28 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 	}
 	// A plain "yes" to "find places for these on one route?" asks to find
 	// them, a "no" drops the question (discovery.go) — never a booking.
-	if (IsYes(text) || IsNo(text)) && r.discoveryOn() {
-		if o := r.freshOffer(ctx, id); o != nil && o.Kind == offerRouteAsk {
+	// With options shown: a "yes" to "Want me to set that up at …?" starts
+	// that option's draft (its summary still asks YES before any booking);
+	// "no" / "never mind" drops the options.
+	if (IsYes(text) || IsNo(text) || IsDraftDecline(text)) && r.discoveryOn() {
+		if o := r.freshOffer(ctx, id); o != nil {
 			at := time.Unix(o.AtUnix, 0)
 			if !r.supporterSpokeSince(ctx, in, id, &at) {
-				if handled, err := r.answerRouteAsk(ctx, in, id, conv, text, o); handled {
-					return err
+				switch {
+				case o.Kind == offerRouteAsk && (IsYes(text) || IsNo(text)):
+					if handled, err := r.answerRouteAsk(ctx, in, id, conv, text, o); handled {
+						return err
+					}
+				case o.Kind == offerOptions && IsYes(text) && o.Suggest > 0 && o.Suggest <= len(o.Options) && (len(o.SuggestItems) > 0 || o.SuggestCheck):
+					// "Want your supporter to get a Margherita…?" (answers.go)
+					return r.chooseSuggested(ctx, in, id, conv, o)
+				case o.Kind == offerOptions && IsYes(text) && o.Suggest > 0 && o.Suggest <= len(o.Options):
+					return r.chooseOption(ctx, in, id, conv, o, o.Suggest, o.SuggestWords)
+				case o.Kind == offerOptions && (IsNo(text) || IsDraftDecline(text)) && !IsYes(text):
+					// Dropped; the words then go on as before (a supporter
+					// who asked something still gets the "no").
+					r.saveOffer(ctx, id, nil)
+					log.Printf("[channel] discovery options dropped identity=%s", id.ID)
 				}
 			}
 		}
@@ -525,7 +553,8 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 	}
 	// "The usual", a pick from places just shown, or where to look: ours,
 	// unless a supporter has written since (discovery.go).
-	if handled, err := r.routeDiscoveryFirst(ctx, in, id, conv, text); handled {
+	handled, tried, err := r.routeDiscoveryFirst(ctx, in, id, conv, text)
+	if handled {
 		return err
 	}
 	// With a supporter on the job, the thread's context decides (D-17).
@@ -537,11 +566,23 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 	if handled, err := r.askRoute(ctx, in, id, text); handled {
 		return err
 	}
+	// "Where can I get…", "recommend me a pizzeria": a search by rule goes
+	// to discovery before the classifier (production 2026-11-06: 3.7 s of
+	// classifying before a search); not discovery after all, it is
+	// classified as before.
+	if !tried && r.discoveryOn() && LooksLikeDiscovery(text) {
+		tried = true
+		if handled, err := r.discover(ctx, in, id, conv, text, r.freshOffer(ctx, id), true, false); handled {
+			return err
+		}
+	}
 	intent := r.classify(ctx, text)
-	// "Where can I get…", "pharmacy open now", a follow-up to places just
-	// shown: place discovery, which answers or leaves it to the switch.
-	if handled, err := r.routeDiscovery(ctx, in, id, conv, text, intent); handled {
-		return err
+	// A question, or a follow-up to places just shown: place discovery,
+	// which answers or leaves it to the switch.
+	if !tried {
+		if handled, err := r.routeDiscovery(ctx, in, id, conv, text, intent); handled {
+			return err
+		}
 	}
 	switch intent {
 	case llm.IntentNewTask:
@@ -599,11 +640,16 @@ type draftOpts struct {
 	// Both are kept on the draft and re-applied on every re-draft.
 	places []ChosenPlace
 	check  bool
+	// notes: words for the supporter added to the draft's notes (a
+	// question asked with a pick — discovery.go).
+	notes []string
 	// prebuilt: the errand is already a draft (the usual — discovery.go):
 	// not parsed, priced and checked like any other. intro: said once
 	// before its first question.
 	prebuilt *llm.TaskDraft
 	intro    string
+	// playbook: the errand type discovery recognised (D-25), "" none.
+	playbook string
 }
 
 // startDraftOpts parses the request, prices it and moves to the name or
@@ -642,6 +688,10 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		return r.Reply(ctx, in, fmt.Sprintf(CopyTooManyErrands, llm.MaxErrands), "")
 	}
 	prompt := r.Prompt(r.now().In(r.loc()))
+	pb := r.draftPlaybook(o, conv.Pending, source)
+	if len(errands) > 1 {
+		pb = nil // several errands: no one type's questions
+	}
 	var items []DraftItem
 	var unparsed []string
 	// A correction re-drafts from everything said; a budget the person
@@ -684,6 +734,7 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		if len(o.places) > 0 {
 			applyPlaces(&draft, o.places, o.check, namesDuration(source))
 		}
+		applyPlaybookNotes(&draft, pb)
 		if len(errands) == 1 && o.prebuilt == nil {
 			// The newest line that is only a duration ("15 mins", "ASAP 15
 			// mins", "make it 45 minutes") sets it, whatever the model read
@@ -773,6 +824,20 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		p.Notes = conv.Pending.Notes
 		p.WhileActive, p.WhileActiveShown = conv.Pending.WhileActive, conv.Pending.WhileActiveShown
 	}
+	for _, n := range o.notes {
+		if n = strings.TrimSpace(n); n != "" && len(p.Notes) < MaxNotes {
+			if utf8.RuneCountInString(n) > maxNoteRunes {
+				n = string([]rune(n)[:maxNoteRunes]) + "…"
+			}
+			p.Notes = append(p.Notes, n)
+		}
+	}
+	if pb != nil {
+		p.Playbook = pb.ID
+		if prev := conv.Pending; prev != nil && prev.Playbook == pb.ID {
+			p.PlaybookAsked = prev.PlaybookAsked
+		}
+	}
 	p.SetItems(items)
 	p.AreaStops = areaStops
 	unclear := area.Outcome == AreaUnclear || area.Outcome == AreaWhichBorough
@@ -828,6 +893,27 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 			return err
 		}
 		return r.Reply(ctx, in, lead+detailsQuestion(p), "")
+	}
+	if pb != nil && !p.PlaybookAsked {
+		// The type's questions, once per draft, before the summary
+		// (playbooks.json asks): only the ones the words have not answered.
+		words := source + "\n" + strings.Join(p.Notes, "\n")
+		if asks := pb.AsksFor(words); len(asks) > 0 {
+			p.PlaybookAsked = true
+			for _, a := range asks {
+				p.PlaybookAsk = append(p.PlaybookAsk, a.Key)
+			}
+			conv.State = StateAwaitingConfirm
+			lead := r.leadIn(p)
+			if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+				return fmt.Errorf("startDraft: %w", err)
+			}
+			if done, err := r.preempted(ctx, in, conv.IdentityID, p); done {
+				return err
+			}
+			log.Printf("[channel] draft identity=%s: playbook %s asks %v", id.ID, pb.ID, p.PlaybookAsk)
+			return r.Reply(ctx, in, lead+playbookAsksText(asks), "")
+		}
 	}
 	if !id.Linked() && conv.PendingName == "" {
 		conv.State = StateAwaitingName
@@ -1028,6 +1114,10 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 		}
 		return r.onIdle(ctx, in, id, conv, text)
 	}
+	if len(conv.Pending.PlaybookAsk) > 0 {
+		// The answer to the type's questions (answers.go).
+		return r.answerPlaybookAsk(ctx, in, id, conv, text)
+	}
 	if conv.Pending.DetailsAsked {
 		switch {
 		case IsNo(text) || IsDraftDecline(text):
@@ -1058,6 +1148,12 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 		// re-shown so the YES that follows is to the terms they chose.
 		if conv.Pending != nil {
 			conv.Pending.NoAutoExtend = true
+		}
+		// "no extra mins, make it 4pm": both — the opt-out above, and the
+		// rest re-drafted as a correction (the opt-out carries over), so one
+		// new summary shows the change on the terms they chose.
+		if change := NoAutoExtendRest(text); change != "" {
+			return r.startDraft(ctx, in, id, conv, conv.Pending.Source+"\n"+change)
 		}
 		return r.showSummary(ctx, in, conv)
 	case !IsBookingYes(text) && IsAffirmation(text):

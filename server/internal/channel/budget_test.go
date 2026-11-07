@@ -543,3 +543,55 @@ func TestNoExtraMinsWithTheSummaryOpen(t *testing.T) {
 		t.Fatal("15 mins is fine turned the extension off")
 	}
 }
+
+// "no extra mins, make it 4pm": the extension off AND the change made — one
+// re-draft, one new summary, the opt-out kept on the new draft and in the
+// booking. No model call decides it.
+func TestNoExtraMinsAndAChange(t *testing.T) {
+	for _, s := range []string{"no extra mins, make it 4pm", "make it 4pm, no extra time", "No overtime and make it 4pm please",
+		"don't go over the estimate. make it 4pm"} {
+		g, _, _, fa := agentRig(llm.Proposal{Action: llm.ActionNote, Task: -1})
+		g.ids.link(me, "user-1")
+		g.parser.draft = cakeDraft
+		g.say(t, prodCakeErrand)
+		parses, sent := len(g.parser.sources), len(g.sentTexts())
+		got := g.say(t, s)
+		if len(g.parser.sources) != parses+1 || len(fa.calls) != 0 {
+			t.Fatalf("%q: parses %d agent %d", s, len(g.parser.sources)-parses, len(fa.calls))
+		}
+		src := g.parser.sources[len(g.parser.sources)-1]
+		if !strings.HasPrefix(src, prodCakeErrand+"\nmake it 4pm") || strings.Contains(src, "extra") || strings.Contains(strings.ToLower(src), "overtime") {
+			t.Fatalf("%q: the parser read %q", s, src)
+		}
+		if n := len(g.sentTexts()) - sent; n != 1 || !strings.Contains(got, "Reply YES") {
+			t.Fatalf("%q: %d messages, want one new summary:\n%s", s, n, got)
+		}
+		if p := g.pending(t); !p.NoAutoExtend || g.state() != StateAwaitingConfirm {
+			t.Fatalf("%q: NoAutoExtend %v state %s", s, p.NoAutoExtend, g.state())
+		}
+		if g.say(t, "YES"); g.booker.posts != 1 || g.booker.opts[0].AutoExtend {
+			t.Fatalf("%q: posts %d auto-extend %v", s, g.booker.posts, g.booker.opts)
+		}
+	}
+}
+
+func TestNoAutoExtendRest(t *testing.T) {
+	for in, want := range map[string]string{
+		"no extra mins, make it 4pm":            "make it 4pm",
+		"make it 4pm, no extra time":            "make it 4pm",
+		"no overtime and add a candle":          "add a candle",
+		"don't go over the estimate, at 5 pm":   "at 5 pm",
+		"No extra mins":                         "",
+		"no extra time, thanks":                 "",
+		"please ask me first":                   "",
+		"yes, don't go over":                    "",
+		"dont go over the estimate":             "",
+		"no extra":                              "",
+		"ok no more than the estimate please":   "",
+		"no extra minutes. 2 bags not 1 though": "2 bags not 1 though",
+	} {
+		if got := NoAutoExtendRest(in); got != want {
+			t.Errorf("NoAutoExtendRest(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

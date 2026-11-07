@@ -54,6 +54,21 @@ type DiscoveryOffer struct {
 	Options [][]string `json:"options,omitempty"`
 	Check   bool       `json:"check,omitempty"`
 	AtUnix  int64      `json:"at"`
+	// Suggest: the option an answer about the options proposed ("Want me
+	// to set that up at Nolita Pizza?"): a YES starts its draft (a summary
+	// and its own YES still come before any booking). SuggestWords go with
+	// it to the parser ("Get their most popular pizza."). 0 none.
+	Suggest      int    `json:"suggest,omitempty"`
+	SuggestWords string `json:"suggest_words,omitempty"`
+	// SuggestItems: what an answer from sources offered the supporter to
+	// get ("Margherita", "spicy vodka slice") — the person's order once they
+	// say YES; item names only, never Google's text (D-25). SuggestCheck /
+	// SuggestAsk: the offer was to go and check, or ask there.
+	SuggestItems []string `json:"suggest_items,omitempty"`
+	SuggestCheck bool     `json:"suggest_check,omitempty"`
+	SuggestAsk   string   `json:"suggest_ask,omitempty"`
+	// Playbook: the errand type discovery recognised, "" none.
+	Playbook string `json:"playbook,omitempty"`
 }
 
 const (
@@ -78,6 +93,8 @@ type DiscoveryStore interface {
 	// TakePlacesCall counts one Places search for identityID on day (New
 	// York date) and reports whether it was within perDay.
 	TakePlacesCall(ctx context.Context, identityID, day string, perDay int) (bool, error)
+	// PlacesCallsLeft reads the calls left on day without counting one.
+	PlacesCallsLeft(ctx context.Context, identityID, day string, perDay int) (int, error)
 }
 
 // PastTask is one of the person's own earlier errands (the usual).
@@ -138,27 +155,40 @@ func (r *Router) discoveryOn() bool { return r.Discovery != nil && r.DiscoverySt
 const (
 	// The attribution Google's policy asks for where there is no map: the
 	// text "Google Maps", unchanged, near the content and set apart from it.
-	CopyDiscoveryFooter      = "Places, ratings and hours from Google Maps. Hours can change."
-	CopyDiscoveryPick        = "Reply with a number and I'll set up the errand for a supporter."
-	CopyDiscoveryPickOne     = "Reply 1 and I'll set up the errand for a supporter."
-	CopyDiscoveryPickCheck   = "Reply with a number and I'll send a supporter to check and text you what they find."
-	CopyDiscoveryLead        = "Here's what I found:"
-	CopyDiscoveryLeadCheck   = "Here's where I can send someone to check:"
-	CopyDiscoveryNothing     = "I couldn't find a good match for that. Tell me the store or address and I'll send someone."
-	CopySearchDown           = "I can't search right now, but tell me the store or address and I'll send someone."
-	CopySearchLimit          = "I've looked up a lot of places for you today, so I can't search more right now. Tell me the store or address and I'll send someone."
-	CopyAskLocation          = "Where should I look? Send an address, cross streets or a neighborhood in NYC."
-	CopyAskLocationLast      = "Where should I look? Send an address, cross streets or a neighborhood in NYC, or reply LAST to look near %s (your last errand)."
-	CopyPlaceLookupDown      = "I can't look that place up right now. Send me its name and address and I'll set up the errand."
-	CopyUsualNone            = "I don't see an earlier errand from you yet. Tell me what you need and I'll set it up."
-	CopyUsualIntro           = "Same as last time, as a new booking:"
-	CopyPlacesLineOne        = "Place: %s (from Google Maps)"
-	CopyPlacesLineRoute      = "Stops, in order (from Google Maps): %s"
-	CopyCheckLine            = "Your supporter goes, checks, and texts you what they find, with a photo."
-	descriptionPlaceOne      = "Place (from Google Maps): %s, %s"
-	descriptionPlaceRoute    = "Stops in order (from Google Maps):"
-	descriptionCheck         = "Go and check, then text the requester what you find, with a photo. Buy only what they asked for, within the budget they set."
-	CopyLookingUp            = "Looking that up…"
+	CopyDiscoveryFooter    = "Places, ratings and hours from Google Maps. Hours can change."
+	CopyDiscoveryPick      = "Reply with a number and I'll set up the errand for a supporter."
+	CopyDiscoveryPickOne   = "Reply 1 and I'll set up the errand for a supporter."
+	CopyDiscoveryPickCheck = "Reply with a number and I'll send a supporter to check and text you what they find."
+	CopyDiscoveryLead      = "Here's what I found:"
+	CopyDiscoveryLeadCheck = "Here's where I can send someone to check:"
+	CopyDiscoveryNothing   = "I couldn't find a good match for that. Tell me the store or address and I'll send someone."
+	CopySearchDown         = "I can't search right now, but tell me the store or address and I'll send someone."
+	CopySearchLimit        = "I've looked up a lot of places for you today, so I can't search more right now. Tell me the store or address and I'll send someone."
+	CopyAskLocation        = "Where should I look? Send an address, cross streets or a neighborhood in NYC."
+	CopyAskLocationLast    = "Where should I look? Send an address, cross streets or a neighborhood in NYC, or reply LAST to look near %s (your last errand)."
+	CopyPlaceLookupDown    = "I can't look that place up right now. Send me its name and address and I'll set up the errand."
+	CopyUsualNone          = "I don't see an earlier errand from you yet. Tell me what you need and I'll set it up."
+	CopyUsualIntro         = "Same as last time, as a new booking:"
+	CopyPlacesLineOne      = "Place: %s (from Google Maps)"
+	CopyPlacesLineRoute    = "Stops, in order (from Google Maps): %s"
+	CopyCheckLine          = "Your supporter goes, checks, and texts you what they find, with a photo."
+	descriptionPlaceOne    = "Place (from Google Maps): %s, %s"
+	descriptionPlaceRoute  = "Stops in order (from Google Maps):"
+	descriptionCheck       = "Go and check, then text the requester what you find, with a photo. Buy only what they asked for, within the budget they set."
+	CopyLookingUp          = "Looking that up…"
+	// Answers about the options shown (llm.DiscoverAbout). Only Google's
+	// data: no menu, no dish, no price is ever named.
+	CopyAboutPick            = "Going by Google Maps ratings, I'd go with %s. I don't have their menus."
+	CopyAboutMenuItem        = "I don't have %s's menu, but I can ask your supporter to get their most popular %s."
+	CopyAboutMenu            = "I don't have %s's menu, but I can ask your supporter to find out what's most popular there and get that."
+	CopyAboutDelivery        = "I can't tell from Google Maps whether %s delivers, but a supporter can pick it up and bring it to you."
+	CopyAboutOther           = "I can't tell that from Google Maps, but your supporter can ask at %s and text you what they find."
+	CopyAboutAsk             = "Want me to set that up at %s?"
+	CopyAboutAskOr           = "Want me to set that up at %s? Or reply with another number."
+	CopyAboutNoData          = "I don't have more on these than Google Maps shows, and I don't have their menus. Your supporter can ask there and text you. " + CopyDiscoveryPick
+	CopyPickAsked            = "I don't have %s's menu, so I've added your question as a note for your supporter to ask there."
+	suggestMenuItem          = "Get their most popular %s."
+	suggestMenu              = "Ask what's most popular there and get that."
 	CopyBookingStillWaiting  = "Your earlier booking is still waiting."
 	CopyPickWhileDraft       = "Your earlier booking is still waiting. Reply YES to book it or NO to drop it, then send your pick again."
 	CopyRouteAsk             = "Want me to find places for these on one route, or do you have the addresses?"
@@ -204,55 +234,162 @@ func IsUsualRequest(text string) bool { return usualRE.MatchString(text) }
 
 // routeDiscoveryFirst runs in idle before the supporter routing: "the
 // usual", a pick from the options just shown, or the answer to "Where
-// should I look?". handled=false: the usual routing.
-func (r *Router) routeDiscoveryFirst(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) (bool, error) {
+// should I look?". With options open, anything else is read by discovery
+// before the classifier — a question about the options ("which one should
+// I pick?") is answered and the options stay open; a new errand comes back
+// not_discovery and takes the usual routing (production 2026-11-06: "No I
+// was asking which pizza should I choose" was drafted as an errand and the
+// options were lost). handled=false: the usual routing; tried: discovery
+// already read this message (it is not asked twice).
+func (r *Router) routeDiscoveryFirst(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) (handled, tried bool, err error) {
 	if !r.discoveryOn() {
-		return false, nil
+		return false, false, nil
 	}
 	if IsUsualRequest(text) {
-		return true, r.startUsual(ctx, in, id, conv, -1)
+		return true, true, r.startUsual(ctx, in, id, conv, -1)
 	}
 	offer := r.freshOffer(ctx, id)
 	if offer == nil {
-		return false, nil
+		return false, false, nil
 	}
 	at := time.Unix(offer.AtUnix, 0)
 	if r.supporterSpokeSince(ctx, in, id, &at) {
 		// A supporter wrote after our answer: "2" may be theirs. The usual
 		// routing (and the model, which sees both) decides.
-		return false, nil
+		return false, false, nil
 	}
 	switch offer.Kind {
 	case offerOptions:
-		if k := r.pickFromOffer(ctx, id, text, offer); k > 0 {
-			return true, r.chooseOption(ctx, in, id, conv, offer, k, "")
+		p := r.pickFromOffer(ctx, id, text, offer)
+		switch {
+		case p.k > 0 && p.question != "" && r.answersOn():
+			// "Ok nolita pizza, what is the best flavor?": answered from
+			// sources (D-25) — the model reads which question it is.
+			if p.facts != nil {
+				ctx = context.WithValue(ctx, factsPrefetchKey{}, p.facts)
+			}
+			handled, err := r.discover(ctx, in, id, conv, text, offer, false, false)
+			if handled {
+				return true, true, err
+			}
+			return true, true, r.chooseOptionWith(ctx, in, id, conv, offer, p.k, p.details, []string{p.question}, fmt.Sprintf(CopyPickAsked, p.name))
+		case p.k > 0 && p.question != "":
+			// "Ok nolita pizza, what is the best flavor?": that option,
+			// with the question kept as a note for the supporter (no menu
+			// here to answer it from).
+			return true, true, r.chooseOptionWith(ctx, in, id, conv, offer, p.k, p.details, []string{p.question}, fmt.Sprintf(CopyPickAsked, p.name))
+		case p.k > 0:
+			return true, true, r.chooseOption(ctx, in, id, conv, offer, p.k, p.details)
 		}
+		if stripFiller(text) == "" {
+			return false, false, nil
+		}
+		if p.looked != nil {
+			// Looked up for the name match: an answer about the options
+			// uses the same lookups, not a second set.
+			ctx = context.WithValue(ctx, aboutPrefetchKey{}, p.looked)
+		}
+		if p.facts != nil {
+			ctx = context.WithValue(ctx, factsPrefetchKey{}, p.facts)
+		}
+		handled, err := r.discover(ctx, in, id, conv, text, offer, false, false)
+		return handled, true, err
 	case offerAskLocation:
 		if lastWordRE.MatchString(text) {
 			if addr := r.lastAddress(ctx, id); addr != "" {
 				text = "near " + addr
 			}
 		}
-		return r.discover(ctx, in, id, conv, text, offer, true, false)
+		handled, err := r.discover(ctx, in, id, conv, text, offer, true, false)
+		return handled, true, err
 	case offerRouteAsk:
-		return r.answerRouteAsk(ctx, in, id, conv, text, offer)
+		handled, err := r.answerRouteAsk(ctx, in, id, conv, text, offer)
+		return handled, true, err
 	}
-	return false, nil
+	return false, false, nil
 }
 
+// offerPick: a pick among the open offer's options, read by rule. details:
+// the person's other words for the errand ("" none); question: a question
+// they asked with it ("what is the best flavor?"), "" none; name: the
+// option's name as Google has it (a pick by name).
+type offerPick struct {
+	k                 int
+	name              string
+	details, question string
+	// looked: the options looked up for a long message (AboutDetails), by
+	// index — reused by an answer about them. facts: the same, with
+	// answers on (Place Details Enterprise + Atmosphere).
+	looked map[int]llm.Place
+	facts  map[int]llm.PlaceFacts
+}
+
+// factsPrefetchKey carries pickFromOffer's facts to answerFromSources.
+type factsPrefetchKey struct{}
+
+// aboutPrefetchKey carries pickFromOffer's lookups to answerAbout within
+// one message.
+type aboutPrefetchKey struct{}
+
 // pickFromOffer reads a pick among the open offer's options: a number or
-// an ordinal by rule with no lookup; otherwise, when the words could be a
-// name ("Joe's", "the bakery"), the options' names are looked up again by
-// id and matched (only ids are kept — Google's terms). 0 = not a pick.
-func (r *Router) pickFromOffer(ctx context.Context, id Identity, text string, offer *DiscoveryOffer) int {
+// an ordinal by rule with no lookup; otherwise, when the words could carry
+// a name, the options' names are looked up again by id (only ids are kept —
+// Google's terms) and matched: the whole message ("Joe's", "the bakery"),
+// or a name inside a message of any length ("Ok nolita pizza, what is the
+// best flavor?"). k=0: not a pick.
+func (r *Router) pickFromOffer(ctx context.Context, id Identity, text string, offer *DiscoveryOffer) offerPick {
 	n := len(offer.Options)
 	if k := pickNumber(text, n); k > 0 {
-		return k
+		return offerPick{k: k}
 	}
-	if !nameCandidate(text) {
-		return 0
+	if !nameCandidate(text) && !longNameCandidate(text) {
+		return offerPick{}
 	}
-	return pickName(text, n, r.offerNames(ctx, id, offer))
+	var names []string
+	var looked map[int]llm.Place
+	if nameCandidate(text) {
+		names = r.offerNames(ctx, id, offer)
+		if k := pickName(text, n, names); k > 0 {
+			return offerPick{k: k, name: names[k-1]}
+		}
+	} else {
+		// A longer message is as likely a question about the options as a
+		// pick: one lookup per option with what an answer needs (names
+		// included), shared with that answer — one set per message against
+		// the daily cap.
+		var facts map[int]llm.PlaceFacts
+		if r.answersOn() {
+			facts = r.factsFor(ctx, id, offer, singleOptions(offer))
+			looked = map[int]llm.Place{}
+			for i, f := range facts {
+				looked[i] = f.Place
+			}
+		} else {
+			looked = r.aboutDetails(ctx, id, offer, singleOptions(offer), nil)
+		}
+		names = make([]string, n)
+		for i, pl := range looked {
+			names[i] = pl.Name
+		}
+		k, rest := pickNameIn(text, n, names)
+		if k == 0 {
+			return offerPick{looked: looked, facts: facts}
+		}
+		p := offerPick{k: k, name: names[k-1], facts: facts}
+		if len(pickWords(rest)) > 0 {
+			p.details, p.question = splitQuestion(text)
+		}
+		return p
+	}
+	k, rest := pickNameIn(text, n, names)
+	if k == 0 {
+		return offerPick{looked: looked}
+	}
+	p := offerPick{k: k, name: names[k-1]}
+	if len(pickWords(rest)) > 0 {
+		p.details, p.question = splitQuestion(text)
+	}
+	return p
 }
 
 // offerNames looks up the name of each single-place option again (Place
@@ -324,7 +461,7 @@ func (r *Router) routeDiscoveryWhileDraft(ctx context.Context, in Inbound, id Id
 		if !r.supporterSpokeSince(ctx, in, id, &at) {
 			switch offer.Kind {
 			case offerOptions:
-				if r.pickFromOffer(ctx, id, text, offer) > 0 {
+				if r.pickFromOffer(ctx, id, text, offer).k > 0 {
 					return true, r.Reply(ctx, in, CopyPickWhileDraft, "")
 				}
 			case offerAskLocation:
@@ -477,7 +614,7 @@ func (r *Router) discover(ctx context.Context, in Inbound, id Identity, conv Con
 	req := llm.DiscoveryRequest{Text: text, Now: r.now().In(r.loc()), MaxSearches: lim.PerMessage}
 	if offer != nil {
 		req.Earlier = offer.Words
-		req.HoraLine, _ = r.ourLastLineText(ctx, id)
+		req.HoraLine = r.offerLine(ctx, id, offer)
 	}
 	past := r.pastTasks(ctx, id)
 	for i, t := range past {
@@ -498,19 +635,33 @@ func (r *Router) discover(ctx context.Context, in Inbound, id Identity, conv Con
 		denied = denied || !ok
 		return ok
 	}
-	// The search takes seconds: one fixed line first, once, only when the
-	// model is about to search. A failed send is logged: the answer still
-	// follows.
-	req.OnSearch = func(context.Context) {
+	// The answer takes seconds: one fixed line first, once. A search by
+	// rule that says where to look gets it before the first model call
+	// (production 2026-11-06: it went out 11 s in, after the classifier and
+	// the model's first call) — unless the daily cap leaves no search.
+	// Otherwise it goes only when the model is about to search. A failed
+	// send is logged: the answer still follows.
+	lookedUp := false
+	lookingUp := func() {
+		if lookedUp {
+			return
+		}
+		lookedUp = true
 		if err := r.Reply(ctx, in, CopyLookingUp, ""); err != nil {
 			log.Printf("[channel] looking up identity=%s: %v", id.ID, err)
 		}
 	}
+	if strong && saysWhere(text, offer) {
+		if left, err := r.DiscoveryStore.PlacesCallsLeft(ctx, id.ID, day, lim.PerDay); err == nil && left > 0 {
+			lookingUp()
+		}
+	}
+	req.OnSearch = func(context.Context) { lookingUp() }
 	dctx, cancel := context.WithTimeout(ctx, lim.Timeout)
 	res, err := r.Discovery.Discover(dctx, req)
 	cancel()
-	log.Printf("[channel] discovery identity=%s action=%s searches=%d options=%d model=%s latency=%s in=%d cached=%d out=%d err=%v",
-		id.ID, res.Action, res.Searches, len(res.Options), res.Usage.Model, res.Usage.Latency.Round(time.Millisecond),
+	log.Printf("[channel] discovery identity=%s action=%s searches=%d options=%d model=%s calls=%d latency=%s in=%d cached=%d out=%d err=%v",
+		id.ID, res.Action, res.Searches, len(res.Options), res.Usage.Model, res.Calls, res.Usage.Latency.Round(time.Millisecond),
 		res.Usage.InputTokens, res.Usage.CacheReadTokens, res.Usage.OutputTokens, err != nil)
 	if err != nil {
 		log.Printf("[channel] discovery identity=%s: %v", id.ID, err)
@@ -540,6 +691,14 @@ func (r *Router) discover(ctx context.Context, in Inbound, id Identity, conv Con
 			return true, r.chooseOption(ctx, in, id, conv, offer, res.Choice, text)
 		}
 		return false, nil
+	case llm.DiscoverAbout:
+		if draftOpen || offer == nil || offer.Kind != offerOptions {
+			return false, nil // nothing shown to ask about: the usual routing
+		}
+		if r.answersOn() {
+			return true, r.answerFromSources(ctx, in, id, offer, res, text)
+		}
+		return true, r.answerAbout(ctx, in, id, offer, res, text)
 	case llm.DiscoverInfo:
 		if len(res.Options) == 0 {
 			r.saveOffer(ctx, id, nil)
@@ -548,7 +707,7 @@ func (r *Router) discover(ctx context.Context, in Inbound, id Identity, conv Con
 			}
 			return true, reply(CopyDiscoveryNothing)
 		}
-		o := &DiscoveryOffer{Kind: offerOptions, Words: lastWords(words), Check: res.Check, AtUnix: r.now().Unix()}
+		o := &DiscoveryOffer{Kind: offerOptions, Words: lastWords(words), Check: res.Check, Playbook: res.Playbook, AtUnix: r.now().Unix()}
 		for _, opt := range res.Options {
 			var ids []string
 			for _, p := range opt {
@@ -756,6 +915,13 @@ func nameKey(s string) string {
 // places are looked up again by id (only ids are kept) and attached by
 // rule; the words the parser reads are the person's own, plus the address.
 func (r *Router) chooseOption(ctx context.Context, in Inbound, id Identity, conv Conversation, offer *DiscoveryOffer, k int, extra string) error {
+	return r.chooseOptionWith(ctx, in, id, conv, offer, k, extra, nil, "")
+}
+
+// chooseOptionWith is chooseOption with notes for the supporter (the
+// person's question, kept on the draft and sent with the booking) and an
+// intro said once before the draft's first question.
+func (r *Router) chooseOptionWith(ctx context.Context, in Inbound, id Identity, conv Conversation, offer *DiscoveryOffer, k int, extra string, notes []string, intro string) error {
 	if r.Places == nil {
 		return r.Reply(ctx, in, CopyPlaceLookupDown, "")
 	}
@@ -794,7 +960,7 @@ func (r *Router) chooseOption(ctx context.Context, in Inbound, id Identity, conv
 		lines = append(lines, "Stops in order: "+strings.Join(stops, "; "))
 	}
 	log.Printf("[channel] discovery choice identity=%s option=%d stops=%d check=%t", id.ID, k, len(chosen), offer.Check)
-	return r.startDraftOpts(ctx, in, id, conv, strings.Join(lines, "\n"), draftOpts{places: chosen, check: offer.Check})
+	return r.startDraftOpts(ctx, in, id, conv, strings.Join(lines, "\n"), draftOpts{places: chosen, check: offer.Check, notes: notes, intro: intro, playbook: offer.Playbook})
 }
 
 // applyPlaces attaches the chosen place(s) to a parsed errand by rule: the
@@ -971,4 +1137,359 @@ func (r *Router) startUsual(ctx context.Context, in Inbound, id Identity, conv C
 // stripAmounts removes dollar figures from a past errand's words.
 func stripAmounts(s string) string {
 	return strings.Join(strings.Fields(saidAmountRE.ReplaceAllString(s, "")), " ")
+}
+
+// ── picks by name in longer messages, and questions about the options ───
+
+// longNameCandidate: a message long enough that a name may sit inside it
+// with other words ("Ok nolita pizza, what is the best flavor?").
+func longNameCandidate(text string) bool { return len(pickWords(text)) > 4 }
+
+// nameGenericWords: words a place name shares with many others. A pick by
+// one word inside a longer message never rests on one of these alone.
+var nameGenericWords = map[string]bool{
+	"the": true, "and": true, "of": true, "a": true, "at": true, "on": true, "new": true, "york": true, "nyc": true, "ny": true,
+	"pizza": true, "pizzeria": true, "cafe": true, "café": true, "coffee": true, "bakery": true, "laundromat": true, "laundry": true,
+	"cleaners": true, "pharmacy": true, "market": true, "store": true, "shop": true, "deli": true, "grocery": true, "restaurant": true,
+	"bar": true, "kitchen": true, "street": true, "st": true, "avenue": true, "ave": true, "brooklyn": true, "manhattan": true,
+	"queens": true, "bronx": true, "wash": true, "fold": true, "co": true, "inc": true, "best": true, "famous": true, "original": true,
+}
+
+// pickNotRE: words that turn a name in a message into something else than
+// a pick of it ("not Nolita Pizza", "cheaper than Joe's", "Joe's or
+// Suds?"). The model reads those.
+var pickNotRE = regexp.MustCompile(`(?i)\b(?:not|no|don'?t|isn'?t|instead|other|another|rather|than|except|besides|cheaper|closer|better|worse|vs|versus|or|compare)\b`)
+
+// nameCuts: where a place name's core ends ("Joe's Pizza - Broadway").
+var nameCutRE = regexp.MustCompile(`\s+[-–—|:]\s+|\s*[(,]`)
+
+// pickNameIn finds one option's name inside a message of any length: the
+// name, its core before " - …" / "(…)", or the core's first words (two or
+// more, not all generic; one word only when it is distinctive and five
+// letters or longer). Two options matching, or words that turn it into a
+// comparison or a refusal, are no pick. rest: the message without the
+// name.
+func pickNameIn(text string, n int, names []string) (int, string) {
+	if pickNotRE.MatchString(strings.NewReplacer("’", "'").Replace(text)) {
+		return 0, ""
+	}
+	tk := " " + nameKey(text) + " "
+	hit, hitKey := 0, ""
+	for i, name := range names {
+		if i >= n || name == "" {
+			continue
+		}
+		var cands []string
+		full := nameKey(name)
+		core := nameKey(nameCutRE.Split(name, 2)[0])
+		cands = append(cands, full, core)
+		w := strings.Fields(core)
+		for j := len(w) - 1; j >= 1; j-- {
+			pre := w[:j]
+			distinct := false
+			for _, x := range pre {
+				distinct = distinct || !nameGenericWords[x]
+			}
+			if !distinct || (j == 1 && utf8.RuneCountInString(pre[0]) < 5) {
+				continue
+			}
+			cands = append(cands, strings.Join(pre, " "))
+		}
+		for _, c := range cands {
+			if c == "" || !strings.Contains(tk, " "+c+" ") {
+				continue
+			}
+			if hit != 0 && hit != i+1 {
+				return 0, "" // two options named
+			}
+			if hit == 0 || len(c) > len(hitKey) {
+				hit, hitKey = i+1, c
+			}
+		}
+	}
+	if hit == 0 {
+		return 0, ""
+	}
+	return hit, strings.TrimSpace(strings.Replace(tk, " "+hitKey+" ", " ", 1))
+}
+
+// questionPartRE: a part of a message that asks something.
+var questionPartRE = regexp.MustCompile(`(?i)^\W*(?:and |so |also |but |ok |okay )*(?:what|what's|whats|which|how|do|does|did|is|are|can|could|would|will|should|any|where|when|who|why)\b`)
+
+var partSplitRE = regexp.MustCompile(`[.!?;,\n]+|\s+-\s+`)
+
+// splitQuestion splits a message into the words for the errand and the
+// question asked with them: "Ok nolita pizza, what is the best flavor?" →
+// "Ok nolita pizza" and "what is the best flavor?".
+func splitQuestion(text string) (details, question string) {
+	var d, q []string
+	idx := partSplitRE.FindAllStringIndex(text, -1)
+	start := 0
+	for i := 0; i <= len(idx); i++ {
+		end, sepEnd := len(text), len(text)
+		if i < len(idx) {
+			end, sepEnd = idx[i][0], idx[i][1]
+		}
+		part := strings.TrimSpace(text[start:end])
+		sep := text[end:sepEnd]
+		start = sepEnd
+		if part == "" {
+			continue
+		}
+		if strings.Contains(sep, "?") || questionPartRE.MatchString(part) {
+			q = append(q, part+"?")
+		} else {
+			d = append(d, part)
+		}
+	}
+	return strings.Join(d, ", "), strings.Join(q, " ")
+}
+
+// saysWhere: the words (or the search's earlier words) say where to look,
+// so the model is going to search — "Looking that up…" can go before it.
+func saysWhere(text string, offer *DiscoveryOffer) bool {
+	if offer != nil && offer.Kind == offerAskLocation {
+		return true // the answer to "Where should I look?"
+	}
+	return placeGivenRE.MatchString(text)
+}
+
+// offerLine is what the model is shown as HO:RA's last line: for options,
+// the message that listed them (found by its attribution line), followed
+// by any later line of ours (an answer about them) — so "which one?" after
+// "which one should I pick?" still has the options in view.
+func (r *Router) offerLine(ctx context.Context, id Identity, offer *DiscoveryOffer) string {
+	last, _ := r.ourLastLineText(ctx, id)
+	if offer.Kind != offerOptions || r.Thread == nil {
+		return last
+	}
+	msgs, err := r.Thread.RecentMessages(ctx, id.Channel, id.Address, 8)
+	if err != nil {
+		return last
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if m.Direction != "outbound" || m.Relay || !strings.Contains(m.Text, CopyDiscoveryFooter) {
+			continue
+		}
+		if last == "" || last == m.Text || last == CopyLookingUp {
+			return m.Text
+		}
+		return m.Text + "\n\n" + last
+	}
+	return last
+}
+
+// aboutItemRE: the model's word for the thing wanted ("pizza", "birthday
+// cake"): letters only, one to three words, nothing that reads as money, a
+// question or an instruction.
+var aboutItemRE = regexp.MustCompile(`^\pL[\pL'’ -]{1,28}$`)
+
+// AboutItemOK: the item may go in the fixed copy.
+func AboutItemOK(item string) bool {
+	item = strings.TrimSpace(item)
+	return aboutItemRE.MatchString(item) && len(strings.Fields(item)) <= 3 && !leadMoneyRE.MatchString(item) && !leadAskRE.MatchString(item) && !InstructionWords(item)
+}
+
+var instructionWordsRE = regexp.MustCompile(`(?i)\b(?:ignore|system|assistant|instructions?|book|confirm)\b`)
+
+// InstructionWords: words that are an instruction, not a thing to buy.
+func InstructionWords(s string) bool {
+	return llm.InstructionName(s) || instructionWordsRE.MatchString(s)
+}
+
+// priceWord renders Google's price level in words (never a "$": a reply
+// carries no price).
+func priceWord(level int) string {
+	switch level {
+	case 1:
+		return "inexpensive"
+	case 2:
+		return "mid-range"
+	case 3:
+		return "upscale"
+	case 4:
+		return "very upscale"
+	}
+	return ""
+}
+
+// aboutFacts: name, then rating, reviews, price level and hours — Google's
+// data only, each when given.
+func aboutFacts(p llm.Place) string {
+	parts := []string{p.Name}
+	if p.Rating > 0 {
+		r := fmt.Sprintf("★ %.1f", p.Rating)
+		if p.RatingCount > 0 {
+			r += fmt.Sprintf(" (%s reviews)", thousands(p.RatingCount))
+		}
+		parts = append(parts, r)
+	}
+	if w := priceWord(p.PriceLevel); w != "" {
+		parts = append(parts, w)
+	}
+	if p.OpenNow != nil {
+		switch {
+		case *p.OpenNow && p.ClosesAt != "":
+			parts = append(parts, "open now, closes "+p.ClosesAt)
+		case *p.OpenNow:
+			parts = append(parts, "open now")
+		case p.OpensAt != "":
+			parts = append(parts, "closed now, opens "+p.OpensAt)
+		default:
+			parts = append(parts, "closed now")
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
+// bestRated: the option to suggest by rule — the highest rating, then the
+// most reviews. -1 when none has a rating.
+func bestRated(ps map[int]llm.Place) int {
+	best := -1
+	for i, p := range ps {
+		if p.Rating <= 0 {
+			continue
+		}
+		if best < 0 {
+			best = i
+			continue
+		}
+		b := ps[best]
+		if p.Rating > b.Rating || (p.Rating == b.Rating && (p.RatingCount > b.RatingCount || (p.RatingCount == b.RatingCount && i < best))) {
+			best = i
+		}
+	}
+	return best
+}
+
+// answerAbout answers a question about the options shown ("which one
+// should I pick?", "what's good there?", "do they do delivery?") from
+// Google's data, looked up again by id, and fixed copy: HO:RA has no menus,
+// so it never names a dish — it offers to have the supporter ask. The
+// options stay open; the suggested one is what a YES sets up.
+func (r *Router) answerAbout(ctx context.Context, in Inbound, id Identity, offer *DiscoveryOffer, res llm.DiscoveryResult, text string) error {
+	want := singleOptions(offer)
+	if res.Choice > 0 && res.Choice <= len(offer.Options) && len(offer.Options[res.Choice-1]) == 1 {
+		want = []int{res.Choice - 1}
+	}
+	pre, _ := ctx.Value(aboutPrefetchKey{}).(map[int]llm.Place)
+	got := r.aboutDetails(ctx, id, offer, want, pre)
+	k := -1
+	if res.Choice > 0 {
+		if _, ok := got[res.Choice-1]; ok {
+			k = res.Choice - 1
+		}
+	}
+	if k < 0 {
+		k = bestRated(got)
+	}
+	if k < 0 {
+		for i := range got { // no ratings at all: the first one looked up
+			if k < 0 || i < k {
+				k = i
+			}
+		}
+	}
+	log.Printf("[channel] discovery about identity=%s topic=%s choice=%d looked_up=%d suggest=%d", id.ID, res.Topic, res.Choice, len(got), k+1)
+	if k < 0 {
+		o := *offer
+		o.Suggest, o.SuggestWords = 0, ""
+		r.saveOffer(ctx, id, &o)
+		return r.Reply(ctx, in, CopyAboutNoData, "")
+	}
+	p := got[k]
+	var lead, words string
+	switch res.Topic {
+	case "pick":
+		lead = fmt.Sprintf(CopyAboutPick, p.Name)
+	case "menu":
+		if AboutItemOK(res.Item) {
+			item := strings.ToLower(strings.TrimSpace(res.Item))
+			lead, words = fmt.Sprintf(CopyAboutMenuItem, p.Name, item), fmt.Sprintf(suggestMenuItem, item)
+		} else {
+			lead, words = fmt.Sprintf(CopyAboutMenu, p.Name), suggestMenu
+		}
+	case "delivery":
+		lead = fmt.Sprintf(CopyAboutDelivery, p.Name)
+	default:
+		lead, words = fmt.Sprintf(CopyAboutOther, p.Name), strings.TrimSpace(text)
+	}
+	var b strings.Builder
+	b.WriteString(lead + "\n\n")
+	if res.Topic == "pick" && len(got) > 1 {
+		for _, i := range want {
+			if q, ok := got[i]; ok {
+				fmt.Fprintf(&b, "%d. %s\n", i+1, aboutFacts(q))
+			}
+		}
+	} else {
+		fmt.Fprintf(&b, "%d. %s\n", k+1, aboutFacts(p))
+	}
+	b.WriteString("\n" + CopyDiscoveryFooter + "\n")
+	if len(offer.Options) > 1 {
+		fmt.Fprintf(&b, CopyAboutAskOr, p.Name)
+	} else {
+		fmt.Fprintf(&b, CopyAboutAsk, p.Name)
+	}
+	o := *offer
+	o.Suggest, o.SuggestWords, o.AtUnix = k+1, words, r.now().Unix()
+	r.saveOffer(ctx, id, &o)
+	return r.Reply(ctx, in, b.String(), "")
+}
+
+// singleOptions: the indexes of the offer's single-place options.
+func singleOptions(offer *DiscoveryOffer) []int {
+	var out []int
+	for i, opt := range offer.Options {
+		if len(opt) == 1 {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// aboutDetails looks the wanted options up again by id (rating, reviews,
+// price level, hours), in parallel, each counted against the daily cap.
+// Index → place; a failed or refused lookup is left out. pre: lookups made
+// earlier in this message, used as they are (a failed one is not retried).
+func (r *Router) aboutDetails(ctx context.Context, id Identity, offer *DiscoveryOffer, want []int, pre map[int]llm.Place) map[int]llm.Place {
+	out := map[int]llm.Place{}
+	if pre != nil {
+		for _, i := range want {
+			if p, ok := pre[i]; ok {
+				out[i] = p
+			}
+		}
+		return out
+	}
+	if r.Places == nil {
+		return out
+	}
+	day := r.now().In(r.loc()).Format("2006-01-02")
+	lctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, i := range want {
+		ok, err := r.DiscoveryStore.TakePlacesCall(lctx, id.ID, day, r.limits().PerDay)
+		if err != nil || !ok {
+			log.Printf("[channel] about details identity=%s: no lookup (cap or count failed: %v)", id.ID, err)
+			continue
+		}
+		wg.Add(1)
+		go func(i int, pid string) {
+			defer wg.Done()
+			p, err := r.Places.AboutDetails(lctx, pid)
+			if err != nil || !p.InNYC || p.Name == "" || llm.InstructionName(p.Name) {
+				log.Printf("[channel] about details identity=%s option=%d: %v", id.ID, i+1, err)
+				return
+			}
+			mu.Lock()
+			out[i] = p
+			mu.Unlock()
+		}(i, offer.Options[i][0])
+	}
+	wg.Wait()
+	return out
 }

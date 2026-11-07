@@ -194,6 +194,7 @@ func (r *Router) Summary(p *PendingDraft) string {
 	if len(items) == 1 {
 		b.WriteString(r.itemLines(items[0], ""))
 		b.WriteString(placesLines(p))
+		b.WriteString(r.playbookLines(p))
 		fmt.Fprintf(&b, "\nEstimate: %s (you pay for the time actually used)", Dollars(p.QuoteCents))
 	} else {
 		for i, it := range items {

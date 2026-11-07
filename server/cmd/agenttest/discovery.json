@@ -482,6 +482,54 @@
     "gift",
     "soho"
    ]
+  },
+  {
+   "id": "pl_nolita",
+   "name": "Nolita Pizza",
+   "address": "68 Kenmare St, Manhattan",
+   "full": "68 Kenmare St, New York, NY 10012",
+   "rating": 4.6,
+   "reviews": 1890,
+   "open_now": true,
+   "closes": "11 PM",
+   "opens": "",
+   "in_nyc": true,
+   "keywords": [
+    "pizza",
+    "pizzeria"
+   ]
+  },
+  {
+   "id": "pl_joespz",
+   "name": "Joe's Pizza - Broadway",
+   "address": "1435 Broadway, Manhattan",
+   "full": "1435 Broadway, New York, NY 10018",
+   "rating": 4.5,
+   "reviews": 12000,
+   "open_now": true,
+   "closes": "11 PM",
+   "opens": "",
+   "in_nyc": true,
+   "keywords": [
+    "pizza",
+    "pizzeria"
+   ]
+  },
+  {
+   "id": "pl_prince",
+   "name": "Prince Street Pizza",
+   "address": "27 Prince St, Manhattan",
+   "full": "27 Prince St, New York, NY 10012",
+   "rating": 4.4,
+   "reviews": 8000,
+   "open_now": true,
+   "closes": "11 PM",
+   "opens": "",
+   "in_nyc": true,
+   "keywords": [
+    "pizza",
+    "pizzeria"
+   ]
   }
  ],
  "cases": [
@@ -1045,6 +1093,154 @@
     ],
     "min_options": 1
    }
+  },
+  {
+   "n": 45,
+   "group": "P pizza",
+   "msg": "my office is 250 Mercer street can you recommend me few nice pizzeria?",
+   "expect": {
+    "action": [
+     "info"
+    ],
+    "min_options": 2
+   },
+   "note": "production 2026-11-06 (first real discovery test), verbatim"
+  },
+  {
+   "n": 46,
+   "group": "P pizza",
+   "msg": "Ok nolita pizza, what is the best flavor?",
+   "expect": {
+    "action": [
+     "choose",
+     "about"
+    ],
+    "choice": 1
+   },
+   "earlier": [
+    "my office is 250 Mercer street can you recommend me few nice pizzeria?"
+   ],
+   "hora_line": "Here are some pizzerias near 250 Mercer St.\n\n1. Nolita Pizza\n   68 Kenmare St, Manhattan · ★ 4.6 (1,890) · open now, closes 11 PM\n2. Joe's Pizza - Broadway\n   1435 Broadway, Manhattan · ★ 4.5 (12,000) · open now, closes 11 PM\n3. Prince Street Pizza\n   27 Prince St, Manhattan · ★ 4.4 (8,000) · open now, closes 11 PM\n\nPlaces, ratings and hours from Google Maps. Hours can change.\nReply with a number and I'll set up the errand for a supporter.",
+   "note": "production 2026-11-06 (first real discovery test), verbatim; the rule picks Nolita by name before the model, this is the fallback"
+  },
+  {
+   "n": 47,
+   "group": "P pizza",
+   "msg": "No I was asking which pizza should I choose",
+   "expect": {
+    "action": [
+     "about"
+    ],
+    "topic": [
+     "menu",
+     "pick"
+    ]
+   },
+   "earlier": [
+    "my office is 250 Mercer street can you recommend me few nice pizzeria?"
+   ],
+   "hora_line": "Here are some pizzerias near 250 Mercer St.\n\n1. Nolita Pizza\n   68 Kenmare St, Manhattan · ★ 4.6 (1,890) · open now, closes 11 PM\n2. Joe's Pizza - Broadway\n   1435 Broadway, Manhattan · ★ 4.5 (12,000) · open now, closes 11 PM\n3. Prince Street Pizza\n   27 Prince St, Manhattan · ★ 4.4 (8,000) · open now, closes 11 PM\n\nPlaces, ratings and hours from Google Maps. Hours can change.\nReply with a number and I'll set up the errand for a supporter.",
+   "note": "production 2026-11-06 (first real discovery test), verbatim"
+  },
+  {
+   "n": 48,
+   "group": "P pizza",
+   "msg": "what's good there?",
+   "expect": {
+    "action": [
+     "about"
+    ],
+    "topic": [
+     "menu",
+     "pick"
+    ]
+   },
+   "earlier": [
+    "my office is 250 Mercer street can you recommend me few nice pizzeria?"
+   ],
+   "hora_line": "Here are some pizzerias near 250 Mercer St.\n\n1. Nolita Pizza\n   68 Kenmare St, Manhattan · ★ 4.6 (1,890) · open now, closes 11 PM\n2. Joe's Pizza - Broadway\n   1435 Broadway, Manhattan · ★ 4.5 (12,000) · open now, closes 11 PM\n3. Prince Street Pizza\n   27 Prince St, Manhattan · ★ 4.4 (8,000) · open now, closes 11 PM\n\nPlaces, ratings and hours from Google Maps. Hours can change.\nReply with a number and I'll set up the errand for a supporter."
+  },
+  {
+   "n": 49,
+   "group": "P pizza",
+   "msg": "which one should I pick?",
+   "expect": {
+    "action": [
+     "about"
+    ],
+    "topic": [
+     "pick"
+    ]
+   },
+   "earlier": [
+    "my office is 250 Mercer street can you recommend me few nice pizzeria?"
+   ],
+   "hora_line": "Here are some pizzerias near 250 Mercer St.\n\n1. Nolita Pizza\n   68 Kenmare St, Manhattan · ★ 4.6 (1,890) · open now, closes 11 PM\n2. Joe's Pizza - Broadway\n   1435 Broadway, Manhattan · ★ 4.5 (12,000) · open now, closes 11 PM\n3. Prince Street Pizza\n   27 Prince St, Manhattan · ★ 4.4 (8,000) · open now, closes 11 PM\n\nPlaces, ratings and hours from Google Maps. Hours can change.\nReply with a number and I'll set up the errand for a supporter."
+  },
+  {
+   "n": 50,
+   "group": "P pizza",
+   "msg": "do they do delivery?",
+   "expect": {
+    "action": [
+     "about"
+    ],
+    "topic": [
+     "takeout_delivery",
+     "delivery"
+    ]
+   },
+   "earlier": [
+    "my office is 250 Mercer street can you recommend me few nice pizzeria?"
+   ],
+   "hora_line": "Here are some pizzerias near 250 Mercer St.\n\n1. Nolita Pizza\n   68 Kenmare St, Manhattan · ★ 4.6 (1,890) · open now, closes 11 PM\n2. Joe's Pizza - Broadway\n   1435 Broadway, Manhattan · ★ 4.5 (12,000) · open now, closes 11 PM\n3. Prince Street Pizza\n   27 Prince St, Manhattan · ★ 4.4 (8,000) · open now, closes 11 PM\n\nPlaces, ratings and hours from Google Maps. Hours can change.\nReply with a number and I'll set up the errand for a supporter."
+  },
+  {
+   "n": 51,
+   "group": "P pizza",
+   "msg": "what flavors does Prince Street have?",
+   "expect": {
+    "action": [
+     "about"
+    ],
+    "topic": [
+     "menu"
+    ],
+    "choice": 3
+   },
+   "earlier": [
+    "my office is 250 Mercer street can you recommend me few nice pizzeria?"
+   ],
+   "hora_line": "Here are some pizzerias near 250 Mercer St.\n\n1. Nolita Pizza\n   68 Kenmare St, Manhattan · ★ 4.6 (1,890) · open now, closes 11 PM\n2. Joe's Pizza - Broadway\n   1435 Broadway, Manhattan · ★ 4.5 (12,000) · open now, closes 11 PM\n3. Prince Street Pizza\n   27 Prince St, Manhattan · ★ 4.4 (8,000) · open now, closes 11 PM\n\nPlaces, ratings and hours from Google Maps. Hours can change.\nReply with a number and I'll set up the errand for a supporter."
+  },
+  {
+   "n": 52,
+   "group": "P pizza",
+   "msg": "1",
+   "expect": {
+    "action": [
+     "choose"
+    ],
+    "choice": 1
+   },
+   "earlier": [
+    "my office is 250 Mercer street can you recommend me few nice pizzeria?"
+   ],
+   "hora_line": "Here are some pizzerias near 250 Mercer St.\n\n1. Nolita Pizza\n   68 Kenmare St, Manhattan · ★ 4.6 (1,890) · open now, closes 11 PM\n2. Joe's Pizza - Broadway\n   1435 Broadway, Manhattan · ★ 4.5 (12,000) · open now, closes 11 PM\n3. Prince Street Pizza\n   27 Prince St, Manhattan · ★ 4.4 (8,000) · open now, closes 11 PM\n\nPlaces, ratings and hours from Google Maps. Hours can change.\nReply with a number and I'll set up the errand for a supporter."
+  },
+  {
+   "n": 53,
+   "group": "P pizza",
+   "msg": "also pick up my dry cleaning at 100 Washington St",
+   "expect": {
+    "action": [
+     "not_discovery"
+    ]
+   },
+   "earlier": [
+    "my office is 250 Mercer street can you recommend me few nice pizzeria?"
+   ],
+   "hora_line": "Here are some pizzerias near 250 Mercer St.\n\n1. Nolita Pizza\n   68 Kenmare St, Manhattan · ★ 4.6 (1,890) · open now, closes 11 PM\n2. Joe's Pizza - Broadway\n   1435 Broadway, Manhattan · ★ 4.5 (12,000) · open now, closes 11 PM\n3. Prince Street Pizza\n   27 Prince St, Manhattan · ★ 4.4 (8,000) · open now, closes 11 PM\n\nPlaces, ratings and hours from Google Maps. Hours can change.\nReply with a number and I'll set up the errand for a supporter."
   }
  ]
 }

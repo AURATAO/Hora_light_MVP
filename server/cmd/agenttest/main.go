@@ -363,6 +363,8 @@ func main() {
 		discovery = flag.Bool("discovery", false, "run the place discovery cases (discovery.json) instead")
 		dCases    = flag.String("discovery-cases", "cmd/agenttest/discovery.json", "discovery case file")
 		livePlace = flag.Bool("live-places", false, "discovery: send searches to Google (billed) instead of the fixtures")
+		playbooks = flag.Bool("playbooks", false, "run the errand playbook cases (evals in internal/channel/llm/playbooks.json) instead")
+		webLive   = flag.Bool("web-live", false, "playbooks: measure Anthropic web search on real places (billed; no grading)")
 	)
 	flag.Parse()
 	f, err := load(*casesPath)
@@ -392,6 +394,9 @@ func main() {
 	if (spec.Provider == "anthropic" && providers.AnthropicKey == "") || (spec.Provider == "baseten" && providers.BasetenKey == "") {
 		fmt.Fprintf(os.Stderr, "set the %s key (ANTHROPIC_API_KEY / LLM_API_KEY; never commit it, never paste it in chat)\n", spec.Provider)
 		os.Exit(1)
+	}
+	if *playbooks {
+		os.Exit(runPlaybooks(*dCases, spec, providers, *runs, *group, *verbose, *jsonOut, *parallel, *delay, timeout, *webLive))
 	}
 	if *discovery {
 		os.Exit(runDiscovery(*dCases, spec, providers, *runs, *only, *group, *verbose, *jsonOut, *parallel, *delay, timeout, *livePlace))
