@@ -65,14 +65,21 @@ func chatStatusHook(sqlDB *sql.DB, router *channel.Router) func(notify.CreateNot
 		// kind comes from the notification type (time vs budget). The
 		// structured fields let the chat compose its own question.
 		var a channel.PendingApproval
-		var mins, cents sql.NullInt64
-		var reason sql.NullString
+		var mins, cents, altCents sql.NullInt64
+		var reason, item, store, alt sql.NullString
 		err := sqlDB.QueryRowContext(ctx, `
-			SELECT id::text, kind, requested_minutes, requested_cents, reason
+			SELECT id::text, kind, requested_minutes, requested_cents, reason,
+			       item_name, store_name, alternative_name, alternative_cents
 			  FROM public.extension_requests
 			 WHERE task_id = $1::uuid AND kind = $2 AND status = $3`,
-			taskID, kind, extensionStatusPending).Scan(&a.ID, &a.Kind, &mins, &cents, &reason)
+			taskID, kind, extensionStatusPending).Scan(&a.ID, &a.Kind, &mins, &cents, &reason,
+			&item, &store, &alt, &altCents)
 		a.Minutes, a.Cents, a.Reason = int(mins.Int64), int(cents.Int64), reasonLabel(reason.String)
+		if a.Kind == extensionKindItem {
+			// The structured item question (item.go): the price is the
+			// alternative's, never an amount to approve.
+			a.Item, a.Store, a.Alternative, a.Cents, a.Reason = item.String, store.String, alt.String, int(altCents.Int64), ""
+		}
 		return a, err
 	}, router)
 }
@@ -103,6 +110,8 @@ func approvalKind(notifType string) string {
 		return extensionKindTime
 	case "BUDGET_INCREASE_REQUESTED":
 		return extensionKindBudget
+	case "ITEM_ALTERNATIVE_PROPOSED":
+		return extensionKindItem
 	}
 	return ""
 }
@@ -119,12 +128,12 @@ var photosOf func(ctx context.Context, taskID string) (completionPhotos, error)
 func statusHook(requesterOf func(context.Context, string) (string, error), pendingExtensionOf func(ctx context.Context, taskID, kind string) (channel.PendingApproval, error), n statusNotifier) func(notify.CreateNotificationInput) {
 	return func(in notify.CreateNotificationInput) {
 		ev := statusEvent(in)
-		if in.Type == "TIME_EXTENSION_REQUESTED" || in.Type == "BUDGET_INCREASE_REQUESTED" {
+		if approvalKind(in.Type) != "" {
 			// Only now does StatusText have what it needs; the lookup is cheap
 			// and happens only for these two types.
 			ev.ApprovalMinutes = Billing.ApprovalTimeoutMinutes
 		}
-		if !chatEvent(ev) && ev.ExtensionID == "" && !(in.Type == "TIME_EXTENSION_REQUESTED" || in.Type == "BUDGET_INCREASE_REQUESTED") {
+		if !chatEvent(ev) && ev.ExtensionID == "" && approvalKind(in.Type) == "" {
 			return // not a chat event; skip the lookups
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

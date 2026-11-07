@@ -807,6 +807,7 @@ func main() {
 		tasksAPI.GET("/:id/extensions", listTaskExtensions)
 		tasksAPI.POST("/:id/budget-increase", requestBudgetIncrease)
 		tasksAPI.POST("/:id/time-extension", requestTimeExtension)
+		tasksAPI.POST("/:id/item-problem", reportItemProblem)
 		tasksAPI.POST("/:id/extensions/:eid/approve", approveExtension)
 		tasksAPI.POST("/:id/extensions/:eid/deny", denyExtension)
 

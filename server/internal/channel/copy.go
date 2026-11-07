@@ -165,6 +165,12 @@ const (
 	CopyApprovalAsk               = "Reply YES to approve or NO to decline."
 	CopyApprovalAskTimed          = "Reply YES to approve or NO to decline. No answer within %d minutes counts as a no."
 	CopyApprovalReask             = "Your supporter is waiting on an answer: reply YES to approve or NO to decline."
+	// Item questions (item.go): digits, never YES/NO.
+	CopyItemAsk              = "Reply 1 for %s, 2 to skip it."
+	CopyItemAskTimed         = "No answer within %d minutes: your supporter will decide."
+	CopyItemReask            = "Your supporter is waiting on an answer: reply 1 for %s, 2 to skip it."
+	CopyItemChoseAlternative = "Got it: %s will get %s instead."
+	CopyItemChoseSkip        = "Got it: %s will skip %s."
 	CopyNotPassedOn               = "(Your note wasn't passed on.)"
 	CopyCouldntPassOn             = "(Couldn't pass “%s” to %s — send it again in a moment.)"
 	CopyApprovalOnItsWay          = "Your supporter has a question for you — it's on its way. If it hasn't arrived in a few minutes, text me again."
