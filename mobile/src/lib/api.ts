@@ -999,6 +999,24 @@ export function resolveExtension(
   );
 }
 
+// ---- Item problem (server/item.go) -----------------------------------------
+
+export interface ItemProblemPayload {
+  item_name: string;
+  store_name?: string;
+  /** "alternative": found one that fits the budget — the requester is asked
+   *  1 or 2. "none": nothing similar — they are told it is skipped. */
+  outcome: "alternative" | "none";
+  alternative_name?: string;
+  alternative_cents?: number;
+  /** The `url` uploadCompletionPhoto returned. */
+  alternative_photo_url?: string;
+}
+
+export function reportItemProblem(id: string, payload: ItemProblemPayload): Promise<unknown> {
+  return apiFetch(`/tasks/${id}/item-problem`, { method: "POST", body: payload });
+}
+
 export async function uploadCompletionPhoto(id: string, file: FilePart): Promise<UploadResponse> {
   return apiFetch<UploadResponse>(`/tasks/${id}/completion-photo`, {
     method: "POST",

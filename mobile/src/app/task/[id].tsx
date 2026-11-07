@@ -16,6 +16,7 @@ import {
   ShieldAlert,
 } from "lucide-react-native";
 import { BudgetIncreaseSheet, type BudgetIncreaseSubmit } from "../../components/BudgetIncreaseSheet";
+import { ItemProblemSheet, type ItemProblemSubmit } from "../../components/ItemProblemSheet";
 import { askForPushInContext } from "../../lib/push";
 import { UserSafetyMenu } from "../../components/UserSafetyMenu";
 import { safetyCounterpart } from "../../lib/safety";
@@ -50,6 +51,7 @@ import {
   getProfileReviews,
   getTask,
   getWorklogs,
+  reportItemProblem,
   requestBudgetIncrease,
   requestTimeExtension,
   resolveExtension,
@@ -215,6 +217,7 @@ export default function TaskDetail() {
   const [reviewOpen, setReviewOpen] = useState(false);
   const [completeOpen, setCompleteOpen] = useState(false);
   const [budgetOpen, setBudgetOpen] = useState(false);
+  const [itemOpen, setItemOpen] = useState(false);
   // The proof-of-work photo, full-screen.
   const [completionPhotoOpen, setCompletionPhotoOpen] = useState(false);
   // The mid-task asks, plus the two numbers that go with them (the currently
@@ -626,6 +629,34 @@ export default function TaskDetail() {
       throw e;
     }
     setBudgetOpen(false);
+    await loadExtensions();
+  }
+
+  // "Problem with an item" (server/item.go). The photo, if any, goes up
+  // through the completion-photo endpoint first (same bucket, this task's
+  // key), and its canonical url rides on the report.
+  async function handleItemProblem(p: ItemProblemSubmit) {
+    try {
+      let photoUrl: string | undefined;
+      if (p.photo) {
+        photoUrl = (await uploadCompletionPhoto(id, p.photo)).url;
+      }
+      await reportItemProblem(id, {
+        item_name: p.itemName,
+        store_name: p.storeName || undefined,
+        outcome: p.outcome,
+        alternative_name: p.alternativeName,
+        alternative_cents: p.alternativeCents,
+        alternative_photo_url: photoUrl,
+      });
+    } catch (e) {
+      handleAuthError(e);
+      throw e;
+    }
+    setItemOpen(false);
+    if (p.outcome === "none") {
+      Alert.alert("They've been told", `You're skipping ${p.itemName}.`);
+    }
     await loadExtensions();
   }
 
@@ -1574,6 +1605,7 @@ export default function TaskDetail() {
             nowMs={now}
             onAskBudget={() => setBudgetOpen(true)}
             onAskTime={handleTimeRequest}
+            onReportItem={() => setItemOpen(true)}
           />
         ) : null}
 
@@ -1853,6 +1885,17 @@ export default function TaskDetail() {
         onClose={() => setCompleteOpen(false)}
         onSubmit={handleCompleteSubmit}
       />
+      <ItemProblemSheet
+        visible={itemOpen}
+        approvedBudgetCents={approvedBudgetCents}
+        timeoutMinutes={extensions?.timeout_minutes ?? 0}
+        onClose={() => setItemOpen(false)}
+        onSubmit={handleItemProblem}
+        onNeedMoreBudget={() => {
+          setItemOpen(false);
+          setBudgetOpen(true);
+        }}
+      />
       <BudgetIncreaseSheet
         visible={budgetOpen}
         approvedBudgetCents={approvedBudgetCents}
@@ -1878,6 +1921,9 @@ function formatCountdown(expiresAt: string, nowMs: number): string {
 
 // What the supporter is asking for, in one phrase, for whichever kind it is.
 function askPhrase(request: ExtensionRequest): string {
+  if (request.kind === "item") {
+    return `${request.alternative_name ?? "the alternative"} instead of ${request.item_name ?? "the item"}`;
+  }
   if (request.kind === "budget") {
     return `${formatCost(request.requested_cents ?? 0)} more`;
   }
@@ -1909,6 +1955,25 @@ function ApprovalCard({
   onDeny: () => void;
 }) {
   const isBudget = request.kind === "budget";
+  if (request.kind === "item") {
+    return (
+      <View className="mb-4 gap-3 rounded-card border border-line bg-surface p-4">
+        <Text className="text-caption font-semibold text-muted">Out of stock</Text>
+        <Text className="text-body text-ink">{request.reason_label}</Text>
+        {request.alternative_photo_url ? (
+          <Image source={{ uri: request.alternative_photo_url }} className="h-40 w-full rounded-sm" resizeMode="cover" />
+        ) : null}
+        <Text className="text-caption text-muted">
+          {formatCountdown(request.expires_at, nowMs)} — no answer: {supporterName} decides.
+        </Text>
+        {error ? <Text className="text-caption text-danger">{error}</Text> : null}
+        <View className="gap-2">
+          <Button label={`Get ${request.alternative_name ?? "the alternative"}`} onPress={onApprove} loading={busy} />
+          <Button label="Skip it" variant="secondary" onPress={onDeny} disabled={busy} />
+        </View>
+      </View>
+    );
+  }
   return (
     <View className="mb-4 gap-3 rounded-card border border-line bg-surface p-4">
       <Text className="text-caption font-semibold text-muted">
@@ -1963,6 +2028,7 @@ function SupporterAskCard({
   nowMs,
   onAskBudget,
   onAskTime,
+  onReportItem,
 }: {
   approvedBudgetCents: number;
   capState: TimeCapState | null;
@@ -1975,13 +2041,20 @@ function SupporterAskCard({
   nowMs: number;
   onAskBudget: () => void;
   onAskTime: (minutes: number) => void;
+  onReportItem: () => void;
 }) {
   const hasBudget = approvedBudgetCents > 0;
   // A resolved request is worth showing only until it has been superseded —
   // and above all when it was DENIED or EXPIRED, because that is the moment
   // the supporter's own fallback becomes the instruction.
+  // An item question's approval is an instruction too ("Buy the
+  // alternative"), so it stays up like the others.
   const showResolved =
-    !pending && latest && (latest.status === "denied" || latest.status === "expired");
+    !pending &&
+    latest &&
+    (latest.status === "denied" ||
+      latest.status === "expired" ||
+      (latest.kind === "item" && latest.status === "approved"));
 
   // The OTHER kind of ask, kept behind a disclosure after a resolution. A
   // denied budget request says nothing about whether the job needs more time,
@@ -2042,7 +2115,11 @@ function SupporterAskCard({
           </Text>
           <Text className="text-caption text-muted">
             {formatCountdown(pending.expires_at, nowMs)}
-            {pending.fallback_instruction ? "" : ` — no answer after ${timeoutMinutes} min counts as a no.`}
+            {pending.kind === "item"
+              ? ` — no answer after ${timeoutMinutes} min: your call.`
+              : pending.fallback_instruction
+                ? ""
+                : ` — no answer after ${timeoutMinutes} min counts as a no.`}
           </Text>
         </View>
       ) : null}
@@ -2057,6 +2134,15 @@ function SupporterAskCard({
             {extensionResolutionTitle(latest)} · {askPhrase(latest)}
           </Text>
           <Text className="text-body text-ink">{extensionResolutionDetail(latest)}</Text>
+          {/* No answer on an item: the supporter decides, and what the
+              requester said about substitutes is what to decide by. */}
+          {latest.kind === "item" && latest.status === "expired" ? (
+            <Text className="text-caption text-muted">
+              {latest.substitution_preference
+                ? `What they asked for: “${latest.substitution_preference}”`
+                : "They didn’t say what to do if something’s out. Pick what’s closest to what they asked for, within the budget, or skip it."}
+            </Text>
+          ) : null}
         </View>
       ) : null}
 
@@ -2074,7 +2160,9 @@ function SupporterAskCard({
           <Button
             label={extensionReaskLabel(latest)}
             variant="text"
-            onPress={latest.kind === "time" ? () => onAskTime(timeChoices[0]) : onAskBudget}
+            onPress={
+              latest.kind === "time" ? () => onAskTime(timeChoices[0]) : latest.kind === "item" ? onReportItem : onAskBudget
+            }
             disabled={busy || (latest.kind === "time" && timeChoices.length === 0)}
           />
 
@@ -2117,6 +2205,14 @@ function SupporterAskCard({
         </View>
       ) : !pending ? (
         <View className="gap-2 border-t border-line pt-3">
+          {hasBudget ? (
+            <Button
+              label="Problem with an item"
+              variant="secondary"
+              onPress={onReportItem}
+              disabled={busy}
+            />
+          ) : null}
           {hasBudget ? (
             <Button
               label="Ask for more budget"

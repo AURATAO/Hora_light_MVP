@@ -76,7 +76,7 @@ function parseDollarsToCents(input: string): number | null {
  * same brandTint + brand pairing §5 specifies for a selected Pill, so it reads
  * as the same idea at a different width.
  */
-function ChoiceRow({
+export function ChoiceRow({
   label,
   selected,
   onPress,

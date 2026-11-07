@@ -188,6 +188,7 @@ function SessionList({ timeline }) {
 // askPhrase (mobile/src/app/task/[id].tsx) word for word.
 function askPhrase(request) {
   if (!request) return ''
+  if (request.kind === 'item') return `${request.alternative_name || 'the alternative'} instead of ${request.item_name || 'the item'}`
   if (request.kind === 'budget') return `${formatCents(request.requested_cents || 0)} more`
   return `${request.requested_minutes || 0} more minutes`
 }
@@ -1292,8 +1293,11 @@ export default function TaskDetail() {
   // A resolved ask is worth showing until it is superseded, and above all when
   // it was DENIED or EXPIRED — that is the moment the supporter's own fallback
   // becomes the instruction.
+  // Item questions are a mobile supporter flow (server/item.go): the web's
+  // supporter card does not report or re-ask them.
   const askResolved = Boolean(
-    !pendingAsk && latestAsk && (latestAsk.status === 'denied' || latestAsk.status === 'expired')
+    !pendingAsk && latestAsk && latestAsk.kind !== 'item' &&
+      (latestAsk.status === 'denied' || latestAsk.status === 'expired')
   )
   // The OTHER kind of ask, kept behind a disclosure after a resolution. A
   // denied budget request says nothing about whether the job needs more time,
@@ -1636,7 +1640,45 @@ export default function TaskDetail() {
             {/* A question with a five-minute fuse on it, so it sits above the
                 travel card and the cost card rather than below them — a
                 requester who has to scroll to find it will not answer in time. */}
-            {isOwner && isTaskActive && pendingAsk && (
+            {/* An out-of-stock item (server/item.go): the same 1/2 choice the
+                text channel asks, as two buttons, for web customers and for
+                numbers that opted out of texts. Nothing here moves money. */}
+            {isOwner && isTaskActive && pendingAsk && pendingAsk.kind === 'item' && (
+              <div className="border border-white/20 rounded-md p-3 space-y-2 text-sm">
+                <div className="text-xs text-white/60">Out of stock</div>
+                <div>{pendingAsk.reason_label}</div>
+                {pendingAsk.alternative_photo_url && (
+                  <img
+                    src={pendingAsk.alternative_photo_url}
+                    alt={pendingAsk.alternative_name || 'The alternative'}
+                    className="w-full max-h-48 object-cover rounded-md"
+                  />
+                )}
+                <div className="text-xs text-white/40">
+                  No answer within {extensions?.timeout_minutes ?? 5} minutes: your supporter decides.
+                </div>
+                {extError && <div className="text-xs text-red-300">{extError}</div>}
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    disabled={extBusy}
+                    onClick={() => resolveAsk(pendingAsk.id, 'approve')}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-white text-black font-medium disabled:opacity-40"
+                  >
+                    1 · Get {pendingAsk.alternative_name || 'the alternative'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={extBusy}
+                    onClick={() => resolveAsk(pendingAsk.id, 'deny')}
+                    className="px-3 py-1.5 text-xs rounded-lg border border-white/20 hover:border-white/40 disabled:opacity-40"
+                  >
+                    2 · Skip it
+                  </button>
+                </div>
+              </div>
+            )}
+            {isOwner && isTaskActive && pendingAsk && pendingAsk.kind !== 'item' && (
               <div className="border border-white/20 rounded-md p-3 space-y-2 text-sm">
                 <div className="text-xs text-white/60">
                   {pendingAsk.kind === 'budget' ? 'Budget request' : 'Time request'}

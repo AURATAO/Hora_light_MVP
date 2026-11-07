@@ -346,6 +346,13 @@ export function extensionDecidedAt(request?: ExtensionRecord | null): string {
  */
 export function extensionResolutionTitle(request?: ExtensionRequest | null): string | null {
   if (!request) return null;
+  if (request.kind === "item") {
+    // Every outcome of an item question is an instruction, the approval too.
+    if (request.status === "approved") return "Alternative chosen";
+    if (request.status === "denied") return "Skip it";
+    if (request.status === "expired") return "No answer";
+    return null;
+  }
   if (request.status === "expired") return "No response";
   if (request.status === "denied") return "Denied";
   return null;
@@ -365,6 +372,11 @@ export function extensionResolutionTitle(request?: ExtensionRequest | null): str
  */
 export function extensionResolutionDetail(request?: ExtensionRequest | null): string | null {
   if (!extensionResolutionTitle(request)) return null;
+  if (request?.kind === "item") {
+    // The server's sentence: "Buy almond milk instead of oat milk." / "Skip
+    // oat milk." / "No answer. It's your call: …".
+    return request.fallback_instruction ?? null;
+  }
   if (request?.fallback_instruction) {
     return request.status === "expired"
       ? `Proceed with your fallback: ${request.fallback_instruction}`
@@ -377,6 +389,7 @@ export function extensionResolutionDetail(request?: ExtensionRequest | null): st
  *  re-ask, labelled for the kind that was just refused so it is obviously the
  *  same request rather than a new idea. */
 export function extensionReaskLabel(request?: ExtensionRequest | null): string {
+  if (request?.kind === "item") return "Problem with another item";
   return request?.kind === "time" ? "Ask for more time again" : "Ask for more budget again";
 }
 
