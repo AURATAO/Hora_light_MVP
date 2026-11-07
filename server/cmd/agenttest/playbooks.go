@@ -270,7 +270,7 @@ func runPBAnswer(a *llm.Anthropic, pbs *llm.PlaybookSet, pb *llm.Playbook, e llm
 		web = append(web, llm.Source{Kind: llm.SourceWeb, Place: fp.Name, Label: w.Domain, URL: "https://" + w.Domain, Text: w.Text})
 		corpus = append(corpus, w.Text)
 	}
-	deps := channel.AnswerDeps{Answerer: &llm.PlaceAnswerer{Model: a}, ScopeAndRules: pbs.PromptBlock(pb), WellKnown: pbs.WebSources.WellKnown}
+	deps := channel.AnswerDeps{Answerer: &llm.PlaceAnswerer{Model: a}, ScopeAndRules: pbs.PromptBlock(pb)}
 	if e.Web != nil {
 		deps.Web, deps.WebPerQuestion, deps.AllowWeb = fixtureWeb{out: web}, 1, func(context.Context) bool { return true }
 	}

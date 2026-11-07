@@ -99,8 +99,6 @@ type EvalPlace struct {
 	Closes             string   `json:"closes"`
 	Opens              string   `json:"opens"`
 	WeekdayHours       []string `json:"weekday_hours"`
-	ReviewSummary      string   `json:"review_summary"`
-	GenerativeSummary  string   `json:"generative_summary"`
 	Editorial          string   `json:"editorial"`
 	Takeout            *bool    `json:"takeout"`
 	Delivery           *bool    `json:"delivery"`
@@ -126,12 +124,6 @@ func (e EvalPlace) Facts() PlaceFacts {
 		Vegetarian: e.Vegetarian, GoodForGroups: e.GoodForGroups, GoodForChildren: e.GoodForChildren,
 		WheelchairEntrance: e.WheelchairEntrance, AcceptsCards: e.Cards, AcceptsNFC: e.NFC, CashOnly: e.CashOnly,
 		Website: e.Website, Lat: e.Lat, Lng: e.Lng,
-	}
-	if e.ReviewSummary != "" {
-		f.ReviewSummary = &Summary{Text: e.ReviewSummary, Disclosure: "Summarized with Gemini", ReviewsURI: "https://maps.google.com/?cid=fixture"}
-	}
-	if e.GenerativeSummary != "" {
-		f.GenerativeSummary = &Summary{Text: e.GenerativeSummary, Disclosure: "Summarized with Gemini"}
 	}
 	f.Editorial = e.Editorial
 	return f

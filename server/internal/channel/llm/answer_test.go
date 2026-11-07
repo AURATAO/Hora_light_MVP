@@ -98,7 +98,7 @@ func TestPlaceAnswerer(t *testing.T) {
 		 "content":[{"type":"text","text":"{\"found\":false,\"answer\":\"x\",\"items\":[\"y\"],\"sources\":[]}"}]}`))
 	})
 	p := &PlaceAnswerer{Model: a}
-	res, err := p.Answer(context.Background(), AnswerRequest{Question: "q", Sources: []Source{{Ref: "s1", Kind: SourceReviewSummary, Text: "t"}}})
+	res, err := p.Answer(context.Background(), AnswerRequest{Question: "q", Sources: []Source{{Ref: "s1", Kind: SourceEditorial, Text: "t"}}})
 	if err != nil || res.Found || res.Answer != "" || res.Items != nil || calls.Load() != 1 {
 		t.Fatalf("%+v %v", res, err)
 	}

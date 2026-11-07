@@ -380,32 +380,25 @@ func CleanPlaceText(s string, max int) string {
 
 // ── answers about a place (D-25) ────────────────────────────────────────
 
-// factsFields: what an answer about a place may use. reviewSummary,
-// generativeSummary, editorialSummary, takeout, delivery, dineIn,
-// servesVegetarianFood, goodForGroups, goodForChildren and paymentOptions
-// are Enterprise + Atmosphere fields, so every lookup is Place Details
-// Enterprise + Atmosphere ($25 / 1,000, 1,000 free a month — price list
-// checked 2026-11-06). accessibilityOptions is Pro, location Essentials,
-// rating / hours / priceLevel / priceRange / websiteUri Enterprise: all in
-// the same request at no extra cost. Review and generative summaries are
-// English in the United States (Google's availability table, 2026-11-06)
-// and "not guaranteed for all places". No reviews, photos or phone numbers
-// are asked for. Nothing from here is stored: each question looks it up
-// again (Google's caching policy allows place ids only).
+// factsFields: what an answer about a place may use. editorialSummary,
+// takeout, delivery, dineIn, servesVegetarianFood, goodForGroups,
+// goodForChildren and paymentOptions are Enterprise + Atmosphere fields,
+// so every lookup is Place Details Enterprise + Atmosphere ($25 / 1,000,
+// 1,000 free a month — price list checked 2026-11-06). accessibilityOptions
+// is Pro, location Essentials, rating / hours / priceLevel / priceRange /
+// websiteUri Enterprise: all in the same request at no extra cost. Google's
+// AI summaries (reviewSummary, generativeSummary) are not asked for: their
+// attribution (heading, disclosure, reviews and report links) does not fit
+// a text message, and dropping them does not lower the SKU — the fields
+// above keep it at Enterprise + Atmosphere (checked 2026-11-07). No
+// reviews, photos or phone numbers are asked for. Nothing from here is
+// stored: each question looks it up again (Google's caching policy allows
+// place ids only).
 const factsFields = aboutFields + ",location,websiteUri,priceRange,regularOpeningHours,editorialSummary," +
-	"reviewSummary.text,reviewSummary.disclosureText,reviewSummary.flagContentUri,reviewSummary.reviewsUri," +
-	"generativeSummary.overview,generativeSummary.disclosureText," +
 	"takeout,delivery,dineIn,servesVegetarianFood,goodForGroups,goodForChildren,accessibilityOptions,paymentOptions"
 
 // FactsUSD is the list price of one PlaceFacts lookup.
 const FactsUSD = 0.025
-
-// Summary is one of Google's AI summaries with its attribution parts.
-type Summary struct {
-	Text       string
-	Disclosure string // "Summarized with Gemini", localized by Google
-	ReviewsURI string // review summary: link to the place's reviews on Google Maps
-}
 
 // PlaceFacts is a place's details for an answer. A nil *bool is "Google
 // doesn't say".
@@ -413,8 +406,6 @@ type PlaceFacts struct {
 	Place
 	PriceRange         string
 	WeekdayHours       []string
-	ReviewSummary      *Summary
-	GenerativeSummary  *Summary
 	Editorial          string
 	Takeout            *bool
 	Delivery           *bool
@@ -453,22 +444,13 @@ type factsWire struct {
 	RegularOpeningHours *struct {
 		WeekdayDescriptions []string `json:"weekdayDescriptions"`
 	} `json:"regularOpeningHours"`
-	EditorialSummary *localizedText `json:"editorialSummary"`
-	ReviewSummary    *struct {
-		Text           localizedText `json:"text"`
-		DisclosureText localizedText `json:"disclosureText"`
-		ReviewsURI     string        `json:"reviewsUri"`
-	} `json:"reviewSummary"`
-	GenerativeSummary *struct {
-		Overview       localizedText `json:"overview"`
-		DisclosureText localizedText `json:"disclosureText"`
-	} `json:"generativeSummary"`
-	Takeout              *bool `json:"takeout"`
-	Delivery             *bool `json:"delivery"`
-	DineIn               *bool `json:"dineIn"`
-	ServesVegetarianFood *bool `json:"servesVegetarianFood"`
-	GoodForGroups        *bool `json:"goodForGroups"`
-	GoodForChildren      *bool `json:"goodForChildren"`
+	EditorialSummary     *localizedText `json:"editorialSummary"`
+	Takeout              *bool          `json:"takeout"`
+	Delivery             *bool          `json:"delivery"`
+	DineIn               *bool          `json:"dineIn"`
+	ServesVegetarianFood *bool          `json:"servesVegetarianFood"`
+	GoodForGroups        *bool          `json:"goodForGroups"`
+	GoodForChildren      *bool          `json:"goodForChildren"`
 	AccessibilityOptions *struct {
 		WheelchairAccessibleEntrance *bool `json:"wheelchairAccessibleEntrance"`
 	} `json:"accessibilityOptions"`
@@ -490,8 +472,7 @@ func PlaceFactsLookup(ctx context.Context, id string, loc *time.Location) (f Pla
 			attribute.String("hora.source", "google_places_details"),
 			attribute.String("hora.places.sku", "place_details_enterprise_atmosphere"),
 			attribute.Float64("hora.cost_usd_est", FactsUSD),
-			attribute.Bool("hora.places.review_summary", f.ReviewSummary != nil),
-			attribute.Bool("hora.places.generative_summary", f.GenerativeSummary != nil),
+			attribute.Bool("hora.places.editorial", f.Editorial != ""),
 			attribute.Int64("hora.places.latency_ms", time.Since(start).Milliseconds()),
 			attribute.Int("http.status_code", httpStatus),
 		)
@@ -534,12 +515,6 @@ func (w factsWire) facts(loc *time.Location) PlaceFacts {
 	}
 	if e := w.EditorialSummary; e != nil {
 		f.Editorial = CleanPlaceText(e.Text, 600)
-	}
-	if r := w.ReviewSummary; r != nil && strings.TrimSpace(r.Text.Text) != "" {
-		f.ReviewSummary = &Summary{Text: CleanPlaceText(r.Text.Text, 1200), Disclosure: CleanPlaceText(r.DisclosureText.Text, 80), ReviewsURI: CleanPlaceText(r.ReviewsURI, 300)}
-	}
-	if g := w.GenerativeSummary; g != nil && strings.TrimSpace(g.Overview.Text) != "" {
-		f.GenerativeSummary = &Summary{Text: CleanPlaceText(g.Overview.Text, 600), Disclosure: CleanPlaceText(g.DisclosureText.Text, 80)}
 	}
 	f.Takeout, f.Delivery, f.DineIn, f.Vegetarian = w.Takeout, w.Delivery, w.DineIn, w.ServesVegetarianFood
 	f.GoodForGroups, f.GoodForChildren = w.GoodForGroups, w.GoodForChildren

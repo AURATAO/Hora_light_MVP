@@ -82,11 +82,10 @@ const (
 	CopyLiveUnknown    = "I can't see that from here: Google Maps doesn't show it live."
 	CopyNothingFound   = "I couldn't find that for %s on Google Maps or their website."
 	CopyAllergy        = "For allergies, your supporter can ask staff, but I can't guarantee it."
-	CopyAnswerFrom     = "From %s."        // "From Google Maps." / "From Google Maps and x.com (web search)."
-	CopyFromWebSite    = "%s (web search)" // one web page's domain
+	CopyNoMenu         = "I don't have their menu, but your supporter can get their most popular %s. Want me to set that up at %s?"
+	CopyFromGoogle     = "From Google Maps."
+	CopyFromTheirSite  = "From their website." // no domain: a texted domain becomes a link
 	CopyHoursChange    = "Hours can change."
-	CopyReviewsLink    = "Reviews: %s" // Google's reviewsUri — always the very last thing
-	CopyGeminiDefault  = "Summarized with Gemini"
 	CopyHoursNone      = "Google Maps doesn't list %s's hours."
 	CopyPriceLevel     = "Google Maps lists %s as %s."
 	CopyPriceRange     = "Google Maps lists %s as %s, about %s a person."
@@ -121,8 +120,7 @@ type AnswerDeps struct {
 	Web      llm.WebSearcher
 	// AllowWeb counts one web search against the daily cap (nil: none).
 	AllowWeb       func(ctx context.Context) bool
-	WebPerQuestion int
-	WellKnown      []string
+	WebPerQuestion int    // > 0 turns the web step on (one search of the place's own site)
 	ScopeAndRules  string // the playbook's prompt block
 	Geocode        func(ctx context.Context, addr string) (lat, lng float64, err error)
 }
@@ -135,7 +133,9 @@ type AnswerReply struct {
 	Check   bool     // a YES sends someone to check / ask
 	Ask     string   // the question the supporter asks there
 	// For reports and traces.
-	Source      string // places_facts | places_summary | web | none | live
+	Source string // places_facts | places_summary (editorial) | web | none | live
+	// OfferIn: the offer is already in the answer's own copy (CopyNoMenu).
+	OfferIn     bool
 	ModelCalls  int
 	WebSearches int
 	Refused     bool // the model's answer failed AnswerOK: fixed wording sent
@@ -171,7 +171,6 @@ func BuildAnswer(ctx context.Context, d AnswerDeps, q AnswerQuestion) AnswerRepl
 	p := q.Facts[k]
 	rep.Suggest = k
 	var lines []string
-	var attribution sourceCredits
 	allergy := allergyRE.MatchString(q.Text)
 	usedGoogleData := false
 
@@ -224,10 +223,21 @@ func BuildAnswer(ctx context.Context, d AnswerDeps, q AnswerQuestion) AnswerRepl
 		for _, f := range places {
 			sources = append(sources, cleanSources(llm.SummarySources(f, len(sources)))...)
 		}
-		res, ok := modelAnswer(ctx, d, q, places, sources, &rep)
-		if !ok && len(places) == 1 && q.Playbook.HasSource("web") && d.Web != nil && d.WebPerQuestion > 0 && d.AllowWeb != nil && q.Topic != "pick" && d.AllowWeb(ctx) {
+		// What to get: Google's editorial summary only when it names
+		// something to get; else one search of the place's own website.
+		namesItems := func(res llm.AnswerResult, ok bool) bool {
+			return ok && (q.Topic != "menu" || len(places) > 1 || len(res.Items) > 0)
+		}
+		var res llm.AnswerResult
+		ok := false
+		if len(sources) > 0 {
+			res, ok = modelAnswer(ctx, d, q, places, sources, &rep)
+			ok = namesItems(res, ok)
+		}
+		own := llm.HostOfURL(p.Website)
+		if !ok && len(places) == 1 && own != "" && q.Playbook.HasSource("web") && d.Web != nil && d.WebPerQuestion > 0 && d.AllowWeb != nil && q.Topic != "pick" && d.AllowWeb(ctx) {
 			web, st, err := d.Web.SearchWeb(ctx, llm.WebRequest{Place: p.Name, Address: firstNonEmpty(p.FullAddress, p.Address), Question: q.Text,
-				OwnDomain: llm.HostOfURL(p.Website), Domains: d.WellKnown, MaxUses: d.WebPerQuestion})
+				OwnDomain: own, MaxUses: 1})
 			rep.WebSearches += st.Searches
 			rep.WebUsage = st.Usage
 			if err != nil {
@@ -239,8 +249,10 @@ func BuildAnswer(ctx context.Context, d AnswerDeps, q AnswerQuestion) AnswerRepl
 			}
 			if len(web) > 0 {
 				sources = web
-				if res, ok = modelAnswer(ctx, d, q, places, sources, &rep); ok {
+				if res, ok = modelAnswer(ctx, d, q, places, sources, &rep); namesItems(res, ok) {
 					rep.Source = "web"
+				} else {
+					ok = false
 				}
 			}
 		}
@@ -250,18 +262,18 @@ func BuildAnswer(ctx context.Context, d AnswerDeps, q AnswerQuestion) AnswerRepl
 			if len(places) == 1 {
 				rep.Items = completeItems(res.Items, sources) // an order is for one place only
 			}
-			attribution = sourceAttribution(res.Sources, sources, places)
+			usedGoogleData = rep.Source != "web"
 		case q.Topic == "compare" && len(places) > 1:
 			rep.Source, usedGoogleData = "places_facts", true
 			lines = append(lines, CopyCompareFacts)
 		case q.Topic == "pick" && len(places) > 1:
 			rep.Source, usedGoogleData = "places_facts", true
 			lines = append(lines, fmt.Sprintf(CopyAboutPick, p.Name))
-		case q.Topic == "menu" && AboutItemOK(q.Item) && !allergy:
+		case q.Topic == "menu" && !allergy:
 			rep.Source = "none"
-			item := strings.ToLower(strings.TrimSpace(q.Item))
-			lines = append(lines, fmt.Sprintf(CopyNothingFound, p.Name))
-			rep.Check, rep.Ask = true, fmt.Sprintf("what their most popular %s is, and get that", item)
+			item := popularWord(q.Item)
+			lines = append(lines, fmt.Sprintf(CopyNoMenu, item, p.Name))
+			rep.Check, rep.Ask, rep.OfferIn = true, fmt.Sprintf("what their most popular %s is, and get that", item), true
 		default:
 			rep.Source = "none"
 			lines = append(lines, fmt.Sprintf(CopyNothingFound, p.Name))
@@ -275,11 +287,12 @@ func BuildAnswer(ctx context.Context, d AnswerDeps, q AnswerQuestion) AnswerRepl
 		rep.Items, rep.Check, rep.Ask = nil, true, strings.TrimSpace(q.Text)
 	}
 
-	// The message: the answer, the option lines only where they add
-	// something (several places, or hours and distance), the offer, then
-	// one attribution line with Google's reviews link last.
+	// The message: one or two sentences, the option lines only where they
+	// add something (several places, or hours and distance), the offer,
+	// then one short attribution line when Google's data or the place's
+	// website is shown. No links.
 	var b strings.Builder
-	b.WriteString(strings.Join(lines, " ") + "\n\n")
+	b.WriteString(strings.Join(lines, " "))
 	var shown []int
 	switch {
 	case q.Topic == "compare" || (q.Topic == "pick" && q.Asked < 0):
@@ -287,26 +300,30 @@ func BuildAnswer(ctx context.Context, d AnswerDeps, q AnswerQuestion) AnswerRepl
 	case q.Topic == "hours" || q.Topic == "live" || q.Topic == "closest":
 		shown = []int{k}
 	}
-	for _, i := range shown {
-		fmt.Fprintf(&b, "%d. %s\n", i+1, aboutFacts(q.Facts[i].Place))
-	}
 	if len(shown) > 0 {
 		b.WriteString("\n")
 	}
-	_ = usedGoogleData
-	switch {
-	case len(rep.Items) > 0:
-		fmt.Fprintf(&b, CopyOfferItems, joinItems(rep.Items), p.Name)
-	case rep.Check && rep.Source == "live":
-		fmt.Fprintf(&b, CopyOfferCheck, p.Name)
-	case rep.Check:
-		fmt.Fprintf(&b, CopyOfferAsk, p.Name)
-	case len(q.Facts) > 1:
-		fmt.Fprintf(&b, CopyAboutAskOr, p.Name)
-	default:
-		fmt.Fprintf(&b, CopyAboutAsk, p.Name)
+	for _, i := range shown {
+		fmt.Fprintf(&b, "\n%d. %s", i+1, aboutFacts(q.Facts[i].Place))
 	}
-	b.WriteString("\n" + attributionLine(attribution, len(shown) > 0 || q.Topic == "hours"))
+	if !rep.OfferIn {
+		b.WriteString("\n\n")
+		switch {
+		case len(rep.Items) > 0:
+			fmt.Fprintf(&b, CopyOfferItems, joinItems(rep.Items), p.Name)
+		case rep.Check && rep.Source == "live":
+			fmt.Fprintf(&b, CopyOfferCheck, p.Name)
+		case rep.Check:
+			fmt.Fprintf(&b, CopyOfferAsk, p.Name)
+		case len(q.Facts) > 1:
+			fmt.Fprintf(&b, CopyAboutAskOr, p.Name)
+		default:
+			fmt.Fprintf(&b, CopyAboutAsk, p.Name)
+		}
+	}
+	if a := attributionLine(rep.Source == "web", usedGoogleData || len(shown) > 0, len(shown) > 0 || q.Topic == "hours"); a != "" {
+		b.WriteString("\n" + a)
+	}
 	rep.Text = b.String()
 	return rep
 }
@@ -488,86 +505,34 @@ func normText(s string) string {
 	return strings.Join(strings.Fields(nameKeyRE.ReplaceAllString(strings.ReplaceAll(s, "'", ""), " ")), " ")
 }
 
-// sourceCredits: what the sources used require to be shown — Google's
-// Gemini disclosure (once, however many summaries were used), the links to
-// the reviews for a review summary, and the web pages' domains.
-type sourceCredits struct {
-	Disclosure  string
-	ReviewLinks []string
-	WebSites    []string
-}
-
-func sourceAttribution(used []string, sources []llm.Source, places []llm.PlaceFacts) sourceCredits {
-	byRef := map[string]llm.Source{}
-	for _, s := range sources {
-		byRef[s.Ref] = s
+// attributionLine: "From Google Maps." when Google's data is shown
+// ("Hours can change." after hours), "From their website." for an answer
+// from the place's own site, "" when the message shows neither.
+func attributionLine(web, google, hours bool) string {
+	var parts []string
+	switch {
+	case web:
+		parts = append(parts, CopyFromTheirSite)
+	case google:
+		parts = append(parts, CopyFromGoogle)
 	}
-	if len(used) == 0 {
-		for _, s := range sources {
-			used = append(used, s.Ref)
-		}
-	}
-	var c sourceCredits
-	seen := map[string]bool{}
-	once := func(l string) bool {
-		if l == "" || seen[l] {
-			return false
-		}
-		seen[l] = true
-		return true
-	}
-	for _, ref := range used {
-		s, ok := byRef[ref]
-		if !ok {
-			continue
-		}
-		var f *llm.PlaceFacts
-		for i := range places {
-			if places[i].Name == s.Place {
-				f = &places[i]
-			}
-		}
-		switch s.Kind {
-		case llm.SourceReviewSummary:
-			if f != nil && f.ReviewSummary != nil {
-				c.Disclosure = firstNonEmpty(c.Disclosure, firstNonEmpty(f.ReviewSummary.Disclosure, CopyGeminiDefault))
-				if u := f.ReviewSummary.ReviewsURI; once(u) {
-					c.ReviewLinks = append(c.ReviewLinks, u)
-				}
-			}
-		case llm.SourceGenerativeSummary:
-			if f != nil && f.GenerativeSummary != nil {
-				c.Disclosure = firstNonEmpty(c.Disclosure, firstNonEmpty(f.GenerativeSummary.Disclosure, CopyGeminiDefault))
-			}
-		case llm.SourceWeb:
-			if once("web:" + s.Label) {
-				c.WebSites = append(c.WebSites, fmt.Sprintf(CopyFromWebSite, s.Label))
-			}
-		}
-	}
-	return c
-}
-
-// attributionLine: the one line at the end of an answer — "From Google
-// Maps. Summarized with Gemini. Reviews: https://…". Google's disclosure is
-// shown as Google words it; the reviews link goes last, as Google gives it
-// (its policy names reviewsUri and allows no other link in its place).
-func attributionLine(c sourceCredits, hours bool) string {
-	parts := []string{fmt.Sprintf(CopyAnswerFrom, joinAnd(append([]string{"Google Maps"}, c.WebSites...)))}
 	if hours {
 		parts = append(parts, CopyHoursChange)
 	}
-	if c.Disclosure != "" {
-		d := strings.TrimSpace(c.Disclosure)
-		if !strings.HasSuffix(d, ".") {
-			d += "."
-		}
-		parts = append(parts, d)
-	}
-	if len(c.ReviewLinks) > 0 {
-		parts = append(parts, fmt.Sprintf(CopyReviewsLink, strings.Join(c.ReviewLinks, " ")))
-	}
 	return strings.Join(parts, " ")
+}
+
+// popularWord: what "their most popular …" is — the customer's own word
+// for it, a slice for pizza, else "item".
+func popularWord(item string) string {
+	w := strings.ToLower(strings.TrimSpace(item))
+	switch {
+	case w == "pizza" || w == "pizzas" || w == "slices":
+		return "slice"
+	case !AboutItemOK(w):
+		return "item"
+	}
+	return w
 }
 
 // joinAnd: "a", "a and b", "a, b and c".
@@ -867,7 +832,7 @@ func (r *Router) answerFromSources(ctx context.Context, in Inbound, id Identity,
 	facts := r.factsFor(ctx, id, offer, want)
 	pb := r.Playbooks.ByID(firstNonEmpty(res.Playbook, offer.Playbook))
 	day := r.now().In(r.loc()).Format("2006-01-02")
-	deps := AnswerDeps{Answerer: r.Answerer, Web: r.Web, WebPerQuestion: r.WebLimits.PerQuestion, WellKnown: r.Playbooks.WebSources.WellKnown,
+	deps := AnswerDeps{Answerer: r.Answerer, Web: r.Web, WebPerQuestion: r.WebLimits.PerQuestion,
 		ScopeAndRules: r.Playbooks.PromptBlock(pb), Geocode: r.Geocode}
 	if q, ok := r.DiscoveryStore.(WebQuota); ok && r.WebLimits.PerDay > 0 {
 		deps.AllowWeb = func(c context.Context) bool {

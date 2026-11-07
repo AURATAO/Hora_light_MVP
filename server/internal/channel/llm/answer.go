@@ -19,18 +19,12 @@ import (
 // ("what is the best flavor?", "are they open Sunday?") and HO:RA answers
 // with real data only, then offers the errand. The facts Google gives as
 // fields (hours, takeout, payment…) are rendered by rule in the router;
-// what only a summary can answer ("what's good there?") is written by the
-// model from the sources below, and the router checks every name, number
+// what only text can answer ("what's good there?") is written by the
+// model from the sources below — Google's editorial summary, then the
+// place's own website, and the router checks every name, number
 // and item in it against them before it is sent. Nothing here is stored:
-// summaries and excerpts are looked up fresh for each question (Google's
+// the editorial summary and excerpts are looked up fresh for each question (Google's
 // terms) and live only for this turn.
-
-// Summary is one of Google's AI summaries with what its attribution needs.
-type Summary struct {
-	Text       string
-	Disclosure string // "Summarized with Gemini" (Google's localized text)
-	ReviewsURI string // a review summary's link to the place's reviews
-}
 
 // PlaceFacts is one place's details for an answer (Place Details,
 // Enterprise + Atmosphere). A nil *bool is "Google doesn't say".
@@ -38,9 +32,7 @@ type PlaceFacts struct {
 	Place
 	PriceRange         string   // "$10–20", "" unknown
 	WeekdayHours       []string // "Monday: 11:00 AM – 11:00 PM", Monday first
-	ReviewSummary      *Summary
-	GenerativeSummary  *Summary
-	Editorial          string
+	Editorial          string   // Google's editorialSummary ("" none)
 	Takeout            *bool
 	Delivery           *bool
 	DineIn             *bool
@@ -64,7 +56,7 @@ type FactSource interface {
 // Source is one text an answer may be made from, for this turn only.
 type Source struct {
 	Ref   string // s1, s2…
-	Kind  string // google_review_summary | google_generative_summary | google_editorial | web
+	Kind  string // google_editorial | web
 	Place string // the place it is about (Google's name)
 	Label string // web: the domain
 	URL   string
@@ -73,13 +65,13 @@ type Source struct {
 
 // SourceKinds.
 const (
-	SourceReviewSummary     = "google_review_summary"
-	SourceGenerativeSummary = "google_generative_summary"
-	SourceEditorial         = "google_editorial"
-	SourceWeb               = "web"
+	SourceEditorial = "google_editorial"
+	SourceWeb       = "web"
 )
 
-// SummarySources: a place's summaries as sources, refs numbered from n.
+// SummarySources: a place's editorial summary as a source, refs numbered
+// from n. Google's AI summaries (review, generative) are never used: their
+// attribution does not fit a text message.
 func SummarySources(f PlaceFacts, n int) []Source {
 	var out []Source
 	add := func(kind, text string) {
@@ -87,12 +79,6 @@ func SummarySources(f PlaceFacts, n int) []Source {
 			n++
 			out = append(out, Source{Ref: fmt.Sprintf("s%d", n), Kind: kind, Place: f.Name, Text: t})
 		}
-	}
-	if f.ReviewSummary != nil {
-		add(SourceReviewSummary, f.ReviewSummary.Text)
-	}
-	if f.GenerativeSummary != nil {
-		add(SourceGenerativeSummary, f.GenerativeSummary.Text)
 	}
 	add(SourceEditorial, f.Editorial)
 	return out
@@ -127,14 +113,14 @@ type Answerer interface {
 type PlaceAnswerer struct{ Model *Anthropic }
 
 // AnswerPromptVersion labels AnswerPrompt in traces and reports.
-const AnswerPromptVersion = "a0.1"
+const AnswerPromptVersion = "a0.2"
 
 // AnswerPrompt is the system prompt (fixed text, cached).
-const AnswerPrompt = `You are HO:RA's answer writer. HO:RA is an errand service in New York City: real people ("supporters") run errands. A customer asked a question about a place HO:RA showed them. You answer ONLY from the SOURCES you are given — Google's summaries of the place, or excerpts from web pages — and HO:RA then offers to send a supporter.
+const AnswerPrompt = `You are HO:RA's answer writer. HO:RA is an errand service in New York City: real people ("supporters") run errands. A customer asked a question about a place HO:RA showed them. You answer ONLY from the SOURCES you are given — Google Maps' editorial summary of the place, or excerpts from the place's own website — and HO:RA then offers to send a supporter.
 
 Return ONE JSON object:
-- "found": true only when the sources answer the question. false when they do not, or say nothing relevant. Never fill a gap from memory: no dish, flavor, item, price or fact that no source states.
-- "answer": when found, one or two short plain sentences that say where it comes from — "Reviews mention their spicy vodka slice and the Margherita.", "Their menu lists dan dan noodles and cumin lamb noodles." Use a place's name exactly as given. When not found, "".
+- "found": true only when the sources answer the question. For what to get or order, that means a source names a specific dish or item; a description with no item ("a popular pizzeria") is found=false. false when they do not, or say nothing relevant. Never fill a gap from memory: no dish, flavor, item, price or fact that no source states.
+- "answer": when found, one or two short plain sentences (under 160 characters) that say where it comes from — "Google Maps says they're known for their spicy vodka slice and the Margherita.", "Their menu lists dan dan noodles and cumin lamb noodles." Never say reviews or reviewers: no source is a review. Use a place's name exactly as given. When not found, "".
 - "items": when the question is what to get or order, the things a supporter could buy there, each copied exactly as a source writes it (at most 3, best first); else [].
 - "sources": the refs ("s1", "s2") of the sources the answer uses.
 
@@ -294,7 +280,8 @@ const webPrompt = `You look up one place in New York City for HO:RA, an errand s
 
 // SearchWeb runs one call with the web search tool. A 400 naming a domain
 // the crawler cannot reach is retried once without the place's own domain
-// (the well-known list is kept free of those).
+// when well-known domains are left to search (the list is kept free of
+// those); an answer searches the place's own site only, so it is not.
 func (w *AnthropicWeb) SearchWeb(ctx context.Context, req WebRequest) (out []Source, st WebStats, err error) {
 	ctx, sp := tracing.StartSpan(ctx, "web.search", tracing.KindTool)
 	start := time.Now()
@@ -317,7 +304,7 @@ func (w *AnthropicWeb) SearchWeb(ctx context.Context, req WebRequest) (out []Sou
 		return nil, st, ErrDiscoveryUnavailable
 	}
 	out, st, err = w.search(ctx, req)
-	if err != nil && req.OwnDomain != "" && strings.Contains(err.Error(), "status 400") {
+	if err != nil && req.OwnDomain != "" && len(req.Domains) > 0 && strings.Contains(err.Error(), "status 400") {
 		req.OwnDomain = ""
 		var st2 WebStats
 		out, st2, err = w.search(ctx, req)

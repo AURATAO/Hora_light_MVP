@@ -15,15 +15,14 @@ const factsBody = `{"id":"gN","displayName":{"text":"Nolita Pizza"},"shortFormat
  "priceRange":{"startPrice":{"currencyCode":"USD","units":"10"},"endPrice":{"currencyCode":"USD","units":"20"}},
  "location":{"latitude":40.7215,"longitude":-73.9962},"websiteUri":"https://www.nolitapizza.example/menu",
  "regularOpeningHours":{"weekdayDescriptions":["Monday: 11:00 AM – 11:00 PM","Sunday: 12:00 – 10:00 PM"]},
- "reviewSummary":{"text":{"text":"People love the spicy vodka slice.","languageCode":"en-US"},"disclosureText":{"text":"Summarized with Gemini"},"reviewsUri":"https://maps.google.com/?cid=1&reviews"},
- "generativeSummary":{"overview":{"text":"Counter-service pizzeria."},"disclosureText":{"text":"Summarized with Gemini"}},
+ "editorialSummary":{"text":"Classic slice shop known for its spicy vodka slice.","languageCode":"en"},
  "takeout":true,"delivery":false,"servesVegetarianFood":true,
  "accessibilityOptions":{"wheelchairAccessibleEntrance":true},
  "paymentOptions":{"acceptsCreditCards":false,"acceptsDebitCards":true,"acceptsCashOnly":false,"acceptsNfc":true}}`
 
 // The answer lookup asks for the Atmosphere fields it uses and nothing
-// that costs more or must not be shown (reviews, photos, phone numbers),
-// and reads Google's nested shapes.
+// that costs more or must not be shown (reviews, photos, phone numbers,
+// Google's AI summaries), and reads Google's nested shapes.
 func TestPlaceFactsLookup(t *testing.T) {
 	var mask string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -40,9 +39,14 @@ func TestPlaceFactsLookup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"reviewSummary.text", "reviewSummary.reviewsUri", "generativeSummary.overview", "servesVegetarianFood", "paymentOptions", "regularOpeningHours", "location"} {
+	for _, want := range []string{"editorialSummary", "servesVegetarianFood", "paymentOptions", "regularOpeningHours", "location"} {
 		if !strings.Contains(mask, want) {
 			t.Errorf("mask lacks %s", want)
+		}
+	}
+	for _, bad := range []string{"reviewSummary", "generativeSummary"} {
+		if strings.Contains(mask, bad) {
+			t.Errorf("mask asks for %s (its attribution does not fit a text)", bad)
 		}
 	}
 	for _, bad := range []string{"Phone", "photos", ",reviews,", "reviews,"} {
@@ -56,8 +60,8 @@ func TestPlaceFactsLookup(t *testing.T) {
 	if f.Name != "Nolita Pizza" || f.PriceRange != "$10–20" || f.PriceLevel != 1 || f.Lat == 0 || f.Website == "" {
 		t.Fatalf("facts %+v", f)
 	}
-	if f.ReviewSummary == nil || f.ReviewSummary.Disclosure != "Summarized with Gemini" || f.ReviewSummary.ReviewsURI == "" || f.GenerativeSummary == nil {
-		t.Fatalf("summaries %+v %+v", f.ReviewSummary, f.GenerativeSummary)
+	if f.Editorial != "Classic slice shop known for its spicy vodka slice." {
+		t.Fatalf("editorial %q", f.Editorial)
 	}
 	if f.Takeout == nil || !*f.Takeout || f.Delivery == nil || *f.Delivery || f.GoodForGroups != nil {
 		t.Fatal("booleans")

@@ -134,12 +134,6 @@ func (placesSearcher) PlaceFacts(ctx context.Context, id string) (llm.PlaceFacts
 		Takeout: f.Takeout, Delivery: f.Delivery, DineIn: f.DineIn, Vegetarian: f.Vegetarian, GoodForGroups: f.GoodForGroups,
 		GoodForChildren: f.GoodForChildren, WheelchairEntrance: f.WheelchairEntrance, AcceptsCards: f.AcceptsCards,
 		AcceptsNFC: f.AcceptsNFC, CashOnly: f.CashOnly, Website: f.Website, Lat: f.Lat, Lng: f.Lng}
-	if s := f.ReviewSummary; s != nil {
-		out.ReviewSummary = &llm.Summary{Text: s.Text, Disclosure: s.Disclosure, ReviewsURI: s.ReviewsURI}
-	}
-	if s := f.GenerativeSummary; s != nil {
-		out.GenerativeSummary = &llm.Summary{Text: s.Text, Disclosure: s.Disclosure}
-	}
 	return out, nil
 }
 
