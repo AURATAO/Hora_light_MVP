@@ -82,7 +82,7 @@ const (
 	CopyWhichSupporterMidQuestion = "Which supporter is that for? Start with their name — %s."
 	CopyHoldGone                  = "Your supporter has finished, so I couldn't pass that on. Tell me if you need something new."
 	CopyRelayWhileBudget          = "(To answer %[1]s, reply to this message. An amount sent on its own answers my question above about the shopping budget.)"
-	CopyAmbiguousYes              = "I can't tell which message that answers. To answer my question, send YES or NO on its own; to answer your supporter, reply to their message."
+	CopyAmbiguousYes              = "I can't tell which message that answers. To answer my question, send just your answer on its own; to answer your supporter, reply to their message."
 	CopyRelayGone                 = "That task has finished, so I can't pass this on. Tell me if you need something new."
 	CopyHoldDropped               = "OK, I won't send that."
 	CopyBackToHold                = "Your earlier message is still waiting — which task is it for?"

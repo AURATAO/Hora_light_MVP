@@ -4,10 +4,6 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { Briefcase, MapPin } from "lucide-react-native";
 import { AvailabilityCard } from "../../components/AvailabilityCard";
 import { askForPushInContext } from "../../lib/push";
-
-// The board asks (or re-registers a granted device) once per app session, not
-// on every focus.
-let pushAskedThisSession = false;
 import { SupporterStatusBanner } from "../../components/SupporterStatusBanner";
 import { Card, EmptyState, Screen, Skeleton } from "../../components/ui";
 import { ApiError, getAppConfig, getAvailableTasks, getProfile } from "../../lib/api";
@@ -15,6 +11,10 @@ import { getCategoryMeta } from "../../lib/categories";
 import { formatCost, formatMinutes, formatScheduledAt } from "../../lib/task-utils";
 import type { Profile, Task } from "../../lib/types";
 import { color, size } from "../../theme/tokens";
+
+// The board asks (or re-registers a granted device) once per app session, not
+// on every focus.
+let pushAskedThisSession = false;
 
 function formatWhen(task: Task): string {
   if (task.is_immediate) return "ASAP";
