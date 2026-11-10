@@ -114,6 +114,8 @@ func (o opsEmailNotifier) NotifyOps(ctx context.Context, n channel.HandoffNotice
 		subject = fmt.Sprintf("[HO:RA] Chat handoff — new message — %s %s", n.Channel, n.PhoneHint)
 	} else if n.Reason == channel.HandoffBookingFailed {
 		subject = fmt.Sprintf("[HO:RA] Text booking failed — %s %s", n.Channel, n.PhoneHint)
+	} else if n.Reason == channel.HandoffSupporterInterest {
+		subject = fmt.Sprintf("[HO:RA] Someone asked about becoming a supporter — %s %s", n.Channel, n.PhoneHint)
 	} else if n.Reason == channel.HandoffScopeUnchecked && n.Urgent {
 		subject = fmt.Sprintf("[HO:RA] URGENT chat handoff (%s) — %s %s", n.UrgentReason, n.Channel, n.PhoneHint)
 	} else if n.Reason == channel.HandoffScopeAlert {
@@ -151,7 +153,8 @@ func (o opsEmailNotifier) NotifyOps(ctx context.Context, n channel.HandoffNotice
 			}
 		}
 	}
-	if !n.Update && !n.AutoReleased && o.sms != nil {
+	// Supporter interest is a non-urgent notice: email only.
+	if !n.Update && !n.AutoReleased && o.sms != nil && n.Reason != channel.HandoffSupporterInterest {
 		text := fmt.Sprintf("[HO:RA] Chat handoff (%s) — %s %s. Details in the ops email / admin.", reasonLabelOps(n.Reason), n.Channel, n.PhoneHint)
 		if n.OptedOut {
 			text = fmt.Sprintf("[HO:RA] Texts stopped — %s %s opted out%s. Details in the ops email.", n.Channel, n.PhoneHint, optOutTasksShort(n))
@@ -246,6 +249,10 @@ func opsNoticeHTML(n channel.HandoffNotice, who string) string {
 	}
 	if n.AutoReleased {
 		heading = fmt.Sprintf("No one replied within %s — the chat went back to the bot and the person was told. Follow up by email if it was a payment or a problem.", channel.HandoffTimeout)
+	}
+	if n.Reason == channel.HandoffSupporterInterest {
+		// Not a hand-off: the bot sent the application link.
+		heading = "Someone texted HO:RA asking about becoming a supporter. The bot sent them the application link; the chat is still with the bot. Nothing to do unless you want to follow up."
 	}
 	if n.Reason == channel.HandoffScopeAlert {
 		// Not a hand-off: the person got only the decline; the chat is
@@ -434,6 +441,8 @@ func reasonLabelOps(r channel.HandoffReason) string {
 		return "a text booking failed"
 	case channel.HandoffScopeAlert:
 		return "a romantic, sexual or physical request was declined"
+	case channel.HandoffSupporterInterest:
+		return "asked about becoming a supporter"
 	case channel.HandoffScopeUnchecked:
 		return "the scope check could not read a message — decide whether HO:RA can do it; nothing was drafted"
 	case channel.HandoffAgentEscalated:

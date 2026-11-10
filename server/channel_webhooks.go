@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -60,9 +61,13 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		QuestionReader: steps.Small,
 		// Words the scope rules leave (people, homes, regulated things):
 		// "allow" or a refusal id (internal/channel/scope.go).
-		Scope:     steps.Small,
-		Booker:    &chatBooker{sqlDB: sqlDB, model: steps.Small},
-		Purchases: steps.Small,
+		Scope: steps.Small,
+		// Someone asking to work as a supporter gets the application form
+		// (internal/channel/supporter.go); the link changes without code.
+		SupporterApplyURL: supporterApplyURLFromEnv(),
+		Supporters:        &chatSupporters{sqlDB: sqlDB},
+		Booker:            &chatBooker{sqlDB: sqlDB, model: steps.Small},
+		Purchases:         steps.Small,
 		// The over-run window the summary states is the billing config's
 		// own value (S-11/5: the YES is to the real exposure).
 		AutoExtendMinutes: Billing.AutoExtendMinutes,
@@ -131,6 +136,39 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 // chatModelsFromEnv is the model behind each chat step (PLAN §9: chosen by
 // the eval, swapped by configuration) — see llm.StepsFromEnv for the
 // variables. Logged once at startup as provider:model, never a key.
+// supporterApplyURLFromEnv: SUPPORTER_APPLY_URL when it is an https URL,
+// else the default form.
+func supporterApplyURLFromEnv() string {
+	u := strings.TrimSpace(os.Getenv("SUPPORTER_APPLY_URL"))
+	if u == "" {
+		return channel.DefaultSupporterApplyURL
+	}
+	if !strings.HasPrefix(u, "https://") || strings.ContainsAny(u, " \n") {
+		log.Printf("[channel] WARNING: SUPPORTER_APPLY_URL is not an https URL — using %s", channel.DefaultSupporterApplyURL)
+		return channel.DefaultSupporterApplyURL
+	}
+	return u
+}
+
+// chatSupporters reads an account's supporter status, derived as GET
+// /profile derives it (Profile.deriveSupporterStatus).
+type chatSupporters struct{ sqlDB *sql.DB }
+
+func (s *chatSupporters) SupporterStatus(ctx context.Context, userID string) (string, error) {
+	var p Profile
+	err := s.sqlDB.QueryRowContext(ctx, `
+		SELECT coalesce(is_verified_supporter, false), supporter_applied_at, supporter_rejected_at
+		  FROM public.profiles WHERE id = $1::uuid`, userID).Scan(&p.IsVerifiedSupporter, &p.SupporterAppliedAt, &p.SupporterRejectedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "none", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("supporter status: %w", err)
+	}
+	p.deriveSupporterStatus()
+	return p.SupporterStatus, nil
+}
+
 // scopeModelFromEnv is the small step on its own, for the scope check on
 // task posts (task_scope.go) — set at startup whether or not the chat runs.
 func scopeModelFromEnv() llm.ScopeChecker {

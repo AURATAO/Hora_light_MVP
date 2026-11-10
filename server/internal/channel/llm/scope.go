@@ -345,7 +345,7 @@ Decide whether it asks HO:RA or a supporter for something HO:RA does not do.
 
 HO:RA does:
 SCOPE_ALLOWED
-Everyday errands are fine: pickups, deliveries, groceries, laundry, waiting in line, returns, gifts, small services, and the details, times, places, thanks and small talk around them.
+Everyday errands are fine: pickups, deliveries, groceries, laundry, waiting in line, returns, gifts, small services, and the details, times, places, thanks and small talk around them. Someone asking to WORK for HO:RA ("are you hiring?", "can I drive or run errands for you?", "how much do supporters make?") is not asking for a service: "allow".
 
 HO:RA does not do (answer with the id):
 SCOPE_REFUSED

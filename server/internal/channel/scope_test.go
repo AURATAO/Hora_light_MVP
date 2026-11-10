@@ -2,6 +2,7 @@ package channel
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -65,6 +66,15 @@ func TestScopeEvalsThroughRouter(t *testing.T) {
 	for _, e := range sr.Evals {
 		g, ops, o := scopeRig(t, map[string]string{e.Msg: firstWant(e.Want)})
 		reply := g.say(t, e.Msg)
+		if firstWant(e.Want) == llm.ScopeAllowID && SupporterInterest(e.Msg) {
+			// In scope, and someone asking to work as a supporter: the
+			// application link (supporter.go), not a draft; ops get the
+			// supporter notice only.
+			if reply != fmt.Sprintf(CopySupporterApply, g.r.applyURL()) || len(ops.notices) != 1 || ops.notices[0].Reason != HandoffSupporterInterest {
+				t.Errorf("%q: reply %q notices %+v", e.Msg, reply, ops.notices)
+			}
+			continue
+		}
 		decided := sr.Rule(e.Msg).Decided
 		if decided && o.calls != 0 {
 			t.Errorf("%q: the model was asked although a rule decided", e.Msg)

@@ -1,0 +1,161 @@
+{
+  "_readme": "Supporter interest (2026-11-10, supporter.go). interest: someone who wants to WORK as a supporter — by: 'rule' (SupporterInterest matches) or 'model' (no rule; the classifier must say supporter_interest). errand: near-misses that ARE errands or customer questions — no rule may match, and the classifier must not say supporter_interest. follow_up: sent after the application link went out — the follow-up line by rule. after_link_errand: after the link, still an errand. mixed: an errand plus interest — rest is the errand words the router keeps. Run by go test (rules, router) and agenttest -supporter (rules, then LLM_SMALL_MODEL).",
+  "interest": [
+    {
+      "msg": "are you hiring?",
+      "by": "rule"
+    },
+    {
+      "msg": "I want to work for you",
+      "by": "rule"
+    },
+    {
+      "msg": "how do I become a supporter?",
+      "by": "rule"
+    },
+    {
+      "msg": "can I do tasks for money?",
+      "by": "rule"
+    },
+    {
+      "msg": "do you need runners?",
+      "by": "rule"
+    },
+    {
+      "msg": "looking for side gigs",
+      "by": "rule"
+    },
+    {
+      "msg": "do you pay people to run errands?",
+      "by": "rule"
+    },
+    {
+      "msg": "Hi, I'm a student looking for part-time work",
+      "by": "rule"
+    },
+    {
+      "msg": "Is HO:RA hiring right now?",
+      "by": "rule"
+    },
+    {
+      "msg": "I'd love to join your team",
+      "by": "rule"
+    },
+    {
+      "msg": "how can I sign up as a supporter",
+      "by": "rule"
+    },
+    {
+      "msg": "can I work for you guys?",
+      "by": "rule"
+    },
+    {
+      "msg": "interested in becoming a runner",
+      "by": "rule"
+    },
+    {
+      "msg": "how much do supporters make?",
+      "by": "rule"
+    },
+    {
+      "msg": "do you have any job openings?",
+      "by": "rule"
+    },
+    {
+      "msg": "I want to make some extra money running errands",
+      "by": "rule"
+    },
+    {
+      "msg": "Where do I apply to be a supporter?",
+      "by": "rule"
+    },
+    {
+      "msg": "Hey are y'all looking for people?",
+      "by": "rule"
+    },
+    {
+      "msg": "Can I make money with HO:RA?",
+      "by": "rule"
+    },
+    {
+      "msg": "do you take on new supporters?",
+      "by": "rule"
+    },
+    {
+      "msg": "did you get my application?",
+      "by": "rule"
+    },
+    {
+      "msg": "I'm between jobs and good at errands, could I help out as one of your people?",
+      "by": "model"
+    },
+    {
+      "msg": "What does it take to become one of the people who do the errands?",
+      "by": "model"
+    },
+    {
+      "msg": "I already run errands for my neighbors, would love to do it for HO:RA",
+      "by": "model"
+    },
+    {
+      "msg": "can I drive for you?",
+      "by": "model"
+    },
+    {
+      "msg": "Do you guys take freelancers?",
+      "by": "model"
+    },
+    {
+      "msg": "are you hiring? I can run errands and drive",
+      "by": "rule"
+    },
+    {
+      "msg": "Do you need runners? I'm fast and I know Brooklyn well",
+      "by": "rule"
+    }
+  ],
+  "errand": [
+    "I need someone to work on my furniture assembly",
+    "can someone help me move a couch tomorrow at 10?",
+    "I'm hiring someone to clean my apartment, can you send a person?",
+    "can I get my errands done today?",
+    "drop off my job application at 350 5th Ave",
+    "pick up my work laptop from my office at 350 5th Ave",
+    "I need a runner to grab my lunch from Sweetgreen on Broadway",
+    "do you have people who can wait in line at Supreme?",
+    "how much do I pay for a laundry pickup?",
+    "can someone do some work in my garden this weekend?",
+    "we need help at our office party this saturday, 3 hours",
+    "can you send someone to work the coat check at my party?"
+  ],
+  "follow_up": [
+    "how much does it pay?",
+    "do I need a car?",
+    "what are the requirements?",
+    "how long until I hear back?",
+    "is it flexible hours?",
+    "do I need a background check?",
+    "how does it work?"
+  ],
+  "after_link_errand": [
+    "pick up my laundry at 12 Bedford Ave tomorrow at 3pm"
+  ],
+  "mixed": [
+    {
+      "msg": "I want to book something and also become a supporter",
+      "rest": "I want to book something"
+    },
+    {
+      "msg": "can someone pick up my dry cleaning at 5th Ave Cleaners? also, are you hiring?",
+      "rest": "can someone pick up my dry cleaning at 5th Ave Cleaners?"
+    },
+    {
+      "msg": "I want to book a laundry pickup at 12 Bedford Ave tomorrow and also become a supporter",
+      "rest": "I want to book a laundry pickup at 12 Bedford Ave tomorrow"
+    },
+    {
+      "msg": "buy me oat milk from Trader Joe's and bring it to 12 Bedford Ave, btw how do I apply to be a supporter?",
+      "rest": "buy me oat milk from Trader Joe's and bring it to 12 Bedford Ave"
+    }
+  ]
+}

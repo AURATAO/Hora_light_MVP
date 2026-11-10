@@ -262,6 +262,11 @@ type Router struct {
 	// Scope reads words the scope rules leave (scope.go): "allow" or a
 	// refusal id, on the small model. Nil: the rules alone.
 	Scope llm.ScopeChecker
+	// SupporterApplyURL is the supporter application form (supporter.go;
+	// SUPPORTER_APPLY_URL, default DefaultSupporterApplyURL). Supporters
+	// reads an account's supporter status; nil = nobody is known to be one.
+	SupporterApplyURL string
+	Supporters        SupporterStatusLookup
 	// Agent, when set, replaces InContext (D-18, behind CHANNEL_AGENT): it
 	// proposes what a message is; the rules decide. nil = today's routing.
 	Agent llm.Agent
@@ -416,7 +421,15 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 
 // routeMessage routes a message in any state the person's next words are
 // theirs to use (not handed off, no booking in flight).
-func (r *Router) routeMessage(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
+func (r *Router) routeMessage(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) (err error) {
+	// A mixed message's supporter application line goes after the errand's
+	// reply, once (supporter.go).
+	ctx, tail := withSupporterTail(ctx)
+	defer func() {
+		if err == nil && tail.want {
+			r.sendSupporterLine(ctx, in, id)
+		}
+	}()
 	// Any state where the next message is the person's to use: an explicit
 	// ask for a human wins over the flow (rule-matched, never the model).
 	if IsHumanRequest(text) {
@@ -426,6 +439,15 @@ func (r *Router) routeMessage(ctx context.Context, in Inbound, id Identity, conv
 	// (help.go). Rule only, ahead of every reading of the words.
 	if handled, err := r.routeHelp(ctx, in, id, conv, text); handled {
 		return err
+	}
+	// Someone who wants to WORK as a supporter (supporter.go): the
+	// application link, never a draft. Rule first; a mixed message goes on
+	// with its errand words only. Ahead of the scope gate: "can I drive for
+	// you?" asks for a job, not a ride.
+	if rest, handled, err := r.routeSupporterRules(ctx, in, id, conv, text); handled {
+		return err
+	} else {
+		text = rest
 	}
 	// What HO:RA does not do about people and homes (scope.go): declined
 	// with a fixed reply before anything can draft, search or relay it —
@@ -458,7 +480,7 @@ func (r *Router) routeMessage(ctx context.Context, in Inbound, id Identity, conv
 			return err
 		}
 	}
-	err := r.handleState(ctx, in, id, conv, text)
+	err = r.handleState(ctx, in, id, conv, text)
 	if err == nil && (len(conv.Deferred) > 0 || conv.Unconfirmed()) {
 		// A question held while the thread could not take it follows the
 		// reply that left the thread idle (I-O). Any other state means the
@@ -618,6 +640,15 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 	}
 	c := r.classify(ctx, text)
 	intent := c.Intent
+	// Wanting to work as a supporter, in words no rule knows: the
+	// application link, never a draft. Also asked beside an errand: the
+	// line follows the errand's reply.
+	if intent == llm.IntentSupporter {
+		return r.answerSupporter(ctx, in, id, "model")
+	}
+	if c.AlsoSupporter {
+		wantSupporterLine(ctx)
+	}
 	// "Help me find…", "is there a … open until 9?" in words no rule knows:
 	// the classifier's find_place is a search (production 2026-11-07: GLM's
 	// new_task drafted them as errands). Not a search after all (the

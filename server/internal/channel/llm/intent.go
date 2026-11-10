@@ -24,6 +24,10 @@ const (
 	// there a dry cleaner open until 9?") — place discovery answers it.
 	// Not an errand: nobody is sent anywhere until they pick one.
 	IntentFind Intent = "find_place"
+	// IntentSupporter: the person wants to WORK as a supporter (or asks
+	// about being one: pay, requirements, their application) — not an
+	// errand. Never drafted (channel/supporter.go).
+	IntentSupporter Intent = "supporter_interest"
 )
 
 // Classifier labels a message's intent.
@@ -33,16 +37,19 @@ type Classifier interface {
 
 const classifyPrompt = `You label one text message sent to HO:RA, an on-demand errand service in New York City where real people ("supporters") run tasks (deliveries, groceries, laundry, waiting in line, companionship, odd jobs). HO:RA can also find places in NYC from Google Maps.
 
-Return {"intent": X, "playbook": Y}. X is exactly one of:
+Return {"intent": X, "playbook": Y, "also_supporter_interest": Z}. X is exactly one of:
+- "supporter_interest": the person wants to WORK for HO:RA, not book — "are you hiring?", "I want to work for you", "how do I become a supporter?", "can I do tasks for money?", "do you need runners?", "looking for side gigs", "do you pay people to run errands?", "I'm a student looking for part-time work" — or asks about BEING a supporter: what supporters earn, requirements, how working for HO:RA works, "did you get my application?". Someone who needs a person to work on something for them ("I need someone to work on my furniture assembly", "can someone help me move?") is new_task.
 - "find_place": the person asks HO:RA to FIND, RECOMMEND, COMPARE or CHECK FACTS ABOUT places — "help me find a pizzeria around 250 Mercer St", "find pizzeria in SoHo", "know any good dumpling spots?", "what's near Union Square for lunch?", "looking for a tailor in Williamsburg", "is there a dry cleaner open until 9pm?", "which pharmacy near me is open now?", "any recommendations?". Opening hours, ratings, what is near, what is open: Google can answer these, so they are find_place, not errands. A neighbourhood ("SoHo", "around Union Square", "in Williamsburg") is a fine place to search.
 - "new_task": the person wants a SUPPORTER TO DO something — "pick up my dry cleaning", "buy and bring me oat milk", "deliver this to my office", "wait in line at Levain", "get me a slice from Joe's", "go check if Trader Joe's still has oat milk" (stock and lines are what Google cannot know: a supporter goes), "need help moving a couch tomorrow", "laundry pickup 3pm".
 - "greeting": a hello or opener with no request ("hi", "hey there", "is this HO:RA?").
-- "question": a question about the service itself (price, hours, area, how it works, who the supporters are).
+- "question": a question about the service itself as a customer (price, hours, area, how booking works, who the supporters are).
 - "other": anything else.
 
 "Can you help me find…", "can you check if … is open" ask HO:RA to look something up: find_place. A request names an action for a person to take (pick up, buy, bring, deliver, drop off, wait, get … from …): new_task. When both are there ("find a pizzeria near me and bring me a slice"), new_task.
 
-Y is the errand type the message is about, for new_task and find_place (else ""), one of: PLAYBOOK_LIST. "" when none fits.`
+Y is the errand type the message is about, for new_task and find_place (else ""), one of: PLAYBOOK_LIST. "" when none fits.
+
+Z is true when the message ALSO asks about working as a supporter besides what X is ("book a laundry pickup, and are you hiring?" is new_task with Z true); false otherwise, and false when X is supporter_interest.`
 
 // ClassifyPrompt is the system prompt with the playbook list filled in.
 var ClassifyPrompt = strings.Replace(classifyPrompt, "PLAYBOOK_LIST", playbookList(), 1)
@@ -52,11 +59,12 @@ func classifySchema() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"intent": map[string]any{"type": "string", "enum": []string{
-				string(IntentNewTask), string(IntentFind), string(IntentGreeting), string(IntentQuestion), string(IntentOther),
+				string(IntentNewTask), string(IntentFind), string(IntentSupporter), string(IntentGreeting), string(IntentQuestion), string(IntentOther),
 			}},
-			"playbook": map[string]any{"type": "string", "enum": playbookEnum()},
+			"playbook":                map[string]any{"type": "string", "enum": playbookEnum()},
+			"also_supporter_interest": map[string]any{"type": "boolean"},
 		},
-		"required":             []string{"intent", "playbook"},
+		"required":             []string{"intent", "playbook", "also_supporter_interest"},
 		"additionalProperties": false,
 	}
 }
@@ -66,6 +74,9 @@ func classifySchema() map[string]any {
 type Classification struct {
 	Intent   Intent
 	Playbook string
+	// AlsoSupporter: the message also asks about working as a supporter
+	// (a mixed message): the errand goes on, the application line follows.
+	AlsoSupporter bool
 }
 
 // DetailClassifier also returns the errand type, from the same call.
@@ -99,8 +110,9 @@ func classifyDetail(ctx context.Context, m Provider, text string) (got Classific
 		return Classification{Intent: HeuristicIntent(text)}, fmt.Errorf("classify: %w", err)
 	}
 	var r struct {
-		Intent   Intent `json:"intent"`
-		Playbook string `json:"playbook"`
+		Intent        Intent `json:"intent"`
+		Playbook      string `json:"playbook"`
+		AlsoSupporter bool   `json:"also_supporter_interest"`
 	}
 	if err := json.Unmarshal([]byte(extractJSONObject(out)), &r); err != nil {
 		return Classification{Intent: HeuristicIntent(text)}, fmt.Errorf("classify decode: %w", err)
@@ -109,8 +121,8 @@ func classifyDetail(ctx context.Context, m Provider, text string) (got Classific
 		r.Playbook = "" // only a listed type
 	}
 	switch r.Intent {
-	case IntentNewTask, IntentFind, IntentGreeting, IntentQuestion, IntentOther:
-		return Classification{Intent: r.Intent, Playbook: r.Playbook}, nil
+	case IntentNewTask, IntentFind, IntentGreeting, IntentQuestion, IntentOther, IntentSupporter:
+		return Classification{Intent: r.Intent, Playbook: r.Playbook, AlsoSupporter: r.AlsoSupporter && r.Intent != IntentSupporter}, nil
 	}
 	return Classification{Intent: HeuristicIntent(text)}, fmt.Errorf("classify: unknown intent %q", r.Intent)
 }

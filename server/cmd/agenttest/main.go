@@ -24,6 +24,7 @@
 //	go run ./cmd/agenttest -routing            # search vs errand: rules, then LLM_SMALL_MODEL (routing.go)
 //	go run ./cmd/agenttest -scope              # scope rules: rules, then LLM_SMALL_MODEL (scope.go)
 //	go run ./cmd/agenttest -scope -scope-all   # the model alone on every scope case
+//	go run ./cmd/agenttest -supporter          # supporter interest: rules, then LLM_SMALL_MODEL (supporter.go)
 //
 // Exit codes: 0 all pass; 1 failures (safe); 2 the model proposed approve or
 // decline where forbidden (the prompt is wrong — production re-asks with a
@@ -370,6 +371,7 @@ func main() {
 		webLive   = flag.Bool("web-live", false, "playbooks: measure Anthropic web search on real places (billed; no grading)")
 		routing   = flag.Bool("routing", false, "search vs errand: rules, then the classifier on LLM_SMALL_MODEL (internal/channel/testdata/routing_paraphrases.json)")
 		scope     = flag.Bool("scope", false, "scope rules (people, homes): rules, then LLM_SMALL_MODEL on what they leave (scope_rules.evals in playbooks.json)")
+		supporter = flag.Bool("supporter", false, "supporter interest: rules, then the classifier on LLM_SMALL_MODEL (internal/channel/testdata/supporter_phrasings.json)")
 		scopeAll  = flag.Bool("scope-all", false, "scope: ask the model on every case, also those a rule decides (measures the model alone)")
 	)
 	flag.Parse()
@@ -385,7 +387,7 @@ func main() {
 		os.Exit(3)
 	}
 	defModel := orDefault(os.Getenv("LLM_AGENT_MODEL"), "anthropic:"+llm.DefaultAnthropicModel)
-	if *routing || *scope {
+	if *routing || *scope || *supporter {
 		defModel = orDefault(os.Getenv("LLM_SMALL_MODEL"), "anthropic:"+llm.DefaultAnthropicModel)
 	}
 	spec, err := llm.ParseSpec(orDefault(*modelFlag, defModel))
@@ -407,6 +409,9 @@ func main() {
 	}
 	if *routing {
 		os.Exit(runRouting(spec, providers, *delay/4))
+	}
+	if *supporter {
+		os.Exit(runSupporter(spec, providers, *runs, *delay/4))
 	}
 	if *scope {
 		os.Exit(runScope(spec, providers, *runs, *scopeAll, *delay/4))

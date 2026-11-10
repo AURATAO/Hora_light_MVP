@@ -44,7 +44,8 @@
      "cuddl(?:e|es|ing|y)|snuggl(?:e|es|ing)|spoon(?:ing)? (?:me|with)|(?:a|some|give me a|need a) hugs?|hug(?:s|ging)? me|hold me(?: close| tight)?$|kiss(?:es|ing)? (?:me|you)|make out|making out|touch me|spank\\w*",
      "hook(?:ing)? up with|hookup|spend the night|stay the night|stay over|sleep ?over|sleep (?:with|next to|beside|in my bed)|(?:in|into) (?:my|your) bed|overnight (?:with|at) (?:me|my)|all night with me",
      "escorts?|escorting|call girl|hooker|prostitut\\w*|gfe|girlfriend experience|boyfriend experience|sugar (?:daddy|baby|mommy)|stripp?er|striptease|lap ?dance|onlyfans|discreet (?:fun|company|meet)|no strings|private (?:session|show)|(?:in|out)[- ]?call",
-     "(?:cute|hot|sexy|pretty|attractive|beautiful|handsome|young|good[- ]looking) (?:girl|guy|woman|man|lady|ladies|girls|guys|supporter|one)s?|if (?:she|he)'s (?:cute|hot|pretty)"
+     "(?:cute|hot|sexy|pretty|attractive|beautiful|handsome|young|good[- ]looking) (?:girl|guy|woman|man|lady|ladies|girls|guys|supporter|one)s?|if (?:she|he)'s (?:cute|hot|pretty)",
+     "(?:company|cuddle|lie|lay|stay|sleep|be|join me|get)\\s+(?:with me\\s+)?in (?:my |the |your )?bed"
     ],
     "unless": [
      "massage (?:gun|chair|roller|ball|device|pillow|cushion|table)",
@@ -815,6 +816,26 @@
    {
     "group": "rephrase",
     "msg": "deliver flowers to my girlfriend at her office, 350 5th Ave",
+    "want": "allow"
+   },
+   {
+    "group": "allowed",
+    "msg": "can I drive for you?",
+    "want": "allow"
+   },
+   {
+    "group": "allowed",
+    "msg": "are you hiring? I can run errands and drive",
+    "want": "allow"
+   },
+   {
+    "group": "allowed",
+    "msg": "how much do supporters make per errand?",
+    "want": "allow"
+   },
+   {
+    "group": "allowed",
+    "msg": "I'm stuck in bed sick, can you bring me soup from Veselka to 12 Bedford Ave?",
     "want": "allow"
    }
   ]
