@@ -178,7 +178,7 @@ func TestMultiSessionMinutesSumAcrossClockBackIns(t *testing.T) {
 	cost := calcTaskCostCents(ctx, w.taskID, total)
 	want := Billing.BaseFeeDefaultCents + 25*Billing.PerMinuteRateCents
 	if cost != want {
-		t.Errorf("cost = %d, want %d ($12.00 base + 25 billable min x $0.50)", cost, want)
+		t.Errorf("cost = %d, want %d ($15.00 base + 25 billable min x $0.60)", cost, want)
 	}
 }
 

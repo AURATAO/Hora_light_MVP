@@ -267,7 +267,8 @@ func TestPhase2aSmokePostPlacesHoldForTheBillingAmount(t *testing.T) {
 
 	t.Setenv("PAYMENTS_ENFORCED", "1")
 
-	// 60 minutes, $20 budget: ($12.00 base + $22.50 time) x 1.5 + $20 + $5.
+	// 60 minutes, $20 budget: base + 45 billable min at the resolved rate +
+	// the $20 budget ($15.00 + $27.00 + $20.00 at the daytime rate).
 	const minutes, budgetCents = 60, 2000
 	want := preAuthAmountCents("delivery", minutes, budgetCents, Billing.PerMinuteRateCents)
 

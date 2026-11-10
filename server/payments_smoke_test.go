@@ -59,12 +59,12 @@ func TestPaymentsSmokeCreateAndRelease(t *testing.T) {
 	ctx := context.Background()
 
 	// A 60-minute standard task with a $20.00 shopping budget:
-	//   $12.00 base + 45 billable min x $0.50 = $34.50, + $20.00 budget = $54.50.
+	//   $15.00 base + 45 billable min x $0.60 = $42.00, + $20.00 budget = $62.00.
 	//
 	// EXACTLY the quote. No multiplier, no buffer — the billing restructure
 	// made the hold equal to what the requester is shown, which is why this
 	// number dropped from $81.75.
-	const wantAmount = 5450
+	const wantAmount = 1500 + 45*60 + 2000
 	in := PreAuthInput{
 		TaskID:              w.taskID,
 		RequesterID:         w.requesterID,

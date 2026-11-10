@@ -34,7 +34,7 @@ export function transferStatusCopy(transfer) {
   return TRANSFER_STATUS_COPY[key] || TRANSFER_STATUS_COPY.on_its_way
 }
 
-/** "20%" for 2000 basis points, "2.5%" for 250 — never a rounded rate. */
+/** "30%" for 3000 basis points, "2.5%" for 250 — never a rounded rate. */
 export function platformFeePercent(bps) {
   const n = Number(bps) || 0
   if (n % 100 === 0) return `${n / 100}%`
@@ -46,7 +46,7 @@ export function platformFeePercent(bps) {
  * the sentence and the arithmetic cannot disagree (S-05); an older backend
  * without it gets the shipped rate.
  */
-export function platformFeeExplainer(bps = 2000) {
+export function platformFeeExplainer(bps = 3000) {
   return `HO:RA takes ${platformFeePercent(bps)} of service fees; purchase reimbursements are always paid back in full.`
 }
 
@@ -66,7 +66,10 @@ export function platformFeeExplainer(bps = 2000) {
 export function earningsBreakdownLine({ time, reimbursement, feeCents, feeBps }) {
   const parts = []
   if (time > 0 || feeCents > 0) {
-    const fee = feeCents > 0 ? ` (after ${platformFeePercent(feeBps || 2000)} platform fee)` : ''
+    // The rate the money was actually cut at; never a guess. A row with no
+    // rate on it says "platform fee" without a number rather than today's.
+    const rate = feeBps > 0 ? `${platformFeePercent(feeBps)} ` : ''
+    const fee = feeCents > 0 ? ` (after ${rate}platform fee)` : ''
     parts.push(`${formatCents(time || 0)} service${fee}`)
   }
   if (reimbursement > 0) parts.push(`${formatCents(reimbursement)} reimbursement`)

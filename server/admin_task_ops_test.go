@@ -249,7 +249,35 @@ func seedOpsWorld(t *testing.T, status string) opsWorld {
 		supporterID: seedUser(t, oldSupporterEmail, "Otto Supporter", true),
 	}
 	w.taskID = seedReassignTask(t, status, w.requesterID, requesterEmail, w.supporterID, oldSupporterEmail)
+	seedStandardRate(t, w.taskID)
 	return w
+}
+
+// seedStandardRate stores the CURRENT standard rate on a seeded task, the way
+// POST /tasks always does (it resolves the rate and inserts it explicitly).
+//
+// Without it a raw-INSERT fixture falls through to the column's DEFAULT 50,
+// which the billing-restructure migration chose as the backfill value for
+// tasks posted before the column existed — i.e. a task posted under the
+// $0.50 schedule. Pricing tests mean "a task posted now", so they must not
+// inherit that. A no-op where the fixture schema predates the column.
+func seedStandardRate(t *testing.T, taskID string) {
+	t.Helper()
+	ctx := context.Background()
+	var has bool
+	if err := db.QueryRow(ctx, `
+		select exists (select 1 from information_schema.columns
+		                where table_schema = 'public' and table_name = 'tasks'
+		                  and column_name = 'rate_cents_per_min')`).Scan(&has); err != nil {
+		t.Fatalf("probe rate column: %v", err)
+	}
+	if !has {
+		return
+	}
+	if _, err := db.Exec(ctx, `update public.tasks set rate_cents_per_min = $2 where id = $1::uuid`,
+		taskID, Billing.PerMinuteRateCents); err != nil {
+		t.Fatalf("seed standard rate: %v", err)
+	}
 }
 
 // seedWorklog adds a session. minutesAgo is when it started; openEnded leaves

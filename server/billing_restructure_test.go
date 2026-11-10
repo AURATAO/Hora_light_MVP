@@ -54,7 +54,7 @@ func TestRestructureRateBoundary(t *testing.T) {
 		{"12:00 — standard", time.Date(2026, 9, 15, 12, 0, 0, 0, ny), Billing.PerMinuteRateCents, false},
 		{"20:00 — standard", time.Date(2026, 9, 15, 20, 0, 0, 0, ny), Billing.PerMinuteRateCents, false},
 		// 20:59 is the last standard minute; a task starting then bills at
-		// $0.50 for its whole run, including the part after 21:00 — see the
+		// $0.60 for its whole run, including the part after 21:00 — see the
 		// immutability test below.
 		{"20:59 — still standard", time.Date(2026, 9, 15, 20, 59, 59, 0, ny), Billing.PerMinuteRateCents, false},
 		{"21:00 — evening", time.Date(2026, 9, 15, 21, 0, 0, 0, ny), Billing.SurgeRateCentsPerMin, true},
@@ -129,7 +129,7 @@ func TestRestructureMissingRateFallsBackToStandard(t *testing.T) {
 }
 
 // The rate is a stored term of the task, not a live lookup: a 20:50 task keeps
-// billing at $0.50 however long it runs, and an evening task keeps billing at
+// billing at $0.60 however long it runs, and an evening task keeps billing at
 // $1.00 even when settled the next morning.
 func TestRestructureStoredRateIsImmutable(t *testing.T) {
 	setupStripeWebhookDB(t)
@@ -137,8 +137,8 @@ func TestRestructureStoredRateIsImmutable(t *testing.T) {
 
 	for _, tc := range []struct{ stored, wantCost int }{
 		// 60 logged minutes, 45 of them billable after the included block.
-		{Billing.PerMinuteRateCents, 1200 + 45*50},
-		{Billing.SurgeRateCentsPerMin, 1200 + 45*100},
+		{Billing.PerMinuteRateCents, 1500 + 45*60},
+		{Billing.SurgeRateCentsPerMin, 1500 + 45*100},
 	} {
 		if _, err := db.Exec(context.Background(),
 			`update public.tasks set rate_cents_per_min = $2, estimated_minutes = 120 where id = $1::uuid`,
@@ -175,9 +175,9 @@ func TestRestructureEstimateCarriesTheRate(t *testing.T) {
 	if out["surge_rate"] != true {
 		t.Errorf("evening quote does not flag surge: %v", out["surge_rate"])
 	}
-	// 30 billable min x $1.00 + $12.00 base
-	if out["total_cents"] != float64(1200+30*100) {
-		t.Errorf("evening total = %v, want %d", out["total_cents"], 1200+30*100)
+	// 30 billable min x $1.00 + $15.00 base
+	if out["total_cents"] != float64(1500+30*100) {
+		t.Errorf("evening total = %v, want %d", out["total_cents"], 1500+30*100)
 	}
 
 	_, out = callEstimate(t, fmt.Sprintf(

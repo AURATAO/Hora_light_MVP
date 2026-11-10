@@ -3991,6 +3991,26 @@ func supporterEarningsView(ctx context.Context, taskID, supporterID string, cost
 		PlatformFeeBps:     Billing.PlatformFeeBps,
 	}
 
+	// What was actually paid, once it was: the payout rows carry the split
+	// they were cut at (payouts.service_cents / fee_cents / fee_bps). A task
+	// settled before a schedule change (20% → 30% on 2026-11-10) must show
+	// the 20% it was paid at, not today's rate recomputed over it. A task
+	// with no breakdown rows yet keeps the computed view above.
+	var paidService, paidFee, paidReimb, paidBps *int
+	if err := db.QueryRow(ctx, `
+		select sum(service_cents), sum(fee_cents), sum(reimbursement_cents), max(fee_bps)
+		  from public.payouts
+		 where task_id = $1::uuid and supporter_id = $2::uuid and service_cents is not null
+	`, taskID, supporterID).Scan(&paidService, &paidFee, &paidReimb, &paidBps); err == nil &&
+		paidService != nil && paidFee != nil && paidReimb != nil && paidBps != nil {
+		e.ServiceGrossCents = *paidService
+		e.PlatformFeeCents = *paidFee
+		e.TimeCents = *paidService - *paidFee
+		e.ReimbursementCents = *paidReimb
+		e.TotalCents = e.TimeCents + e.ReimbursementCents
+		e.PlatformFeeBps = *paidBps
+	}
+
 	// The transfer, if one exists. A task may have two payout rows (the hold
 	// and a completion balance), so the worst status wins: 'failed' if
 	// anything failed, then 'pending', then 'paid'. Reporting 'paid' while

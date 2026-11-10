@@ -698,22 +698,23 @@ func TestPhase3SupporterSeesTheirOwnCut(t *testing.T) {
 		t.Fatalf("the supporter cannot see what they earned: %v", settlement)
 	}
 
-	// base $12.00 + 30 billable x $0.50 = $27.00 of service, less the 20%
-	// platform fee = $21.60; $12.40 reimbursed in full (D-14).
-	if got := num(earned["time_cents"]); got != 2160 {
-		t.Errorf("time = %s, want $21.60 after the fee", formatCentsUSD(got))
+	// No payout row exists yet, so this is the estimate at today's fee:
+	// base $15.00 + 30 billable x $0.60 = $33.00 of service, less the 30%
+	// platform fee ($9.90) = $23.10; $12.40 reimbursed in full (D-14).
+	if got := num(earned["time_cents"]); got != 3300-990 {
+		t.Errorf("time = %s, want $23.10 after the fee", formatCentsUSD(got))
 	}
-	if got := num(earned["service_gross_cents"]); got != 2700 {
-		t.Errorf("service gross = %s, want $27.00", formatCentsUSD(got))
+	if got := num(earned["service_gross_cents"]); got != 1500+30*60 {
+		t.Errorf("service gross = %s, want $33.00", formatCentsUSD(got))
 	}
-	if got := num(earned["platform_fee_cents"]); got != 540 {
-		t.Errorf("fee = %s, want $5.40", formatCentsUSD(got))
+	if got := num(earned["platform_fee_cents"]); got != 990 {
+		t.Errorf("fee = %s, want $9.90", formatCentsUSD(got))
 	}
 	if got := num(earned["reimbursement_cents"]); got != 1240 {
 		t.Errorf("reimbursement = %s, want $12.40", formatCentsUSD(got))
 	}
-	if got := num(earned["total_cents"]); got != 3400 {
-		t.Errorf("total = %s, want $34.00", formatCentsUSD(got))
+	if got := num(earned["total_cents"]); got != 2310+1240 {
+		t.Errorf("total = %s, want $35.50", formatCentsUSD(got))
 	}
 
 	// The two halves are separate numbers on purpose: a supporter who sees one

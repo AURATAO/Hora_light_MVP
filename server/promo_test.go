@@ -42,10 +42,11 @@ func TestPromoArithmetic(t *testing.T) {
 		discount, total        int
 		wantApplied, wantAfter int
 	}{
-		{"ordinary: $10 off $19.50", 1000, 1950, 1000, 950},
-		{"exactly the total", 1950, 1950, 1950, 0},
-		{"more than the total: never below $0", 5000, 1950, 1950, 0},
-		{"no discount", 0, 1950, 0, 1950},
+		// $24.00 is the 30-minute estimate: $15.00 + 15 min × $0.60.
+		{"ordinary: $10 off $24.00", 1000, 2400, 1000, 1400},
+		{"exactly the total", 2400, 2400, 2400, 0},
+		{"more than the total: never below $0", 5000, 2400, 2400, 0},
+		{"no discount", 0, 2400, 0, 2400},
 		{"nothing to discount", 1000, 0, 0, 0},
 		{"negative inputs are ignored", -5, -5, 0, -5},
 	}
@@ -60,10 +61,11 @@ func TestPromoArithmetic(t *testing.T) {
 		})
 	}
 
-	// The hold: base $12 + 15 billable min × $0.50 = $19.50, plus a $30 budget.
+	// The hold: base $15 + 15 billable min × $0.60 = $24.00, plus a $30 budget,
+	// less the $10 promo.
 	rate := Billing.PerMinuteRateCents
-	if got := preAuthAfterPromoCents("delivery", 30, 3000, rate, 1000); got != 3950 {
-		t.Errorf("hold with $10 promo = %s, want $39.50", formatCentsUSD(got))
+	if got := preAuthAfterPromoCents("delivery", 30, 3000, rate, 1000); got != 1500+15*60+3000-1000 {
+		t.Errorf("hold with $10 promo = %s, want $44.00", formatCentsUSD(got))
 	}
 	if got := preAuthAfterPromoCents("delivery", 30, 0, rate, 5000); got != 0 {
 		t.Errorf("hold under a promo larger than the estimate = %s, want $0.00", formatCentsUSD(got))
@@ -85,23 +87,23 @@ func TestPromoPayoutIsUndiscounted(t *testing.T) {
 		total, mainCaptured, balanceCaptured, subsidy int
 		want                                          []payoutSplit
 	}{
-		// $24.50 owed; the requester paid $14.50 (a $10 promo); the platform
-		// pays the $10.
-		{"promo inside the hold", 2450, 1450, 0, 1000,
-			[]payoutSplit{{Source: payoutSourceHold, ServiceCents: 1450}, {Source: payoutSourcePromo, ServiceCents: 1000}}},
+		// $30.00 owed ($15.00 + 25 min × $0.60); the requester paid $20.00 (a
+		// $10 promo); the platform pays the $10.
+		{"promo inside the hold", 3000, 2000, 0, 1000,
+			[]payoutSplit{{Source: payoutSourceHold, ServiceCents: 2000}, {Source: payoutSourcePromo, ServiceCents: 1000}}},
 		// A zero hold: everything the requester owed was a balance charge,
 		// and the platform pays the discount.
-		{"zero hold, balance collected", 2450, 0, 500, 1950,
-			[]payoutSplit{{Source: payoutSourceBalance, ServiceCents: 500}, {Source: payoutSourcePromo, ServiceCents: 1950}}},
+		{"zero hold, balance collected", 3000, 0, 500, 2500,
+			[]payoutSplit{{Source: payoutSourceBalance, ServiceCents: 500}, {Source: payoutSourcePromo, ServiceCents: 2500}}},
 		// A promo that covered the whole settlement: one transfer, all
 		// platform money.
-		{"fully discounted", 1200, 0, 0, 1200,
-			[]payoutSplit{{Source: payoutSourcePromo, ServiceCents: 1200}}},
+		{"fully discounted", 1500, 0, 0, 1500,
+			[]payoutSplit{{Source: payoutSourcePromo, ServiceCents: 1500}}},
 		// The balance charge failed. The subsidy is still paid — the
 		// platform's promise does not depend on the requester's card — and
 		// only the uncollected balance is a shortfall.
-		{"balance failed, subsidy still paid", 2450, 0, 0, 1950,
-			[]payoutSplit{{Source: payoutSourcePromo, ServiceCents: 1950, ShortfallCents: 500}}},
+		{"balance failed, subsidy still paid", 3000, 0, 0, 2500,
+			[]payoutSplit{{Source: payoutSourcePromo, ServiceCents: 2500, ShortfallCents: 500}}},
 		{"balance failed after a partial hold", 3000, 1000, 0, 1000,
 			[]payoutSplit{{Source: payoutSourceHold, ServiceCents: 1000, ShortfallCents: 1000}, {Source: payoutSourcePromo, ServiceCents: 1000}}},
 		// No promo: exactly the Phase 3 shape.
@@ -476,13 +478,14 @@ func TestPromoEstimateShowsTheDiscount(t *testing.T) {
 	}
 
 	q := quote("welcome10")
-	if num(q["total_cents"]) != 1950 || num(q["promo_discount_cents"]) != 1000 ||
-		num(q["total_after_promo_cents"]) != 950 || num(q["hold_cents"]) != 950 || q["promo_code"] != "WELCOME10" {
+	// $15.00 + 15 min × $0.60 = $24.00, less $10.00.
+	if num(q["total_cents"]) != 1500+15*60 || num(q["promo_discount_cents"]) != 1000 ||
+		num(q["total_after_promo_cents"]) != 1400 || num(q["hold_cents"]) != 1400 || q["promo_code"] != "WELCOME10" {
 		t.Errorf("quote with promo = %v", q)
 	}
 
 	q = quote("NOPE")
-	if num(q["total_cents"]) != 1950 || num(q["hold_cents"]) != 1950 || q["promo_error_code"] != promoErrInvalid {
+	if num(q["total_cents"]) != 2400 || num(q["hold_cents"]) != 2400 || q["promo_error_code"] != promoErrInvalid {
 		t.Errorf("quote with a bad code = %v", q)
 	}
 	if _, ok := q["promo_discount_cents"]; ok {
@@ -519,11 +522,12 @@ func TestPromoHoldIsDiscounted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pre-auth: %v", err)
 	}
-	if len(f.holds) != 1 || f.holds[0] != 950 {
-		t.Fatalf("Stripe was asked to hold %v, want [950] ($19.50 − $10.00)", f.holds)
+	// $15.00 + 15 min × $0.60 = $24.00, less the $10.00 promo.
+	if len(f.holds) != 1 || f.holds[0] != 1400 {
+		t.Fatalf("Stripe was asked to hold %v, want [1400] ($24.00 − $10.00)", f.holds)
 	}
-	if derefIntOr(p.AuthorizedCents, -1) != 950 {
-		t.Errorf("row authorized %d, want 950", derefIntOr(p.AuthorizedCents, -1))
+	if derefIntOr(p.AuthorizedCents, -1) != 1400 {
+		t.Errorf("row authorized %d, want 1400", derefIntOr(p.AuthorizedCents, -1))
 	}
 
 	// The requester's view says all three numbers, and the base on its own
@@ -532,8 +536,8 @@ func TestPromoHoldIsDiscounted(t *testing.T) {
 	if view == nil {
 		t.Fatal("no payment view")
 	}
-	if view.AuthorizedCents != 950 || view.PromoDiscountCents != 1000 || view.PreDiscountCents != 1950 ||
-		view.PromoCode != "WELCOME10" || view.BaseFeeCents != 1200 || view.MinutesCostCents != 750 ||
+	if view.AuthorizedCents != 1400 || view.PromoDiscountCents != 1000 || view.PreDiscountCents != 2400 ||
+		view.PromoCode != "WELCOME10" || view.BaseFeeCents != 1500 || view.MinutesCostCents != 15*60 ||
 		view.CardLast4 != "4242" {
 		t.Errorf("view = %+v", view)
 	}
@@ -569,15 +573,15 @@ func TestPromoCaptureDiscountedPayoutUndiscounted(t *testing.T) {
 	if err := seedRedemption(t, promoID, w.requesterID, w.taskID, 1000); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	// $12.00 base + 25 billable min × $0.50 = $24.50 owed to the supporter.
+	// $15.00 base + 25 billable min × $0.60 = $30.00 owed to the supporter.
 	seedWorklog(t, w.taskID, 40, false)
 	paymentID := seedPayment(t, w.taskID, w.requesterID, "pi_hold", paymentStatusAuthorized)
 	setPaymentCard(t, paymentID, "visa", "4242")
 
 	completeAs(t, w.taskID, w.supporterID, map[string]any{"completion_photo_url": "https://x/done.jpg"}, http.StatusOK)
 
-	if len(f.captures) != 1 || f.captures[0] != 1450 {
-		t.Fatalf("captured %v, want [1450] ($24.50 − $10.00)", f.captures)
+	if len(f.captures) != 1 || f.captures[0] != 2000 {
+		t.Fatalf("captured %v, want [2000] ($30.00 − $10.00)", f.captures)
 	}
 	if len(f.charges) != 0 {
 		t.Errorf("a balance was charged (%v) on a task the hold covered", f.charges)
@@ -594,20 +598,20 @@ func TestPromoCaptureDiscountedPayoutUndiscounted(t *testing.T) {
 			t.Errorf("payout %+v: funding and payment_id disagree", r)
 		}
 	}
-	// The supporter's 80% is of the UNDISCOUNTED $24.50 = $19.60 (D-14): the
-	// charge funds $14.50 of it and the platform makes up the $5.10 — the
-	// discount less the fee it would otherwise have kept.
-	if paid[payoutFundingCharge] != 1450 || paid[payoutFundingPromoSubsidy] != 510 {
-		t.Errorf("payouts = %+v, want $14.50 from the charge + $5.10 subsidy", rows)
+	// The supporter's 70% is of the UNDISCOUNTED $30.00 = $21.00 (D-14): the
+	// charge funds $20.00 of it and the platform makes up the $1.00 — the
+	// $10.00 discount less the $9.00 fee it would otherwise have kept.
+	if paid[payoutFundingCharge] != 2000 || paid[payoutFundingPromoSubsidy] != 100 {
+		t.Errorf("payouts = %+v, want $20.00 from the charge + $1.00 subsidy", rows)
 	}
 	// The subsidy transfer is unbound; the charge-funded one names its charge.
 	for _, tr := range f.transfers {
 		switch tr.Cents {
-		case 1450:
+		case 2000:
 			if tr.Source == "" {
 				t.Error("the charge-funded transfer has no source_transaction")
 			}
-		case 510:
+		case 100:
 			if tr.Source != "" {
 				t.Error("the subsidy transfer is bound to a charge it exceeds")
 			}
@@ -618,8 +622,8 @@ func TestPromoCaptureDiscountedPayoutUndiscounted(t *testing.T) {
 
 	// The requester's settlement view: discounted total, code named.
 	s := getWorklogsAs(t, w.taskID, w.requesterID, requesterEmail)["settlement"].(map[string]any)
-	if num(s["total_cents"]) != 2450 || num(s["promo_discount_cents"]) != 1000 ||
-		num(s["total_after_promo_cents"]) != 1450 || s["promo_code"] != "WELCOME10" || num(s["captured_cents"]) != 1450 {
+	if num(s["total_cents"]) != 3000 || num(s["promo_discount_cents"]) != 1000 ||
+		num(s["total_after_promo_cents"]) != 2000 || s["promo_code"] != "WELCOME10" || num(s["captured_cents"]) != 2000 {
 		t.Errorf("requester settlement = %v", s)
 	}
 	// The supporter's: no code, no discount, the full amount earned.
@@ -629,8 +633,8 @@ func TestPromoCaptureDiscountedPayoutUndiscounted(t *testing.T) {
 			t.Errorf("the supporter's settlement carries %s", k)
 		}
 	}
-	if earned := s["earned"].(map[string]any); num(earned["total_cents"]) != 1960 || num(earned["service_gross_cents"]) != 2450 {
-		t.Errorf("supporter earned %v, want $19.60: 80%% of the undiscounted $24.50", earned)
+	if earned := s["earned"].(map[string]any); num(earned["total_cents"]) != 2100 || num(earned["service_gross_cents"]) != 3000 {
+		t.Errorf("supporter earned %v, want $21.00: 70%% of the undiscounted $30.00", earned)
 	}
 
 	// The receipt: once, for the discounted charge, with the promo line.
@@ -638,13 +642,14 @@ func TestPromoCaptureDiscountedPayoutUndiscounted(t *testing.T) {
 		t.Fatalf("%d receipts, want 1", n)
 	}
 	body := notificationBody(t, w.requesterID, "RECEIPT")
-	for _, want := range []string{"Charged $14.50 to Visa ••4242", "$12.00 base", "25 min × $0.50", "− $10.00 promo (WELCOME10)", "$35.50 of the hold released"} {
+	// The fixture hold is $50.00, so $50.00 − $20.00 = $30.00 goes back.
+	for _, want := range []string{"Charged $20.00 to Visa ••4242", "$15.00 base", "25 min × $0.60", "− $10.00 promo (WELCOME10)", "$30.00 of the hold released"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("receipt body %q lacks %q", body, want)
 		}
 	}
 	// The requester's completion email says the discounted figure too.
-	if b := notificationBody(t, w.requesterID, "COMPLETED"); strings.Contains(b, "$24.50") {
+	if b := notificationBody(t, w.requesterID, "COMPLETED"); strings.Contains(b, "$30.00") {
 		t.Errorf("the requester's completion notice quotes the undiscounted total: %q", b)
 	}
 	if n := countNotifications(t, w.supporterID, "RECEIPT"); n != 0 {
@@ -662,8 +667,9 @@ func TestPromoZeroHoldCollectsTheRestAsABalance(t *testing.T) {
 	linkConnectAccount(t, w.supporterID, "acct_promo")
 	giveCard(t, w.requesterID)
 
-	promoID := seedPromoCode(t, "FREEBIE", 1950, promoOpts{})
-	if err := seedRedemption(t, promoID, w.requesterID, w.taskID, 1950); err != nil {
+	// $24.00: exactly the 30-minute estimate ($15.00 + 15 min × $0.60).
+	promoID := seedPromoCode(t, "FREEBIE", 2400, promoOpts{})
+	if err := seedRedemption(t, promoID, w.requesterID, w.taskID, 2400); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	// The zero-hold row CreatePreAuth writes.
@@ -674,30 +680,30 @@ func TestPromoZeroHoldCollectsTheRestAsABalance(t *testing.T) {
 	`, w.taskID, w.requesterID, paymentKindTaskPayment, paymentStatusAuthorized).Scan(&paymentID); err != nil {
 		t.Fatalf("seed zero hold: %v", err)
 	}
-	seedWorklog(t, w.taskID, 40, false) // $24.50 owed; $5.00 after the promo
+	seedWorklog(t, w.taskID, 40, false) // $15.00 + 25 × $0.60 = $30.00 owed; $6.00 after the promo
 
 	completeAs(t, w.taskID, w.supporterID, map[string]any{"completion_photo_url": "https://x/done.jpg"}, http.StatusOK)
 
 	if len(f.captures) != 0 {
 		t.Errorf("a zero hold was captured at Stripe: %v", f.captures)
 	}
-	if len(f.charges) != 1 || f.charges[0] != 500 {
-		t.Fatalf("balance charged %v, want [500]", f.charges)
+	if len(f.charges) != 1 || f.charges[0] != 600 {
+		t.Fatalf("balance charged %v, want [600]", f.charges)
 	}
 	paid := map[string]int{}
 	for _, r := range payoutRows(t, w.taskID) {
 		paid[r.Funding] += r.Cents
 	}
-	// $24.50 of service nets $19.60 after the fee; the balance charge funds
-	// $5.00 of it and the platform the remaining $14.60.
-	if paid[payoutFundingCharge] != 500 || paid[payoutFundingPromoSubsidy] != 1460 {
-		t.Errorf("payouts = %v, want $5.00 from the balance charge + $14.60 subsidy", paid)
+	// $30.00 of service nets $21.00 after the 30% fee; the balance charge
+	// funds $6.00 of it and the platform the remaining $15.00.
+	if paid[payoutFundingCharge] != 600 || paid[payoutFundingPromoSubsidy] != 1500 {
+		t.Errorf("payouts = %v, want $6.00 from the balance charge + $15.00 subsidy", paid)
 	}
 	if n := countNotifications(t, w.requesterID, "RECEIPT"); n != 1 {
 		t.Fatalf("%d receipts, want 1", n)
 	}
 	body := notificationBody(t, w.requesterID, "RECEIPT")
-	if !strings.Contains(body, "Charged $5.00") || !strings.Contains(body, "− $19.50 promo (FREEBIE)") {
+	if !strings.Contains(body, "Charged $6.00") || !strings.Contains(body, "− $24.00 promo (FREEBIE)") {
 		t.Errorf("receipt body = %q", body)
 	}
 	if strings.Contains(body, "released") {

@@ -963,6 +963,10 @@ type EarningsTransfer struct {
 	// where TimeCents was the whole service figure.
 	ServiceGrossCents int `json:"service_gross_cents"`
 	PlatformFeeCents  int `json:"platform_fee_cents"`
+	// The rate THIS transfer was cut at (payouts.fee_bps), so a row paid
+	// at 20% still says 20% after the schedule moved to 30% (2026-11-10).
+	// Zero on a row from before the fee.
+	PlatformFeeBps int `json:"platform_fee_bps"`
 	// The payouts row status: pending / paid / failed. "paid" means the
 	// TRANSFER happened — money left the platform — not that the bank has it.
 	Status    string    `json:"status"`
@@ -1084,7 +1088,7 @@ func earningsHandler(c *gin.Context) {
 	rows, err := db.Query(ctx, `
 		select po.task_id::text, coalesce(t.title,''), po.amount_cents, po.status, po.created_at,
 		       coalesce(p.time_cost_cents, 0), coalesce(p.shopping_receipt_cents, 0), po.bank_paid_at,
-		       po.service_cents, po.fee_cents, po.reimbursement_cents
+		       po.service_cents, po.fee_cents, po.reimbursement_cents, po.fee_bps
 		  from public.payouts po
 		  join public.tasks t         on t.id = po.task_id
 		  -- LEFT: a promo_subsidy row is the platform's own money and names no
@@ -1103,9 +1107,9 @@ func earningsHandler(c *gin.Context) {
 
 	for rows.Next() {
 		var e EarningsTransfer
-		var service, fee, reimb *int
+		var service, fee, reimb, bps *int
 		if err := rows.Scan(&e.TaskID, &e.TaskTitle, &e.AmountCents, &e.Status, &e.CreatedAt,
-			&e.TimeCents, &e.ReceiptCents, &e.BankPaidAt, &service, &fee, &reimb); err != nil {
+			&e.TimeCents, &e.ReceiptCents, &e.BankPaidAt, &service, &fee, &reimb, &bps); err != nil {
 			break
 		}
 		if service != nil && fee != nil && reimb != nil {
@@ -1113,6 +1117,9 @@ func earningsHandler(c *gin.Context) {
 			e.PlatformFeeCents = *fee
 			e.TimeCents = *service - *fee
 			e.ReceiptCents = *reimb
+			if bps != nil {
+				e.PlatformFeeBps = *bps
+			}
 		}
 		e.DisplayStatus = displayStatusFor(e.Status, e.BankPaidAt)
 		out.Transfers = append(out.Transfers, e)

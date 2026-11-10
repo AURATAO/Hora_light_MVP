@@ -11,10 +11,10 @@ package main
 //
 // THE MODEL
 //
-//	base fee        $12.00, or $25.00 for companionship
+//	base fee        $15.00, or $25.00 for companionship
 //	included        the first 15 minutes are inside the base fee
 //	billable        max(total_logged_minutes - 15, 0)
-//	time cost       billable x $0.50/min
+//	time cost       billable x $0.60/min
 //	task total      base fee + time cost  (+ verified receipt at settlement)
 //
 // total_logged_minutes is the sum across ALL closed worklog sessions on the
@@ -160,10 +160,13 @@ type BillingConfig struct {
 // every settlement, and every client-rendered price at once, which is the
 // entire point.
 var Billing = BillingConfig{
-	BaseFeeDefaultCents:       1200, // $12.00
+	// Margin schedule (Aura 2026-11-10): $12 → $15 base, $0.50 → $0.60/min,
+	// 20% → 30% platform fee. Companionship base and the evening rate are
+	// unchanged.
+	BaseFeeDefaultCents:       1500, // $15.00 (was $12.00)
 	BaseFeeCompanionshipCents: 2500, // $25.00
 
-	PerMinuteRateCents: 50, // $0.50/min, standard
+	PerMinuteRateCents: 60, // $0.60/min, standard (was $0.50)
 	IncludedMinutes:    15,
 
 	SurgeRateCentsPerMin: 100, // $1.00/min for starts from 21:00 to 07:59 New York
@@ -183,7 +186,7 @@ var Billing = BillingConfig{
 	ApprovalTimeoutMinutes: 5,
 	CapWarningLeadMinutes:  5,
 
-	PlatformFeeBps: 2000, // 20% of service revenue; reimbursements untouched
+	PlatformFeeBps: 3000, // 30% of service revenue (was 20%); reimbursements untouched
 
 	Currency: "usd",
 }

@@ -573,10 +573,10 @@ literals in `main.go` and three hand-copied duplicates in the web app.
 
 | | |
 |---|---|
-| Base fee | **$12.00** default, **$25.00** companionship/companion |
+| Base fee | **$15.00** default, **$25.00** companionship/companion |
 | Included | the **first 15 minutes** are inside the base fee |
 | Billable minutes | `max(total_logged_minutes − 15, 0)` |
-| Rate | **$0.50/min**, or **$1.00/min** for a start between **21:00 and 07:59 America/New_York** (wrapping midnight) — resolved once at post and stored on the task (§11.1) |
+| Rate | **$0.60/min**, or **$1.00/min** for a start between **21:00 and 07:59 America/New_York** (wrapping midnight) — resolved once at post and stored on the task (§11.1) |
 | Task time cost | `base_fee + billable_minutes × the task's stored rate` |
 
 `total_logged_minutes` is the sum across **all closed worklog sessions** on the
@@ -645,7 +645,7 @@ Auto-extend consent (cap **+15 min**) is captured at post as
 ### 4. Payouts (Phase 3)
 
 Separate charges and transfers (the hold is placed at post, before there is a
-supporter to name). The platform keeps **20% of service revenue** — base fee +
+supporter to name). The platform keeps **30% of service revenue** — base fee +
 billable minutes + approved extensions — via `BillingConfig.PlatformFeeBps =
 2000`, deducted from the supporter's transfer; a receipt reimbursement is
 transferred **in full**, never commissioned. The fee is computed once per
@@ -1146,7 +1146,7 @@ Supersedes the hold shape in §3 and the approval-time authorization in §10.3.
 rate = $1.00/min  when the task STARTS between 21:00 and 07:59 America/New_York
                   (a RANGE that wraps midnight: 21:00 first surge minute,
                    07:59 last, 08:00 first standard minute)
-       $0.50/min  otherwise
+       $0.60/min  otherwise
 ```
 
 It was "at or after 21:00" until 2026-09-26, which left a midnight gap: a
@@ -1274,9 +1274,9 @@ and never the word *refund*.
 
 | Constant | Value |
 |---|---|
-| `BaseFeeDefaultCents` | 1200 |
+| `BaseFeeDefaultCents` | 1500 (was 1200 until 2026-11-10) |
 | `BaseFeeCompanionshipCents` | 2500 |
-| `PerMinuteRateCents` | 50 |
+| `PerMinuteRateCents` | 60 (was 50 until 2026-11-10) |
 | `IncludedMinutes` | 15 |
 | `SurgeRateCentsPerMin` | 100 |
 | `SurgeStartHour` | 21 |
@@ -1288,7 +1288,7 @@ and never the word *refund*.
 | `GracePeriodMinutes` | 30 |
 | `ApprovalTimeoutMinutes` | 5 |
 | `CapWarningLeadMinutes` | 5 |
-| `PlatformFeeBps` | 2000 (20% of service revenue; reimbursements exempt) |
+| `PlatformFeeBps` | 3000 (30% of service revenue; 20% before 2026-11-10; reimbursements exempt) |
 | `Currency` | `usd` |
 
 **Removed:** `PreAuthMultiplier`, `PreAuthBufferCents`, `ShoppingBudgetCapCents`.

@@ -1071,6 +1071,8 @@ export interface EarningsTransfer {
   /** The fee, itemized (D-14). Both 0 on a transfer sent before the fee. */
   service_gross_cents?: number;
   platform_fee_cents?: number;
+  /** The rate this transfer was cut at (payouts.fee_bps). */
+  platform_fee_bps?: number;
   /** Row status: paid means the TRANSFER happened, not that the bank has it. */
   status: "pending" | "paid" | "failed";
   created_at: string;
