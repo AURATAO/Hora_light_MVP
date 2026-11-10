@@ -19,9 +19,22 @@ package channel
 import (
 	"context"
 	"log"
+	"time"
 
 	"hora-auth/internal/channel/llm"
 )
+
+// ScopeTimeout bounds the model's scope reading (the provider's own timeout
+// is 45 s; Sonnet answers in ~1.3 s, p90 ~1.6 s). Past it the message fails
+// closed: ops, not a draft.
+var ScopeTimeout = 8 * time.Second
+
+// HandoffScopeUnchecked: words that touch the scope could not be checked
+// (the model failed or timed out). Failing closed: a hand-off, not a draft.
+const HandoffScopeUnchecked HandoffReason = "scope_unchecked"
+
+// CopyScopeHolding answers a message the scope check could not read.
+const CopyScopeHolding = "A HO:RA teammate will look at this and get back to you shortly."
 
 // HandoffScopeAlert: a request in an alert category was declined. Not a
 // hand-off: the person got the decline, the thread stays with the bot.
@@ -44,9 +57,19 @@ func (r *Router) scopeGate(ctx context.Context, in Inbound, id Identity, conv Co
 	if sr == nil {
 		return false, nil
 	}
-	d, err := sr.Decide(ctx, r.Scope, text)
+	sctx, cancel := context.WithTimeout(ctx, ScopeTimeout)
+	d, err := sr.Decide(sctx, r.Scope, text)
+	cancel()
 	if err != nil {
-		log.Printf("[channel] scope check identity=%s (allowed): %v", id.ID, err)
+		// Sensitive words and no reading of them: fail closed. Ops take
+		// the thread; nothing is drafted. Urgent when an intimate pattern
+		// is there at all. The log carries the failure's kind only.
+		urgent := sr.MatchesAlertPattern(text)
+		log.Printf("[channel] scope check FAILED identity=%s kind=%s urgent=%t: handed to ops", id.ID, llm.ErrorKind(err), urgent)
+		return true, r.handOffWith(ctx, in, id, conv, HandoffScopeUnchecked, handoffWith{
+			copy: CopyScopeHolding, detail: "the scope check could not read a message (" + llm.ErrorKind(err) + ")",
+			urgent: urgent, urgentReason: "unchecked message with a romantic/sexual pattern",
+		})
 	}
 	if d.By != "no_scope_words" {
 		log.Printf("[channel] scope identity=%s: %s by=%s", id.ID, d.ID(), d.By)

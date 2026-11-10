@@ -234,6 +234,45 @@ func (s *ScopeRules) Rule(text string) ScopeDecision {
 	return ScopeDecision{By: "model"}
 }
 
+// MatchesAlertPattern: an alert category's match words appear, whatever its
+// unless words say ("massage gun" matches) — for how urgent a message the
+// model could not check is.
+func (s *ScopeRules) MatchesAlertPattern(text string) bool {
+	if s == nil {
+		return false
+	}
+	t := curlyRE.Replace(text)
+	for _, r := range s.Refusals {
+		if r.Alert && r.match != nil && r.match.MatchString(t) {
+			return true
+		}
+	}
+	return false
+}
+
+// StripFixedNotes removes HO:RA's own fixed lines (every playbook's
+// supporter notes, the home-entry note) from a task's words: they are ours,
+// not the person's, and "…never a bar or a club, no alcohol" must not
+// refuse the task it protects.
+func (s *PlaybookSet) StripFixedNotes(text string) string {
+	if s == nil {
+		return text
+	}
+	if n := s.ScopeRules.HomeEntry.SupporterNote; n != "" {
+		text = strings.ReplaceAll(text, n, "")
+	}
+	for _, p := range s.Playbooks {
+		for _, n := range p.SupporterNotes {
+			text = strings.ReplaceAll(text, n, "")
+		}
+	}
+	return strings.TrimSpace(text)
+}
+
+// ErrorKind labels a model failure for the log: "timeout", "status_NNN"
+// or "error" — never the error's text, which could carry the message.
+func ErrorKind(err error) string { return fallbackReason(err) }
+
 // RefusedByRule: the refusal a rule makes, nil when no refusal rule
 // matches (allow rules and the model are not consulted).
 func (s *ScopeRules) RefusedByRule(text string) *ScopeRefusal {
@@ -250,9 +289,10 @@ type ScopeChecker interface {
 }
 
 // Decide is the production order: the rules, then the model when they
-// leave it. A model error allows (logged by the caller through By): the
-// clear refusals are the rules', and a draft still needs the person's YES
-// and a supporter's acceptance.
+// leave it. A model error (or an unknown verdict) comes back as By
+// "model_error" with the error: the words touch the scope and nothing
+// checked them, so the caller fails closed (channel/scope.go hands the
+// thread to ops; tasks.go refuses the post).
 func (s *ScopeRules) Decide(ctx context.Context, m ScopeChecker, text string) (ScopeDecision, error) {
 	d := s.Rule(text)
 	if d.Decided {

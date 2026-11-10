@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Zap, Truck, WashingMachine, ShoppingBasket, Clock, Users } from 'lucide-react'
 import { api } from '../api/client'
+import { scopeRefusal } from '../lib/scopeRefusal'
 import { POST_CATEGORY_ORDER, CATEGORY_META } from '../lib/categoryOrder'
 
 const ICON_COLOR = '#9aab3a'
@@ -41,6 +42,13 @@ export default function CategoryHome() {
       const parsed = await api('/ai/parse-task', { method: 'POST', body: { input: aiInput } })
       nav('/tasks/new', { state: { aiPrefill: parsed } })
     } catch (err) {
+      // Something HO:RA does not do: the server's reply, not "couldn't
+      // understand", and no category grid to post it anyway.
+      const scope = scopeRefusal(err)
+      if (scope) {
+        setAiError(scope.message)
+        return
+      }
       setAiError("Couldn't understand that — try choosing a category below.")
       setCategoryOpen(true)
     } finally {

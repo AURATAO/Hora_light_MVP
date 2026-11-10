@@ -380,6 +380,8 @@ type NotificationDTO struct {
 
 func main() {
 	_ = godotenv.Load()
+	// The scope check on task posts and the AI prefill (task_scope.go).
+	taskScopeModel = scopeModelFromEnv()
 
 	// --- JWKS (Supabase Bearer 驗證用) ---
 	projectURL := strings.TrimSuffix(os.Getenv("SUPABASE_PROJECT_URL"), "/")
@@ -783,7 +785,8 @@ func main() {
 	r.POST("/push/register", dualAuth(sqldb), registerPushTokenHandler)
 	r.POST("/push/unregister", dualAuth(sqldb), unregisterPushTokenHandler)
 
-	r.POST("/ai/parse-task", dualAuth(sqldb), parseTaskWithAI)
+	// The scope check runs in front of the frozen parser (task_scope.go).
+	r.POST("/ai/parse-task", dualAuth(sqldb), aiParseScopeGuard, parseTaskWithAI)
 
 	// The post form's "Apply" for a promo code. Advisory — POST /tasks
 	// re-checks inside its transaction (server/promo.go).
@@ -1641,6 +1644,11 @@ func createTask(c *gin.Context) {
 		in.Category, in.EstimatedMinutes, in.IsImmediate, in.CreatedVia, in.LocationText != "", in.PromoCode != "")
 	if in.Title == "" {
 		c.JSON(400, gin.H{"error": "title required"})
+		return
+	}
+	// What HO:RA does not do about people and homes (task_scope.go): the
+	// same check as the text channel, on every post.
+	if refuseTaskScope(c, "createTask", taskScopeWords(in.Title, in.Description)) {
 		return
 	}
 	if in.EstimatedMinutes <= 0 {
@@ -2595,13 +2603,13 @@ func updateTask(c *gin.Context) {
 	// from one that does not — see the rate below.
 	var wasImmediate bool
 	var wasScheduledAt *time.Time
-	var wasLocation string
+	var wasLocation, wasTitle, wasDescription string
 	if err := db.QueryRow(ctx,
 		`select requester_id, requester, status, assigned_to_id, is_immediate, scheduled_at,
-		        coalesce(location_text, '')
+		        coalesce(location_text, ''), coalesce(title, ''), coalesce(description, '')
 		   from public.tasks where id=$1`,
 		id,
-	).Scan(&requesterID, &requesterEmail, &status, &assignedToID, &wasImmediate, &wasScheduledAt, &wasLocation); err != nil {
+	).Scan(&requesterID, &requesterEmail, &status, &assignedToID, &wasImmediate, &wasScheduledAt, &wasLocation, &wasTitle, &wasDescription); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
@@ -2659,6 +2667,12 @@ func updateTask(c *gin.Context) {
 
 	if in.Title == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "title required"})
+		return
+	}
+	// An edit that changes the words is checked like a new post
+	// (task_scope.go); one that only moves the time or the budget is not.
+	if (in.Title != strings.TrimSpace(wasTitle) || in.Description != strings.TrimSpace(wasDescription)) &&
+		refuseTaskScope(c, "updateTask", taskScopeWords(in.Title, in.Description)) {
 		return
 	}
 	if in.EstimatedMinutes <= 0 {

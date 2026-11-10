@@ -131,6 +131,21 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 // chatModelsFromEnv is the model behind each chat step (PLAN §9: chosen by
 // the eval, swapped by configuration) — see llm.StepsFromEnv for the
 // variables. Logged once at startup as provider:model, never a key.
+// scopeModelFromEnv is the small step on its own, for the scope check on
+// task posts (task_scope.go) — set at startup whether or not the chat runs.
+func scopeModelFromEnv() llm.ScopeChecker {
+	warn := func(s string) { log.Printf("[scope] WARNING: llm %s", s) }
+	p := llm.ProvidersFromEnv()
+	spec, err := llm.ParseSpec(firstNonEmptyEnv("LLM_SMALL_MODEL", "anthropic:"+llm.DefaultAnthropicModel))
+	if err != nil {
+		warn(err.Error())
+		spec, _ = llm.ParseSpec("anthropic:" + llm.DefaultAnthropicModel)
+	}
+	m := p.Step(spec, warn)
+	log.Printf("[scope] task posts: scope model %s", m.Name())
+	return m
+}
+
 func chatModelsFromEnv() llm.Steps {
 	warn := func(s string) { log.Printf("[channel] WARNING: llm %s", s) }
 	steps := llm.StepsFromEnv(llm.ProvidersFromEnv(), warn)

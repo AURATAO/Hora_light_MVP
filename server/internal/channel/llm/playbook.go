@@ -73,8 +73,11 @@ type Playbook struct {
 	SummaryLines     []string       `json:"summary_lines"`
 	Limits           []string       `json:"limits"`
 	Evals            []PlaybookEval `json:"evals"`
-	match            *regexp.Regexp
-	unless           *regexp.Regexp
+	// Category: when set, every draft of this type is filed — and priced —
+	// under it, whatever the parser read (companionship has its own base fee).
+	Category string `json:"category"`
+	match    *regexp.Regexp
+	unless   *regexp.Regexp
 }
 
 // EvalPlace is a fixture place for the answer evals (invented data).
@@ -169,6 +172,9 @@ func ParsePlaybooks(b []byte) (*PlaybookSet, error) {
 		seen[p.ID] = true
 		if p.Name == "" || p.Guidance == "" || len(p.Evals) == 0 || len(p.Sources) == 0 {
 			return nil, fmt.Errorf("playbooks: %s: name, guidance, sources and evals are required", p.ID)
+		}
+		if p.Category != "" && !Categories[p.Category] {
+			return nil, fmt.Errorf("playbooks: %s: unknown category %q", p.ID, p.Category)
 		}
 		for _, src := range p.Sources {
 			if !playbookSources[src] {

@@ -12,6 +12,7 @@ import { useTaskEstimate, formatCents } from '../hooks/useTaskEstimate'
 import { highBudgetWarning, holdPlacedMessage, promoReservedLine, surgeRateNote } from '../lib/paymentCopy'
 import { readPromoFailure, totalAfterPromo } from '../lib/promo'
 import { needsCompanionPolicy } from '../lib/companionship'
+import { scopeRefusal } from '../lib/scopeRefusal'
 import { completeCardAuthentication, readPaymentError, usePaymentGate } from '../hooks/usePaymentGate'
 import { betaSettlementLine } from '../lib/traction'
 import { SCHEDULE_STEP_MINUTES, defaultSchedule, localDateStr, scheduleFields } from '../lib/schedule'
@@ -77,6 +78,9 @@ export default function NewTask() {
   // Refused by the service-area check: shown under the addresses, because a
   // toast is gone before anyone can fix the address it was about.
   const [addressError, setAddressError] = useState('')
+  // What HO:RA does not do (server/task_scope.go): the server's own reply,
+  // shown above the submit button until the words change.
+  const [scopeError, setScopeError] = useState('')
   // The promo code. Typed here, checked with POST /promo/validate on Apply,
   // then sent on the estimate and on the post — where the server checks it
   // again and has the last word. `promoApplied` is the server's own answer.
@@ -271,6 +275,7 @@ export default function NewTask() {
   setIsSubmitting(true)
   setPaymentError('')
   setAddressError('')
+  setScopeError('')
   try {
     if (!user) throw new Error('Please sign in')
 
@@ -321,6 +326,14 @@ export default function NewTask() {
     if (promoFailure) {
       setPromoApplied(null)
       setPromoError(promoFailure)
+      return
+    }
+
+    // Refused by the scope rules, or the check could not run: nothing was
+    // posted, and the server's sentence says why and what HO:RA can do.
+    const scope = scopeRefusal(err)
+    if (scope) {
+      setScopeError(scope.message)
       return
     }
 
@@ -785,6 +798,11 @@ export default function NewTask() {
             </div>
           )}
 
+          {scopeError && (
+            <div role="alert" className="rounded-md border border-red-400/40 bg-red-500/10 p-3 text-sm text-red-300">
+              {scopeError}
+            </div>
+          )}
           {paymentError && (
             <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2.5 text-sm text-red-300">
               <div>{paymentError}</div>

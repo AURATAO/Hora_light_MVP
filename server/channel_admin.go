@@ -114,6 +114,8 @@ func (o opsEmailNotifier) NotifyOps(ctx context.Context, n channel.HandoffNotice
 		subject = fmt.Sprintf("[HO:RA] Chat handoff — new message — %s %s", n.Channel, n.PhoneHint)
 	} else if n.Reason == channel.HandoffBookingFailed {
 		subject = fmt.Sprintf("[HO:RA] Text booking failed — %s %s", n.Channel, n.PhoneHint)
+	} else if n.Reason == channel.HandoffScopeUnchecked && n.Urgent {
+		subject = fmt.Sprintf("[HO:RA] URGENT chat handoff (%s) — %s %s", n.UrgentReason, n.Channel, n.PhoneHint)
 	} else if n.Reason == channel.HandoffScopeAlert {
 		subject = fmt.Sprintf("[HO:RA] URGENT (%s) — declined, chat still with the bot — %s %s%s", n.UrgentReason, n.Channel, n.PhoneHint, optOutTasksShort(n))
 	}
@@ -159,6 +161,9 @@ func (o opsEmailNotifier) NotifyOps(ctx context.Context, n channel.HandoffNotice
 		}
 		if n.Reason == channel.HandoffBookingFailed {
 			text = fmt.Sprintf("[HO:RA] Text booking failed — %s %s. The bot still has the chat. Details in the ops email.", n.Channel, n.PhoneHint)
+		}
+		if n.Reason == channel.HandoffScopeUnchecked && n.Urgent {
+			text = fmt.Sprintf("[HO:RA] URGENT chat handoff (%s) — %s %s. Nothing was drafted. Details in the ops email / admin.", n.UrgentReason, n.Channel, n.PhoneHint)
 		}
 		if n.Reason == channel.HandoffScopeAlert {
 			text = fmt.Sprintf("[HO:RA] URGENT (%s) — %s %s was declined, nothing drafted%s. Check on any supporter with them. Details in the ops email.", n.UrgentReason, n.Channel, n.PhoneHint, optOutTasksShort(n))
@@ -429,6 +434,8 @@ func reasonLabelOps(r channel.HandoffReason) string {
 		return "a text booking failed"
 	case channel.HandoffScopeAlert:
 		return "a romantic, sexual or physical request was declined"
+	case channel.HandoffScopeUnchecked:
+		return "the scope check could not read a message — decide whether HO:RA can do it; nothing was drafted"
 	case channel.HandoffAgentEscalated:
 		return "the assistant judged a person should handle it (safety, dispute, legal/medical or repeated confusion)"
 	}

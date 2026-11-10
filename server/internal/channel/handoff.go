@@ -133,11 +133,31 @@ func (r *Router) handOff(ctx context.Context, in Inbound, id Identity, conv Conv
 
 // handOffDetail is handOff with the agent's escalation reason for ops.
 func (r *Router) handOffDetail(ctx context.Context, in Inbound, id Identity, conv Conversation, reason HandoffReason, detail string) error {
+	return r.handOffWith(ctx, in, id, conv, reason, handoffWith{detail: detail})
+}
+
+// handoffWith: what a hand-off may carry besides its reason — the detail
+// for ops, the person's holding line (default CopyHandoffStart), urgency.
+type handoffWith struct {
+	detail, copy string
+	urgent       bool
+	urgentReason string
+}
+
+// handOffWith is the one hand-off path.
+func (r *Router) handOffWith(ctx context.Context, in Inbound, id Identity, conv Conversation, reason HandoffReason, w handoffWith) error {
+	start := CopyHandoffStart
+	if w.copy != "" {
+		start = w.copy
+	}
 	var open handoffOpen
 	if conv.State == StateAwaitingApproval && conv.PendingExtensionID != "" {
 		open = handoffOpen{extensionID: conv.PendingExtensionID, taskID: conv.ApprovalTaskID, unconfirmed: conv.Unconfirmed()}
 	}
-	open.detail = detail
+	open.detail = w.detail
+	if w.urgent {
+		open.urgent, open.urgentReason = true, w.urgentReason
+	}
 	// Ops are told FIRST. If no one could be reached, the thread is not
 	// handed off and the person is told so — never "a teammate will text
 	// you" with nobody notified (staging 2026-10-24: every ops email
@@ -156,10 +176,10 @@ func (r *Router) handOffDetail(ctx context.Context, in Inbound, id Identity, con
 		// them twice. Logged, and the person gets the true answer (a
 		// teammate is coming); the thread is not held, which ops see.
 		log.Printf("[channel] handoff identity=%s reason=%s: ops told, thread NOT held: %v", id.ID, reason, err)
-		return r.Reply(ctx, in, CopyHandoffStart, "")
+		return r.Reply(ctx, in, start, "")
 	}
 	log.Printf("[channel] handoff identity=%s reason=%s", id.ID, reason)
-	return r.Reply(ctx, in, CopyHandoffStart, "")
+	return r.Reply(ctx, in, start, "")
 }
 
 // onHandoff is every message while ops hold the thread.

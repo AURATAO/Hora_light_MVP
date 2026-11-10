@@ -28,3 +28,14 @@
 - `-scope -scope-all` (the model alone on every case): 102/102 after one prompt fix. Before the fix, the model refused "pick up Tylenol from Duane Reade"; the personal-care sentence now says over-the-counter items are fine.
 - `go test`: every eval through the router (`TestScopeEvalsThroughRouter`). Refusals: the category's reply only, no parse, no draft, idle, no quote; ops told only for `intimate`. The existing corpora (381 messages) are refused only where they ask for alcohol, prescriptions or a login (`TestScopeRulesSpareExistingErrands`).
 - `REQUIRE_DB_TESTS=1 go test -p 1 ./... -race -count=1` with Postgres: green.
+
+## Amendment before merge (2026-11-10)
+Aura, same day, before merge:
+1. **main merged in** (supporter-only dispatch, item problem, new pricing). It merged with no conflicts. Public companionship is priced as companionship whatever the parser filed it under: a playbook may name a `category`, and the companionship entry names `companionship`.
+2. **Fail closed.** The order is unchanged: refusal rules, then allowed patterns, then no sensitive word = everyday errand, then the model. When the words contain a sensitive word and the model fails, times out (`ScopeTimeout`, 8 s) or returns an unknown verdict, nothing is drafted. The person gets "A HO:RA teammate will look at this and get back to you shortly." and the thread is handed to ops (`HandoffScopeUnchecked`). It is urgent only when an intimate pattern appears in the words, even one its unless exempts. The log carries the failure's kind (timeout, status_NNN, error), never the text. Messages with no sensitive word never ask the model.
+3. **Every task creation path** (`server/task_scope.go`) runs the same check:
+   - `POST /tasks` (web and app);
+   - `PATCH /tasks/:id` when the title or description changes;
+   - `POST /ai/parse-task`, via gin middleware in front of the frozen parser, which is not touched.
+   A refusal is 422 `{error: "out_of_scope", category, message: <the category's reply>}`. A model failure on sensitive words is 503 `scope_unchecked`. The web post form shows the reply above the submit button, and the AI box shows it in place of "couldn't understand". Title and description are joined with ". " so they are not read as one phrase. HO:RA's own fixed supporter notes are removed first ("…no alcohol" must not refuse a companionship task). A chat booking was read by the chat's gate with the model, so its post re-checks by rule only.
+4. **No driving people.** The `driving` category now covers rides in anyone's car: "drive me to JFK", "give me a ride", "pick me up at … and drive me", "drive my mom to the airport", "be my driver". It is ordered before `third_person` so it gets the driving copy. Carrying items by car is allowed, and so is "pick me up a coffee".

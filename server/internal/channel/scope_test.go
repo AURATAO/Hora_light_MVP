@@ -2,9 +2,12 @@ package channel
 
 import (
 	"context"
+	"log"
+	"os"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"hora-auth/internal/channel/llm"
 )
@@ -189,12 +192,69 @@ func TestScopeModelOnlyWhenRulesLeaveIt(t *testing.T) {
 	if o.calls != 1 || reply != scopeSet(t).Refusal("third_person").Reply || len(g.parser.sources) != 0 {
 		t.Fatalf("model refusal: calls %d reply %q", o.calls, reply)
 	}
-	g, _ = handoffRig(t, llm.IntentNewTask)
-	g.r.Scope = failingScope{}
-	g.say(t, "my mom needs company on her walk, can someone go?")
-	if len(g.parser.sources) != 1 {
-		t.Fatal("model error did not allow")
+}
+
+// Fail closed (2026-11-10): sensitive words the model could not read are
+// never drafted — the holding line, the thread to ops (urgent only with an
+// intimate pattern in the words), and the failure logged without the text.
+// Words with no sensitive word never ask the model, so its failure cannot
+// touch them.
+func TestScopeFailsClosedOnModelError(t *testing.T) {
+	sr := scopeSet(t)
+	for _, c := range []struct {
+		msg    string
+		urgent bool
+	}{
+		{"my mom needs company on her walk, can someone go?", false},
+		{"pick up my massage gun from my friend's office", true}, // the unless spares it; the pattern is there
+	} {
+		if sr.Rule(c.msg).Decided {
+			t.Fatalf("%q: a rule decides — pick words left to the model", c.msg)
+		}
+		g, ops := handoffRig(t, llm.IntentNewTask)
+		g.r.Scope = failingScope{}
+		var logs strings.Builder
+		log.SetOutput(&logs)
+		reply := g.say(t, c.msg)
+		log.SetOutput(os.Stderr)
+		if reply != CopyScopeHolding || len(g.parser.sources) != 0 || g.conv(t).Pending != nil || g.state() != StateHandoff {
+			t.Fatalf("%q: reply %q parses %d state %s", c.msg, reply, len(g.parser.sources), g.state())
+		}
+		if len(ops.notices) != 1 || ops.notices[0].Reason != HandoffScopeUnchecked || ops.notices[0].Urgent != c.urgent {
+			t.Fatalf("%q: notices %+v", c.msg, ops.notices)
+		}
+		if !strings.Contains(logs.String(), "scope check FAILED") || !strings.Contains(logs.String(), "kind=timeout") || strings.Contains(logs.String(), c.msg) {
+			t.Fatalf("%q: log\n%s", c.msg, logs.String())
+		}
 	}
+	// No sensitive word: allowed as today, the model never asked.
+	g, ops := handoffRig(t, llm.IntentNewTask)
+	g.r.Scope = failingScope{}
+	g.say(t, "pick up my dry cleaning at 12 Bedford Ave at 5pm")
+	if len(g.parser.sources) != 1 || len(ops.notices) != 0 || g.state() == StateHandoff {
+		t.Fatalf("plain errand: parses %d notices %d state %s", len(g.parser.sources), len(ops.notices), g.state())
+	}
+}
+
+// A model that hangs past ScopeTimeout fails closed too.
+func TestScopeTimeoutFailsClosed(t *testing.T) {
+	prev := ScopeTimeout
+	ScopeTimeout = 150 * time.Millisecond
+	defer func() { ScopeTimeout = prev }()
+	g, ops := handoffRig(t, llm.IntentNewTask)
+	g.r.Scope = hangingScope{}
+	start := time.Now()
+	reply := g.say(t, "my mom needs company on her walk, can someone go?")
+	if took := time.Since(start); took > ScopeTimeout+2*time.Second || reply != CopyScopeHolding || len(ops.notices) != 1 {
+		t.Fatalf("took %s reply %q notices %d", took, reply, len(ops.notices))
+	}
+}
+
+type hangingScope struct{}
+
+func (hangingScope) CheckScope(ctx context.Context, _ string) (string, error) {
+	<-ctx.Done()
+	return "", ctx.Err()
 }
 
 type failingScope struct{}
@@ -246,7 +306,9 @@ func TestCompanionshipPlaybook(t *testing.T) {
 	cp := pbs.ByID("companionship")
 	g, _, _ := scopeRig(t, nil)
 	g.r.Playbooks = pbs
-	g.parser.draft = llm.TaskDraft{Title: "Walk in Washington Square Park", Category: "companionship", Location1: "Washington Square Park, New York, NY 10012"}
+	// The parser files it as anything_else: the playbook's category wins,
+	// so it is priced as companionship.
+	g.parser.draft = llm.TaskDraft{Title: "Walk in Washington Square Park", Category: "anything_else", Location1: "Washington Square Park, New York, NY 10012"}
 	reply := g.say(t, "can you keep me company for a walk in Washington Square Park?")
 	if p := g.pending(t); p.Playbook != "companionship" || strings.Join(p.PlaybookAsk, ",") != "when,how_long" {
 		t.Fatalf("playbook %q asks %v\n%s", p.Playbook, p.PlaybookAsk, reply)
@@ -260,5 +322,8 @@ func TestCompanionshipPlaybook(t *testing.T) {
 	}
 	if d := g.pending(t).Items()[0].Draft.Description; !strings.Contains(d, cp.SupporterNotes[0]) {
 		t.Fatalf("note: %q", d)
+	}
+	if c := g.pending(t).Items()[0].Draft.Category; c != "companionship" {
+		t.Fatalf("category %q: public companionship must be priced as companionship", c)
 	}
 }

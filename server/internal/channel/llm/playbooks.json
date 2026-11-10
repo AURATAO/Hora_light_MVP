@@ -71,6 +71,22 @@
     ]
    },
    {
+    "id": "driving",
+    "name": "driving people, or the customer's car",
+    "rule": "Driving people anywhere, in the supporter's car or the customer's: rides, lifts, airport runs, \"pick me up and drive me to…\", driving someone else (a parent, a friend). Also driving, moving, parking or picking up the customer's car or other vehicle (including alternate-side parking). Carrying ITEMS by car is allowed.",
+    "reply": "Sorry, HO:RA can't drive people, and supporters can't drive or move your car. A supporter can carry your bags to the car or the curb, pick something up, or bring it to you.",
+    "match": [
+     "(?:drive|driving|move|moving|park|parking|repark|re-park|pick ?up|take|bring|return|gas up|fill up|valet|jump[- ]?start)\\s+(?:my|our|his|her|their)\\s+(?:\\w+\\s+)?(?:car|vehicle|truck|van|suv|jeep|tesla|minivan|motorcycle|scooter|moped)\\b",
+     "alternate[- ]side|street cleaning|be my (?:driver|chauffeur|uber|taxi|lyft)|designated driver|chauffeur\\w*",
+     "(?:drive|driving)\\s+(?:me|us|him|her|them|(?:my|our)\\s+(?:\\w+\\s+)?(?:mom|mommy|mum|mother|dad|daddy|father|parents?|grand(?:ma|mother|pa|father|parents?|mom|dad)|granny|nana|nonna|abuel[ao]|aunt(?:ie)?|uncle|sister|brother|siblings?|wife|husband|partner|spouse|girlfriend|boyfriend|fianc[eé]e?|friends?|bestie|neighbou?rs?|roommates?|cousins?|nieces?|nephews?|in-laws?|mother-in-law|father-in-law|colleagues?|coworkers?|co-workers?|boss|clients?|guests?|relatives?|family|elders?|landlord|kids?|kiddos?|child|children|sons?|daughters?|bab(?:y|ies)|toddlers?|infants?|teens?|teenagers?|grandsons?|granddaughters?|grandkids?|grandchild(?:ren)?|stepsons?|stepdaughters?|little (?:one|boy|girl)s?))\\b",
+     "(?:give|giving|offer)\\s+(?:me|us|him|her|them|(?:my|our)\\s+(?:\\w+\\s+)?(?:mom|mommy|mum|mother|dad|daddy|father|parents?|grand(?:ma|mother|pa|father|parents?|mom|dad)|granny|nana|nonna|abuel[ao]|aunt(?:ie)?|uncle|sister|brother|siblings?|wife|husband|partner|spouse|girlfriend|boyfriend|fianc[eé]e?|friends?|bestie|neighbou?rs?|roommates?|cousins?|nieces?|nephews?|in-laws?|mother-in-law|father-in-law|colleagues?|coworkers?|co-workers?|boss|clients?|guests?|relatives?|family|elders?|landlord|kids?|kiddos?|child|children|sons?|daughters?|bab(?:y|ies)|toddlers?|infants?|teens?|teenagers?|grandsons?|granddaughters?|grandkids?|grandchild(?:ren)?|stepsons?|stepdaughters?|little (?:one|boy|girl)s?))\\s+a\\s+(?:ride|lift)|(?:need|want|get|have|grab|catch)\\s+(?:a\\s+)?(?:ride|lift)\\b|(?:a\\s+)?(?:ride|lift)\\s+(?:to|home|from|back|into|downtown|uptown)\\b",
+     "pick (?:me|us) up (?:at|from|outside|in front of|after)\\b|pick (?:me|us) up and (?:drive|take|bring|run)|(?:take|bring|get) (?:me|us) (?:to|home|back)\\b[^.\\n]{0,50}\\b(?:car|drive|ride|airport)|(?:uber|lyft|taxi|cab) (?:me|us)\\b|airport (?:run|pickup|pick-up|drop[- ]?off|transfer)s?\\b|(?:drop|take) me (?:off )?at (?:the )?(?:airport|jfk|lga|laguardia|newark|ewr|station)"
+    ],
+    "unless": [
+     "(?:car|vehicle) (?:keys?|seat|charger|mats?|mount|insurance|registration|wash)|pick (?:me|us) up (?:a|an|some|the|\\d)\\b"
+    ]
+   },
+   {
     "id": "personal_care",
     "name": "personal or medical care, prescriptions, or professional advice",
     "rule": "Personal or medical care (bathing, toileting, dressing, giving or reminding about medication, wound care, caregiving), prescriptions of any kind, and medical, legal or financial advice. Buying over-the-counter items (Tylenol, cold medicine, bandages) at a pharmacy is an ordinary errand and fine, also for someone else.",
@@ -154,19 +170,6 @@
     ]
    },
    {
-    "id": "driving",
-    "name": "driving the customer's car",
-    "rule": "Driving, moving, parking or picking up the customer's car or other vehicle (including alternate-side parking).",
-    "reply": "Sorry, supporters can't drive or move your car. They get around on foot or by transit, and anything they can carry, they can pick up or drop off for you.",
-    "match": [
-     "(?:drive|driving|move|moving|park|parking|repark|re-park|pick ?up|take|bring|return|gas up|fill up|valet|jump[- ]?start)\\s+(?:my|our|his|her|their)\\s+(?:\\w+\\s+)?(?:car|vehicle|truck|van|suv|jeep|tesla|minivan|motorcycle|scooter|moped)\\b",
-     "alternate[- ]side|street cleaning|be my (?:driver|chauffeur)|designated driver|chauffeur"
-    ],
-    "unless": [
-     "(?:car|vehicle) (?:keys?|seat|charger|mats?|mount|insurance|registration|wash)"
-    ]
-   },
-   {
     "id": "cash",
     "name": "carrying or handing over cash beyond the budget",
     "rule": "Cash beyond the errand's budget: ATM runs, withdrawing, delivering, lending or collecting money, money orders, paying someone in cash.",
@@ -226,7 +229,7 @@
    "bath\\w*|shower\\w*|toilet\\w*|bathroom|diapers?|dress(?:ed)? (?:me|him|her|them)|wash (?:me|him|her|them)|medic\\w*|meds|pills?|prescri\\w*|rx|refill|doctor|hospital|clinic|appointment|nurse|caregiv\\w*|care for|aide|sick|injur\\w*|wound|bandage|insulin|advice|lawyer|attorney|legal|sue|taxes|invest\\w*|financ\\w*|savings|stocks?|crypto|bitcoin|therap\\w*|diagnos\\w*|symptoms?|mole|rash",
    "drinks?|drinking|drunk|tipsy|bars?|pub|club\\w*|lounge|beers?|wines?|liquor|vodka|whisk\\w*|tequila|rum|gin|booze|alcohol\\w*|cocktail\\w*|champagne|prosecco|sake|seltzer|cigar\\w*|cigs?|tobacco|vap\\w*|juul|nicotine|zyns?|hookah|smok\\w*|weed|cannabis|marijuana|edibles?|thc|cbd|dispensar\\w*|joint|blunt|stoned|420|green stuff|edge off",
    "id|ids|i\\.d\\.|passport|licen[cs]e|ssn|social security|sign for|signature|login|log ?in|sign ?in|password|passcode|pin|account|credentials|credit card|debit card|ebt",
-   "car|cars|vehicle|truck|van|drive|driving|driver|parking",
+   "car|cars|vehicle|truck|van|drive|driving|driver|parking|rides?|lift|uber|lyft|taxi|cab|airport|jfk|lga|laguardia|newark|pick (?:me|us) up",
    "cash|atm|venmo|zelle|wire|loan|lend|owes?"
   ],
   "home_entry": {
@@ -590,6 +593,66 @@
     "want": "driving"
    },
    {
+    "group": "driving",
+    "msg": "drive me to JFK",
+    "want": "driving"
+   },
+   {
+    "group": "driving",
+    "msg": "can you give me a ride to the airport tomorrow at 6am",
+    "want": "driving"
+   },
+   {
+    "group": "driving",
+    "msg": "pick me up at my office and drive me to Brooklyn",
+    "want": "driving"
+   },
+   {
+    "group": "driving",
+    "msg": "drive my mom to the airport",
+    "want": "driving"
+   },
+   {
+    "group": "driving",
+    "msg": "I need a lift home tonight from Midtown",
+    "want": "driving"
+   },
+   {
+    "group": "driving",
+    "msg": "can you take me to my doctor in your car",
+    "want": "driving"
+   },
+   {
+    "group": "driving",
+    "msg": "be my driver for the day",
+    "want": "driving"
+   },
+   {
+    "group": "allowed",
+    "msg": "drive the boxes from my office to my apartment in your car",
+    "want": "allow"
+   },
+   {
+    "group": "allowed",
+    "msg": "pick up a dresser from IKEA Red Hook and bring it to 12 Bedford Ave in your car",
+    "want": "allow"
+   },
+   {
+    "group": "allowed",
+    "msg": "carry my grocery bags to my car at the Trader Joe's on Court St",
+    "want": "allow"
+   },
+   {
+    "group": "allowed",
+    "msg": "pick me up a coffee from Starbucks on 8th Ave",
+    "want": "allow"
+   },
+   {
+    "group": "allowed",
+    "msg": "pick up my package at the FedEx near JFK and bring it to 12 Bedford Ave",
+    "want": "allow"
+   },
+   {
     "group": "cash",
     "msg": "withdraw $200 from the ATM and bring it to me",
     "want": "cash"
@@ -771,6 +834,7 @@
   {
    "id": "companionship",
    "name": "Companionship in a public place",
+   "category": "companionship",
    "match": [
     "keep (?:me|us) company|walk with me|(?:go|going) (?:for|on) a walk with|take a walk with me|walk together|walking buddy|someone to (?:walk|talk|sit) with|(?:grab|get|have)\\s+(?:a\\s+)?(?:coffee|tea|lunch|brunch|bite|ice cream)\\s+with me|coffee together|sit with me|company for (?:a|my) (?:walk|coffee|stroll)|companionship"
    ],

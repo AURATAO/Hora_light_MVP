@@ -809,6 +809,11 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 			applyPlaces(&draft, o.places, o.check, namesDuration(source))
 		}
 		applyPlaybookNotes(&draft, pb)
+		if pb != nil && pb.Category != "" {
+			// Public companionship is priced as companionship, whatever
+			// the parser filed it under.
+			draft.Category = pb.Category
+		}
 		if n := r.homeEntryNote(text); n != "" && !strings.Contains(draft.Description, n) {
 			draft.Description = strings.TrimSpace(strings.TrimSpace(draft.Description) + "\n\n" + n)
 		}

@@ -238,3 +238,33 @@ func TestOpsNoticeScopeAlert(t *testing.T) {
 		}
 	}
 }
+
+// Fail closed (D-26): a message the scope check could not read is a real
+// hand-off; urgent in the subject and the text only when an intimate
+// pattern was in the words, and the email says nothing was drafted.
+func TestOpsNoticeScopeUnchecked(t *testing.T) {
+	prev := sendOpsEmail
+	defer func() { sendOpsEmail = prev }()
+	var subject, body string
+	sendOpsEmail = func(p notify.EmailPayload) error { subject, body = p.Subject, p.Html; return nil }
+	t.Setenv("CHANNEL_OPS_EMAILS", "ops@example.com")
+	t.Setenv("CHANNEL_OPS_NUMBERS", "+1 (555) 010-0199")
+	sms := &stubAdapter{}
+	n := newOpsNotifier(nil, sms, &stubToucher{})
+	n.lookup = func(context.Context, string) (string, error) { return "+15550100777", nil }
+	notice := channel.HandoffNotice{IdentityID: "i", Channel: channel.IMessage, PhoneHint: "•••• 0777", Reason: channel.HandoffScopeUnchecked,
+		Detail: "the scope check could not read a message (timeout)"}
+	if err := n.NotifyOps(context.Background(), notice); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(subject, "URGENT") || !strings.Contains(body, "nothing was drafted") || strings.Contains(sms.sent[0].Text, "URGENT") {
+		t.Fatalf("not urgent: subject %q text %q", subject, sms.sent[0].Text)
+	}
+	notice.Urgent, notice.UrgentReason = true, "unchecked message with a romantic/sexual pattern"
+	if err := n.NotifyOps(context.Background(), notice); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(subject, "[HO:RA] URGENT chat handoff (unchecked message with a romantic/sexual pattern)") || !strings.Contains(sms.sent[1].Text, "URGENT") {
+		t.Fatalf("urgent: subject %q text %q", subject, sms.sent[1].Text)
+	}
+}

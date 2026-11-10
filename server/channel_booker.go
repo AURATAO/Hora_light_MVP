@@ -128,6 +128,9 @@ func (b *chatBooker) Post(ctx context.Context, userID string, d llm.TaskDraft, o
 	c.Request.Header.Set("Content-Type", "application/json")
 	c.Set("uid", userID)
 	c.Set("email", email)
+	// The chat's scope gate read these words with the model already
+	// (task_scope.go re-checks by rule only).
+	c.Set(ctxScopeChecked, true)
 	// In the context, not the body: a body key is the web form's, stored as
 	// "web:<key>" (task_booking_key.go); a ceiling only the chat names.
 	if opts.BookingKey != "" {
