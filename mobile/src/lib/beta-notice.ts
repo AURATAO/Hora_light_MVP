@@ -32,15 +32,15 @@ import type { TaskCategory } from "./types";
  * Kept in lockstep with server/billing.go's BillingConfig by eye, and with
  * web's copy of it by test:
  *
- *   BaseFeeDefaultCents       1200   $12
+ *   BaseFeeDefaultCents       1500   $15
  *   IncludedMinutes             15   first 15 minutes
- *   PerMinuteRateCents          50   $0.50/min
+ *   PerMinuteRateCents          60   $0.60/min
  *   BaseFeeCompanionshipCents 2500   $25 companionship
  *   SurgeRateCentsPerMin       100   $1.00/min
  *   SurgeStartHour              21   from 9 PM
  */
 export const PRICING_LINE =
-  "$12 base fee includes the first 15 minutes, then $0.50/min " +
+  "$15 base fee includes the first 15 minutes, then $0.60/min " +
   "($25 base for companionship; $1.00/min for tasks starting 9 PM–8 AM)";
 
 /**
@@ -128,13 +128,13 @@ export const TRACTION_3_CONFIG = {
   startsAt: "2026-08-18T00:00:00-04:00",
   endsAt: "2026-08-29T00:00:00-04:00",
   /** Billing rate quoted in the post-task questionnaire. */
-  perMinuteRate: "$0.50",
+  perMinuteRate: "$0.60",
   /**
    * The SHORT price string, for the questionnaire's two would-you-use-it
    * questions, where the full PRICING_LINE above would bury the question it is
    * attached to. Byte-identical to web's copy by test.
    */
-  pricingSummary: "$12 base (first 15 min included), then $0.50/min",
+  pricingSummary: "$15 base (first 15 min included), then $0.60/min",
 } as const;
 
 // Categories switched off for the current round: shown everywhere they were

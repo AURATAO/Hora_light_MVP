@@ -61,6 +61,9 @@ type Booker interface {
 	// ExtensionPending: the request still awaits the requester's answer
 	// (a deferred question is sent only then — D-17 I-O).
 	ExtensionPending(ctx context.Context, userID, extensionID string) (bool, error)
+	// ItemQuestion is the request when it is an item question (kind=item,
+	// answered 1 or 2 — item.go); ok=false for any other kind.
+	ItemQuestion(ctx context.Context, userID, extensionID string) (PendingApproval, bool, error)
 	// OpenTasks are the requester's posted tasks that can still be cancelled
 	// (newest first).
 	OpenTasks(ctx context.Context, userID string) ([]TaskRef, error)

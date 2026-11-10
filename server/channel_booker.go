@@ -268,8 +268,11 @@ func (b *chatBooker) ResolveExtension(ctx context.Context, userID, extensionID s
 // announcements phrase it: "15 more minutes on “Laundry pickup”".
 func (b *chatBooker) extensionAsk(ctx context.Context, e ExtensionRequest) string {
 	ask := fmt.Sprintf("%d more minutes", derefInt(e.RequestedMinutes))
-	if e.Kind == extensionKindBudget {
+	switch e.Kind {
+	case extensionKindBudget:
 		ask = formatCentsUSD(derefInt(e.RequestedCents)) + " more budget"
+	case extensionKindItem:
+		ask = e.AlternativeName + " instead of " + e.ItemName
 	}
 	var title string
 	if err := b.sqlDB.QueryRowContext(ctx,
@@ -418,10 +421,19 @@ func (b *chatBooker) CancelQuote(ctx context.Context, userID, taskID string) (ch
 		// person says YES to.
 		var category string
 		var rate int
-		if err := b.sqlDB.QueryRowContext(ctx, `SELECT COALESCE(category,''), COALESCE(rate_cents_per_min,0) FROM public.tasks WHERE id=$1::uuid`, taskID).Scan(&category, &rate); err != nil {
+		var storedBase sql.NullInt64
+		if err := b.sqlDB.QueryRowContext(ctx, `SELECT COALESCE(category,''), COALESCE(rate_cents_per_min,0), base_fee_cents FROM public.tasks WHERE id=$1::uuid`, taskID).Scan(&category, &rate, &storedBase); err != nil {
 			return channel.CancelQuote{}, fmt.Errorf("cancel quote: task: %w", err)
 		}
 		rate = normalizeRate(rate)
+		// The base fee the task was posted at (pricing.go), as the cancel
+		// itself bills it.
+		var basePtr *int
+		if storedBase.Valid {
+			v := int(storedBase.Int64)
+			basePtr = &v
+		}
+		base := storedBaseFee(basePtr, category)
 		// The committed charge as of now, from the same formula the cancel
 		// bills with (not the preview's fields, which may be zeroed inside
 		// the free window — review 10/25 r3 #5).
@@ -429,7 +441,7 @@ func (b *chatBooker) CancelQuote(ctx context.Context, userID, taskID string) (ch
 		if err != nil {
 			return channel.CancelQuote{}, fmt.Errorf("cancel quote: minutes: %w", err)
 		}
-		q.CeilingCents = cancelSettlementCents(category, closedMin, true, rate)
+		q.CeilingCents = cancelSettlementBase(base, closedMin, true, rate)
 		if sessionOpen {
 			var estimate, approvedExtra int
 			var consent bool
@@ -455,7 +467,7 @@ func (b *chatBooker) CancelQuote(ctx context.Context, userID, taskID string) (ch
 				// two readers): any drift fails the quote.
 				return channel.CancelQuote{}, fmt.Errorf("cancel quote: cap drift %d vs %d", capMinutes, got)
 			}
-			q.CeilingCents = cancelSettlementCents(category, capMinutes, true, rate)
+			q.CeilingCents = cancelSettlementBase(base, capMinutes, true, rate)
 		}
 		if q.CeilingCents < q.ChargeCents {
 			q.CeilingCents = q.ChargeCents
@@ -517,4 +529,31 @@ func cancelResultFrom(status int, raw []byte) channel.CancelResult {
 	}
 	log.Printf("[channel-booker] cancel failed status=%d", status)
 	return channel.CancelResult{}
+}
+
+// ItemQuestion is the request when it is an item question (item.go): the
+// structured fields the chat's digit answer and re-ask need. ok=false for a
+// budget or time request.
+func (b *chatBooker) ItemQuestion(ctx context.Context, userID, extensionID string) (channel.PendingApproval, bool, error) {
+	var q channel.PendingApproval
+	var kind string
+	var cents sql.NullInt64
+	err := b.sqlDB.QueryRowContext(ctx, `
+		SELECT e.id::text, e.kind, coalesce(e.item_name,''), coalesce(e.store_name,''),
+		       coalesce(e.alternative_name,''), e.alternative_cents
+		  FROM public.extension_requests e
+		  JOIN public.tasks t ON t.id = e.task_id
+		 WHERE e.id = $1::uuid AND t.requester_id = $2::uuid`,
+		extensionID, userID).Scan(&q.ID, &kind, &q.Item, &q.Store, &q.Alternative, &cents)
+	if errors.Is(err, sql.ErrNoRows) {
+		return q, false, nil
+	}
+	if err != nil {
+		return q, false, fmt.Errorf("item question: %w", err)
+	}
+	if kind != extensionKindItem {
+		return channel.PendingApproval{}, false, nil
+	}
+	q.Kind, q.Cents = kind, int(cents.Int64)
+	return q, true, nil
 }

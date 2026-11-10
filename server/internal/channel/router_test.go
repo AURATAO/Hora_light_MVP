@@ -568,7 +568,9 @@ func (f fakeClassifier) Classify(context.Context, string) (llm.Intent, error) { 
 
 type fakeBooker struct {
 	mu         sync.Mutex
-	pendingExt map[string]bool // ExtensionPending answers
+	pendingExt map[string]bool            // ExtensionPending answers
+	items      map[string]PendingApproval // ItemQuestion answers: item questions by extension id
+	itemErr    error                      // ItemQuestion fails with it when set
 	pendingErr error
 	during     func() // runs inside Post, while the thread is "posting"
 	quotes     int
@@ -694,6 +696,16 @@ func (b *fakeBooker) ResolveExtension(_ context.Context, user, ext string, appro
 	}
 	return b.extResult
 }
+func (b *fakeBooker) ItemQuestion(_ context.Context, _, ext string) (PendingApproval, bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.itemErr != nil {
+		return PendingApproval{}, false, b.itemErr
+	}
+	q, ok := b.items[ext]
+	return q, ok, nil
+}
+
 func (b *fakeBooker) ExtensionPending(_ context.Context, _, ext string) (bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

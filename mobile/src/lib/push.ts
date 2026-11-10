@@ -53,7 +53,7 @@ export async function registerPushIfAlreadyGranted(): Promise<string | null> {
 // the system prompt once; this guards OUR pre-prompt.
 const PUSH_ASKED_KEY = "hora_push_asked";
 
-export type PushAskContext = "task_posted" | "task_accepted";
+export type PushAskContext = "task_accepted" | "available" | "supporter_ready";
 
 /** The one-line explanation shown before the system prompt. */
 export function pushAskCopy(context: PushAskContext): { title: string; body: string } {
@@ -63,9 +63,12 @@ export function pushAskCopy(context: PushAskContext): { title: string; body: str
       body: "We'll let you know when the requester messages you, approves a request, or cancels — and remind you to clock out.",
     };
   }
+  // "supporter_ready" (first look at the board as an approved supporter) and
+  // "available" (going available): the same one line, because it is the
+  // same reason (App Review notes, 2026-11-07).
   return {
     title: "Turn on notifications?",
-    body: "We'll let you know when a supporter accepts your task, when they're arriving, and when something needs your approval.",
+    body: "Turn on notifications so you don't miss jobs near you.",
   };
 }
 
@@ -73,7 +76,13 @@ export function pushAskCopy(context: PushAskContext): { title: string; body: str
 // our own explanatory alert first; the system prompt follows only on "Turn
 // on". Asked at most once per device by this path; a later change of mind
 // goes through iOS Settings. Never throws.
+// One ask at a time: the board asks on every focus, and two focuses before
+// the first answer must not stack two alerts.
+let askInFlight = false;
+
 export async function askForPushInContext(context: PushAskContext): Promise<void> {
+  if (askInFlight) return;
+  askInFlight = true;
   try {
     const perm = await Notifications.getPermissionsAsync();
     if (perm.granted) {
@@ -95,6 +104,43 @@ export async function askForPushInContext(context: PushAskContext): Promise<void
     if (turnOn) await registerPush({ request: true });
   } catch (e) {
     if (__DEV__) console.warn("[push] in-context ask failed:", e);
+  } finally {
+    askInFlight = false;
+  }
+}
+
+// Going available is the one moment notifications are the whole point (D-24):
+// an offer that cannot reach the phone is no offer. So unlike the in-context
+// ask above, this one is NOT once-per-device — the supporter just asked for
+// offers. "ok" when this device can receive them; "denied" when notification
+// permission is off (the fix is Settings); "failed" when permission is on but
+// no token could be registered (offline, no EAS project id) — a retry, not
+// Settings. Never throws.
+export type OffersPushResult = "ok" | "denied" | "failed";
+
+export async function ensurePushForOffers(): Promise<OffersPushResult> {
+  const registered = async (request: boolean): Promise<OffersPushResult> => {
+    if ((await registerPush({ request })) !== null) return "ok";
+    const perm = await Notifications.getPermissionsAsync().catch(() => null);
+    return perm?.granted ? "failed" : "denied";
+  };
+  try {
+    const perm = await Notifications.getPermissionsAsync();
+    if (perm.granted) return await registered(false);
+    if (!perm.canAskAgain) return "denied";
+    const { title, body } = pushAskCopy("available");
+    const turnOn = await new Promise<boolean>((resolve) => {
+      Alert.alert(title, body, [
+        { text: "Not now", style: "cancel", onPress: () => resolve(false) },
+        { text: "Turn on", onPress: () => resolve(true) },
+      ]);
+    });
+    if (!turnOn) return "denied";
+    await SecureStore.setItemAsync(PUSH_ASKED_KEY, "1").catch(() => {});
+    return await registered(true);
+  } catch (e) {
+    if (__DEV__) console.warn("[push] offers ask failed:", e);
+    return "failed";
   }
 }
 

@@ -226,7 +226,8 @@ func TestTaskEditUnderAPromoHoldComparesLikeWithLike(t *testing.T) {
 	// edit also writes one column it does not carry.
 	mustExec(t, `alter table public.tasks add column if not exists transport_required text not null default 'none'`)
 	mustExec(t, `update public.tasks set category='delivery', estimated_minutes=30, is_immediate=true,
-	                    rate_cents_per_min=$2 where id=$1::uuid`, id, Billing.PerMinuteRateCents)
+	                    rate_cents_per_min=$2, base_fee_cents=$3, platform_fee_bps=$4 where id=$1::uuid`,
+		id, Billing.PerMinuteRateCents, Billing.BaseFeeDefaultCents, Billing.PlatformFeeBps)
 	promoID := seedPromoCode(t, "WELCOME10", 1000, promoOpts{})
 	if err := seedRedemption(t, promoID, w.requesterID, id, 1000); err != nil {
 		t.Fatalf("seed redemption: %v", err)

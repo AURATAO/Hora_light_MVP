@@ -3,7 +3,7 @@
     "name": "HO:RA",
     "slug": "hora",
     "scheme": "hora",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -11,6 +11,9 @@
       "supportsTablet": false,
       "bundleIdentifier": "co.horaapp.app",
       "usesAppleSignIn": true,
+      "entitlements": {
+        "com.apple.developer.usernotifications.time-sensitive": true
+      },
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "LSApplicationQueriesSchemes": ["mailto"],
@@ -172,7 +175,6 @@
           "faceIDPermission": "HO:RA does not use Face ID. Your sign-in is kept in the iOS keychain without biometrics."
         }
       ],
-      "@react-native-community/datetimepicker",
       [
         "expo-location",
         {
@@ -187,7 +189,7 @@
         "expo-image-picker",
         {
           "photosPermission": "HO:RA uses your photo library when you choose a profile photo, a task completion photo or a receipt photo.",
-          "cameraPermission": "HO:RA uses the camera when you take a profile photo, a task completion photo or a receipt photo.",
+          "cameraPermission": "HO:RA uses the camera when you take a profile photo, a task completion photo, a receipt photo or a photo of a substitute item for the customer.",
           "microphonePermission": "HO:RA only takes photos and never records audio, so it does not use the microphone."
         }
       ],
@@ -212,13 +214,6 @@
           "image": "./assets/splash.png",
           "resizeMode": "cover",
           "enableFullScreenImage_legacy": true
-        }
-      ],
-      [
-        "@stripe/stripe-react-native",
-        {
-          "merchantIdentifier": "merchant.co.horaapp.app",
-          "enableGooglePay": false
         }
       ],
       "expo-status-bar",

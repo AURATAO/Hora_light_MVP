@@ -6,6 +6,7 @@ import {
   platformFeeExplainer,
   earnedBreakdownLine,
   transferBreakdownLine,
+  earningsBreakdownLine,
 } from "../src/lib/earnings-copy.ts";
 
 test("platformFeePercent never rounds a rate it did not charge", () => {
@@ -14,12 +15,12 @@ test("platformFeePercent never rounds a rate it did not charge", () => {
   assert.equal(platformFeePercent(undefined), "0%");
 });
 
-test("the explainer reads the backend rate, and ships with 20% when there is none", () => {
+test("the explainer reads the backend rate, and ships with 30% when there is none", () => {
   assert.equal(
     platformFeeExplainer(2000),
     "HO:RA takes 20% of service fees; purchase reimbursements are always paid back in full.",
   );
-  assert.equal(platformFeeExplainer(), platformFeeExplainer(2000));
+  assert.equal(platformFeeExplainer(), platformFeeExplainer(3000));
 });
 
 test("a settlement with a fee names the fee beside the service, and the reimbursement whole", () => {
@@ -41,3 +42,14 @@ test("a row paid before the fee is never described as discounted", () => {
     "$27.00 service + $12.40 reimbursement",
   );
 });
+
+test("a row says the rate it was cut at, and no number when it has none", () => {
+  assert.equal(
+    earningsBreakdownLine({ time: 1960, reimbursement: 0, feeCents: 490, feeBps: 2000 }),
+    "$19.60 service (after 20% platform fee)",
+  )
+  assert.equal(
+    earningsBreakdownLine({ time: 1960, reimbursement: 0, feeCents: 490 }),
+    "$19.60 service (after platform fee)",
+  )
+})

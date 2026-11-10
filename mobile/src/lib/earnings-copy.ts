@@ -36,7 +36,7 @@ export function transferStatusCopy(transfer: EarningsTransfer): { label: string;
   return TRANSFER_STATUS_COPY[key] ?? TRANSFER_STATUS_COPY.on_its_way;
 }
 
-/** "20%" for 2000 basis points, "2.5%" for 250 — never a rounded rate. */
+/** "30%" for 3000 basis points, "2.5%" for 250 — never a rounded rate. */
 export function platformFeePercent(bps: number | undefined): string {
   const n = Number(bps) || 0;
   if (n % 100 === 0) return `${n / 100}%`;
@@ -48,7 +48,7 @@ export function platformFeePercent(bps: number | undefined): string {
  * the sentence and the arithmetic cannot disagree (S-05); an older backend
  * without it gets the shipped rate.
  */
-export function platformFeeExplainer(bps: number = 2000): string {
+export function platformFeeExplainer(bps: number = 3000): string {
   return `HO:RA takes ${platformFeePercent(bps)} of service fees; purchase reimbursements are always paid back in full.`;
 }
 
@@ -71,7 +71,10 @@ export function earningsBreakdownLine(input: {
   const parts: string[] = [];
   const fee = input.feeCents ?? 0;
   if (input.time > 0 || fee > 0) {
-    const clause = fee > 0 ? ` (after ${platformFeePercent(input.feeBps ?? 2000)} platform fee)` : "";
+    // The rate the money was actually cut at; never a guess. A row with no
+    // rate on it says "platform fee" without a number rather than today's.
+    const rate = input.feeBps && input.feeBps > 0 ? `${platformFeePercent(input.feeBps)} ` : "";
+    const clause = fee > 0 ? ` (after ${rate}platform fee)` : "";
     parts.push(`${formatCost(input.time || 0)} service${clause}`);
   }
   if (input.reimbursement > 0) parts.push(`${formatCost(input.reimbursement)} reimbursement`);
@@ -94,5 +97,6 @@ export function transferBreakdownLine(transfer: EarningsTransfer): string {
     time: transfer.time_cents,
     reimbursement: transfer.receipt_cents,
     feeCents: transfer.platform_fee_cents,
+    feeBps: transfer.platform_fee_bps,
   });
 }

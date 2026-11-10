@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url'
 import {
   BETA_NOTICE_COPY,
   PRICING_LINE,
+  pricingLineFor,
   SERVICE_AREA,
   TRACTION_3_CONFIG,
   betaSettlementLine,
@@ -154,16 +155,16 @@ test('web copy still matches mobile, the source of truth', t => {
 test('the pricing line is the whole schedule, in one sentence', () => {
   assert.equal(
     PRICING_LINE,
-    '$12 base fee includes the first 15 minutes, then $0.50/min ' +
+    '$15 base fee includes the first 15 minutes, then $0.60/min ' +
       '($25 base for companionship; $1.00/min for tasks starting 9 PM–8 AM)'
   )
   // Every number in it, against server/billing.go's BillingConfig. A schedule
   // change that misses this string quotes the old price to the person being
   // charged — which is the drift S-05 exists to prevent, on the one surface
   // where the figure is copy rather than a server quote.
-  assert.ok(PRICING_LINE.includes('$12'), 'BaseFeeDefaultCents 1200')
+  assert.ok(PRICING_LINE.includes('$15'), 'BaseFeeDefaultCents 1500')
   assert.ok(PRICING_LINE.includes('first 15 minutes'), 'IncludedMinutes 15')
-  assert.ok(PRICING_LINE.includes('$0.50/min'), 'PerMinuteRateCents 50')
+  assert.ok(PRICING_LINE.includes('$0.60/min'), 'PerMinuteRateCents 60')
   assert.ok(PRICING_LINE.includes('$25 base for companionship'), 'BaseFeeCompanionshipCents 2500')
   assert.ok(PRICING_LINE.includes('$1.00/min'), 'SurgeRateCentsPerMin 100')
   assert.ok(PRICING_LINE.includes('9 PM–8 AM'), 'SurgeStartHour 21 / SurgeEndHour 8 — the window wraps midnight')
@@ -333,4 +334,23 @@ test('the round config no longer carries notice fields', () => {
     Object.keys(TRACTION_3_CONFIG).sort(),
     ['endsAt', 'perMinuteRate', 'pricingSummary', 'round', 'startsAt', 'window']
   )
+})
+
+test('the live price line is built from the server schedule, and falls back whole', () => {
+  assert.equal(
+    pricingLineFor({
+      base_fee_default_cents: 1500, per_minute_rate_cents: 60, base_fee_companionship_cents: 2500,
+      surge_rate_cents_per_min: 100, included_minutes: 15, surge_window: '9 PM–8 AM',
+    }),
+    PRICING_LINE,
+  )
+  assert.equal(
+    pricingLineFor({
+      base_fee_default_cents: 1750, per_minute_rate_cents: 65, base_fee_companionship_cents: 2500,
+      surge_rate_cents_per_min: 110, included_minutes: 15, surge_window: '9 PM–8 AM',
+    }),
+    '$17.50 base fee includes the first 15 minutes, then $0.65/min ($25 base for companionship; $1.10/min for tasks starting 9 PM–8 AM)',
+  )
+  assert.equal(pricingLineFor(null), PRICING_LINE)
+  assert.equal(pricingLineFor({ base_fee_default_cents: 0 }), PRICING_LINE)
 })

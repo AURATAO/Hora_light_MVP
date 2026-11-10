@@ -33,10 +33,10 @@ import (
 
 // What a cancel owes, by state. The base fee is a FLOOR and not a component
 // that time can substitute for: a committed cancel with zero minutes owes the
-// whole $12, which is the case the old `hadSession` gate answered with zero.
+// whole $15, which is the case the old `hadSession` gate answered with zero.
 func TestCancellationSettlementByState(t *testing.T) {
-	if Billing.BaseFeeDefaultCents != 1200 || Billing.IncludedMinutes != 15 || Billing.PerMinuteRateCents != 50 {
-		t.Fatalf("this table is written against $12.00 base / 15 included / 50c per minute; BillingConfig now says %d/%d/%d",
+	if Billing.BaseFeeDefaultCents != 1500 || Billing.IncludedMinutes != 15 || Billing.PerMinuteRateCents != 60 {
+		t.Fatalf("this table is written against $15.00 base / 15 included / 60c per minute; BillingConfig now says %d/%d/%d",
 			Billing.BaseFeeDefaultCents, Billing.IncludedMinutes, Billing.PerMinuteRateCents)
 	}
 
@@ -56,16 +56,16 @@ func TestCancellationSettlementByState(t *testing.T) {
 
 		// Committed. The base fee is owed regardless, and the first row is the
 		// one the old rule got wrong: accepted, travelling, nothing logged.
-		{"accepted, nothing logged", "errand", 0, true, 1200},
-		{"accepted, inside the included block", "errand", 10, true, 1200},
-		{"accepted, exactly at the inclusion", "errand", 15, true, 1200},
-		{"accepted, 22 min worked", "errand", 22, true, 1550},
-		{"accepted, 40 min worked", "errand", 40, true, 2450},
+		{"accepted, nothing logged", "errand", 0, true, 1500},
+		{"accepted, inside the included block", "errand", 10, true, 1500},
+		{"accepted, exactly at the inclusion", "errand", 15, true, 1500},
+		{"accepted, 22 min worked", "errand", 22, true, 1500 + 7*60},
+		{"accepted, 40 min worked", "errand", 40, true, 1500 + 25*60},
 
 		// Companionship carries its own floor, and the guarantee is that
 		// floor rather than the default one.
 		{"companionship, nothing logged", "companionship", 0, true, 2500},
-		{"companionship, 40 min worked", "companionship", 40, true, 3750},
+		{"companionship, 40 min worked", "companionship", 40, true, 2500 + 25*60},
 	}
 
 	for _, tc := range cases {
@@ -165,7 +165,7 @@ func TestCancellationChargesByState(t *testing.T) {
 			// accepted" — and ops were the only way out.
 			name:     "accepted, nothing logged, past the grace window",
 			accepted: true, acceptedAgo: time.Hour,
-			wantCode: http.StatusOK, wantBill: 1200, wantSupPayee: true,
+			wantCode: http.StatusOK, wantBill: 1500, wantSupPayee: true,
 		},
 		{
 			// RULE B's grace carve-out.
@@ -176,21 +176,21 @@ func TestCancellationChargesByState(t *testing.T) {
 		{
 			name:     "accepted, closed session, past the grace window",
 			accepted: true, acceptedAgo: time.Hour, sessionMins: 40,
-			wantCode: http.StatusOK, wantBill: 2450, wantMinutes: 40, wantSupPayee: true,
+			wantCode: http.StatusOK, wantBill: 1500 + 25*60, wantMinutes: 40, wantSupPayee: true,
 		},
 		{
 			// RULE C. This was a 400 telling the requester to make somebody
 			// else clock out. The session is force-closed and billed.
 			name:     "accepted, OPEN session, past the grace window",
 			accepted: true, acceptedAgo: time.Hour, sessionMins: 7, sessionOpen: true,
-			wantCode: http.StatusOK, wantBill: 1200, wantMinutes: 7, wantSupPayee: true,
+			wantCode: http.StatusOK, wantBill: 1500, wantMinutes: 7, wantSupPayee: true,
 		},
 		{
 			// An open session long enough to bill past the inclusion, so the
 			// force-close is visible in the money and not just in the minutes.
 			name:     "accepted, OPEN session past the inclusion",
 			accepted: true, acceptedAgo: time.Hour, sessionMins: 35, sessionOpen: true,
-			wantCode: http.StatusOK, wantBill: 2200, wantMinutes: 35, wantSupPayee: true,
+			wantCode: http.StatusOK, wantBill: 1500 + 20*60, wantMinutes: 35, wantSupPayee: true,
 		},
 		{
 			// The grace window covers an open session too: it is a question
@@ -295,8 +295,8 @@ func TestCancellationPreservesTheSupportersAccess(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("cancel: %d (%v)", code, body)
 	}
-	if got := num(body["bill_cents"]); got != 1200 {
-		t.Fatalf("bill = %s, want the $12.00 base fee", formatCentsUSD(got))
+	if got := num(body["bill_cents"]); got != 1500 {
+		t.Fatalf("bill = %s, want the $15.00 base fee", formatCentsUSD(got))
 	}
 
 	ctx := context.Background()
@@ -417,8 +417,8 @@ func TestCancellationPreviewCarriesTheGraceDeadline(t *testing.T) {
 		// pass: zeroing the breakdown along with the charge left the live
 		// countdown reading "after that, the base fee goes to your supporter"
 		// with no number in it — and the number is the whole sentence.
-		if preview.BaseFeeCents != 1200 {
-			t.Errorf("base_fee_cents = %s inside the grace window, want the $12.00 the countdown has to name",
+		if preview.BaseFeeCents != 1500 {
+			t.Errorf("base_fee_cents = %s inside the grace window, want the $15.00 the countdown has to name",
 				formatCentsUSD(preview.BaseFeeCents))
 		}
 		if preview.ReleaseCents != 5000 {
@@ -435,11 +435,11 @@ func TestCancellationPreviewCarriesTheGraceDeadline(t *testing.T) {
 		if preview.WithinGrace || preview.GraceEndsAt != nil {
 			t.Error("the window is still being advertised after it shut")
 		}
-		if preview.ChargeCents != 1200 {
-			t.Errorf("charge = %s, want the $12.00 base fee", formatCentsUSD(preview.ChargeCents))
+		if preview.ChargeCents != 1500 {
+			t.Errorf("charge = %s, want the $15.00 base fee", formatCentsUSD(preview.ChargeCents))
 		}
-		if preview.ReleaseCents != 3800 {
-			t.Errorf("release = %s, want $38.00 of the $50.00 hold", formatCentsUSD(preview.ReleaseCents))
+		if preview.ReleaseCents != 5000-1500 {
+			t.Errorf("release = %s, want $35.00 of the $50.00 hold", formatCentsUSD(preview.ReleaseCents))
 		}
 	})
 }

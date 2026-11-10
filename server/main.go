@@ -428,6 +428,18 @@ func main() {
 	}
 	log.Println("[db] connected")
 
+	// The live price schedule (pricing.go): read once before serving, so no
+	// request after a restart is priced by the compiled defaults when an
+	// admin has set others; then every minute.
+	{
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := loadPricing(ctx); err != nil {
+			log.Printf("[pricing] first read failed, using the compiled schedule until the next: %v", err)
+		}
+		cancel()
+	}
+	go watchPricing()
+
 	// Ops visibility for holds approaching the card networks' ~7-day release
 	// of an uncaptured authorization. Logging only — see watchExpiringPreAuths
 	// for why re-authorizing is deliberately not attempted here. Started
@@ -450,6 +462,10 @@ func main() {
 	// announced within a minute of being reached, GPS heartbeat or not
 	// (web-app supporters send none).
 	go watchLiveTimeCaps(context.Background(), time.Minute)
+	if dispatchEnabled() {
+		log.Printf("[dispatch] supporter push dispatch ON (D-24): borough round, +%s everyone, +%s ops", dispatchWidenAfter, dispatchOpsAfter)
+		go watchDispatches(context.Background(), dispatchSweepEvery)
+	}
 
 	pgxCfg, err := pgx.ParseConfig(dbURL)
 	if err != nil {
@@ -597,6 +613,11 @@ func main() {
 	// moves money: it refuses outright if the payout already has a transfer
 	// id. See payments_payouts.go.
 	r.POST("/admin/payouts/:id/retry", dualAuth(sqldb), requireOpsAdmin(), adminRetryPayout)
+	// The price schedule as data (pricing.go): read and change it from Ops;
+	// the public read is for the clients' marketing sentences.
+	r.GET("/admin/pricing", dualAuth(sqldb), requireOpsAdmin(), adminGetPricing)
+	r.POST("/admin/pricing", dualAuth(sqldb), requireOpsAdmin(), adminSetPricing)
+	r.GET("/pricing", getPublicPricing)
 
 	// Promo codes: create, deactivate, and see redemption counts. Same
 	// allowlist and audit trail as every other admin action; rendered by the
@@ -744,7 +765,14 @@ func main() {
 		// In-app account deletion (App Store 5.1.1(v)); see account_deletion.go.
 		meAPI.GET("/deletion", accountDeletionPreview)
 		meAPI.DELETE("", deleteMyAccount)
+		// Supporter dispatch settings (D-24): boroughs and "I'm available".
+		meAPI.GET("/dispatch", getMyDispatch)
+		meAPI.PUT("/dispatch", putMyDispatch)
+		meAPI.POST("/availability", postMyAvailability)
 	}
+
+	// What the apps may show (D-24). No auth: nothing in it is private.
+	r.GET("/config", getAppConfig)
 
 	r.GET("/talkjs/signature", dualAuth(sqldb), talkjsSignatureHandler)
 
@@ -796,6 +824,7 @@ func main() {
 		tasksAPI.GET("/:id/extensions", listTaskExtensions)
 		tasksAPI.POST("/:id/budget-increase", requestBudgetIncrease)
 		tasksAPI.POST("/:id/time-extension", requestTimeExtension)
+		tasksAPI.POST("/:id/item-problem", reportItemProblem)
 		tasksAPI.POST("/:id/extensions/:eid/approve", approveExtension)
 		tasksAPI.POST("/:id/extensions/:eid/deny", denyExtension)
 
@@ -1704,11 +1733,15 @@ func createTask(c *gin.Context) {
 		rateStart = *when
 	}
 	rateCents := resolveRateCentsPerMin(rateStart)
+	// The base fee and the platform fee, locked the same way: read from the
+	// live schedule once, stored on the task, and every later price of this
+	// task reads the stored values (pricing.go).
+	postBaseFee, postFeeBps := newTaskPrice(in.Category)
 	// The price the requester agreed to, when the caller knows it (a text
 	// booking's YES): a post that now prices above it is refused before
 	// anything is written or held, and the new figure goes back to be asked.
 	if maxQuote := c.GetInt(ctxMaxQuoteCents); maxQuote > 0 {
-		if q := quoteTask(in.Category, in.EstimatedMinutes, in.PrepayAmountCents, rateCents); q.TotalCents > maxQuote {
+		if q := quoteTaskBase(postBaseFee, in.EstimatedMinutes, in.PrepayAmountCents, rateCents); q.TotalCents > maxQuote {
 			log.Printf("[createTask] quote %d above the agreed %d — refused, to be asked again", q.TotalCents, maxQuote)
 			c.JSON(http.StatusConflict, gin.H{"error": "quote_changed", "quote_cents": q.TotalCents})
 			return
@@ -1901,17 +1934,20 @@ func createTask(c *gin.Context) {
        estimated_minutes,prepay_amount_cents,shopping_budget_approved_cents,
        is_immediate,scheduled_at,
        requester, requester_id, status, assigned_to, assigned_to_id,
-       transport_required, created_via, auto_extend_consent, rate_cents_per_min)
+       transport_required, created_via, auto_extend_consent, rate_cents_per_min,
+       base_fee_cents, platform_fee_bps)
     VALUES
       ($1,$2,$3,$4,
        $5,$6,$6,
        $7,$8,
        $9, $10::uuid, $13, '', NULL,
-       $11, $12, $14, $15)
+       $11, $12, $14, $15,
+       $16, $17)
     RETURNING id, created_at
   `, in.Title, in.Description, in.Category, in.LocationText,
 		in.EstimatedMinutes, in.PrepayAmountCents, in.IsImmediate, when,
 		email, uid, transport, createdVia, initialStatus, autoExtend, rateCents,
+		postBaseFee, postFeeBps,
 	).Scan(&taskID, &createdAt); err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok {
 			log.Printf("[tasks.insert] code=%s tbl=%s col=%s detail=%s where=%s msg=%s",
@@ -2080,6 +2116,8 @@ func createTask(c *gin.Context) {
 // announcement that only fires on the straight-through path would silently
 // skip every task that needed a card challenge.
 func announceNewTaskInput(ctx context.Context, taskID string, in createTaskInput, email string, when *time.Time) {
+	// Supporters, by push (D-24); off unless DISPATCH_PUSH_ENABLED=1.
+	startDispatch(taskID)
 	requesterName := resolveDisplayName(ctx, email)
 	go notify.NotifyAdminNewTask(notify.AdminNewTaskInput{
 		TaskID:           taskID,
@@ -2691,6 +2729,18 @@ func updateTask(c *gin.Context) {
 	// posted at 20:50 into the evening band.
 	rateCents := taskRateCentsPerMin(ctx, id)
 	var newRate *int // nil leaves the column alone
+
+	// THE BASE FEE FOLLOWS THE TIER, the way the rate follows the start: the
+	// task keeps the base fee it was posted at (pricing.go) unless the edit
+	// moves it between the companionship tier and the default one, which is
+	// a new answer to "what is this task's base fee" — asked of today's
+	// schedule.
+	editBase := taskBaseFeeCents(ctx, id)
+	var newBase *int // nil leaves the column alone
+	if isCompanionship(taskCategory(ctx, id)) != isCompanionship(in.Category) {
+		editBase = baseFeeCents(in.Category)
+		newBase = &editBase
+	}
 	if taskStartMoved(wasImmediate, wasScheduledAt, in.IsImmediate, when) {
 		rateStart := time.Now()
 		if when != nil {
@@ -2709,7 +2759,7 @@ func updateTask(c *gin.Context) {
 		// price against a discounted hold refused every edit on a promo task,
 		// a corrected typo included.
 		_, promoCents := promoDiscountForTask(ctx, id)
-		if want := preAuthAfterPromoCents(in.Category, in.EstimatedMinutes, in.PrepayAmountCents,
+		if want := preAuthAfterPromoBase(editBase, in.EstimatedMinutes, in.PrepayAmountCents,
 			rateCents, promoCents); want > *p.AuthorizedCents {
 			c.JSON(http.StatusConflict, gin.H{
 				"error": "exceeds_authorized_hold",
@@ -2770,7 +2820,8 @@ func updateTask(c *gin.Context) {
             scheduled_at=$8,
             transport_required=coalesce(nullif($9, ''), transport_required),
             auto_extend_consent=coalesce($11, auto_extend_consent),
-            rate_cents_per_min=coalesce($12, rate_cents_per_min)
+            rate_cents_per_min=coalesce($12, rate_cents_per_min),
+            base_fee_cents=coalesce($13, base_fee_cents)
         where id=$10
           and status='open'
           and assigned_to_id is null
@@ -2787,6 +2838,7 @@ func updateTask(c *gin.Context) {
 		id,
 		in.AutoExtendConsent,
 		newRate,
+		newBase,
 	)
 	if err != nil {
 		log.Printf("[updateTask] db error: %v", err)
@@ -2830,6 +2882,14 @@ func listAvailableTasks(c *gin.Context) {
 	if !isVerified {
 		c.JSON(403, gin.H{"error": "verification_required"})
 		return
+	}
+
+	// The App Review account's board refills itself: the supporter-only app
+	// cannot post, so a reviewer who worked through the demo tasks (or whose
+	// login seed failed) gets new ones on the next pull to refresh. First page
+	// only; background; a no-op for every real account (review_seed.go).
+	if c.Query("before_id") == "" && meEmail != "" && canSelfAccept(c.Request.Context(), meUID) {
+		kickReviewBoard(meUID, meEmail)
 	}
 
 	limit := parseLimit(c.Query("limit"), 10, 50)
@@ -3769,7 +3829,7 @@ func getWorklogs(c *gin.Context) {
 	case taskStatus == "completed":
 		cost = inputs.quote()
 	default:
-		cost = quoteTask(inputs.Category, cappedMinutes(totalMin, inputs.CapMinutes), 0, inputs.RateCents)
+		cost = quoteTaskBase(inputs.BaseFeeCents, cappedMinutes(totalMin, inputs.CapMinutes), 0, inputs.RateCents)
 		cost.TotalMinutes = totalMin
 		cost.BilledMinutes = cappedMinutes(totalMin, inputs.CapMinutes)
 		cost.CapMinutes = inputs.CapMinutes
@@ -3981,14 +4041,34 @@ type SupporterEarnings struct {
 // computing them from one value is what stops them drifting into a state where
 // the app tells two people different things about the same forty minutes.
 func supporterEarningsView(ctx context.Context, taskID, supporterID string, cost TaskQuote) SupporterEarnings {
-	pay := supporterPayFor(cost.BaseFeeCents+cost.TimeCostCents, cost.ShoppingReceiptCents)
+	pay := supporterPayForBps(cost.BaseFeeCents+cost.TimeCostCents, cost.ShoppingReceiptCents, taskPlatformFeeBps(ctx, taskID))
 	e := SupporterEarnings{
 		TimeCents:          pay.ServiceNetCents(),
 		ReimbursementCents: pay.ReimbursementCents,
 		TotalCents:         pay.NetCents(),
 		ServiceGrossCents:  pay.ServiceCents,
 		PlatformFeeCents:   pay.FeeCents,
-		PlatformFeeBps:     Billing.PlatformFeeBps,
+		PlatformFeeBps:     pay.FeeBps,
+	}
+
+	// What was actually paid, once it was: the payout rows carry the split
+	// they were cut at (payouts.service_cents / fee_cents / fee_bps). A task
+	// settled before a schedule change (20% → 30% on 2026-11-10) must show
+	// the 20% it was paid at, not today's rate recomputed over it. A task
+	// with no breakdown rows yet keeps the computed view above.
+	var paidService, paidFee, paidReimb, paidBps *int
+	if err := db.QueryRow(ctx, `
+		select sum(service_cents), sum(fee_cents), sum(reimbursement_cents), max(fee_bps)
+		  from public.payouts
+		 where task_id = $1::uuid and supporter_id = $2::uuid and service_cents is not null
+	`, taskID, supporterID).Scan(&paidService, &paidFee, &paidReimb, &paidBps); err == nil &&
+		paidService != nil && paidFee != nil && paidReimb != nil && paidBps != nil {
+		e.ServiceGrossCents = *paidService
+		e.PlatformFeeCents = *paidFee
+		e.TimeCents = *paidService - *paidFee
+		e.ReimbursementCents = *paidReimb
+		e.TotalCents = e.TimeCents + e.ReimbursementCents
+		e.PlatformFeeBps = *paidBps
 	}
 
 	// The transfer, if one exists. A task may have two payout rows (the hold
@@ -4295,7 +4375,7 @@ func completeTask(c *gin.Context) {
 	// The supporter's figure: undiscounted, and NET of the platform fee —
 	// what will actually reach them, with the breakdown in the body so the
 	// deduction is never silent (D-14). The requester's is below.
-	supporterPay := supporterPayFor(timeCostCents, reimbursedCents)
+	supporterPay := supporterPayForBps(timeCostCents, reimbursedCents, taskPlatformFeeBps(ctx, taskID))
 	completeCostStr := formatCentsUSD(supporterPay.NetCents())
 	// What the REQUESTER pays: the same, less any promo discount (promo.go).
 	_, promoDiscount := promoDiscountForTask(ctx, taskID)
@@ -4407,7 +4487,7 @@ func completeTask(c *gin.Context) {
 
 		// Email supporter: confirmation with time logged + earnings
 		supporterBody := fmt.Sprintf("The task has been marked complete. Time logged: %s.", completeTotalStr)
-		if line := payoutBreakdownLine(supporterPay.ServiceCents, supporterPay.FeeCents, supporterPay.ReimbursementCents); line != "" {
+		if line := payoutBreakdownLineBps(supporterPay.ServiceCents, supporterPay.FeeCents, supporterPay.ReimbursementCents, supporterPay.FeeBps); line != "" {
 			supporterBody += fmt.Sprintf(" You earned %s — %s.", completeCostStr, line)
 		}
 		notifyAssigneeCtx(bg, notify.CreateNotificationInput{
@@ -4602,7 +4682,8 @@ func cancelTask(c *gin.Context) {
 	capMinutes, _ := taskTimeCapMinutes(ctx, taskID)
 	billedMin := cappedMinutes(totalMin, capMinutes)
 	charged := committed && !withinGrace
-	billCents := cancelSettlementCents(taskCategory(ctx, taskID), billedMin, charged,
+	cancelBase := taskBaseFeeCents(ctx, taskID)
+	billCents := cancelSettlementBase(cancelBase, billedMin, charged,
 		taskRateCentsPerMin(ctx, taskID))
 
 	// The two halves of that number, for the confirmation. Derived here rather
@@ -4610,7 +4691,7 @@ func cancelTask(c *gin.Context) {
 	// the total can never disagree.
 	baseFeeOnCancel, timeCostOnCancel := 0, 0
 	if charged {
-		baseFeeOnCancel = baseFeeCents(taskCategory(ctx, taskID))
+		baseFeeOnCancel = cancelBase
 		timeCostOnCancel = billCents - baseFeeOnCancel
 	}
 

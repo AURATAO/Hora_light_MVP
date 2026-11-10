@@ -13,10 +13,10 @@ import {
   MapPin,
   MessageCircle,
   Navigation,
-  Pencil,
   ShieldAlert,
 } from "lucide-react-native";
 import { BudgetIncreaseSheet, type BudgetIncreaseSubmit } from "../../components/BudgetIncreaseSheet";
+import { ItemProblemSheet, type ItemProblemSubmit } from "../../components/ItemProblemSheet";
 import { askForPushInContext } from "../../lib/push";
 import { UserSafetyMenu } from "../../components/UserSafetyMenu";
 import { safetyCounterpart } from "../../lib/safety";
@@ -51,6 +51,7 @@ import {
   getProfileReviews,
   getTask,
   getWorklogs,
+  reportItemProblem,
   requestBudgetIncrease,
   requestTimeExtension,
   resolveExtension,
@@ -155,8 +156,6 @@ const ACCEPT_LOST_ERROR = "not available";
 // an error — and it points somewhere useful rather than just reporting.
 const ACCEPT_LOST_COPY = "Someone just grabbed this one — check out the other tasks.";
 
-// Long enough to read one sentence before the screen goes away.
-const ACCEPT_LOST_LEAVE_MS = 1500;
 
 const TRANSPORT_LABELS: Record<string, string> = {
   none: "No transport needed",
@@ -218,6 +217,7 @@ export default function TaskDetail() {
   const [reviewOpen, setReviewOpen] = useState(false);
   const [completeOpen, setCompleteOpen] = useState(false);
   const [budgetOpen, setBudgetOpen] = useState(false);
+  const [itemOpen, setItemOpen] = useState(false);
   // The proof-of-work photo, full-screen.
   const [completionPhotoOpen, setCompletionPhotoOpen] = useState(false);
   // The mid-task asks, plus the two numbers that go with them (the currently
@@ -261,6 +261,10 @@ export default function TaskDetail() {
   // team took this one down while the screen was open, and removal detaches the
   // supporter, so the person looking at it may no longer be allowed to read it.
   const [removedGone, setRemovedGone] = useState(false);
+  // An offer push opened after somebody else accepted, or after the requester
+  // cancelled: the server answers a non-participant "forbidden" once a task is
+  // no longer open (main.go getTask). Said as what happened, not as an error.
+  const [noLongerOpen, setNoLongerOpen] = useState(false);
   const gpsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const acceptLostTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -295,6 +299,7 @@ export default function TaskDetail() {
   const load = useCallback(async () => {
     try {
       const [me, t] = await Promise.all([getMe(), getTask(id)]);
+      setNoLongerOpen(false);
       if (!me.auth) {
         router.replace("/(auth)/login");
         return;
@@ -360,6 +365,12 @@ export default function TaskDetail() {
         // Terminal. The render effect below can't see this one — `task` is
         // null, which it reads as "still loading" — so it is said here.
         endTaskTracking(id, "removed").catch(() => {});
+        return;
+      }
+      if (e instanceof ApiError && (e.status === 403 || e.status === 404)) {
+        setTask(null);
+        setNoLongerOpen(true);
+        setError(null);
         return;
       }
       setError(e instanceof Error ? e.message : "Couldn't load this task");
@@ -453,9 +464,11 @@ export default function TaskDetail() {
       if (e instanceof ApiError && e.message === ACCEPT_LOST_ERROR) {
         // Someone else won. Say so plainly, refetch so this screen stops
         // offering a task that is gone, then hand them back to the feed.
+        // The refetch now answers 403 to a non-participant, so the screen
+        // becomes the "no longer open" state carrying ACCEPT_LOST_COPY, with
+        // its own way out — no timed navigation racing the person's tap.
         setAcceptLost(true);
         await load();
-        acceptLostTimeoutRef.current = setTimeout(leaveToWorkList, ACCEPT_LOST_LEAVE_MS);
       } else {
         setAcceptError(e instanceof Error ? e.message : "Couldn't accept this task.");
       }
@@ -616,6 +629,34 @@ export default function TaskDetail() {
       throw e;
     }
     setBudgetOpen(false);
+    await loadExtensions();
+  }
+
+  // "Problem with an item" (server/item.go). The photo, if any, goes up
+  // through the completion-photo endpoint first (same bucket, this task's
+  // key), and its canonical url rides on the report.
+  async function handleItemProblem(p: ItemProblemSubmit) {
+    try {
+      let photoUrl: string | undefined;
+      if (p.photo) {
+        photoUrl = (await uploadCompletionPhoto(id, p.photo)).url;
+      }
+      await reportItemProblem(id, {
+        item_name: p.itemName,
+        store_name: p.storeName || undefined,
+        outcome: p.outcome,
+        alternative_name: p.alternativeName,
+        alternative_cents: p.alternativeCents,
+        alternative_photo_url: photoUrl,
+      });
+    } catch (e) {
+      handleAuthError(e);
+      throw e;
+    }
+    setItemOpen(false);
+    if (p.outcome === "none") {
+      Alert.alert("They've been told", `You're skipping ${p.itemName}.`);
+    }
     await loadExtensions();
   }
 
@@ -1017,6 +1058,21 @@ export default function TaskDetail() {
     );
   }
 
+  if (noLongerOpen) {
+    return (
+      <Screen scroll={false}>
+        <HeaderRow onBack={leaveToWorkList} />
+        <EmptyState
+          icon={CircleAlert}
+          title="This task is no longer open"
+          caption={acceptLost ? ACCEPT_LOST_COPY : "Someone else took it, or it was cancelled. New tasks come in throughout the day."}
+          actionLabel="See open tasks"
+          onAction={() => router.replace("/(tabs)/work")}
+        />
+      </Screen>
+    );
+  }
+
   if (error && !task) {
     return (
       <Screen scroll={false}>
@@ -1054,11 +1110,6 @@ export default function TaskDetail() {
     supporterName: supporter?.name || task.assignee_name,
     requesterName: requester?.name || task.requester_name,
   });
-  // Editing stays open-only: changing the terms of a job somebody has already
-  // accepted is a renegotiation, and that belongs in chat. deriveTaskStatus
-  // only returns "open" while assigned_to_id is null, and the server enforces
-  // the same rule (main.go updateTask).
-  const editable = isRequester && status === "open";
 
   // CANCELLING DOES NOT. It used to share `editable`, which meant that the
   // moment a supporter accepted, the requester had no way out of their own
@@ -1077,7 +1128,6 @@ export default function TaskDetail() {
   // "Post again" — my own finished task, completed or cancelled. Same rule as
   // My Tasks' swipe action (isRepostable there): never on a `removed` task, and
   // never for a supporter, who sees this screen for tasks they only worked on.
-  const canRepost = isRequester && (task.status === "completed" || task.status === "cancelled");
   // The requester sees their own words; everyone else sees the preset's label
   // or nothing at all. cancel_reason is free text and may have been typed by
   // an ops admin about the person reading it.
@@ -1156,7 +1206,7 @@ export default function TaskDetail() {
         </PressableScale>
         <PressableScale
           onPress={() => router.push(`/task/${id}/chat`)}
-          className="min-h-11 justify-center border-t border-line p-4"
+          className="min-h-[44px] justify-center border-t border-line p-4"
         >
           <View className="flex-row items-center gap-2">
             <MessageCircle color={color.muted} size={18} strokeWidth={size.iconStroke} />
@@ -1178,7 +1228,6 @@ export default function TaskDetail() {
     >
       <HeaderRow
         onBack={() => router.back()}
-        onEdit={editable ? () => router.push(`/task/${id}/edit`) : undefined}
         safety={
           counterpart ? (
             <UserSafetyMenu
@@ -1283,7 +1332,7 @@ export default function TaskDetail() {
                   onPress={() => openAddressInMaps(loc)}
                   accessibilityRole="link"
                   accessibilityLabel={`Open ${loc} in maps`}
-                  className="min-h-11 flex-row items-center gap-2"
+                  className="min-h-[44px] flex-row items-center gap-2"
                 >
                   <MapPin color={color.brand} size={16} strokeWidth={size.iconStroke} />
                   <Text className="flex-1 text-caption text-brand">
@@ -1298,7 +1347,7 @@ export default function TaskDetail() {
                 <PressableScale
                   onPress={() => openRouteInMaps(locations)}
                   accessibilityRole="button"
-                  className="mt-1 min-h-11 flex-row items-center gap-2 border-t border-line pt-2"
+                  className="mt-1 min-h-[44px] flex-row items-center gap-2 border-t border-line pt-2"
                 >
                   <Navigation color={color.brand} size={16} strokeWidth={size.iconStroke} />
                   <Text className="text-caption text-brand">
@@ -1318,7 +1367,7 @@ export default function TaskDetail() {
 
           <View className="flex-row items-center justify-between">
             <Text className="text-caption text-muted">Transport</Text>
-            <View className="flex-row items-center gap-1.5">
+            <View className="flex-row items-center gap-1">
               {TransportIcon ? (
                 <TransportIcon color={color.muted} size={14} strokeWidth={size.iconStroke} />
               ) : null}
@@ -1407,7 +1456,7 @@ export default function TaskDetail() {
             </PressableScale>
             <PressableScale
               onPress={() => router.push(`/task/${id}/chat`)}
-              className="min-h-11 justify-center border-t border-line p-4"
+              className="min-h-[44px] justify-center border-t border-line p-4"
             >
               <View className="flex-row items-center gap-2">
                 <MessageCircle color={color.muted} size={18} strokeWidth={size.iconStroke} />
@@ -1556,6 +1605,7 @@ export default function TaskDetail() {
             nowMs={now}
             onAskBudget={() => setBudgetOpen(true)}
             onAskTime={handleTimeRequest}
+            onReportItem={() => setItemOpen(true)}
           />
         ) : null}
 
@@ -1683,7 +1733,7 @@ export default function TaskDetail() {
               >
                 <Image
                   source={{ uri: task.completion_photo_url }}
-                  className="h-40 w-full rounded-sm"
+                  className="h-[160px] w-full rounded-sm"
                   resizeMode="cover"
                   accessibilityIgnoresInvertColors
                 />
@@ -1740,19 +1790,6 @@ export default function TaskDetail() {
           )
         ) : null}
 
-        {/* Post again. Placed with the other requester actions, and it is the
-            only one a finished task offers: `cancellable` is open-only, so this
-            and the cancel button below never appear together. Secondary, like
-            every action in this stack — the screen's solid CTA is Accept. */}
-        {canRepost ? (
-          <Button
-            label="Post again"
-            variant="secondary"
-            onPress={() => router.push(`/post-task?duplicate=${task.id}`)}
-            className="mb-4"
-          />
-        ) : null}
-
         {/* Cancel. Secondary throughout — it is an exit, never this screen's
             CTA — and now offered on an accepted or in-progress task too, not
             only on one nobody has taken. The sheet behind it does the work of
@@ -1798,7 +1835,7 @@ export default function TaskDetail() {
                 <PressableScale
                   onPress={() => setPayoutsGate(null)}
                   hitSlop={8}
-                  className="min-h-11 justify-center"
+                  className="min-h-[44px] justify-center"
                 >
                   <Text className="text-caption font-semibold text-brand">Not now</Text>
                 </PressableScale>
@@ -1848,6 +1885,17 @@ export default function TaskDetail() {
         onClose={() => setCompleteOpen(false)}
         onSubmit={handleCompleteSubmit}
       />
+      <ItemProblemSheet
+        visible={itemOpen}
+        approvedBudgetCents={approvedBudgetCents}
+        timeoutMinutes={extensions?.timeout_minutes ?? 0}
+        onClose={() => setItemOpen(false)}
+        onSubmit={handleItemProblem}
+        onNeedMoreBudget={() => {
+          setItemOpen(false);
+          setBudgetOpen(true);
+        }}
+      />
       <BudgetIncreaseSheet
         visible={budgetOpen}
         approvedBudgetCents={approvedBudgetCents}
@@ -1873,6 +1921,9 @@ function formatCountdown(expiresAt: string, nowMs: number): string {
 
 // What the supporter is asking for, in one phrase, for whichever kind it is.
 function askPhrase(request: ExtensionRequest): string {
+  if (request.kind === "item") {
+    return `${request.alternative_name ?? "the alternative"} instead of ${request.item_name ?? "the item"}`;
+  }
   if (request.kind === "budget") {
     return `${formatCost(request.requested_cents ?? 0)} more`;
   }
@@ -1904,6 +1955,25 @@ function ApprovalCard({
   onDeny: () => void;
 }) {
   const isBudget = request.kind === "budget";
+  if (request.kind === "item") {
+    return (
+      <View className="mb-4 gap-3 rounded-card border border-line bg-surface p-4">
+        <Text className="text-caption font-semibold text-muted">Out of stock</Text>
+        <Text className="text-body text-ink">{request.reason_label}</Text>
+        {request.alternative_photo_url ? (
+          <Image source={{ uri: request.alternative_photo_url }} className="h-[160px] w-full rounded-sm" resizeMode="cover" />
+        ) : null}
+        <Text className="text-caption text-muted">
+          {formatCountdown(request.expires_at, nowMs)} — no answer: {supporterName} decides.
+        </Text>
+        {error ? <Text className="text-caption text-danger">{error}</Text> : null}
+        <View className="gap-2">
+          <Button label={`Get ${request.alternative_name ?? "the alternative"}`} onPress={onApprove} loading={busy} />
+          <Button label="Skip it" variant="secondary" onPress={onDeny} disabled={busy} />
+        </View>
+      </View>
+    );
+  }
   return (
     <View className="mb-4 gap-3 rounded-card border border-line bg-surface p-4">
       <Text className="text-caption font-semibold text-muted">
@@ -1958,6 +2028,7 @@ function SupporterAskCard({
   nowMs,
   onAskBudget,
   onAskTime,
+  onReportItem,
 }: {
   approvedBudgetCents: number;
   capState: TimeCapState | null;
@@ -1970,13 +2041,20 @@ function SupporterAskCard({
   nowMs: number;
   onAskBudget: () => void;
   onAskTime: (minutes: number) => void;
+  onReportItem: () => void;
 }) {
   const hasBudget = approvedBudgetCents > 0;
   // A resolved request is worth showing only until it has been superseded —
   // and above all when it was DENIED or EXPIRED, because that is the moment
   // the supporter's own fallback becomes the instruction.
+  // An item question's approval is an instruction too ("Buy the
+  // alternative"), so it stays up like the others.
   const showResolved =
-    !pending && latest && (latest.status === "denied" || latest.status === "expired");
+    !pending &&
+    latest &&
+    (latest.status === "denied" ||
+      latest.status === "expired" ||
+      (latest.kind === "item" && latest.status === "approved"));
 
   // The OTHER kind of ask, kept behind a disclosure after a resolution. A
   // denied budget request says nothing about whether the job needs more time,
@@ -2037,7 +2115,11 @@ function SupporterAskCard({
           </Text>
           <Text className="text-caption text-muted">
             {formatCountdown(pending.expires_at, nowMs)}
-            {pending.fallback_instruction ? "" : ` — no answer after ${timeoutMinutes} min counts as a no.`}
+            {pending.kind === "item"
+              ? ` — no answer after ${timeoutMinutes} min: your call.`
+              : pending.fallback_instruction
+                ? ""
+                : ` — no answer after ${timeoutMinutes} min counts as a no.`}
           </Text>
         </View>
       ) : null}
@@ -2052,6 +2134,15 @@ function SupporterAskCard({
             {extensionResolutionTitle(latest)} · {askPhrase(latest)}
           </Text>
           <Text className="text-body text-ink">{extensionResolutionDetail(latest)}</Text>
+          {/* No answer on an item: the supporter decides, and what the
+              requester said about substitutes is what to decide by. */}
+          {latest.kind === "item" && latest.status === "expired" ? (
+            <Text className="text-caption text-muted">
+              {latest.substitution_preference
+                ? `What they asked for: “${latest.substitution_preference}”`
+                : "They didn’t say what to do if something’s out. Pick what’s closest to what they asked for, within the budget, or skip it."}
+            </Text>
+          ) : null}
         </View>
       ) : null}
 
@@ -2069,7 +2160,9 @@ function SupporterAskCard({
           <Button
             label={extensionReaskLabel(latest)}
             variant="text"
-            onPress={latest.kind === "time" ? () => onAskTime(timeChoices[0]) : onAskBudget}
+            onPress={
+              latest.kind === "time" ? () => onAskTime(timeChoices[0]) : latest.kind === "item" ? onReportItem : onAskBudget
+            }
             disabled={busy || (latest.kind === "time" && timeChoices.length === 0)}
           />
 
@@ -2112,6 +2205,14 @@ function SupporterAskCard({
         </View>
       ) : !pending ? (
         <View className="gap-2 border-t border-line pt-3">
+          {hasBudget ? (
+            <Button
+              label="Problem with an item"
+              variant="secondary"
+              onPress={onReportItem}
+              disabled={busy}
+            />
+          ) : null}
           {hasBudget ? (
             <Button
               label="Ask for more budget"
@@ -2457,7 +2558,7 @@ function SettlementCard({
       ) : null}
 
       {isRequester ? (
-        <PressableScale onPress={onReportProblem} hitSlop={8} className="min-h-11 justify-center">
+        <PressableScale onPress={onReportProblem} hitSlop={8} className="min-h-[44px] justify-center">
           <Text className="text-caption font-semibold text-brand">Report a problem</Text>
         </PressableScale>
       ) : null}
@@ -2465,15 +2566,13 @@ function SettlementCard({
   );
 }
 
-// `onEdit` is passed only for a task the signed-in requester can still change,
-// so the pencil is absent — not disabled — the moment someone accepts it.
+// No edit control: the app is supporter-only, and requesters change their
+// task where they booked it (iMessage, WhatsApp or the web).
 function HeaderRow({
   onBack,
-  onEdit,
   safety,
 }: {
   onBack: () => void;
-  onEdit?: () => void;
   /** Report / Block for the other party on this task (UserSafetyMenu). */
   safety?: ReactNode;
 }) {
@@ -2483,7 +2582,7 @@ function HeaderRow({
         <PressableScale
           onPress={onBack}
           // Labelled like every other back control in the app (tasks/history,
-          // profile/earnings-history) and like the Edit button beside it. It
+          // profile/earnings-history) and like every other control here. It
           // was the one unlabeled chevron on the most-used screen: a screen
           // reader landed on it and said nothing, and the build 12 simulator
           // driver could not find it by name for the same reason.
@@ -2497,17 +2596,6 @@ function HeaderRow({
         <Text className="ml-1 text-title font-semibold text-ink">Task</Text>
       </View>
       <View className="flex-row items-center gap-2">
-        {onEdit ? (
-          <PressableScale
-            onPress={onEdit}
-            className="h-11 w-11 items-center justify-center rounded-pill"
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel="Edit task"
-          >
-            <Pencil color={color.ink} size={20} strokeWidth={size.iconStroke} />
-          </PressableScale>
-        ) : null}
         {safety}
       </View>
     </View>

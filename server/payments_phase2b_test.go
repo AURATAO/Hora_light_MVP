@@ -57,8 +57,8 @@ func TestPhase2bTimeCapArithmetic(t *testing.T) {
 	// Fixed against BillingConfig rather than recomputed from it, so that a
 	// change to IncludedMinutes or AutoExtendMinutes fails here loudly instead
 	// of silently agreeing with itself.
-	if Billing.IncludedMinutes != 15 || Billing.AutoExtendMinutes != 15 || Billing.PerMinuteRateCents != 50 {
-		t.Fatalf("this table is written against 15 included / 15 auto-extend / 50c per minute; BillingConfig now says %d/%d/%d",
+	if Billing.IncludedMinutes != 15 || Billing.AutoExtendMinutes != 15 || Billing.PerMinuteRateCents != 60 {
+		t.Fatalf("this table is written against 15 included / 15 auto-extend / 60c per minute; BillingConfig now says %d/%d/%d",
 			Billing.IncludedMinutes, Billing.AutoExtendMinutes, Billing.PerMinuteRateCents)
 	}
 
@@ -75,31 +75,31 @@ func TestPhase2bTimeCapArithmetic(t *testing.T) {
 	}{
 		// Inside the estimate: the cap is not in play at all.
 		{"well inside, all within the inclusion", 45, 10, 10, 0, 0},
-		{"inside, past the inclusion", 45, 30, 30, 15, 750},
-		{"exactly at the estimate", 45, 45, 45, 30, 1500},
+		{"inside, past the inclusion", 45, 30, 30, 15, 15 * 60},
+		{"exactly at the estimate", 45, 45, 45, 30, 30 * 60},
 
 		// Consent ON: estimate 30 + auto-extend 15 = 45. The 15 minutes past
 		// the estimate bill normally, with no interruption — Layer 1.
-		{"consent on, 10 min over the estimate", 45, 40, 40, 25, 1250},
-		{"consent on, exactly at the ceiling", 45, 45, 45, 30, 1500},
-		{"consent on, past the ceiling: accrual stops", 45, 60, 45, 30, 1500},
-		{"consent on, far past the ceiling", 45, 240, 45, 30, 1500},
+		{"consent on, 10 min over the estimate", 45, 40, 40, 25, 25 * 60},
+		{"consent on, exactly at the ceiling", 45, 45, 45, 30, 30 * 60},
+		{"consent on, past the ceiling: accrual stops", 45, 60, 45, 30, 30 * 60},
+		{"consent on, far past the ceiling", 45, 240, 45, 30, 30 * 60},
 
 		// Consent OFF: the ceiling IS the estimate.
-		{"consent off, at the estimate", 30, 30, 30, 15, 750},
-		{"consent off, one minute over", 30, 31, 30, 15, 750},
-		{"consent off, an hour over", 30, 90, 30, 15, 750},
+		{"consent off, at the estimate", 30, 30, 30, 15, 15 * 60},
+		{"consent off, one minute over", 30, 31, 30, 15, 15 * 60},
+		{"consent off, an hour over", 30, 90, 30, 15, 15 * 60},
 
 		// An approved 15-minute extension on top of consent: 30 + 15 + 15.
-		{"one approved extension", 60, 60, 60, 45, 2250},
-		{"one approved extension, still overrun", 60, 75, 60, 45, 2250},
+		{"one approved extension", 60, 60, 60, 45, 45 * 60},
+		{"one approved extension, still overrun", 60, 75, 60, 45, 45 * 60},
 
 		// A ceiling inside the included block. Nothing is billable either way,
 		// and the cap must not make the base fee negative or the minutes wrap.
 		{"tiny ceiling, inside the inclusion", 10, 30, 10, 0, 0},
 
 		// No recorded estimate: no ceiling, everything bills.
-		{"no ceiling", 0, 200, 200, 185, 9250},
+		{"no ceiling", 0, 200, 200, 185, 185 * 60},
 	}
 
 	for _, tc := range cases {
@@ -152,9 +152,9 @@ func TestPhase2bTimeCapIsPerTaskNotPerSession(t *testing.T) {
 		perSession += timeCostCentsCapped(m, capMinutes, Billing.PerMinuteRateCents)
 	}
 
-	// 45 capped -> 30 billable -> $15.00
-	if perTask != 1500 {
-		t.Errorf("per-task cap billed %s, want $15.00", formatCentsUSD(perTask))
+	// 45 capped -> 30 billable x $0.60 -> $18.00
+	if perTask != 30*60 {
+		t.Errorf("per-task cap billed %s, want $18.00", formatCentsUSD(perTask))
 	}
 	if perSession == perTask {
 		t.Fatal("this test cannot tell per-session capping from per-task capping — pick different sessions")
@@ -409,9 +409,9 @@ func TestPhase2bSettlementBreakdownPayload(t *testing.T) {
 	if got := num(cost["cap_minutes"]); got != 45 {
 		t.Errorf("in progress: cap_minutes = %d, want 45 (30 estimate + 15 consented)", got)
 	}
-	// base $12.00 + 25 billable x $0.50 = $24.50
-	if got := num(cost["total_cents"]); got != 2450 {
-		t.Errorf("in progress: total = %s, want $24.50", formatCentsUSD(got))
+	// base $15.00 + 25 billable x $0.60 = $30.00
+	if got := num(cost["total_cents"]); got != 1500+25*60 {
+		t.Errorf("in progress: total = %s, want $30.00", formatCentsUSD(got))
 	}
 	settlement := body["settlement"].(map[string]any)
 	if settlement["state"] != "not_charged" {
@@ -436,12 +436,12 @@ func TestPhase2bSettlementBreakdownPayload(t *testing.T) {
 	if got := num(cost["shopping_receipt_cents"]); got != 1740 {
 		t.Errorf("settled: receipt = %s, want $17.40", formatCentsUSD(got))
 	}
-	// $12.00 base + $12.50 time + $17.40 receipt = $41.90
-	if got := num(cost["total_cents"]); got != 4190 {
-		t.Errorf("settled: total = %s, want $41.90", formatCentsUSD(got))
+	// $15.00 base + $15.00 time + $17.40 receipt = $47.40
+	if got := num(cost["total_cents"]); got != 1500+25*60+1740 {
+		t.Errorf("settled: total = %s, want $47.40", formatCentsUSD(got))
 	}
-	if got := num(settlement["time_cost_cents"]); got != 2450 {
-		t.Errorf("settled: time half = %s, want $24.50", formatCentsUSD(got))
+	if got := num(settlement["time_cost_cents"]); got != 1500+25*60 {
+		t.Errorf("settled: time half = %s, want $30.00", formatCentsUSD(got))
 	}
 	if got := num(settlement["approved_budget_cents"]); got != 2000 {
 		t.Errorf("settled: approved budget = %s, want $20.00", formatCentsUSD(got))
@@ -480,10 +480,10 @@ func TestPhase2bOverrunSettlesAtTheCap(t *testing.T) {
 	if got := num(cost["billed_minutes"]); got != 45 {
 		t.Errorf("billed minutes = %d, want 45", got)
 	}
-	// $12.00 + 30 x $0.50 = $27.00, not the $39.50 an uncapped 70 minutes
-	// would have produced.
-	if got := num(cost["total_cents"]); got != 2700 {
-		t.Errorf("total = %s, want $27.00", formatCentsUSD(got))
+	// $15.00 + 30 x $0.60 = $33.00, not the $48.00 ($15.00 + 55 x $0.60) an
+	// uncapped 70 minutes would have produced.
+	if got := num(cost["total_cents"]); got != 1500+30*60 {
+		t.Errorf("total = %s, want $33.00", formatCentsUSD(got))
 	}
 }
 
@@ -545,9 +545,9 @@ func TestPhase2bShoppingTaskRequiresAnAnswerButZeroIsFine(t *testing.T) {
 	if got := num(cost["shopping_receipt_cents"]); got != 0 {
 		t.Errorf("receipt = %s on a task where nothing was bought", formatCentsUSD(got))
 	}
-	// $12.00 base + 15 billable x $0.50 = $19.50
-	if got := num(cost["total_cents"]); got != 1950 {
-		t.Errorf("total = %s, want $19.50", formatCentsUSD(got))
+	// $15.00 base + 15 billable x $0.60 = $24.00
+	if got := num(cost["total_cents"]); got != 1500+15*60 {
+		t.Errorf("total = %s, want $24.00", formatCentsUSD(got))
 	}
 }
 
@@ -982,10 +982,10 @@ func TestPhase2bCancelWithClosedSessionSettlesAndDetaches(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("cancel: %d (%v)", code, body)
 	}
-	// base $12.00 + 25 billable x $0.50 = $24.50. The supporter travelled and
+	// base $15.00 + 25 billable x $0.60 = $30.00. The supporter travelled and
 	// worked; a cancel does not un-earn that.
-	if got := num(body["bill_cents"]); got != 2450 {
-		t.Errorf("bill = %s, want $24.50", formatCentsUSD(got))
+	if got := num(body["bill_cents"]); got != 1500+25*60 {
+		t.Errorf("bill = %s, want $30.00", formatCentsUSD(got))
 	}
 	if got := taskStatus(t, w.taskID); got != "cancelled" {
 		t.Errorf("status = %q", got)
@@ -1008,7 +1008,7 @@ func TestPhase2bCancelWithClosedSessionSettlesAndDetaches(t *testing.T) {
 	if n := countNotifications(t, w.supporterID, "CANCELLED"); n != 1 {
 		t.Errorf("%d supporter CANCELLED notifications, want 1", n)
 	}
-	if body := notificationBody(t, w.supporterID, "CANCELLED"); !strings.Contains(body, "$24.50") {
+	if body := notificationBody(t, w.supporterID, "CANCELLED"); !strings.Contains(body, "$30.00") {
 		t.Errorf("the supporter is not told what they were paid: %q", body)
 	}
 }
@@ -1069,8 +1069,8 @@ func TestPhase2bAdjustTimeBeforeCaptureRecomputes(t *testing.T) {
 	}
 
 	after := num(getWorklogsAs(t, w.taskID, w.requesterID, requesterEmail)["total_cost_cents"])
-	if after != before+500 { // 10 more billable minutes x $0.50
-		t.Errorf("cost went %s → %s, want a $5.00 increase", formatCentsUSD(before), formatCentsUSD(after))
+	if after != before+10*60 { // 10 more billable minutes x $0.60
+		t.Errorf("cost went %s → %s, want a $6.00 increase", formatCentsUSD(before), formatCentsUSD(after))
 	}
 }
 
@@ -1083,7 +1083,7 @@ func TestPhase2bAdjustTimeAfterCaptureIsRefused(t *testing.T) {
 		insert into public.payments (task_id, requester_id, kind, status,
 		                             stripe_payment_intent_id, authorized_cents,
 		                             captured_cents, time_cost_cents)
-		values ($1::uuid, $2::uuid, $3, 'captured', $4, 7675, 1950, 1950)
+		values ($1::uuid, $2::uuid, $3, 'captured', $4, 7675, 2400, 2400)
 	`, w.taskID, w.requesterID, paymentKindTaskPayment, "pi_captured_"+w.taskID[:8]); err != nil {
 		t.Fatalf("seed capture: %v", err)
 	}
@@ -1406,13 +1406,13 @@ func TestPhase2bCancelReportsWhatWasReleased(t *testing.T) {
 		if code != http.StatusOK {
 			t.Fatalf("cancel: %d (%v)", code, body)
 		}
-		// base $12.00 + 25 billable x $0.50 = $24.50 owed. Stripe is not
+		// base $15.00 + 25 billable x $0.60 = $30.00 owed. Stripe is not
 		// configured in this test, so nothing actually moves and captured is 0
 		// — what is under test is that the three numbers are reported and add
 		// up, not Stripe's behaviour (payments_phase2b_smoke_test.go covers
 		// that against the real API).
-		if got := num(body["bill_cents"]); got != 2450 {
-			t.Errorf("bill = %s, want $24.50", formatCentsUSD(got))
+		if got := num(body["bill_cents"]); got != 1500+25*60 {
+			t.Errorf("bill = %s, want $30.00", formatCentsUSD(got))
 		}
 		held := num(body["authorized_cents"])
 		captured := num(body["captured_cents"])

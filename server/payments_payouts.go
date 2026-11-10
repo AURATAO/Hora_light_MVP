@@ -106,6 +106,16 @@ type Payout struct {
 	ReimbursementCents int
 }
 
+// feeBps is the rate this payout's fee was cut at; the live rate when the
+// caller set none (an admin retry of a pre-breakdown row, which carries no
+// fee anyway).
+func (in payoutInput) feeBps() int {
+	if in.FeeBps != nil {
+		return *in.FeeBps
+	}
+	return pricing().PlatformFeeBps
+}
+
 // payoutInput is everything a transfer needs, gathered by the settlement path
 // so that this file reads no pricing and decides no amounts of its own.
 type payoutInput struct {
@@ -131,6 +141,10 @@ type payoutInput struct {
 	ServiceCents       int
 	FeeCents           int
 	ReimbursementCents int
+	// The rate FeeCents was cut at — the task's (pricing.go) — recorded as
+	// payouts.fee_bps. nil only where no rate is known (an admin retry of a
+	// pre-breakdown row, which carries no fee); 0 is a real 0% rate.
+	FeeBps *int
 	// The Stripe charge this money actually came from. Becomes
 	// source_transaction, which is what lets the transfer succeed against a
 	// platform balance that has not settled yet.
@@ -163,6 +177,9 @@ type supporterPay struct {
 	ServiceCents       int
 	FeeCents           int
 	ReimbursementCents int
+	// The rate FeeCents was cut at: the task's own (pricing.go), recorded
+	// on the payout rows and named in the copy.
+	FeeBps int
 }
 
 func (p supporterPay) ServiceNetCents() int { return p.ServiceCents - p.FeeCents }
@@ -172,6 +189,12 @@ func (p supporterPay) NetCents() int        { return p.ServiceNetCents() + p.Rei
 // reimbursement is not, and both are clamped at zero so a malformed input can
 // never produce a negative pay packet.
 func supporterPayFor(serviceCents, reimbursementCents int) supporterPay {
+	return supporterPayForBps(serviceCents, reimbursementCents, pricing().PlatformFeeBps)
+}
+
+// supporterPayForBps is supporterPayFor at a given rate: the one the task was
+// posted at. Every settlement path uses this.
+func supporterPayForBps(serviceCents, reimbursementCents, feeBps int) supporterPay {
 	if serviceCents < 0 {
 		serviceCents = 0
 	}
@@ -180,8 +203,9 @@ func supporterPayFor(serviceCents, reimbursementCents int) supporterPay {
 	}
 	return supporterPay{
 		ServiceCents:       serviceCents,
-		FeeCents:           platformFeeCents(serviceCents),
+		FeeCents:           platformFeeCentsAt(serviceCents, feeBps),
 		ReimbursementCents: reimbursementCents,
+		FeeBps:             feeBps,
 	}
 }
 
@@ -198,10 +222,15 @@ func supporterPayFor(serviceCents, reimbursementCents int) supporterPay {
 // the fraction is always one of .0 .2 .4 .6 .8 — the half-up rule matters
 // only for other rates and is stated so the answer is pinned.
 func platformFeeCents(serviceCents int) int {
-	if serviceCents <= 0 || Billing.PlatformFeeBps <= 0 {
+	return platformFeeCentsAt(serviceCents, pricing().PlatformFeeBps)
+}
+
+// platformFeeCentsAt is platformFeeCents at a given rate.
+func platformFeeCentsAt(serviceCents, feeBps int) int {
+	if serviceCents <= 0 || feeBps <= 0 {
 		return 0
 	}
-	return (serviceCents*Billing.PlatformFeeBps + 5000) / 10000
+	return (serviceCents*feeBps + 5000) / 10000
 }
 
 // payoutSplit is one transfer a settlement produces: what it carries, funded
@@ -631,7 +660,7 @@ func insertPayout(ctx context.Context, in payoutInput, amount int) (*Payout, err
 		returning id::text, task_id::text, supporter_id::text, payment_id::text,
 		          amount_cents, status, attempt_count
 	`, in.TaskID, in.SupporterID, paymentID, amount, payoutStatusPending, string(raw), funding,
-		in.ServiceCents, in.FeeCents, in.ReimbursementCents, Billing.PlatformFeeBps).
+		in.ServiceCents, in.FeeCents, in.ReimbursementCents, in.feeBps()).
 		Scan(&p.ID, &p.TaskID, &p.SupporterID, &scannedPayment, &p.AmountCents, &p.Status, &p.AttemptCount)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// ON CONFLICT DO NOTHING returned nothing: a unique index caught a
@@ -808,7 +837,7 @@ func notifySupporterPaid(ctx context.Context, in payoutInput, amount int) {
 		`select coalesce(email,'') from public.users where id = $1::uuid`, in.SupporterID).Scan(&email)
 
 	body := fmt.Sprintf("Your payment for %q is on its way to your bank.", t.Title)
-	if breakdown := payoutBreakdownLine(in.ServiceCents, in.FeeCents, in.ReimbursementCents); breakdown != "" {
+	if breakdown := payoutBreakdownLineBps(in.ServiceCents, in.FeeCents, in.ReimbursementCents, in.feeBps()); breakdown != "" {
 		body = fmt.Sprintf("Your payment for %q is on its way to your bank: %s.", t.Title, breakdown)
 	}
 	notifyUser(ctx, in.SupporterID, email, notify.CreateNotificationInput{
@@ -830,12 +859,17 @@ func notifySupporterPaid(ctx context.Context, in payoutInput, amount int) {
 // retry). Worded here, once, so the deposit push, the completion email and
 // the task screen cannot describe the same transfer three different ways.
 func payoutBreakdownLine(serviceCents, feeCents, reimbursementCents int) string {
+	return payoutBreakdownLineBps(serviceCents, feeCents, reimbursementCents, pricing().PlatformFeeBps)
+}
+
+// payoutBreakdownLineBps names the rate the fee was actually cut at.
+func payoutBreakdownLineBps(serviceCents, feeCents, reimbursementCents, feeBps int) string {
 	var parts []string
 	if serviceCents > 0 {
 		net := serviceCents - feeCents
 		if feeCents > 0 {
 			parts = append(parts, fmt.Sprintf("%s service (after the %s platform fee)",
-				formatCentsUSD(net), platformFeePercentLabel()))
+				formatCentsUSD(net), feePercentLabel(feeBps)))
 		} else {
 			parts = append(parts, fmt.Sprintf("%s service", formatCentsUSD(net)))
 		}
@@ -849,7 +883,11 @@ func payoutBreakdownLine(serviceCents, feeCents, reimbursementCents int) string 
 // platformFeePercentLabel is "20%" for 2000 bps — and "2.5%" for 250, so the
 // copy never rounds a rate it did not charge.
 func platformFeePercentLabel() string {
-	bps := Billing.PlatformFeeBps
+	return feePercentLabel(pricing().PlatformFeeBps)
+}
+
+// feePercentLabel is the label for a given rate.
+func feePercentLabel(bps int) string {
 	if bps%100 == 0 {
 		return fmt.Sprintf("%d%%", bps/100)
 	}
@@ -880,15 +918,16 @@ func adminRetryPayout(c *gin.Context) {
 	// The breakdown is NULL on a pre-fee row; coalesced to zero, and the retry
 	// then sends amount_cents as recorded — a retry re-sends what the row
 	// says, it never re-prices.
+	var retryFeeBps *int
 	err := db.QueryRow(ctx, `
 		select id::text, task_id::text, supporter_id::text, payment_id::text,
 		       amount_cents, status, attempt_count, stripe_transfer_id,
 		       coalesce(service_cents, 0), coalesce(fee_cents, 0), coalesce(reimbursement_cents, 0),
-		       coalesce(meta, '{}'::jsonb)
+		       coalesce(meta, '{}'::jsonb), fee_bps
 		  from public.payouts where id = $1::uuid
 	`, payoutID).Scan(&p.ID, &p.TaskID, &p.SupporterID, &paymentID,
 		&p.AmountCents, &p.Status, &p.AttemptCount, &transferID,
-		&p.ServiceCents, &p.FeeCents, &p.ReimbursementCents, &rawMeta)
+		&p.ServiceCents, &p.FeeCents, &p.ReimbursementCents, &rawMeta, &retryFeeBps)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
 		return
@@ -989,7 +1028,10 @@ func adminRetryPayout(c *gin.Context) {
 		ServiceCents:       p.ServiceCents,
 		FeeCents:           p.FeeCents,
 		ReimbursementCents: p.ReimbursementCents,
-		SourceChargeID:     chargeForPayment(ctx, p.PaymentID),
+		// The rate the row was cut at, so the retry's notification names
+		// the fee actually taken, not today's (pricing.go).
+		FeeBps:         retryFeeBps,
+		SourceChargeID: chargeForPayment(ctx, p.PaymentID),
 	}
 	tr, err := sendTransfer(ctx, &p, accountID, in)
 	if err != nil {

@@ -49,7 +49,17 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
   });
 
   const text = await response.text();
-  const data = text ? JSON.parse(text) : null;
+  // A proxy's HTML error page (a 502 during a deploy) is not JSON: read it as
+  // no body, so the caller gets an ApiError with the status instead of a red
+  // "JSON Parse error" (runbook, deferred mobile item).
+  let data: unknown = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      if (response.ok) throw new ApiError(response.status, { error: "Unexpected response from the server" });
+    }
+  }
 
   if (!response.ok) {
     throw new ApiError(response.status, data);
@@ -323,6 +333,45 @@ export interface ApplySupporterPayload {
   first_name?: string;
   last_name?: string;
 }
+
+// ── Supporter dispatch (D-24) ──────────────────────────────────────────────
+
+export interface AppConfig {
+  /** Whether new tasks are pushed to available supporters; the app shows the
+   *  "I'm available" control only when this is on. */
+  dispatch: boolean;
+}
+
+export function getAppConfig(): Promise<AppConfig> {
+  return apiFetch<AppConfig>("/config");
+}
+
+export interface DispatchSettings {
+  boroughs: string[];
+  available: boolean;
+  available_until: string | null;
+  enabled: boolean;
+  all_boroughs: string[];
+  /** The task this supporter is on right now; offers that clash with it are
+   *  held back by the server, so the card says so. */
+  on_task_id?: string | null;
+}
+
+export function getDispatchSettings(): Promise<DispatchSettings> {
+  return apiFetch<DispatchSettings>("/me/dispatch");
+}
+
+export function saveDispatchBoroughs(boroughs: string[]): Promise<DispatchSettings> {
+  return apiFetch<DispatchSettings>("/me/dispatch", { method: "PUT", body: { boroughs } });
+}
+
+export function setAvailability(on: boolean): Promise<DispatchSettings> {
+  return apiFetch<DispatchSettings>("/me/availability", { method: "POST", body: { on } });
+}
+
+/** The five boroughs as the server spells them, for screens that render
+ *  before /me/dispatch answers. */
+export const NYC_BOROUGHS = ["Manhattan", "Brooklyn", "Queens", "the Bronx", "Staten Island"] as const;
 
 export function applySupporter(payload: ApplySupporterPayload): Promise<{ ok: true }> {
   return apiFetch<{ ok: true }>("/supporter/apply", { method: "POST", body: payload });
@@ -950,6 +999,24 @@ export function resolveExtension(
   );
 }
 
+// ---- Item problem (server/item.go) -----------------------------------------
+
+export interface ItemProblemPayload {
+  item_name: string;
+  store_name?: string;
+  /** "alternative": found one that fits the budget — the requester is asked
+   *  1 or 2. "none": nothing similar — they are told it is skipped. */
+  outcome: "alternative" | "none";
+  alternative_name?: string;
+  alternative_cents?: number;
+  /** The `url` uploadCompletionPhoto returned. */
+  alternative_photo_url?: string;
+}
+
+export function reportItemProblem(id: string, payload: ItemProblemPayload): Promise<unknown> {
+  return apiFetch(`/tasks/${id}/item-problem`, { method: "POST", body: payload });
+}
+
 export async function uploadCompletionPhoto(id: string, file: FilePart): Promise<UploadResponse> {
   return apiFetch<UploadResponse>(`/tasks/${id}/completion-photo`, {
     method: "POST",
@@ -1071,6 +1138,8 @@ export interface EarningsTransfer {
   /** The fee, itemized (D-14). Both 0 on a transfer sent before the fee. */
   service_gross_cents?: number;
   platform_fee_cents?: number;
+  /** The rate this transfer was cut at (payouts.fee_bps). */
+  platform_fee_bps?: number;
   /** Row status: paid means the TRANSFER happened, not that the bank has it. */
   status: "pending" | "paid" | "failed";
   created_at: string;

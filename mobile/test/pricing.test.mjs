@@ -24,18 +24,18 @@ test("mirrors BillingConfig field for field", () => {
 });
 
 test("an hour's work, priced and paid the way the server does it", () => {
-  // $12 base + 45 billable minutes at $0.50, less the 20% fee.
-  assert.equal(serviceCents(PRICING.baseFeeDefaultCents, 60), 3450);
-  assert.equal(supporterPayoutCents(3450), 2760);
+  // $15 base + 45 billable minutes at $0.60 = $42.00, less the 30% fee ($12.60).
+  assert.equal(serviceCents(PRICING.baseFeeDefaultCents, 60), 1500 + 45 * 60);
+  assert.equal(supporterPayoutCents(4200), 4200 - 1260);
   // Inside the included minutes, only the base fee.
-  assert.equal(serviceCents(PRICING.baseFeeDefaultCents, 10), 1200);
+  assert.equal(serviceCents(PRICING.baseFeeDefaultCents, 10), 1500);
 });
 
 test("the Home pitch states the current schedule and no retired tier", () => {
   assert.equal(
     supporterPayPitch(),
-    "Every task pays a base fee that covers the first 15 minutes, plus $0.50 per minute of " +
-      "actual work after that — and you keep **80%** of it all. A one-hour grocery run pays " +
-      "**$27.60**. Errands and deliveries start at a $12 base, companionship at $25.",
+    "Every task pays a base fee that covers the first 15 minutes, plus $0.60 per minute of " +
+      "actual work after that — and you keep **70%** of it all. A one-hour grocery run pays " +
+      "**$29.40**. Errands and deliveries start at a $15 base, companionship at $25.",
   );
 });

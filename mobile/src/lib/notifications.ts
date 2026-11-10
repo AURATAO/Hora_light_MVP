@@ -55,6 +55,8 @@ const NOTIFICATION_META: Record<NotificationType, NotificationMeta> = {
   EXTENSION_RESOLVED: { icon: HandCoins, tint: "neutral" },
   TIME_CAP_WARNING: { icon: Clock, tint: "neutral" },
   TIME_CAP_REACHED: { icon: TimerOff, tint: "neutral" },
+  ITEM_ALTERNATIVE_PROPOSED: { icon: HandCoins, tint: "neutral" },
+  ITEM_UNAVAILABLE: { icon: HandCoins, tint: "neutral" },
 
   // Stripe Phase 3. The only unambiguously good money event in the list —
   // brand, like the completion events, because it reads the same way to

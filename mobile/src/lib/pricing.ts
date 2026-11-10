@@ -13,14 +13,14 @@ import { formatCost } from "./task-utils";
  * still promised an "$18" tier and a "$33.60" hour after both were gone.
  */
 export const PRICING = {
-  baseFeeDefaultCents: 1200,
+  baseFeeDefaultCents: 1500,
   baseFeeCompanionshipCents: 2500,
-  perMinuteRateCents: 50,
+  perMinuteRateCents: 60,
   includedMinutes: 15,
-  platformFeeBps: 2000,
+  platformFeeBps: 3000,
 } as const;
 
-/** "$12" for whole dollars, "$0.50" otherwise. */
+/** "$15" for whole dollars, "$0.60" otherwise. */
 function dollars(cents: number): string {
   return cents % 100 === 0 ? `$${cents / 100}` : formatCost(cents);
 }

@@ -322,6 +322,8 @@ func seedLiveWorld(t *testing.T) liveWorld {
 	`, w.requesterEmail, w.requesterID, w.supporterEmail, w.supporterID, w.jobLat, w.jobLng).Scan(&w.taskID); err != nil {
 		t.Fatalf("seed task: %v", err)
 	}
+	// Priced like a task posted today (pricing.go), as POST /tasks writes it.
+	seedStandardRate(t, w.taskID)
 	return w
 }
 

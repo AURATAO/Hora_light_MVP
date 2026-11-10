@@ -83,8 +83,9 @@ func TestPhase2bSmokeCaptureLessThanTheHoldReleasesTheRest(t *testing.T) {
 		t.Errorf("taskPaymentView does not name the card: %+v", view)
 	}
 
-	// Settle at well under the hold: 30 minutes and a $17.40 receipt.
-	const timeCost, receipt = 1950, 1740
+	// Settle at well under the hold: 30 minutes ($15.00 + 15 x $0.60) and a
+	// $17.40 receipt, against the $24.00 + $20.00 = $44.00 held.
+	const timeCost, receipt = 1500 + 15*60, 1740
 	out := settleTaskPayment(context.Background(), taskID, timeCost, receipt)
 	if out.Err != nil {
 		t.Fatalf("settle: %v", out.Err)
@@ -198,9 +199,9 @@ func TestPhase2bSmokeOverageIsChargedAsASecondPayment(t *testing.T) {
 		t.Fatalf("pre-auth: %v", err)
 	}
 	held := derefIntOr(p.AuthorizedCents, 0)
-	// The hold is the bare estimate now: $12.00 + 15 billable x $0.50.
-	if held != 1950 {
-		t.Fatalf("hold %s, want $19.50 — the hold is no longer the bare estimate", formatCentsUSD(held))
+	// The hold is the bare estimate now: $15.00 + 15 billable x $0.60.
+	if held != 1500+15*60 {
+		t.Fatalf("hold %s, want $24.00 — the hold is no longer the bare estimate", formatCentsUSD(held))
 	}
 
 	// Settle for $10 more than was ever reserved.

@@ -39,52 +39,52 @@ func TestBillingQuoteTable(t *testing.T) {
 		{
 			// Under the included block: the base fee is the whole bill. This is
 			// the case the old engine got wrong in the most expensive
-			// direction — it charged $12 + 10x$0.50 = $17.00 for a ten-minute
+			// direction — it charged $12 + 10x$0.50 = $17.00 (old schedule) for a ten-minute
 			// errand whose comments claimed the first 15 were included.
 			name: "10 min is base only", category: "quick_errand", minutes: 10,
-			wantBase: 1200, wantBillable: 0, wantTime: 0, wantTotal: 1200,
+			wantBase: 1500, wantBillable: 0, wantTime: 0, wantTotal: 1500,
 		},
 		{
 			// The boundary. 15 is inclusive — the fifteenth minute is inside
 			// the base fee, not the first billable one.
 			name: "15 min is base only", category: "quick_errand", minutes: 15,
-			wantBase: 1200, wantBillable: 0, wantTime: 0, wantTotal: 1200,
+			wantBase: 1500, wantBillable: 0, wantTime: 0, wantTotal: 1500,
 		},
 		{
 			name: "16 min bills one minute", category: "quick_errand", minutes: 16,
-			wantBase: 1200, wantBillable: 1, wantTime: 50, wantTotal: 1250,
+			wantBase: 1500, wantBillable: 1, wantTime: 60, wantTotal: 1500 + 60,
 		},
 		{
 			name: "60 min bills 45", category: "standard", minutes: 60,
-			wantBase: 1200, wantBillable: 45, wantTime: 2250, wantTotal: 3450,
+			wantBase: 1500, wantBillable: 45, wantTime: 45 * 60, wantTotal: 1500 + 45*60,
 		},
 		{
 			name: "companionship base", category: "companionship", minutes: 60,
-			wantBase: 2500, wantBillable: 45, wantTime: 2250, wantTotal: 4750,
+			wantBase: 2500, wantBillable: 45, wantTime: 45 * 60, wantTotal: 2500 + 45*60,
 		},
 		{
 			// Both spellings price identically; the picker submits one and Post
 			// Task normalizes to the other.
 			name: "companion alias prices the same", category: "companion", minutes: 60,
-			wantBase: 2500, wantBillable: 45, wantTime: 2250, wantTotal: 4750,
+			wantBase: 2500, wantBillable: 45, wantTime: 45 * 60, wantTotal: 2500 + 45*60,
 		},
 		{
 			// The removed tier. Under the old schedule this was $18.00 base;
 			// a >90-minute task is now priced by its minutes alone.
 			name: "over 90 min no longer changes the base fee", category: "standard", minutes: 120,
-			wantBase: 1200, wantBillable: 105, wantTime: 5250, wantTotal: 6450,
+			wantBase: 1500, wantBillable: 105, wantTime: 105 * 60, wantTotal: 1500 + 105*60,
 		},
 		{
 			name: "budget adds at face value", category: "standard", minutes: 30, budget: 2000,
-			wantBase: 1200, wantBillable: 15, wantTime: 750, wantTotal: 3950,
+			wantBase: 1500, wantBillable: 15, wantTime: 15 * 60, wantTotal: 1500 + 15*60 + 2000,
 		},
 		{
 			name: "zero minutes", category: "standard", minutes: 0,
-			wantBase: 1200, wantBillable: 0, wantTime: 0, wantTotal: 1200,
+			wantBase: 1500, wantBillable: 0, wantTime: 0, wantTotal: 1500,
 		},
 		{
 			name: "negative minutes clamp to zero", category: "standard", minutes: -30,
-			wantBase: 1200, wantBillable: 0, wantTime: 0, wantTotal: 1200,
+			wantBase: 1500, wantBillable: 0, wantTime: 0, wantTotal: 1500,
 		},
 	}
 
@@ -113,7 +113,7 @@ func TestBillingQuoteTable(t *testing.T) {
 // The multi-session promise, at the arithmetic level: two sessions of 10 and
 // 20 minutes are one 30-minute task, so the inclusion is consumed once and 15
 // minutes bill — NOT once per session (which would bill 0 + 5 = 5 minutes and
-// undercharge by $5.00).
+// undercharge by 10 min x $0.60 = $6.00).
 func TestBillingMultiSessionConsumesInclusionOnce(t *testing.T) {
 	const summed = 10 + 20
 
@@ -121,16 +121,16 @@ func TestBillingMultiSessionConsumesInclusionOnce(t *testing.T) {
 	if got.BillableMinutes != 15 {
 		t.Fatalf("billable minutes = %d, want 15", got.BillableMinutes)
 	}
-	if got.TotalCents != 1200+750 {
-		t.Fatalf("total = %d, want %d (base $12.00 + $7.50)", got.TotalCents, 1200+750)
+	if got.TotalCents != 1500+15*60 {
+		t.Fatalf("total = %d, want %d (base $15.00 + 15 min x $0.60 = $9.00)", got.TotalCents, 1500+15*60)
 	}
 
 	perSession := timeCostCents(10, Billing.PerMinuteRateCents) + timeCostCents(20, Billing.PerMinuteRateCents)
 	if perSession == got.TimeCostCents {
 		t.Fatal("per-session and summed inclusion agree — the test cannot detect the bug it exists for")
 	}
-	if perSession != 250 {
-		t.Fatalf("per-session sanity = %d, want 250", perSession)
+	if perSession != 5*60 {
+		t.Fatalf("per-session sanity = %d, want %d (0 + 5 min x $0.60)", perSession, 5*60)
 	}
 }
 
@@ -152,15 +152,15 @@ func TestBillingCancelSettlement(t *testing.T) {
 			// Supporter travelled and worked 10 minutes: base fee is earned,
 			// the 10 minutes are inside it.
 			name:     "cancel after a short session owes the base fee",
-			category: "standard", minutes: 10, hadSession: true, want: 1200,
+			category: "standard", minutes: 10, hadSession: true, want: 1500,
 		},
 		{
 			name:     "cancel after a long session bills time past the inclusion",
-			category: "standard", minutes: 45, hadSession: true, want: 1200 + 1500,
+			category: "standard", minutes: 45, hadSession: true, want: 1500 + 30*60,
 		},
 		{
 			name:     "companionship cancel uses its own base fee",
-			category: "companion", minutes: 20, hadSession: true, want: 2500 + 250,
+			category: "companion", minutes: 20, hadSession: true, want: 2500 + 5*60,
 		},
 		{
 			// Defensive: minutes without a session is an impossible state, but
@@ -183,8 +183,8 @@ func TestBillingCancelSettlement(t *testing.T) {
 // authorization ceiling; nothing has been charged against it.
 func TestBillingSettlementIgnoresShoppingBudget(t *testing.T) {
 	for _, budget := range []int{0, 500, 3000} {
-		if got := cancelSettlementCents("standard", 45, true, Billing.PerMinuteRateCents); got != 2700 {
-			t.Errorf("cancel settlement moved with a %d budget in scope: got %d, want 2700", budget, got)
+		if got := cancelSettlementCents("standard", 45, true, Billing.PerMinuteRateCents); got != 1500+30*60 {
+			t.Errorf("cancel settlement moved with a %d budget in scope: got %d, want %d", budget, got, 1500+30*60)
 		}
 	}
 }
@@ -203,19 +203,19 @@ func TestBillingPreAuthCoversTheHappyPath(t *testing.T) {
 		}
 	}
 
-	// The documented shape, spelled out once: 30 min standard is $12.00 base +
-	// 15 billable min x $0.50 = $19.50, plus the $20.00 budget = $39.50. No
+	// The documented shape, spelled out once: 30 min standard is $15.00 base +
+	// 15 billable min x $0.60 = $24.00, plus the $20.00 budget = $44.00. No
 	// multiplier, no buffer — exactly what the requester is quoted.
-	if got := preAuthAmountCents("standard", 30, 2000, Billing.PerMinuteRateCents); got != 3950 {
-		t.Errorf("preAuthAmountCents(standard, 30, 2000) = %d, want 3950", got)
+	if got := preAuthAmountCents("standard", 30, 2000, Billing.PerMinuteRateCents); got != 1500+15*60+2000 {
+		t.Errorf("preAuthAmountCents(standard, 30, 2000) = %d, want 4400", got)
 	}
-	if got := preAuthAmountCents("standard", 30, 0, Billing.PerMinuteRateCents); got != 1950 {
-		t.Errorf("preAuthAmountCents(standard, 30, 0) = %d, want 1950", got)
+	if got := preAuthAmountCents("standard", 30, 0, Billing.PerMinuteRateCents); got != 1500+15*60 {
+		t.Errorf("preAuthAmountCents(standard, 30, 0) = %d, want 2400", got)
 	}
-	// The evening rate doubles the per-minute half and nothing else: the base
-	// fee and the budget are not surge-priced.
-	if got := preAuthAmountCents("standard", 30, 2000, Billing.SurgeRateCentsPerMin); got != 4700 {
-		t.Errorf("evening preAuthAmountCents(standard, 30, 2000) = %d, want 4700", got)
+	// The evening rate replaces the per-minute half and nothing else: the base
+	// fee and the budget are not surge-priced. $15.00 + 15 x $1.00 + $20.00.
+	if got := preAuthAmountCents("standard", 30, 2000, Billing.SurgeRateCentsPerMin); got != 1500+15*100+2000 {
+		t.Errorf("evening preAuthAmountCents(standard, 30, 2000) = %d, want 5000", got)
 	}
 }
 
@@ -251,13 +251,13 @@ func TestBillingEstimateBreakdownShape(t *testing.T) {
 	// Every field a client needs to render an itemized quote without doing any
 	// arithmetic of its own (S-05).
 	want := map[string]float64{
-		"base_fee_cents":        1200,
+		"base_fee_cents":        1500,
 		"included_minutes":      15,
 		"total_minutes":         60,
 		"billable_minutes":      45,
-		"time_cost_cents":       2250,
+		"time_cost_cents":       45 * 60,
 		"shopping_budget_cents": 1000,
-		"total_cents":           4450,
+		"total_cents":           1500 + 45*60 + 1000,
 	}
 	for k, v := range want {
 		got, ok := out[k]
@@ -301,8 +301,8 @@ func TestBillingEstimateQuotesAnyBudget(t *testing.T) {
 		if code != http.StatusOK {
 			t.Fatalf("budget %s refused with %d (%v)", formatCentsUSD(budget), code, out)
 		}
-		// base $12.00 + 15 billable x $0.50 + the budget, held in full.
-		want := float64(1950 + budget)
+		// base $15.00 + 15 billable x $0.60 + the budget, held in full.
+		want := float64(1500 + 15*60 + budget)
 		if out["total_cents"] != want {
 			t.Errorf("budget %s: total %v, want %v", formatCentsUSD(budget), out["total_cents"], want)
 		}
@@ -348,7 +348,7 @@ func TestBillingMultiSessionSettlementAgainstDB(t *testing.T) {
 	w := seedOpsWorld(t, "open")
 	ctx := context.Background()
 
-	// 10 minutes, then 20. Summed: 30. Billable: 15. Cost: $12.00 + $7.50.
+	// 10 minutes, then 20. Summed: 30. Billable: 15. Cost: $15.00 + 15 x $0.60.
 	seedClosedWorklog(t, w.taskID, 10)
 	seedClosedWorklog(t, w.taskID, 20)
 
@@ -361,13 +361,13 @@ func TestBillingMultiSessionSettlementAgainstDB(t *testing.T) {
 	}
 
 	got := calcTaskCostCents(ctx, w.taskID, totalMin)
-	if got != 1950 {
-		t.Errorf("cost = %d, want 1950 ($12.00 base + 15 billable min x $0.50)", got)
+	if got != 1500+15*60 {
+		t.Errorf("cost = %d, want 2400 ($15.00 base + 15 billable min x $0.60)", got)
 	}
 
 	// The bug this guards: applying the inclusion per session would price the
-	// same work at $12.00 + $2.50.
-	if got == 1200+timeCostCents(10, Billing.PerMinuteRateCents)+timeCostCents(20, Billing.PerMinuteRateCents) {
+	// same work at $15.00 + $3.00.
+	if got == 1500+timeCostCents(10, Billing.PerMinuteRateCents)+timeCostCents(20, Billing.PerMinuteRateCents) {
 		t.Error("inclusion is being applied per session, not once per task")
 	}
 }

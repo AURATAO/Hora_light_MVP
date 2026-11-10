@@ -11,10 +11,10 @@ package main
 //
 // THE MODEL
 //
-//	base fee        $12.00, or $25.00 for companionship
+//	base fee        $15.00, or $25.00 for companionship
 //	included        the first 15 minutes are inside the base fee
 //	billable        max(total_logged_minutes - 15, 0)
-//	time cost       billable x $0.50/min
+//	time cost       billable x $0.60/min
 //	task total      base fee + time cost  (+ verified receipt at settlement)
 //
 // total_logged_minutes is the sum across ALL closed worklog sessions on the
@@ -160,10 +160,13 @@ type BillingConfig struct {
 // every settlement, and every client-rendered price at once, which is the
 // entire point.
 var Billing = BillingConfig{
-	BaseFeeDefaultCents:       1200, // $12.00
+	// Margin schedule (Aura 2026-11-10): $12 → $15 base, $0.50 → $0.60/min,
+	// 20% → 30% platform fee. Companionship base and the evening rate are
+	// unchanged.
+	BaseFeeDefaultCents:       1500, // $15.00 (was $12.00)
 	BaseFeeCompanionshipCents: 2500, // $25.00
 
-	PerMinuteRateCents: 50, // $0.50/min, standard
+	PerMinuteRateCents: 60, // $0.60/min, standard (was $0.50)
 	IncludedMinutes:    15,
 
 	SurgeRateCentsPerMin: 100, // $1.00/min for starts from 21:00 to 07:59 New York
@@ -183,7 +186,7 @@ var Billing = BillingConfig{
 	ApprovalTimeoutMinutes: 5,
 	CapWarningLeadMinutes:  5,
 
-	PlatformFeeBps: 2000, // 20% of service revenue; reimbursements untouched
+	PlatformFeeBps: 3000, // 30% of service revenue (was 20%); reimbursements untouched
 
 	Currency: "usd",
 }
@@ -215,12 +218,12 @@ func resolveRateCentsPerMin(start time.Time) int {
 		// existed.
 		log.Printf("[billing] timezone %q unavailable (%v) — falling back to the standard rate",
 			Billing.SurgeTimezone, err)
-		return Billing.PerMinuteRateCents
+		return pricing().PerMinuteRateCents
 	}
 	if inSurgeWindow(start.In(loc).Hour()) {
-		return Billing.SurgeRateCentsPerMin
+		return pricing().SurgeRateCentsPerMin
 	}
-	return Billing.PerMinuteRateCents
+	return pricing().PerMinuteRateCents
 }
 
 // taskStartMoved reports whether an edit changes when a task begins — the one
@@ -279,7 +282,7 @@ func clockHourLabel(hour int) string {
 // isSurgeRate reports whether a stored rate is the evening one, so a client can
 // be told WHY it is being quoted more without re-deriving anything.
 func isSurgeRate(rateCents int) bool {
-	return rateCents >= Billing.SurgeRateCentsPerMin
+	return rateCents >= pricing().SurgeRateCentsPerMin
 }
 
 // normalizeRate guards every read of a stored rate. Rows written before
@@ -287,7 +290,10 @@ func isSurgeRate(rateCents int) bool {
 // at the standard rate rather than free.
 func normalizeRate(rateCents int) int {
 	if rateCents <= 0 {
-		return Billing.PerMinuteRateCents
+		// The rate every task was billed at before the column existed. Never
+		// the live rate: this guards stored values, and a stored value is
+		// a term already agreed (pricing.go).
+		return legacyPerMinuteRateCents
 	}
 	return rateCents
 }
@@ -330,7 +336,13 @@ func taskRateCentsPerMin(ctx context.Context, taskID string) int {
 // to do with what is reserved, and two requesters who asked for the same task
 // must see the same hold.
 func preAuthAmountCents(category string, estimatedMinutes, shoppingBudgetCents, rateCents int) int {
-	return baseFeeCents(category) + timeCostCents(estimatedMinutes, rateCents) + shoppingBudgetCents
+	return preAuthAmountBase(baseFeeCents(category), estimatedMinutes, shoppingBudgetCents, rateCents)
+}
+
+// preAuthAmountBase is the hold for a task whose base fee is already known —
+// the one it was posted at (pricing.go).
+func preAuthAmountBase(baseFeeCents, estimatedMinutes, shoppingBudgetCents, rateCents int) int {
+	return baseFeeCents + timeCostCents(estimatedMinutes, rateCents) + shoppingBudgetCents
 }
 
 // preAuthAfterPromoCents is the hold with a promo code's discount taken off,
@@ -340,6 +352,11 @@ func preAuthAfterPromoCents(category string, estimatedMinutes, shoppingBudgetCen
 	return afterPromo(preAuthAmountCents(category, estimatedMinutes, shoppingBudgetCents, rateCents), discountCents)
 }
 
+// preAuthAfterPromoBase is preAuthAfterPromoCents at a known base fee.
+func preAuthAfterPromoBase(baseFeeCents, estimatedMinutes, shoppingBudgetCents, rateCents, discountCents int) int {
+	return afterPromo(preAuthAmountBase(baseFeeCents, estimatedMinutes, shoppingBudgetCents, rateCents), discountCents)
+}
+
 // isCompanionship reports whether a category bills at the companionship base
 // fee. Both spellings are live: the picker submits "companionship" and Post
 // Task normalizes it to "companion", and rows of both exist in production.
@@ -347,7 +364,9 @@ func isCompanionship(category string) bool {
 	return category == "companionship" || category == "companion"
 }
 
-// baseFeeCents is the base fee for a category.
+// baseFeeCents is the base fee for a category ON THE LIVE SCHEDULE: for a
+// quote, an estimate, a task being posted. A task that exists is billed at the
+// base fee it was posted at — taskBaseFeeCents (pricing.go).
 //
 // Two tiers, deliberately. The old schedule had a third — $18.00 when
 // estimated_minutes > 90 — which was a duration surcharge wearing a category's
@@ -356,10 +375,8 @@ func isCompanionship(category string) bool {
 // worked, so a task that overran its estimate was cheaper than one that was
 // estimated honestly. Removed.
 func baseFeeCents(category string) int {
-	if isCompanionship(category) {
-		return Billing.BaseFeeCompanionshipCents
-	}
-	return Billing.BaseFeeDefaultCents
+	b, _ := newTaskPrice(category)
+	return b
 }
 
 // billableMinutes applies the included block: the first Billing.IncludedMinutes
@@ -434,6 +451,12 @@ type TaskQuote struct {
 // quoteTask prices a task: base fee for the category, plus time beyond the
 // included block, plus the shopping budget the requester approved.
 func quoteTask(category string, totalMinutes, shoppingBudgetCents, rateCents int) TaskQuote {
+	return quoteTaskBase(baseFeeCents(category), totalMinutes, shoppingBudgetCents, rateCents)
+}
+
+// quoteTaskBase is quoteTask at a known base fee: the one an existing task was
+// posted at.
+func quoteTaskBase(base, totalMinutes, shoppingBudgetCents, rateCents int) TaskQuote {
 	if totalMinutes < 0 {
 		totalMinutes = 0
 	}
@@ -441,7 +464,6 @@ func quoteTask(category string, totalMinutes, shoppingBudgetCents, rateCents int
 		shoppingBudgetCents = 0
 	}
 	rateCents = normalizeRate(rateCents)
-	base := baseFeeCents(category)
 	time := timeCostCents(totalMinutes, rateCents)
 	return TaskQuote{
 		BaseFeeCents:        base,
@@ -501,7 +523,7 @@ func taskCategory(ctx context.Context, taskID string) string {
 // about what a task costs. See taskTimeCapMinutes for what the ceiling is.
 func calcTaskCostCents(ctx context.Context, taskID string, totalMinutes int) int {
 	capMinutes, _ := taskTimeCapMinutes(ctx, taskID)
-	return baseFeeCents(taskCategory(ctx, taskID)) +
+	return taskBaseFeeCents(ctx, taskID) +
 		timeCostCentsCapped(totalMinutes, capMinutes, taskRateCentsPerMin(ctx, taskID))
 }
 
@@ -681,8 +703,13 @@ func receiptWithinTolerance(receiptCents, approvedBudgetCents int) bool {
 // was $17.40" is the sentence the requester needs — but it is the RECEIPT that
 // is added to the total, because the budget was never a charge.
 func quoteSettlement(category string, totalMinutes, capMinutes, approvedBudgetCents, receiptCents, rateCents int) TaskQuote {
+	return quoteSettlementBase(baseFeeCents(category), totalMinutes, capMinutes, approvedBudgetCents, receiptCents, rateCents)
+}
+
+// quoteSettlementBase is quoteSettlement at the base fee the task was posted at.
+func quoteSettlementBase(base, totalMinutes, capMinutes, approvedBudgetCents, receiptCents, rateCents int) TaskQuote {
 	billed := cappedMinutes(totalMinutes, capMinutes)
-	q := quoteTask(category, billed, approvedBudgetCents, rateCents)
+	q := quoteTaskBase(base, billed, approvedBudgetCents, rateCents)
 	// quoteTask reports the minutes it priced. Settlement needs both: what was
 	// worked, and what was billable after the ceiling.
 	q.TotalMinutes = totalMinutes
@@ -730,10 +757,15 @@ func quoteSettlement(category string, totalMinutes, capMinutes, approvedBudgetCe
 // authorization ceiling, not money anyone has been charged, so a cancel has
 // nothing to net against it.
 func cancelSettlementCents(category string, totalMinutes int, committed bool, rateCents int) int {
+	return cancelSettlementBase(baseFeeCents(category), totalMinutes, committed, rateCents)
+}
+
+// cancelSettlementBase is cancelSettlementCents at the base fee the task was
+// posted at.
+func cancelSettlementBase(base, totalMinutes int, committed bool, rateCents int) int {
 	if !committed {
 		return 0
 	}
-	base := baseFeeCents(category)
 	if withTime := base + timeCostCents(totalMinutes, rateCents); withTime > base {
 		return withTime
 	}
@@ -1003,9 +1035,9 @@ func cancellationPreview(ctx context.Context, taskID string, assignedToID *strin
 	// The committed charge, computed whether or not it applies yet. Inside the
 	// grace window it is what the requester is about to become liable for, and
 	// the countdown names it.
-	category := taskCategory(ctx, taskID)
-	committedCharge := cancelSettlementCents(category, out.BilledMinutes, true, taskRateCentsPerMin(ctx, taskID))
-	out.BaseFeeCents = baseFeeCents(category)
+	base := taskBaseFeeCents(ctx, taskID)
+	committedCharge := cancelSettlementBase(base, out.BilledMinutes, true, taskRateCentsPerMin(ctx, taskID))
+	out.BaseFeeCents = base
 	out.TimeCostCents = committedCharge - out.BaseFeeCents
 	if !out.WithinGrace {
 		out.ChargeCents = committedCharge

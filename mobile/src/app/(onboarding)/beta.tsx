@@ -27,7 +27,7 @@ export default function BetaWelcome() {
       const updated = await updateProfile({ beta_accepted: true });
       await refresh();
       router.replace(
-        needsProfileCompletion(updated) ? "/(onboarding)/complete-profile" : "/(tabs)/home"
+        needsProfileCompletion(updated) ? "/(onboarding)/complete-profile" : "/(tabs)/work"
       );
     } catch (e) {
       if (e instanceof ApiError && e.isAuthError) {

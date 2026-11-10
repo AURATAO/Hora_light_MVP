@@ -4,7 +4,9 @@ import { useRouter } from "expo-router";
 import { CircleCheck, ChevronLeft } from "lucide-react-native";
 import { Button, Input, PressableScale, Screen, Skeleton } from "../components/ui";
 import { SupporterStatusBanner } from "../components/SupporterStatusBanner";
-import { ApiError, applySupporter, getProfile, updateProfile } from "../lib/api";
+import { ApiError, applySupporter, getAppConfig, getDispatchSettings, getProfile, saveDispatchBoroughs, updateProfile } from "../lib/api";
+import { BoroughPicker } from "../components/BoroughPicker";
+import { SupporterRules } from "../components/SupporterRules";
 import type { SupporterStatus } from "../lib/types";
 import { color, size } from "../theme/tokens";
 
@@ -38,6 +40,10 @@ export default function SupporterApply() {
   const [phone, setPhone] = useState("");
   const [city, setCity] = useState("");
   const [email, setEmail] = useState("");
+  // Where they want task offers first (D-24). null = the server has no
+  // dispatch endpoint yet, so the question is not asked.
+  const [boroughs, setBoroughs] = useState<string[]>([]);
+  const [allBoroughs, setAllBoroughs] = useState<string[] | null>(null);
 
   const [errors, setErrors] = useState<FieldErrors>({});
   const [submitting, setSubmitting] = useState(false);
@@ -63,6 +69,15 @@ export default function SupporterApply() {
       setEmail(p.email ?? "");
       setStatus(p.supporter_status);
       setLoadError(null);
+      // Asked only while task offers are on: with dispatch off the areas do
+      // nothing, and the copy below would promise what isn't happening.
+      getAppConfig()
+        .then((cfg) => (cfg.dispatch ? getDispatchSettings() : Promise.reject(new Error("dispatch off"))))
+        .then((d) => {
+          setAllBoroughs(d.all_boroughs);
+          setBoroughs(d.boroughs);
+        })
+        .catch(() => setAllBoroughs(null));
     } catch (e) {
       if (handleAuthError(e)) return;
       setLoadError(e instanceof Error ? e.message : "Couldn't load your details");
@@ -96,6 +111,9 @@ export default function SupporterApply() {
         city: city.trim(),
       });
       await applySupporter({ first_name: firstName.trim(), last_name: lastName.trim() });
+      // Best-effort: the application is what matters, and the areas can be
+      // changed any time from Profile → Task areas.
+      if (allBoroughs) await saveDispatchBoroughs(boroughs).catch(() => {});
       // /supporter/apply answers { ok: true } only — re-read the profile so the
       // Work tab we return to renders the server's status, not a guessed one.
       await getProfile();
@@ -226,6 +244,28 @@ export default function SupporterApply() {
               </View>
             </View>
           </View>
+
+          {/* The rules, before they apply: what they may always do and what
+              they never do (App Review notes; Profile → Supporter rules has
+              the same list). */}
+          <View className="mt-6">
+            <Text className="mb-3 text-caption text-muted">Supporter rules</Text>
+            <SupporterRules />
+          </View>
+
+          {allBoroughs ? (
+            <View className="mt-6">
+              <Text className="mb-1 text-caption text-muted">Where do you want to work?</Text>
+              <Text className="mb-3 text-caption text-muted">
+                You&apos;ll hear about tasks in these boroughs first. You can change this later.
+              </Text>
+              <BoroughPicker
+                selected={boroughs}
+                onChange={setBoroughs}
+                options={allBoroughs.length ? allBoroughs : undefined}
+              />
+            </View>
+          ) : null}
 
           {loadError ? <Text className="mt-3 text-caption text-danger">{loadError}</Text> : null}
           {submitError ? <Text className="mt-3 text-caption text-danger">{submitError}</Text> : null}

@@ -893,6 +893,90 @@ Open, Aura's call before building:
 - **Requester-side pricing.** A base fee or a minimum charge is the other
   half of the margin.
 
+### 13b-3. Supporter push dispatch — the pre-pilot focus (Aura, 2026-11-06)
+
+**Ruled 2026-11-06 (Aura):**
+- **Pre-pilot focus.** Push dispatch to supporters is the focus before the
+  pilot (about 50 supporters waiting to be onboarded).
+- **Rounds, not one at a time.** Round 1 pushes to available supporters who
+  serve the task's borough. After **3 minutes** with no accept, round 2
+  widens to every available supporter. After **5 minutes**, ops are alerted
+  (§13b's N).
+- **Area.** The five NYC boroughs, multi-select at onboarding. No finer
+  area for now.
+- **Availability.** An "I'm available" toggle that turns itself off after
+  **4 hours**. No separate night rule; the toggle covers it.
+- **Claiming and live location.** First accept wins (D-10's claim).
+  Supporters' live location is not tracked for dispatch.
+
+**Backend** (branch `feat/supporter-dispatch`, D-24):
+1. **Migration.**
+   - `profiles.dispatch_boroughs text[]` and `profiles.available_until
+     timestamptz`.
+   - `tasks.borough text`, the first stop's borough.
+   - `task_dispatches`: one row per task, with round 1, widened and
+     ops-alerted times and counts. RLS on, no client grants (CLAUDE.md
+     Rule 3).
+2. **Borough.** The service-area check already knows each stop's county,
+   so it now returns the borough, and the post stores it. A task with no
+   borough (old, or app-posted before this) skips round 1 and goes to
+   everyone available.
+3. **Endpoints.**
+   - `GET/PUT /me/dispatch`: the boroughs.
+   - `POST /me/availability {on}`: on means `available_until` = now + 4 h;
+     off means null.
+   - `GET /config`: `{dispatch: bool}` from `DISPATCH_PUSH_ENABLED`, so
+     the app shows the toggle only when it is on.
+4. **Dispatcher.** It runs when a task goes live, on both the straight post
+   and the 3DS-confirm path, and only with `DISPATCH_PUSH_ENABLED=1`.
+   - **Who gets the push:** verified supporters who are available, have a
+     push token, are payout-ready when payments are enforced, are in the
+     same sandbox partition as the requester, are not blocked either way,
+     and are not the requester.
+   - **The sweep:** every 30 s it widens at 3 min and alerts ops at 5 min.
+     It is restart-safe because the times live in `task_dispatches`, not
+     in memory (D-20).
+5. **Push content.**
+   - **Lock-screen safe:** the title is "New task near you · ~$X", where $X
+     is the supporter's estimated earnings. The body is the task title,
+     the borough, and "Now" or the time.
+   - **Never shown:** the address, the requester's name, or the
+     description.
+   - **Data:** `task_id`, `type: NEW_TASK_OFFER`, `url: /task/{id}`.
+6. **Tests and review.** Unit tests with Postgres, an adversarial review,
+   staging first, and the production flag off until Aura turns it on.
+   Aura applies the migration and merges.
+
+**Added the same day (Aura, after aligning with the supporter-only prompt):**
+- **No overlapping task** is required to be pushed (D-24).
+- **iOS Time Sensitive** pushes, with high priority.
+- **"This task was just taken"** when a push is opened too late.
+- **Withdrawing a delivered push** is a stretch goal, researched first.
+- **The borough round stays.** It is NOT "nearest 2–3 within a radius" (ruled 2026-11-06).
+
+**App** (the supporter-only build):
+1. Borough multi-select in supporter-apply and in profile.
+2. An "I'm available" toggle on the Tasks screen, showing "until 6:40 PM"
+   and turning off automatically. It is shown only when `/config.dispatch`
+   is true.
+3. A push tap opens `data.url`, a generic route, so later offer types need
+   no new build.
+4. Ask for notification permission at onboarding, saying why.
+5. Add the `com.apple.developer.usernotifications.time-sensitive` entitlement (app.json `ios.entitlements`). It must be in this submission's build.
+6. When a push is opened for a task someone else took (acceptTask answers "not available"), say "This task was just taken" and return to the list.
+7. Review notes: the review account is a supporter, its tasks are seeded,
+   and the flag is off during review.
+
+**Later, onto the roadmap:**
+- Distance and live-location ranking.
+- Pin and escalating flat pricing (13b-2).
+- Trusted tiers first.
+- An SMS fallback for supporters without push.
+- A server-built `pay_label`.
+- Acceptance rate in ranking.
+- A cap on pushes per supporter per hour, against fatigue.
+- Quiet hours, if the toggle proves not enough.
+
 ## 14. Paused
 
 App Store public release of the requester app; requester-side app features;

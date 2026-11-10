@@ -35,14 +35,14 @@ func TestReceiptSentOncePerChargeAndMatchesSettlement(t *testing.T) {
 	f := stubStripe(t)
 	w := seedOpsWorld(t, "open")
 	giveCard(t, w.requesterID)
-	seedWorklog(t, w.taskID, 40, false)                                                      // $12.00 + 25 × $0.50 = $24.50
+	seedWorklog(t, w.taskID, 40, false)                                                      // $15.00 + 25 × $0.60 = $30.00
 	paymentID := seedPayment(t, w.taskID, w.requesterID, "pi_hold", paymentStatusAuthorized) // $50.00 held
 	setPaymentCard(t, paymentID, "mastercard", "5100")
 
 	completeAs(t, w.taskID, w.supporterID, map[string]any{"completion_photo_url": "https://x/done.jpg"}, http.StatusOK)
 
-	if len(f.captures) != 1 || f.captures[0] != 2450 {
-		t.Fatalf("captured %v, want [2450]", f.captures)
+	if len(f.captures) != 1 || f.captures[0] != 1500+25*60 {
+		t.Fatalf("captured %v, want [3000]", f.captures)
 	}
 	if n := countNotifications(t, w.requesterID, "RECEIPT"); n != 1 {
 		t.Fatalf("%d receipts after one charge, want exactly 1", n)
@@ -52,7 +52,7 @@ func TestReceiptSentOncePerChargeAndMatchesSettlement(t *testing.T) {
 	// are the settlement's lines.
 	s := getWorklogsAs(t, w.taskID, w.requesterID, requesterEmail)["settlement"].(map[string]any)
 	captured := num(s["captured_cents"])
-	if captured != 2450 {
+	if captured != 3000 {
 		t.Fatalf("settlement captured %d", captured)
 	}
 	if title := notificationTitle(t, w.requesterID, "RECEIPT"); title != "Your HO:RA receipt — "+formatCentsUSD(captured) {
@@ -60,10 +60,10 @@ func TestReceiptSentOncePerChargeAndMatchesSettlement(t *testing.T) {
 	}
 	body := notificationBody(t, w.requesterID, "RECEIPT")
 	for _, want := range []string{
-		"Charged $24.50 to Mastercard ••5100",
+		"Charged $30.00 to Mastercard ••5100",
 		formatCentsUSD(Billing.BaseFeeDefaultCents) + " base",
-		"25 min × $0.50",
-		"$25.50 of the hold released", // $50.00 held − $24.50 taken
+		"25 min × $0.60",
+		"$20.00 of the hold released", // $50.00 held − $30.00 taken
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("receipt body %q lacks %q", body, want)
@@ -108,8 +108,8 @@ func TestReceiptNamesBothChargesOfOneCompletion(t *testing.T) {
 	w := seedOpsWorld(t, "open")
 	giveCard(t, w.requesterID)
 	// A long task against a $50.00 hold: 200 logged min on a 200-min estimate
-	// bills $12.00 + 185 × $0.50 = $104.50, so the hold is captured in full
-	// and $54.50 is a balance charge.
+	// bills $15.00 + 185 × $0.60 = $126.00, so the hold is captured in full
+	// and $76.00 is a balance charge.
 	mustExec(t, `update public.tasks set estimated_minutes = 200 where id = $1::uuid`, w.taskID)
 	seedWorklog(t, w.taskID, 200, false)
 	paymentID := seedPayment(t, w.taskID, w.requesterID, "pi_hold", paymentStatusAuthorized)
@@ -117,14 +117,14 @@ func TestReceiptNamesBothChargesOfOneCompletion(t *testing.T) {
 
 	completeAs(t, w.taskID, w.supporterID, map[string]any{"completion_photo_url": "https://x/done.jpg"}, http.StatusOK)
 
-	if len(f.captures) != 1 || f.captures[0] != 5000 || len(f.charges) != 1 || f.charges[0] != 5450 {
-		t.Fatalf("captures %v charges %v, want [5000] and [5450]", f.captures, f.charges)
+	if len(f.captures) != 1 || f.captures[0] != 5000 || len(f.charges) != 1 || f.charges[0] != 1500+185*60-5000 {
+		t.Fatalf("captures %v charges %v, want [5000] and [7600]", f.captures, f.charges)
 	}
 	if n := countNotifications(t, w.requesterID, "RECEIPT"); n != 1 {
 		t.Fatalf("%d receipts for one completion with two charges, want 1", n)
 	}
 	body := notificationBody(t, w.requesterID, "RECEIPT")
-	for _, want := range []string{"Charged $104.50", "Two charges: reserved amount $50.00 and balance $54.50"} {
+	for _, want := range []string{"Charged $126.00", "Two charges: reserved amount $50.00 and balance $76.00"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("receipt body %q lacks %q", body, want)
 		}
@@ -132,7 +132,7 @@ func TestReceiptNamesBothChargesOfOneCompletion(t *testing.T) {
 	if strings.Contains(body, "released") {
 		t.Errorf("a fully captured hold released something: %q", body)
 	}
-	if title := notificationTitle(t, w.requesterID, "RECEIPT"); title != "Your HO:RA receipt — $104.50" {
+	if title := notificationTitle(t, w.requesterID, "RECEIPT"); title != "Your HO:RA receipt — $126.00" {
 		t.Errorf("title = %q", title)
 	}
 }
@@ -176,21 +176,21 @@ func TestReceiptForAChargedCancel(t *testing.T) {
 	f := stubStripe(t)
 	w := seedOpsWorld(t, "open")
 	mustExec(t, `update public.tasks set accepted_at = now() - interval '1 hour' where id = $1::uuid`, w.taskID)
-	seedWorklog(t, w.taskID, 20, false) // $12.00 + 5 × $0.50 = $14.50
+	seedWorklog(t, w.taskID, 20, false) // $15.00 + 5 × $0.60 = $18.00
 	paymentID := seedPayment(t, w.taskID, w.requesterID, "pi_hold", paymentStatusAuthorized)
 	setPaymentCard(t, paymentID, "visa", "4242")
 
 	code, body := cancelAs(t, w.taskID, w.requesterID, "no longer needed")
-	if code != http.StatusOK || num(body["bill_cents"]) != 1450 {
+	if code != http.StatusOK || num(body["bill_cents"]) != 1500+5*60 {
 		t.Fatalf("cancel: %d %v", code, body)
 	}
-	if len(f.captures) != 1 || f.captures[0] != 1450 {
+	if len(f.captures) != 1 || f.captures[0] != 1800 {
 		t.Fatalf("captured %v", f.captures)
 	}
 	if n := countNotifications(t, w.requesterID, "RECEIPT"); n != 1 {
 		t.Fatalf("%d receipts for a charged cancel, want 1", n)
 	}
-	if b := notificationBody(t, w.requesterID, "RECEIPT"); !strings.Contains(b, "Charged $14.50 to Visa ••4242") {
+	if b := notificationBody(t, w.requesterID, "RECEIPT"); !strings.Contains(b, "Charged $18.00 to Visa ••4242") {
 		t.Errorf("receipt = %q", b)
 	}
 
