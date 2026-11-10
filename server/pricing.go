@@ -63,6 +63,7 @@ const (
 	legacyBaseFeeDefaultCents       = 1200
 	legacyBaseFeeCompanionshipCents = 2500
 	legacyPlatformFeeBps            = 2000
+	legacyPerMinuteRateCents        = 50
 )
 
 const pricingRefresh = time.Minute
@@ -206,29 +207,34 @@ func storedFeeBps(bps *int) int {
 	return legacyPlatformFeeBps
 }
 
-// taskBaseFeeCents is the base fee a task was posted at.
-func taskBaseFeeCents(ctx context.Context, taskID string) int {
-	var base *int
+// taskStoredPrice is the base fee and platform fee a task was posted at, read
+// together so the two can never come from different schedules. A task that
+// cannot be read (no row: a caller pricing something that is not yet a task)
+// is priced as a task posted now would be — never as free.
+func taskStoredPrice(ctx context.Context, taskID string) (baseFeeCents, platformFeeBps int) {
+	var base, bps *int
 	var category string
 	if err := db.QueryRow(ctx,
-		`select base_fee_cents, coalesce(category,'') from public.tasks where id = $1::uuid`, taskID,
-	).Scan(&base, &category); err != nil {
-		// No row: price it as a task posted now would be, never as free.
-		b, _ := newTaskPrice(category)
-		return b
+		`select base_fee_cents, platform_fee_bps, coalesce(category,'') from public.tasks where id = $1::uuid`, taskID,
+	).Scan(&base, &bps, &category); err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			log.Printf("[pricing] task=%s: stored price unreadable, pricing as a new task: %v", taskID, err)
+		}
+		return newTaskPrice(category)
 	}
-	return storedBaseFee(base, category)
+	return storedBaseFee(base, category), storedFeeBps(bps)
+}
+
+// taskBaseFeeCents is the base fee a task was posted at.
+func taskBaseFeeCents(ctx context.Context, taskID string) int {
+	b, _ := taskStoredPrice(ctx, taskID)
+	return b
 }
 
 // taskPlatformFeeBps is the platform fee a task was posted at.
 func taskPlatformFeeBps(ctx context.Context, taskID string) int {
-	var bps *int
-	if err := db.QueryRow(ctx,
-		`select platform_fee_bps from public.tasks where id = $1::uuid`, taskID,
-	).Scan(&bps); err != nil {
-		return pricing().PlatformFeeBps
-	}
-	return storedFeeBps(bps)
+	_, f := taskStoredPrice(ctx, taskID)
+	return f
 }
 
 // ── Admin ──────────────────────────────────────────────────────────────────
@@ -272,10 +278,32 @@ func adminGetPricing(c *gin.Context) {
 
 // POST /admin/pricing — a new schedule, for tasks posted from now on.
 func adminSetPricing(c *gin.Context) {
-	var in PriceSchedule
-	if err := c.ShouldBindJSON(&in); err != nil {
+	// Pointers: a field left out is refused, never read as 0 (a 0% fee
+	// set by omission).
+	var raw struct {
+		BaseFeeDefaultCents       *int   `json:"base_fee_default_cents"`
+		BaseFeeCompanionshipCents *int   `json:"base_fee_companionship_cents"`
+		PerMinuteRateCents        *int   `json:"per_minute_rate_cents"`
+		SurgeRateCentsPerMin      *int   `json:"surge_rate_cents_per_min"`
+		PlatformFeeBps            *int   `json:"platform_fee_bps"`
+		Note                      string `json:"note"`
+	}
+	if err := c.ShouldBindJSON(&raw); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
 		return
+	}
+	if raw.BaseFeeDefaultCents == nil || raw.BaseFeeCompanionshipCents == nil || raw.PerMinuteRateCents == nil ||
+		raw.SurgeRateCentsPerMin == nil || raw.PlatformFeeBps == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_schedule", "message": "Every price is required."})
+		return
+	}
+	in := PriceSchedule{
+		BaseFeeDefaultCents:       *raw.BaseFeeDefaultCents,
+		BaseFeeCompanionshipCents: *raw.BaseFeeCompanionshipCents,
+		PerMinuteRateCents:        *raw.PerMinuteRateCents,
+		SurgeRateCentsPerMin:      *raw.SurgeRateCentsPerMin,
+		PlatformFeeBps:            *raw.PlatformFeeBps,
+		Note:                      raw.Note,
 	}
 	if err := in.validate(); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_schedule", "message": err.Error()})
@@ -309,6 +337,10 @@ func adminSetPricing(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"id": id, "live": pricing()})
 }
 
+// GET /pricing — the requester-facing prices for the clients' marketing
+// sentences. The platform fee is not one of them (it is the supporter side's
+// business; Earnings carries it).
+//
 // GET /pricing — the live schedule for the clients' marketing sentences
 // ("$15 base fee includes the first 15 minutes…"), so no client hardcodes a
 // price that can now change without a release. Public: prices are public.
@@ -319,7 +351,6 @@ func getPublicPricing(c *gin.Context) {
 		"base_fee_companionship_cents": p.BaseFeeCompanionshipCents,
 		"per_minute_rate_cents":        p.PerMinuteRateCents,
 		"surge_rate_cents_per_min":     p.SurgeRateCentsPerMin,
-		"platform_fee_bps":             p.PlatformFeeBps,
 		"included_minutes":             Billing.IncludedMinutes,
 		"surge_window":                 surgeWindowLabel(),
 	})

@@ -272,7 +272,12 @@ func seedStandardRate(t *testing.T, taskID string) {
 		t.Fatalf("probe rate column: %v", err)
 	}
 	if !has {
-		return
+		// A slice of the schema from before the rate column: production has
+		// it, and a missing rate now bills at the legacy $0.50 (normalizeRate),
+		// so give the fixture the column every real task carries.
+		if _, err := db.Exec(ctx, `alter table public.tasks add column if not exists rate_cents_per_min integer`); err != nil {
+			t.Fatalf("add rate column: %v", err)
+		}
 	}
 	if _, err := db.Exec(ctx, `update public.tasks set rate_cents_per_min = $2 where id = $1::uuid`,
 		taskID, Billing.PerMinuteRateCents); err != nil {

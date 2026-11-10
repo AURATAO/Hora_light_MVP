@@ -139,6 +139,8 @@ func TestPricingAdminEndpoints(t *testing.T) {
 		`{"base_fee_default_cents":1500,"base_fee_companionship_cents":2500,"per_minute_rate_cents":60,"surge_rate_cents_per_min":50,"platform_fee_bps":3000,"note":"x"}`,
 		`{"base_fee_default_cents":1500,"base_fee_companionship_cents":2500,"per_minute_rate_cents":60,"surge_rate_cents_per_min":100,"platform_fee_bps":30000,"note":"x"}`,
 		`{"base_fee_default_cents":1500,"base_fee_companionship_cents":2500,"per_minute_rate_cents":60,"surge_rate_cents_per_min":100,"platform_fee_bps":3000,"note":"  "}`,
+		// A field left out is refused, never read as 0 (a 0% fee by omission).
+		`{"base_fee_default_cents":1500,"base_fee_companionship_cents":2500,"per_minute_rate_cents":60,"surge_rate_cents_per_min":100,"note":"x"}`,
 	} {
 		if code, out := set(w.adminID, adminEmail, bad); code != http.StatusBadRequest || out["message"] == nil {
 			t.Errorf("%s: %d %v", bad, code, out)

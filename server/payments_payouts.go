@@ -110,8 +110,8 @@ type Payout struct {
 // caller set none (an admin retry of a pre-breakdown row, which carries no
 // fee anyway).
 func (in payoutInput) feeBps() int {
-	if in.FeeBps > 0 {
-		return in.FeeBps
+	if in.FeeBps != nil {
+		return *in.FeeBps
 	}
 	return pricing().PlatformFeeBps
 }
@@ -142,8 +142,9 @@ type payoutInput struct {
 	FeeCents           int
 	ReimbursementCents int
 	// The rate FeeCents was cut at — the task's (pricing.go) — recorded as
-	// payouts.fee_bps.
-	FeeBps int
+	// payouts.fee_bps. nil only where no rate is known (an admin retry of a
+	// pre-breakdown row, which carries no fee); 0 is a real 0% rate.
+	FeeBps *int
 	// The Stripe charge this money actually came from. Becomes
 	// source_transaction, which is what lets the transfer succeed against a
 	// platform balance that has not settled yet.
@@ -917,15 +918,16 @@ func adminRetryPayout(c *gin.Context) {
 	// The breakdown is NULL on a pre-fee row; coalesced to zero, and the retry
 	// then sends amount_cents as recorded — a retry re-sends what the row
 	// says, it never re-prices.
+	var retryFeeBps *int
 	err := db.QueryRow(ctx, `
 		select id::text, task_id::text, supporter_id::text, payment_id::text,
 		       amount_cents, status, attempt_count, stripe_transfer_id,
 		       coalesce(service_cents, 0), coalesce(fee_cents, 0), coalesce(reimbursement_cents, 0),
-		       coalesce(meta, '{}'::jsonb)
+		       coalesce(meta, '{}'::jsonb), fee_bps
 		  from public.payouts where id = $1::uuid
 	`, payoutID).Scan(&p.ID, &p.TaskID, &p.SupporterID, &paymentID,
 		&p.AmountCents, &p.Status, &p.AttemptCount, &transferID,
-		&p.ServiceCents, &p.FeeCents, &p.ReimbursementCents, &rawMeta)
+		&p.ServiceCents, &p.FeeCents, &p.ReimbursementCents, &rawMeta, &retryFeeBps)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
 		return
@@ -1026,7 +1028,10 @@ func adminRetryPayout(c *gin.Context) {
 		ServiceCents:       p.ServiceCents,
 		FeeCents:           p.FeeCents,
 		ReimbursementCents: p.ReimbursementCents,
-		SourceChargeID:     chargeForPayment(ctx, p.PaymentID),
+		// The rate the row was cut at, so the retry's notification names
+		// the fee actually taken, not today's (pricing.go).
+		FeeBps:         retryFeeBps,
+		SourceChargeID: chargeForPayment(ctx, p.PaymentID),
 	}
 	tr, err := sendTransfer(ctx, &p, accountID, in)
 	if err != nil {

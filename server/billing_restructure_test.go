@@ -114,15 +114,17 @@ func TestRestructureRateBoundary(t *testing.T) {
 	}
 }
 
-// A zero or missing stored rate bills at the standard rate, never at zero.
-// Rows written before the column existed read as 0, and a pricing path that
-// can return "free" is worse than one that can return "cheap".
+// A zero or missing stored rate bills at the rate such a task was posted
+// under — the legacy $0.50 — never at zero, and never at today's live rate
+// (a stored value is an agreed term; pricing.go). Rows written before the
+// column existed read as 0, and a pricing path that can return "free" is
+// worse than one that can return "cheap".
 func TestRestructureMissingRateFallsBackToStandard(t *testing.T) {
 	for _, stored := range []int{0, -1} {
-		if got := normalizeRate(stored); got != Billing.PerMinuteRateCents {
-			t.Errorf("stored rate %d normalized to %d, want %d", stored, got, Billing.PerMinuteRateCents)
+		if got := normalizeRate(stored); got != legacyPerMinuteRateCents {
+			t.Errorf("stored rate %d normalized to %d, want %d", stored, got, legacyPerMinuteRateCents)
 		}
-		if got := timeCostCents(60, stored); got != billableMinutes(60)*Billing.PerMinuteRateCents {
+		if got := timeCostCents(60, stored); got != billableMinutes(60)*legacyPerMinuteRateCents {
 			t.Errorf("stored rate %d priced 60 min at %s", stored, formatCentsUSD(got))
 		}
 	}

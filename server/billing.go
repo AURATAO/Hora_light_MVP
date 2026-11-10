@@ -290,7 +290,10 @@ func isSurgeRate(rateCents int) bool {
 // at the standard rate rather than free.
 func normalizeRate(rateCents int) int {
 	if rateCents <= 0 {
-		return pricing().PerMinuteRateCents
+		// The rate every task was billed at before the column existed. Never
+		// the live rate: this guards stored values, and a stored value is
+		// a term already agreed (pricing.go).
+		return legacyPerMinuteRateCents
 	}
 	return rateCents
 }

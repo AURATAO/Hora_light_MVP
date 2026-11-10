@@ -423,7 +423,7 @@ func settleTaskPayment(ctx context.Context, taskID string, timeCostCents, receip
 				AmountCents:        split.AmountCents(),
 				ServiceCents:       split.ServiceCents,
 				FeeCents:           split.FeeCents,
-				FeeBps:             pay.FeeBps,
+				FeeBps:             &pay.FeeBps,
 				ReimbursementCents: split.ReimbursementCents,
 				ShortfallCents:     split.ShortfallCents,
 			}

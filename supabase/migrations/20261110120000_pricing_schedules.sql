@@ -62,3 +62,9 @@ UPDATE public.tasks
    SET base_fee_cents   = CASE WHEN category IN ('companionship', 'companion') THEN 2500 ELSE 1200 END,
        platform_fee_bps = 2000
  WHERE base_fee_cents IS NULL;
+
+-- And the rate, for the same reason: a task from before rate_cents_per_min
+-- (or one somehow left at 0) was billed $0.50/min; the server reads a
+-- missing rate the same way (legacyPerMinuteRateCents).
+UPDATE public.tasks SET rate_cents_per_min = 50
+ WHERE rate_cents_per_min IS NULL OR rate_cents_per_min <= 0;
