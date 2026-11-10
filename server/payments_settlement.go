@@ -75,6 +75,9 @@ type settlementInputs struct {
 	// The rate this task was POSTED at. Never re-resolved — see
 	// resolveRateCentsPerMin.
 	RateCents int
+	// The base fee and platform fee it was posted at (pricing.go).
+	BaseFeeCents   int
+	PlatformFeeBps int
 }
 
 func readSettlementInputs(ctx context.Context, taskID string) settlementInputs {
@@ -82,6 +85,8 @@ func readSettlementInputs(ctx context.Context, taskID string) settlementInputs {
 	in.LoggedMinutes, _ = totalClosedMinutes(ctx, taskID)
 	in.CapMinutes, in.Cap = taskTimeCapMinutes(ctx, taskID)
 	in.RateCents = taskRateCentsPerMin(ctx, taskID)
+	in.BaseFeeCents = taskBaseFeeCents(ctx, taskID)
+	in.PlatformFeeBps = taskPlatformFeeBps(ctx, taskID)
 	_ = db.QueryRow(ctx, `
 		select coalesce(shopping_budget_approved_cents, 0),
 		       coalesce(receipt_amount_cents, 0),
@@ -93,7 +98,7 @@ func readSettlementInputs(ctx context.Context, taskID string) settlementInputs {
 
 // quote is the itemized settlement these inputs produce.
 func (in settlementInputs) quote() TaskQuote {
-	return quoteSettlement(in.Category, in.LoggedMinutes, in.CapMinutes, in.ApprovedBudgetCents,
+	return quoteSettlementBase(in.BaseFeeCents, in.LoggedMinutes, in.CapMinutes, in.ApprovedBudgetCents,
 		in.ReceiptCents, in.RateCents)
 }
 
@@ -409,7 +414,7 @@ func settleTaskPayment(ctx context.Context, taskID string, timeCostCents, receip
 		subsidy := out.DiscountCents + waived
 		// The pay packet: the fee comes off the UNDISCOUNTED service, once,
 		// here; the reimbursement is passed through whole (D-14).
-		pay := supporterPayFor(timeCostCents, receiptCents)
+		pay := supporterPayForBps(timeCostCents, receiptCents, taskPlatformFeeBps(ctx, taskID))
 		out.PlatformFeeCents = pay.FeeCents
 		for _, split := range settlementPayouts(pay, mainCaptured, balanceCaptured, subsidy) {
 			in := payoutInput{
@@ -418,6 +423,7 @@ func settleTaskPayment(ctx context.Context, taskID string, timeCostCents, receip
 				AmountCents:        split.AmountCents(),
 				ServiceCents:       split.ServiceCents,
 				FeeCents:           split.FeeCents,
+				FeeBps:             pay.FeeBps,
 				ReimbursementCents: split.ReimbursementCents,
 				ShortfallCents:     split.ShortfallCents,
 			}
@@ -713,12 +719,13 @@ func taskPaymentView(ctx context.Context, taskID string) *TaskPayment {
 	// the promo discount taken off first, when there is one.
 	var category string
 	var estimate, budget, rate int
+	var storedBase *int
 	if err := db.QueryRow(ctx, `
 		select coalesce(category,''), coalesce(estimated_minutes,0),
-		       coalesce(prepay_amount_cents,0), coalesce(rate_cents_per_min,0)
+		       coalesce(prepay_amount_cents,0), coalesce(rate_cents_per_min,0), base_fee_cents
 		  from public.tasks where id = $1::uuid
-	`, taskID).Scan(&category, &estimate, &budget, &rate); err == nil {
-		base := baseFeeCents(category)
+	`, taskID).Scan(&category, &estimate, &budget, &rate, &storedBase); err == nil {
+		base := storedBaseFee(storedBase, category)
 		minutes := timeCostCents(estimate, rate)
 		timePart := base + minutes
 		code, discount := promoDiscountForTask(ctx, taskID)

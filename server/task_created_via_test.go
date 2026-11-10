@@ -127,7 +127,7 @@ func setupCreatedViaDB(t *testing.T) {
 	// auto_extend_consent and a status ('pending_payment') the fixture's own
 	// CHECK constraint would reject.
 	for _, path := range []string{createdViaMigrationPath, paymentsMigrationPath, phase2aMigrationPath,
-		phase2bMigrationPath, cardDisplayMigrationPath, restructureMigrationPath} {
+		phase2bMigrationPath, cardDisplayMigrationPath, restructureMigrationPath, pricingMigrationPath} {
 		migration, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read migration %s: %v", path, err)

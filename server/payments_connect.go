@@ -1069,7 +1069,7 @@ func earningsHandler(c *gin.Context) {
 	limit := parseLimit(c.Query("limit"), earningsRecentLimit, earningsMaxLimit)
 	offset := parseOffset(c.Query("offset"))
 
-	out := Earnings{Onboarding: st, Transfers: []EarningsTransfer{}, PlatformFeeBps: Billing.PlatformFeeBps}
+	out := Earnings{Onboarding: st, Transfers: []EarningsTransfer{}, PlatformFeeBps: pricing().PlatformFeeBps}
 	out.LifetimeEarnedCents = lifetimePaidCents(ctx, uid)
 	out.PaidOutCents = lifetimeBankPaidCents(ctx, uid)
 	out.InTransitCents = out.LifetimeEarnedCents - out.PaidOutCents

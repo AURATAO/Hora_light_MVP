@@ -278,6 +278,27 @@ func seedStandardRate(t *testing.T, taskID string) {
 		taskID, Billing.PerMinuteRateCents); err != nil {
 		t.Fatalf("seed standard rate: %v", err)
 	}
+	// And the base fee and platform fee, as POST /tasks stores them
+	// (pricing.go), when the schema has them. A NULL means "posted before
+	// prices were stored" and bills at the legacy schedule.
+	var hasPrice bool
+	if err := db.QueryRow(ctx, `
+		select exists (select 1 from information_schema.columns
+		                where table_schema = 'public' and table_name = 'tasks'
+		                  and column_name = 'base_fee_cents')`).Scan(&hasPrice); err != nil {
+		t.Fatalf("probe price columns: %v", err)
+	}
+	if !hasPrice {
+		return
+	}
+	if _, err := db.Exec(ctx, `
+		update public.tasks
+		   set base_fee_cents = case when category in ('companionship','companion') then $2::int else $3::int end,
+		       platform_fee_bps = $4::int
+		 where id = $1::uuid`,
+		taskID, Billing.BaseFeeCompanionshipCents, Billing.BaseFeeDefaultCents, Billing.PlatformFeeBps); err != nil {
+		t.Fatalf("seed task price: %v", err)
+	}
 }
 
 // seedWorklog adds a session. minutesAgo is when it started; openEnded leaves

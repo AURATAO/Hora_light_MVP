@@ -212,7 +212,9 @@ func CreatePreAuth(ctx context.Context, in PreAuthInput) (*Payment, error) {
 		return nil, errors.New("payments: task_id and requester_id are required")
 	}
 
-	amount := preAuthAfterPromoCents(in.Category, in.EstimatedMinutes, in.ShoppingBudgetCents,
+	// At the base fee the task row was written with (pricing.go), so the
+	// hold and the settlement are priced by one number.
+	amount := preAuthAfterPromoBase(taskBaseFeeCents(ctx, in.TaskID), in.EstimatedMinutes, in.ShoppingBudgetCents,
 		in.RateCents, in.PromoDiscountCents)
 
 	// The requester's key: the sandbox's test key for the review account.

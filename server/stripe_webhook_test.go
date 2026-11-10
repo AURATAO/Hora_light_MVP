@@ -58,6 +58,10 @@ const cardDisplayMigrationPath = "../supabase/migrations/20260915120000_payments
 // balance needs. Last, because it rewrites CHECKs the earlier ones created.
 const restructureMigrationPath = "../supabase/migrations/20260915130000_billing_restructure.sql"
 
+// pricingMigrationPath is the schedule as data (pricing.go): the
+// pricing_schedules table and the base fee / platform fee every task stores.
+const pricingMigrationPath = "../supabase/migrations/20261110120000_pricing_schedules.sql"
+
 // Phase 3: users.stripe_account_id + the status cache, public.payouts, and
 // payments.stripe_charge_id. Applied rather than restated, like every
 // migration in this fixture — a hand-copied CREATE TABLE keeps passing after
@@ -124,7 +128,7 @@ func setupStripeWebhookDB(t *testing.T) {
 
 	for _, path := range []string{paymentsMigrationPath, phase2aMigrationPath, phase2bMigrationPath, cardDisplayMigrationPath,
 		restructureMigrationPath, connectPayoutsMigrationPath, transfersActiveMigrationPath,
-		bankArrivalMigrationPath, promoCodesMigrationPath, platformFeeMigrationPath} {
+		bankArrivalMigrationPath, promoCodesMigrationPath, platformFeeMigrationPath, pricingMigrationPath} {
 		migration, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read migration %s: %v", path, err)
