@@ -261,3 +261,31 @@ func readProviderBody(r io.Reader, limit int64) ([]byte, error) {
 	}
 	return b, nil
 }
+
+var _ MediaFetcher = (*SendblueAdapter)(nil)
+
+// FetchMedia downloads an inbound attachment from Sendblue's media link
+// (https only). Errors never carry the link.
+func (a *SendblueAdapter) FetchMedia(ctx context.Context, mediaURL string, max int64) ([]byte, error) {
+	if !strings.HasPrefix(mediaURL, "https://") {
+		return nil, fmt.Errorf("sendblue media: not an https link: %w", ErrMediaUnavailable)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, mediaURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("sendblue media: %w", mediaErr(err))
+	}
+	resp, err := mediaClient(a.HTTP).Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("sendblue media: %w", mediaErr(err))
+	}
+	defer closeBody("sendblue media", resp.Body)
+	return readMedia(resp, max)
+}
+
+// mediaClient: a media download may take longer than an API call.
+func mediaClient(c *http.Client) *http.Client {
+	if c != nil {
+		return c
+	}
+	return &http.Client{Timeout: 30 * time.Second}
+}

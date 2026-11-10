@@ -44,6 +44,11 @@ type ThreadMessage struct {
 	// Relay: an outbound line that carried a supporter's words (the
 	// store's flag) — not HO:RA's own voice.
 	Relay bool `json:"relay"`
+	// ProviderID is the provider's message id (server side only); Photos,
+	// signed links to the photos an inbound message came with (Ops Chats
+	// only — never in a hand-off email).
+	ProviderID string   `json:"-"`
+	Photos     []string `json:"photos,omitempty"`
 }
 
 // HandoffNotice is what ops receive.

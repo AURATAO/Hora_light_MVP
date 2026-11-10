@@ -493,6 +493,7 @@ func registerChannelAdminRoutes(r *gin.Engine, sqlDB *sql.DB, store *channel.PGS
 		if msgs == nil {
 			msgs = []channel.ThreadMessage{}
 		}
+		attachThreadPhotos(c.Request.Context(), store, id.Channel, msgs)
 		c.JSON(http.StatusOK, gin.H{"identity_id": id.ID, "channel": id.Channel, "phone_hint": channel.PhoneHint(id.Address), "messages": msgs})
 	})
 	r.POST("/admin/channel/:identity/send", dualAuth(sqlDB), requireOpsAdmin(), func(c *gin.Context) {
@@ -612,6 +613,14 @@ func watchHandoffs(ctx context.Context, store *channel.PGStore, router *channel.
 					}
 				}()
 				sweepOptedOutForwards(ctx, store, router)
+			}()
+			func() {
+				defer func() {
+					if p := recover(); p != nil {
+						log.Printf("[channel-admin] photo sweep panic: %v", p)
+					}
+				}()
+				runPhotoSweep(ctx, "retention")
 			}()
 		}
 	}

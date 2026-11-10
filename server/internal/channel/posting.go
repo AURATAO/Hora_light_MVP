@@ -344,6 +344,9 @@ func (r *Router) RecoverStuckPosting(ctx context.Context, id Identity, async boo
 			}
 		}
 		if taskID != "" {
+			if lastTask == "" {
+				r.attachBookedPhotos(ctx, id, pending, taskID)
+			}
 			lastTask = taskID
 			continue
 		}

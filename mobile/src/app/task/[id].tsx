@@ -220,6 +220,7 @@ export default function TaskDetail() {
   const [itemOpen, setItemOpen] = useState(false);
   // The proof-of-work photo, full-screen.
   const [completionPhotoOpen, setCompletionPhotoOpen] = useState(false);
+  const [requestPhotoOpen, setRequestPhotoOpen] = useState<string | null>(null);
   // The mid-task asks, plus the two numbers that go with them (the currently
   // approved budget and the time ceiling). Null until the first fetch; the
   // sections that read it render nothing until then rather than guessing.
@@ -1321,6 +1322,38 @@ export default function TaskDetail() {
               <Text className="text-body text-muted">No description provided.</Text>
             )}
           </View>
+
+          {/* Photos the requester texted for this task (server
+              channel_photos.go): signed links, only on this screen's own
+              read check. */}
+          {task.request_photos && task.request_photos.length > 0 ? (
+            <View className="gap-2">
+              <Text className="text-caption font-semibold text-muted">
+                {task.request_photos.length === 1 ? "Photo from the requester" : "Photos from the requester"}
+              </Text>
+              {task.request_photos.map((p, i) => (
+                <PressableScale
+                  key={p.url}
+                  onPress={() => setRequestPhotoOpen(p.url)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`View photo ${i + 1} from the requester`}
+                >
+                  <Image
+                    source={{ uri: p.url }}
+                    className="h-[160px] w-full rounded-sm"
+                    resizeMode="cover"
+                    accessibilityIgnoresInvertColors
+                  />
+                </PressableScale>
+              ))}
+              <Text className="text-caption text-muted">Tap to view</Text>
+              <PhotoViewer
+                uri={requestPhotoOpen}
+                label="Photo from the requester"
+                onClose={() => setRequestPhotoOpen(null)}
+              />
+            </View>
+          ) : null}
 
           {/* Each address opens the platform maps app; the supporter additionally
               gets the whole multi-stop route in one tap (see below). */}

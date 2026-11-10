@@ -32,7 +32,10 @@ type PlaybookAsk struct {
 	Answer string `json:"answer"`
 	Note   string `json:"note"`
 	SkipIf string `json:"skip_if"`
-	skip   *regexp.Regexp
+	// Photo: a photo answers it (the return label or QR code): asked only
+	// when the draft has none, and dropped when one arrives.
+	Photo bool `json:"photo,omitempty"`
+	skip  *regexp.Regexp
 }
 
 // PlaybookEval is one eval case (agenttest -playbooks, go test).

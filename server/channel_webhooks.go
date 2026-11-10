@@ -111,6 +111,18 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		// while the supporter hears nothing.
 		log.Printf("[channel] WARNING: TALKJS_APP_ID/TALKJS_SECRET_KEY not set — chat relay off (both directions)")
 	}
+	// Photos people text us (channel_photos.go): only with the flag, the
+	// migration applied, and the bucket reachable with the service key.
+	if channelPhotosEnabled() {
+		if blobs := photoBlobsFromEnv(); blobs != nil {
+			router.Photos, router.Blobs = store, blobs
+			chatPhotoStore, chatPhotoSigner = store, blobs
+			photoSweep = func(ctx context.Context) (int, error) { return sweepPhotos(ctx, store, blobs) }
+			log.Printf("[channel] inbound photos ON (bucket %s)", channelPhotoBucket)
+		} else {
+			log.Printf("[channel] WARNING: CHANNEL_PHOTOS_ENABLED=1 but SUPABASE_PROJECT_URL/SUPABASE_SERVICE_ROLE_KEY not set — photos off")
+		}
+	}
 	// Task status updates to the chat (channel_status.go). Set here, before
 	// the server starts, and only when the flag is on.
 	notify.ChatHook = chatStatusHook(sqlDB, router)

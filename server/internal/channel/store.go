@@ -81,7 +81,7 @@ func (s *PGStore) RecordOutbound(ctx context.Context, out Outbound, providerMess
 // oldest first (ThreadReader, for ops handoffs).
 func (s *PGStore) RecentMessages(ctx context.Context, ch Channel, address string, limit int) ([]ThreadMessage, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT direction, COALESCE(body, ''), received_at, COALESCE(relay, false)
+		SELECT direction, COALESCE(body, ''), received_at, COALESCE(relay, false), provider_message_id
 		FROM channel_messages
 		WHERE channel = $1 AND address = $2
 		ORDER BY received_at DESC
@@ -93,7 +93,7 @@ func (s *PGStore) RecentMessages(ctx context.Context, ch Channel, address string
 	var out []ThreadMessage
 	for rows.Next() {
 		var m ThreadMessage
-		if err := rows.Scan(&m.Direction, &m.Text, &m.At, &m.Relay); err != nil {
+		if err := rows.Scan(&m.Direction, &m.Text, &m.At, &m.Relay, &m.ProviderID); err != nil {
 			if cerr := rows.Close(); cerr != nil {
 				log.Printf("[channel] recent messages: close rows: %v", cerr)
 			}

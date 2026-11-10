@@ -188,6 +188,12 @@ type Task struct {
 	CompletionNote     *string    `json:"completion_note,omitempty"`
 	CompletedAt        *time.Time `json:"completed_at,omitempty"`
 
+	// RequestPhotos: photos the requester texted for this task (a return
+	// label, the item, where to leave it — channel_photos.go). SIGNED,
+	// short-lived links, for the requester, the assignee and ops only: a
+	// supporter browsing the open board does not see them.
+	RequestPhotos []photoLink `json:"request_photos,omitempty"`
+
 	// When the assigned supporter tapped "On my way" — the pre-clock-in live
 	// sharing window (server/live_tracking.go). Selected only by getTask, so
 	// like AutoExtendConsent it is absent from list responses rather than null
@@ -2520,6 +2526,11 @@ func getTask(c *gin.Context) {
 				t.CancelReason = freeText
 			}
 		}
+	}
+
+	// Texted photos: the requester's own, the supporter's on the job, ops'.
+	if uid == t.RequesterID || isAssignee || isAdmin {
+		t.RequestPhotos = requestPhotosForTask(ctx, id)
 	}
 
 	// The completion artefacts, for everybody who reached this line on a

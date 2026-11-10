@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -71,6 +72,12 @@ func (a *WhatsAppAdapter) VerifySubscribe(mode, token, challenge string) (string
 	return challenge, true
 }
 
+// waMedia is an attachment on an inbound message.
+type waMedia struct {
+	ID      string `json:"id"`
+	Caption string `json:"caption"`
+}
+
 type waPayload struct {
 	Entry []struct {
 		Changes []struct {
@@ -98,6 +105,13 @@ type waPayload struct {
 					Context *struct {
 						ID string `json:"id"`
 					} `json:"context"`
+					// Attachments: the media id (downloaded by FetchMedia) and
+					// the caption, which is the words.
+					Image    *waMedia `json:"image"`
+					Document *waMedia `json:"document"`
+					Video    *waMedia `json:"video"`
+					Audio    *waMedia `json:"audio"`
+					Sticker  *waMedia `json:"sticker"`
 				} `json:"messages"`
 			} `json:"value"`
 		} `json:"changes"`
@@ -135,8 +149,20 @@ func (a *WhatsAppAdapter) ParseInbound(body []byte) ([]Inbound, error) {
 				case m.Interactive != nil && m.Interactive.ButtonReply != nil:
 					text = m.Interactive.ButtonReply.Title
 				default:
-					// media, location, stickers: not handled in v1; the
-					// router answers with a "text only" hint.
+					// A location, a contact card: not handled; the router
+					// answers with a "text only" hint. Attachments below.
+				}
+				var media []string
+				for _, att := range []*waMedia{m.Image, m.Document, m.Video, m.Audio, m.Sticker} {
+					if att == nil || att.ID == "" {
+						continue
+					}
+					// Every kind is passed on: the router keeps images and
+					// politely refuses the rest (photos.go).
+					media = append(media, att.ID)
+					if text == "" {
+						text = att.Caption
+					}
 				}
 				if m.ID == "" {
 					log.Printf("[channel] whatsapp parse: dropping a message with no id")
@@ -161,6 +187,7 @@ func (a *WhatsAppAdapter) ParseInbound(body []byte) ([]Inbound, error) {
 				if m.Context != nil {
 					in.ReplyToProviderID = m.Context.ID
 				}
+				in.MediaURLs = media
 				out = append(out, in)
 			}
 		}
@@ -285,4 +312,63 @@ func looksLikeImageURL(u string) bool {
 		}
 	}
 	return false
+}
+
+var _ MediaFetcher = (*WhatsAppAdapter)(nil)
+
+// FetchMedia downloads an inbound attachment by its media id: the Graph API
+// gives a short-lived URL (and the size), which is fetched with the same
+// token. Errors never carry the URL.
+func (a *WhatsAppAdapter) FetchMedia(ctx context.Context, mediaID string, max int64) ([]byte, error) {
+	if a.AccessToken == "" {
+		return nil, fmt.Errorf("whatsapp media: %w", ErrNotConfigured)
+	}
+	base, ver := a.BaseURL, a.GraphVersion
+	if base == "" {
+		base = "https://graph.facebook.com"
+	}
+	if ver == "" {
+		ver = "v21.0"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/%s/%s", strings.TrimRight(base, "/"), ver, url.PathEscape(mediaID)), nil)
+	if err != nil {
+		return nil, fmt.Errorf("whatsapp media request: %w", mediaErr(err))
+	}
+	req.Header.Set("Authorization", "Bearer "+a.AccessToken)
+	resp, err := httpClient(a.HTTP).Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("whatsapp media lookup: %w", mediaErr(err))
+	}
+	defer closeBody("whatsapp media lookup", resp.Body)
+	body, err := readProviderBody(resp.Body, 64<<10)
+	if err != nil {
+		return nil, fmt.Errorf("whatsapp media lookup: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("whatsapp media lookup: status %d: %w", resp.StatusCode, ErrMediaUnavailable)
+	}
+	var meta struct {
+		URL      string `json:"url"`
+		FileSize int64  `json:"file_size"`
+	}
+	if err := json.Unmarshal(body, &meta); err != nil || meta.URL == "" {
+		return nil, fmt.Errorf("whatsapp media lookup: no url: %w", ErrMediaUnavailable)
+	}
+	if meta.FileSize > max {
+		return nil, ErrMediaTooLarge
+	}
+	if !strings.HasPrefix(meta.URL, "https://") {
+		return nil, fmt.Errorf("whatsapp media: not an https link: %w", ErrMediaUnavailable)
+	}
+	dreq, err := http.NewRequestWithContext(ctx, http.MethodGet, meta.URL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("whatsapp media download: %w", mediaErr(err))
+	}
+	dreq.Header.Set("Authorization", "Bearer "+a.AccessToken)
+	dresp, err := mediaClient(a.HTTP).Do(dreq)
+	if err != nil {
+		return nil, fmt.Errorf("whatsapp media download: %w", mediaErr(err))
+	}
+	defer closeBody("whatsapp media download", dresp.Body)
+	return readMedia(dresp, max)
 }

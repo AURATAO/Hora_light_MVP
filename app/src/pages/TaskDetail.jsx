@@ -446,6 +446,7 @@ export default function TaskDetail() {
   const [photoPreviews, setPhotoPreviews] = useState({})
   // The proof-of-work photo on a completed task, full-screen.
   const [completionPhotoOpen, setCompletionPhotoOpen] = useState(false)
+  const [requestPhotoOpen, setRequestPhotoOpen] = useState(null)
   const [completionNote, setCompletionNote] = useState('')
   const [photoUploading, setPhotoUploading] = useState(false)
   const completionPhotoInputRef = useRef(null)
@@ -1634,6 +1635,34 @@ export default function TaskDetail() {
                   {task.description || <span className="text-white/40 italic">No notes provided.</span>}
                 </p>
               </div>
+              {/* Photos the requester texted for this task (server
+                  channel_photos.go): signed links, sent only to the
+                  requester, the supporter on the task and ops. */}
+              {Array.isArray(task.request_photos) && task.request_photos.length > 0 && (
+                <div className="space-y-2 border-t border-white/10 pt-2">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-white/50">
+                    {task.request_photos.length === 1 ? 'Photo from the requester' : 'Photos from the requester'}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {task.request_photos.map((p, i) => (
+                      <button
+                        key={p.url}
+                        type="button"
+                        onClick={() => setRequestPhotoOpen(p.url)}
+                        aria-label={`View photo ${i + 1} from the requester`}
+                        className="block w-full"
+                      >
+                        <img src={p.url} alt={`Photo ${i + 1} from the requester`} className="w-full h-32 rounded-lg object-cover" />
+                      </button>
+                    ))}
+                  </div>
+                  <PhotoLightbox
+                    src={requestPhotoOpen || ''}
+                    alt="Photo from the requester"
+                    onClose={() => setRequestPhotoOpen(null)}
+                  />
+                </div>
+              )}
             </InfoShell>
             <DebugMe />
 

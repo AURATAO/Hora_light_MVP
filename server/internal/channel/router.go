@@ -301,6 +301,11 @@ type Router struct {
 	// A YES — or the setup page finishing — after it re-quotes instead of
 	// booking. Zero = DefaultSummaryTTL (CHANNEL_SUMMARY_TTL overrides).
 	SummaryTTL time.Duration
+	// Photos and Blobs keep the photos people text us (photos.go): the rows
+	// and the private bucket. Either nil = photos are not taken (the old
+	// "I can only read text" reply).
+	Photos PhotoStore
+	Blobs  PhotoBlobs
 }
 
 // dispatch runs a reply: inline when routing a webhook message (already off
@@ -375,8 +380,38 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 		return fmt.Errorf("HandleInbound: %w", err)
 	}
 	text := strings.TrimSpace(in.Text)
-	if text == "" {
+	// Photos are downloaded and stored first, whatever happens next:
+	// provider links expire (photos.go).
+	hasPhotos := false
+	if len(in.MediaURLs) > 0 && r.photosOn() {
+		res := r.ingestPhotos(ctx, in, id)
+		if len(res.saved) == 0 {
+			if text == "" {
+				return r.Reply(ctx, in, res.problemCopy(), "")
+			}
+			// The problem, then the words as usual.
+			if err := r.Reply(ctx, in, res.problemCopy(), ""); err != nil {
+				return err
+			}
+		} else {
+			ctx = withPhotos(ctx, res.saved)
+			hasPhotos = true
+		}
+	}
+	if text == "" && !hasPhotos {
 		return r.Reply(ctx, in, CopyTextOnly, "")
+	}
+	if text == "" {
+		// A photo alone. Ops on the thread see it in Ops Chats; a booking
+		// in flight takes it on the next draft; otherwise it is placed.
+		switch conv.State {
+		case StateHandoff:
+			return r.onHandoff(ctx, in, id)
+		case StatePosting:
+			return r.Reply(ctx, in, CopyBookingInFlight, "")
+		}
+		_, _, err := r.routePhotos(ctx, in, id, conv, "")
+		return err
 	}
 
 	if r.handoffStale(conv) {
@@ -455,6 +490,14 @@ func (r *Router) routeMessage(ctx context.Context, in Inbound, id Identity, conv
 	// the small model for words they leave.
 	if handled, err := r.scopeGate(ctx, in, id, conv, text); handled {
 		return err
+	}
+	// Photos with the words (photos.go): onto the open draft, into the
+	// task chat with the words, or kept for the next draft. Only after the
+	// scope check: the words that come with a photo are checked as any.
+	if handled, c, err := r.routePhotos(ctx, in, id, conv, text); handled {
+		return err
+	} else {
+		conv = c
 	}
 	// Inline replies (relay.go, routeReply): the bubble decides. A "yes"
 	// swiped on a supporter's words never books; a YES on our prompt does.
@@ -935,6 +978,7 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		// A correction re-drafts; the opt-out they already gave stands.
 		p.NoAutoExtend = conv.Pending.NoAutoExtend
 		p.Notes = conv.Pending.Notes
+		p.Photos = conv.Pending.Photos
 		p.WhileActive, p.WhileActiveShown = conv.Pending.WhileActive, conv.Pending.WhileActiveShown
 	}
 	for _, n := range o.notes {
@@ -945,6 +989,9 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 			p.Notes = append(p.Notes, n)
 		}
 	}
+	// A photo sent just before, with nothing open, is this errand's
+	// (photos.go).
+	r.claimDraftPhotos(ctx, id, p)
 	if pb != nil {
 		p.Playbook = pb.ID
 	}
@@ -1014,7 +1061,7 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		// (playbooks.json asks): only the ones the words have not answered,
 		// and the home-entry access question when a supporter goes inside.
 		words := source + "\n" + strings.Join(p.Notes, "\n")
-		if asks := r.Playbooks.DraftAsks(pb, words); len(asks) > 0 {
+		if asks := withoutPhotoAsks(r.Playbooks.DraftAsks(pb, words), len(p.Photos) > 0); len(asks) > 0 {
 			p.PlaybookAsked = true
 			for _, a := range asks {
 				p.PlaybookAsk = append(p.PlaybookAsk, a.Key)
@@ -1512,10 +1559,16 @@ func (r *Router) claimAndPost(ctx context.Context, ch Channel, id Identity, from
 	// those — never the ones already booked.
 	items := pending.Items()
 	booked := 0
+	photosPut := false
 	for i, it := range items {
 		res = r.Booker.Post(ctx, id.UserID, it.Draft, PostOptions{BudgetCents: it.BudgetCents, AutoExtend: !pending.NoAutoExtend,
 			QuotedCents: it.QuoteCents, BookingKey: it.BookingKey, Notes: pending.Notes})
 		log.Printf("[channel] post identity=%s item=%d/%d outcome=%d task=%s", id.ID, i+1, len(items), res.Outcome, res.TaskID)
+		if (res.Outcome == PostBooked || res.Outcome == PostNeeds3DS) && res.TaskID != "" && !photosPut {
+			// The photos go on the first errand that made a task.
+			r.attachBookedPhotos(ctx, id, pending, res.TaskID)
+			photosPut = true
+		}
 		switch res.Outcome {
 		case PostBooked:
 			booked++

@@ -123,29 +123,48 @@ func (t *talkjsRelay) PostAsRequester(ctx context.Context, taskID, userID, text,
 }
 
 func (t *talkjsRelay) postAsRequester(ctx context.Context, taskID, userID, text, key string) error {
-	pair, err := relayPair(ctx, t.sqlDB, taskID)
-	if err == sql.ErrNoRows {
-		return fmt.Errorf("post as requester: task %s: %w", taskID, channel.ErrTaskNotActive)
-	}
+	pair, err := t.openRelay(ctx, taskID, userID)
 	if err != nil {
 		return fmt.Errorf("post as requester: %w", err)
+	}
+	msg := map[string]any{
+		"text":   text,
+		"sender": pair.requesterEmail,
+		"type":   "UserMessage",
+	}
+	if err := t.sendAsRequester(ctx, taskID, msg, key); err != nil {
+		return fmt.Errorf("post as requester: %w", err)
+	}
+	return nil
+}
+
+// openRelay checks that userID may post into taskID's chat (the task is
+// theirs, open, with a supporter, and the pair not blocked) and makes sure
+// both sides and the conversation exist in TalkJS.
+func (t *talkjsRelay) openRelay(ctx context.Context, taskID, userID string) (relayPairRow, error) {
+	pair, err := relayPair(ctx, t.sqlDB, taskID)
+	if err == sql.ErrNoRows {
+		return pair, fmt.Errorf("task %s: %w", taskID, channel.ErrTaskNotActive)
+	}
+	if err != nil {
+		return pair, err
 	}
 	// The task must be the caller's and still open with a supporter: the id
 	// came from ActiveTasks or from a channel_messages row, but the sender
 	// is re-checked here, not trusted.
 	if pair.requesterID == "" || pair.requesterID != userID {
-		return fmt.Errorf("post as requester: task %s is not the sender's: %w", taskID, channel.ErrTaskNotActive)
+		return pair, fmt.Errorf("task %s is not the sender's: %w", taskID, channel.ErrTaskNotActive)
 	}
 	if pair.status != "open" || pair.supporterID == "" || pair.supporterEmail == "" || pair.requesterEmail == "" {
-		return fmt.Errorf("post as requester: task %s has no open chat pair: %w", taskID, channel.ErrTaskNotActive)
+		return pair, fmt.Errorf("task %s has no open chat pair: %w", taskID, channel.ErrTaskNotActive)
 	}
 	if blocked, err := pairBlocked(ctx, t.sqlDB, pair.requesterID, pair.supporterID); err != nil {
-		return fmt.Errorf("post as requester: block check: %w", err)
+		return pair, fmt.Errorf("block check: %w", err)
 	} else if blocked {
-		return fmt.Errorf("post as requester: pair blocked: %w", channel.ErrTaskNotActive)
+		return pair, fmt.Errorf("pair blocked: %w", channel.ErrTaskNotActive)
 	}
 	if _, _, ok := talkjsConfigured(); !ok {
-		return fmt.Errorf("post as requester: talkjs not configured")
+		return pair, fmt.Errorf("talkjs not configured")
 	}
 
 	// Neither side may exist in TalkJS yet: a requester who books by text
@@ -153,10 +172,10 @@ func (t *talkjsRelay) postAsRequester(ctx context.Context, taskID, userID, text,
 	// task's chat. PUT /users is create-or-update (fields not sent are
 	// left as they are).
 	if err := talkjsUpsertUser(ctx, pair.requesterEmail, pair.requesterName); err != nil {
-		return fmt.Errorf("post as requester: %w", err)
+		return pair, err
 	}
 	if err := talkjsUpsertUser(ctx, pair.supporterEmail, pair.supporterName); err != nil {
-		return fmt.Errorf("post as requester: %w", err)
+		return pair, err
 	}
 	convPath := "/conversations/" + url.PathEscape(talkjsConversationID(taskID))
 	// PUT is create-or-update; participants given here are added with
@@ -167,30 +186,31 @@ func (t *talkjsRelay) postAsRequester(ctx context.Context, taskID, userID, text,
 		"custom":       map[string]string{"taskId": taskID},
 	})
 	if err != nil {
-		return fmt.Errorf("post as requester: ensure conversation: %w", scrubURLErr(err))
+		return pair, fmt.Errorf("ensure conversation: %w", scrubURLErr(err))
 	}
 	if status != http.StatusOK {
 		// Status only: TalkJS error bodies echo user ids, which are emails
 		// here (S-12).
-		return fmt.Errorf("post as requester: talkjs PUT conversation returned %d", status)
+		return pair, fmt.Errorf("talkjs PUT conversation returned %d", status)
 	}
-	msg := map[string]any{
-		"text":   text,
-		"sender": pair.requesterEmail,
-		"type":   "UserMessage",
-	}
+	return pair, nil
+}
+
+// sendAsRequester posts one message (already shaped) into the task's chat.
+func (t *talkjsRelay) sendAsRequester(ctx context.Context, taskID string, msg map[string]any, key string) error {
+	convPath := "/conversations/" + url.PathEscape(talkjsConversationID(taskID))
 	if key != "" {
 		// At most once across webhook retries and the recovery sweep. Hashed:
 		// provider ids (a WhatsApp wamid) are long and of no fixed shape.
 		sum := sha256.Sum256([]byte(key))
 		msg["idempotencyKey"] = hex.EncodeToString(sum[:16])
 	}
-	status, _, err = talkjsRequest(ctx, http.MethodPost, convPath+"/messages", []map[string]any{msg})
+	status, _, err := talkjsRequest(ctx, http.MethodPost, convPath+"/messages", []map[string]any{msg})
 	if err != nil {
-		return fmt.Errorf("post as requester: send: %w", scrubURLErr(err))
+		return fmt.Errorf("send: %w", scrubURLErr(err))
 	}
 	if status != http.StatusOK {
-		return fmt.Errorf("post as requester: talkjs POST message returned %d", status)
+		return fmt.Errorf("talkjs POST message returned %d", status)
 	}
 	return nil
 }

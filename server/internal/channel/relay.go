@@ -351,7 +351,7 @@ func (r *Router) onAwaitingTaskChoice(ctx context.Context, in Inbound, id Identi
 			return r.Reply(ctx, in, CopyWhichTaskBadPick, "")
 		}
 		taskID := choices[n-1]
-		if err := r.Chat.PostAsRequester(ctx, taskID, id.UserID, capText(held), in.ProviderMessageID); err != nil {
+		if err := r.deliverHold(ctx, in, id, taskID, held); err != nil {
 			log.Printf("[channel] relay identity=%s task=%s: %v", id.ID, taskID, err)
 			if errors.Is(err, ErrTaskNotActive) {
 				return r.clearHold(ctx, in, conv, CopyRelayGone)
@@ -376,7 +376,7 @@ func (r *Router) onAwaitingTaskChoice(ctx context.Context, in Inbound, id Identi
 	if t, ok := supporterNamed(active0, text); ok && contains(choices, t.ID) {
 		// Named the supporter: deliver the hold with these words to them.
 		joined := capText(strings.TrimSpace(held + "\n" + text))
-		if err := r.Chat.PostAsRequester(ctx, t.ID, id.UserID, joined, in.ProviderMessageID); err != nil {
+		if err := r.deliverHold(ctx, in, id, t.ID, joined); err != nil {
 			log.Printf("[channel] relay identity=%s task=%s: %v", id.ID, t.ID, err)
 			if errors.Is(err, ErrTaskNotActive) {
 				return r.clearHold(ctx, in, conv, CopyRelayGone)
@@ -430,7 +430,7 @@ func (r *Router) onAwaitingTaskChoice(ctx context.Context, in Inbound, id Identi
 	case 1:
 		taskID := active[0].ID
 		// Deliver first; the hold is cleared only once the supporter has it.
-		if err := r.Chat.PostAsRequester(ctx, taskID, id.UserID, joined, in.ProviderMessageID); err != nil {
+		if err := r.deliverHold(ctx, in, id, taskID, joined); err != nil {
 			log.Printf("[channel] relay identity=%s task=%s: %v", id.ID, taskID, err)
 			if errors.Is(err, ErrTaskNotActive) {
 				return r.clearHold(ctx, in, conv, CopyRelayGone)

@@ -122,6 +122,10 @@ type PendingDraft struct {
 	// an instruction (notes.go). Shown in the summary, kept across a
 	// re-draft, and sent with the booking in the task description.
 	Notes []string `json:"notes,omitempty"`
+	// Photos: the channel_photos ids of photos the person sent for this
+	// booking (photos.go). "Photo attached" in the summary; put on the task
+	// at booking, where the supporter sees them.
+	Photos []string `json:"photos,omitempty"`
 }
 
 // DraftItem is one errand with its estimate.

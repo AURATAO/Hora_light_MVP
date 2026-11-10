@@ -37,10 +37,10 @@ import (
 // reassignment that is already committed in Postgres; the cost of a failure is
 // a stale participant, which is recoverable by hand, not a broken swap.
 
-const (
-	talkjsAPIBase  = "https://api.talkjs.com/v1"
-	talkjsHTTPTime = 8 * time.Second
-)
+// talkjsAPIBase is a var only so tests can point it at a fake.
+var talkjsAPIBase = "https://api.talkjs.com/v1"
+
+const talkjsHTTPTime = 8 * time.Second
 
 // talkjsConversationID mirrors the id both clients build. Keep in step.
 func talkjsConversationID(taskID string) string {

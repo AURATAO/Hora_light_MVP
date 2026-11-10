@@ -1237,6 +1237,7 @@
      "key": "label",
      "question": "Do you have the return label or QR code? Send a photo of it here.",
      "answer": "redraft",
+     "photo": true,
      "skip_if": "(?i)\\blabel|\\bqr\\b|barcode|code attached|photo"
     },
     {

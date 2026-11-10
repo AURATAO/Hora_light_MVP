@@ -58,10 +58,18 @@ const (
 	CopyConfirmReask         = "Reply YES to book, NO to drop it, or tell me what to change."
 	CopyExtraTimeAck         = "Got it: up to %d extra minutes are OK, and nothing else changes. Reply YES to book, NO to drop it, or tell me what to change."
 	CopyNoteForSupporter     = "Note for your supporter: %s"
-	CopyReceipt              = "Receipt: %s."
-	CopyReceiptNoPhoto       = "Receipt: %s. (The photo couldn't be sent here.)"
-	CopyReceiptPhotoOnly     = "The receipt:"
-	CopyReceiptPhotoNotSent  = "The receipt photo couldn't be sent here."
+	// Photos (photos.go). Fixed copy.
+	CopyPhotoAttached       = "Got the photo — your supporter will see it."
+	CopyPhotoWhatFor        = "Got your photo. What's it for? Tell me the errand and I'll attach it for your supporter."
+	CopyPhotoNotImage       = "I can only take photos here (JPEG, PNG or HEIC), not other files. Could you send it as a photo or a screenshot?"
+	CopyPhotoTooLarge       = "That photo is too large for me (10 MB max). Could you send a smaller one or a screenshot?"
+	CopyPhotoFailed         = "I couldn't open that photo. Could you send it again?"
+	CopyPhotoLine           = "Photo attached"
+	CopyPhotosLine          = "%d photos attached"
+	CopyReceipt             = "Receipt: %s."
+	CopyReceiptNoPhoto      = "Receipt: %s. (The photo couldn't be sent here.)"
+	CopyReceiptPhotoOnly    = "The receipt:"
+	CopyReceiptPhotoNotSent = "The receipt photo couldn't be sent here."
 	// I-P version B: a casual affirmative went to the supporter.
 	CopyPassedOn = "(Passed “%s” to %s.)"
 	// After an approval with one of the closed message shapes (I-AE): the
@@ -219,6 +227,12 @@ func (r *Router) Summary(p *PendingDraft) string {
 	}
 	for _, n := range p.Notes {
 		b.WriteString("\n" + fmt.Sprintf(CopyNoteForSupporter, n))
+	}
+	switch n := len(p.Photos); {
+	case n == 1:
+		b.WriteString("\n" + CopyPhotoLine)
+	case n > 1:
+		fmt.Fprintf(&b, "\n"+CopyPhotosLine, n)
 	}
 	// The over-run consent, stated where the YES can see it (the app's
 	// checkbox). One line either way, so the person always knows which.

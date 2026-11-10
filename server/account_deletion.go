@@ -211,6 +211,12 @@ func deleteMyAccount(c *gin.Context) {
 		return
 	}
 
+	// Their texted photos: deleted from the bucket now; whatever the bucket
+	// refuses, the sweeper retries (the rows stay marked until it is gone).
+	if counts.chatPhotos > 0 {
+		runPhotoSweep(ctx, "account deletion")
+	}
+
 	// External systems, after the commit. Best-effort and recorded.
 	stripeDeleted := false
 	if stripeCustomerID.Valid && stripeCustomerID.String != "" && paymentsEnabled() {
@@ -240,6 +246,7 @@ func deleteMyAccount(c *gin.Context) {
 		"supabase_user_deleted":     supabaseDeleted,
 		"gps_pings_deleted":         counts.gpsPings,
 		"channel_numbers_deleted":   counts.channelNumbers,
+		"chat_photos_deleted":       counts.chatPhotos,
 		"push_tokens_deleted":       counts.pushTokens,
 		"notifications_deleted":     counts.notifications,
 		"tasks_anonymised":          counts.tasks,
@@ -267,6 +274,8 @@ type anonymiseCounts struct {
 	channelNumbers int64
 	// Conversations whose Phoenix traces were queued for deletion (D-22).
 	traceSessions int64
+	// Photos texted from their numbers, marked for deletion.
+	chatPhotos int64
 }
 
 // anonymiseAccount is the database half, in one transaction.
@@ -345,6 +354,12 @@ func anonymiseAccount(ctx context.Context, uid, email, placeholder string) (anon
 		if n.traceSessions, err = channel.QueueTraceDeletionsTx(ctx, tx, uid); err != nil {
 			return n, err
 		}
+	}
+	// Photos they texted (channel_photos.go): marked for deletion while the
+	// identities that name them still exist; the objects and rows go right
+	// after the commit, and the sweeper retries any the bucket refused.
+	if n.chatPhotos, err = channel.RequestPhotoDeletionTx(ctx, tx, uid); err != nil {
+		return n, err
 	}
 	// Chat booking (D-16 R-3): linked numbers and everything said over them.
 	if n.channelNumbers, err = channel.PurgeUserTx(ctx, tx, uid); err != nil {

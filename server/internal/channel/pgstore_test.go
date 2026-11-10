@@ -41,7 +41,7 @@ func testDB(t *testing.T) *sql.DB {
 		t.Fatal(err)
 	}
 	reset := `
-		DROP TABLE IF EXISTS channel_discovery, channel_setup_tokens, channel_conversations, channel_messages, channel_identities CASCADE;
+		DROP TABLE IF EXISTS channel_photos, channel_discovery, channel_setup_tokens, channel_conversations, channel_messages, channel_identities CASCADE;
 		DROP TABLE IF EXISTS extension_requests, tasks, users CASCADE;
 		DO $$ BEGIN
 		  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='anon') THEN CREATE ROLE anon; END IF;
@@ -63,7 +63,7 @@ func testDB(t *testing.T) *sql.DB {
 	if _, err := db.Exec(string(mig2)); err != nil {
 		t.Fatalf("migration e164: %v", err)
 	}
-	for _, f := range []string{"20261022120000_channel_approval_columns.sql", "20261022130000_channel_approval_question_pid.sql", "20261024120000_channel_cancel_by_chat.sql", "20261024210000_channel_handoff_timeout.sql", "20261103150000_channel_identity_opt_out.sql", "20261104120100_channel_posting_started_at.sql", "20261104150000_channel_opted_out_forward.sql", "20261104170000_channel_discovery.sql", "20261106130000_channel_web_search_quota.sql"} {
+	for _, f := range []string{"20261022120000_channel_approval_columns.sql", "20261022130000_channel_approval_question_pid.sql", "20261024120000_channel_cancel_by_chat.sql", "20261024210000_channel_handoff_timeout.sql", "20261103150000_channel_identity_opt_out.sql", "20261104120100_channel_posting_started_at.sql", "20261104150000_channel_opted_out_forward.sql", "20261104170000_channel_discovery.sql", "20261106130000_channel_web_search_quota.sql", "20261110150000_channel_photos.sql"} {
 		mig, err := os.ReadFile(filepath.Join("..", "..", "..", "supabase", "migrations", f))
 		if err != nil {
 			t.Fatal(err)
@@ -593,7 +593,7 @@ func TestPGPurgeUserRemovesOnlyThatPersonsChatData(t *testing.T) {
 // tables (production before go-live).
 func TestPGPurgeUserWithoutChannelTablesIsANoop(t *testing.T) {
 	db := testDB(t)
-	if _, err := db.Exec(`DROP TABLE channel_discovery, channel_setup_tokens, channel_conversations, channel_messages, channel_identities`); err != nil {
+	if _, err := db.Exec(`DROP TABLE channel_photos, channel_discovery, channel_setup_tokens, channel_conversations, channel_messages, channel_identities`); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := db.BeginTx(context.Background(), nil)

@@ -308,7 +308,18 @@ export default function OpsChats() {
                           inbound ? 'bg-white/10' : m.relay ? 'bg-emerald-500/20' : 'bg-white/20'
                         }`}
                       >
-                        <div>{m.text}</div>
+                        {Array.isArray(m.photos) && m.photos.length > 0 && (
+                          // Photos the person texted: signed links (an hour),
+                          // from the ops-only thread route.
+                          <div className="mb-1 flex flex-wrap gap-1">
+                            {m.photos.map((u, j) => (
+                              <a key={j} href={u} target="_blank" rel="noopener noreferrer">
+                                <img src={u} alt={`Photo ${j + 1} from them`} className="h-32 max-w-full rounded object-cover" />
+                              </a>
+                            ))}
+                          </div>
+                        )}
+                        {m.text && <div>{m.text}</div>}
                         <div className="mt-1 text-[10px] opacity-60">
                           {inbound ? 'them' : m.relay ? "supporter's words, relayed" : 'HO:RA'} · {formatWhen(m.at)}
                         </div>

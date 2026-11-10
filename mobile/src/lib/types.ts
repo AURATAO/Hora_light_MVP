@@ -215,6 +215,10 @@ export interface Task {
   travel_time_minutes: number | null;
   total_estimate_minutes: number | null;
   completion_photo_url: string | null;
+  /** Photos the requester texted for this task (a return label, the item,
+   *  where to leave it). Signed links valid for an hour; sent only to the
+   *  requester, the supporter on the task and ops. */
+  request_photos?: { url: string; content_type: string }[];
   completion_note: string | null;
   completed_at: string | null;
   /** FREE TEXT, written by whoever cancelled — the requester, or an ops
