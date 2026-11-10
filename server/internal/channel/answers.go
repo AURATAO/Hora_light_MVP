@@ -997,15 +997,16 @@ func applyPlaybookNotes(d *llm.TaskDraft, pb *llm.Playbook) {
 
 // playbookLines: the summary's fixed lines for the draft's type.
 func (r *Router) playbookLines(p *PendingDraft) string {
-	if r.Playbooks == nil || p == nil || p.Playbook == "" {
-		return ""
-	}
-	pb := r.Playbooks.ByID(p.Playbook)
-	if pb == nil {
+	if r.Playbooks == nil || p == nil {
 		return ""
 	}
 	var b strings.Builder
-	for _, l := range pb.SummaryLines {
+	if pb := r.Playbooks.ByID(p.Playbook); pb != nil {
+		for _, l := range pb.SummaryLines {
+			b.WriteString("\n" + l)
+		}
+	}
+	if l := r.homeEntryLine(p); l != "" {
 		b.WriteString("\n" + l)
 	}
 	return b.String()
@@ -1046,7 +1047,7 @@ func (r *Router) answerPlaybookAsk(ctx context.Context, in Inbound, id Identity,
 	case IsCancelRequest(text) || IsWithdrawal(text):
 		// "cancel the draft": dropped by rule, never read as the answer.
 		return r.dropDraftWith(ctx, in, conv, CopyDroppedCancelHint)
-	case skipRE.MatchString(text) || pb == nil:
+	case skipRE.MatchString(text) || len(r.Playbooks.AsksOf(pb)) == 0:
 		return r.afterAsks(ctx, in, id, conv)
 	case IsBookingYes(text) || IsAffirmation(text):
 		// Nothing to say yes to yet: the questions again (state unchanged).
@@ -1069,14 +1070,24 @@ func (r *Router) answerPlaybookAsk(ctx context.Context, in Inbound, id Identity,
 		p.PlaybookAsk = asked
 		return r.answerAskedBack(ctx, in, id, conv, text, askText)
 	}
-	noteOnly, prefix := true, ""
-	for _, a := range pb.Asks {
+	noteOnly := true
+	var prefixes []string
+	for _, a := range r.Playbooks.AsksOf(pb) {
 		for _, k := range asked {
 			if a.Key == k {
 				noteOnly = noteOnly && a.Answer == "note"
-				prefix = firstNonEmpty(prefix, a.Note)
+				if a.Note != "" {
+					prefixes = append(prefixes, strings.TrimSuffix(strings.TrimSpace(a.Note), ":"))
+				}
 			}
 		}
+	}
+	// One answer to several note questions ("who's home?" and "anything to
+	// avoid?") carries all their labels, so the supporter knows what it
+	// answers.
+	prefix := ""
+	if len(prefixes) > 0 {
+		prefix = strings.Join(prefixes, " / ") + ": "
 	}
 	if noteOnly && !noteCarriesChange(text) {
 		note := prefix + strings.TrimSpace(text)
@@ -1097,12 +1108,8 @@ func (r *Router) pendingAsks(p *PendingDraft) []llm.PlaybookAsk {
 	if r.Playbooks == nil || p == nil || len(p.PlaybookAsk) == 0 {
 		return nil
 	}
-	pb := r.Playbooks.ByID(p.Playbook)
-	if pb == nil {
-		return nil
-	}
 	var asks []llm.PlaybookAsk
-	for _, a := range pb.Asks {
+	for _, a := range r.Playbooks.AsksOf(r.Playbooks.ByID(p.Playbook)) {
 		for _, k := range p.PlaybookAsk {
 			if a.Key == k {
 				asks = append(asks, a)

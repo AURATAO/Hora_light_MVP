@@ -114,6 +114,8 @@ func (o opsEmailNotifier) NotifyOps(ctx context.Context, n channel.HandoffNotice
 		subject = fmt.Sprintf("[HO:RA] Chat handoff — new message — %s %s", n.Channel, n.PhoneHint)
 	} else if n.Reason == channel.HandoffBookingFailed {
 		subject = fmt.Sprintf("[HO:RA] Text booking failed — %s %s", n.Channel, n.PhoneHint)
+	} else if n.Reason == channel.HandoffScopeAlert {
+		subject = fmt.Sprintf("[HO:RA] URGENT (%s) — declined, chat still with the bot — %s %s%s", n.UrgentReason, n.Channel, n.PhoneHint, optOutTasksShort(n))
 	}
 	body := opsNoticeHTML(n, who)
 	// Sent here, not in the background: the router must know whether anyone
@@ -157,6 +159,9 @@ func (o opsEmailNotifier) NotifyOps(ctx context.Context, n channel.HandoffNotice
 		}
 		if n.Reason == channel.HandoffBookingFailed {
 			text = fmt.Sprintf("[HO:RA] Text booking failed — %s %s. The bot still has the chat. Details in the ops email.", n.Channel, n.PhoneHint)
+		}
+		if n.Reason == channel.HandoffScopeAlert {
+			text = fmt.Sprintf("[HO:RA] URGENT (%s) — %s %s was declined, nothing drafted%s. Check on any supporter with them. Details in the ops email.", n.UrgentReason, n.Channel, n.PhoneHint, optOutTasksShort(n))
 		}
 		own, err := o.addressOf(ctx, n.IdentityID)
 		if err != nil {
@@ -237,6 +242,12 @@ func opsNoticeHTML(n channel.HandoffNotice, who string) string {
 	if n.AutoReleased {
 		heading = fmt.Sprintf("No one replied within %s — the chat went back to the bot and the person was told. Follow up by email if it was a payment or a problem.", channel.HandoffTimeout)
 	}
+	if n.Reason == channel.HandoffScopeAlert {
+		// Not a hand-off: the person got only the decline; the chat is
+		// still with the bot. Supporter safety comes first.
+		heading = fmt.Sprintf("URGENT (%s): HO:RA declined this request and drafted nothing (%s). The chat is still with the bot. "+
+			"If a supporter is on a task with this person, check on the supporter now; review the account.", n.UrgentReason, n.Detail)
+	}
 	if n.Reason == channel.HandoffBookingFailed {
 		// Not a hand-off: nothing to reply to or release unless ops choose to.
 		heading = "A text booking failed: " + n.BookingProblem + ". The chat is still with the bot. " +
@@ -261,7 +272,28 @@ func opsNoticeHTML(n channel.HandoffNotice, who string) string {
 %s<p>Reply with <code>POST /admin/channel/%s/send {"text": "…"}</code>; hand back with <code>POST /admin/channel/%s/release</code>.</p>
 <hr>%s`,
 		html.EscapeString(heading), n.Channel, html.EscapeString(n.PhoneHint), who,
-		html.EscapeString(n.IdentityID), openRequestHTML(n), html.EscapeString(n.IdentityID), html.EscapeString(n.IdentityID), lines.String())
+		html.EscapeString(n.IdentityID), openRequestHTML(n)+scopeTasksHTML(n), html.EscapeString(n.IdentityID), html.EscapeString(n.IdentityID), lines.String())
+}
+
+// scopeTasksHTML: for a scope alert, the person's tasks under way — a
+// supporter may be with them right now.
+func scopeTasksHTML(n channel.HandoffNotice) string {
+	if n.Reason != channel.HandoffScopeAlert {
+		return ""
+	}
+	switch {
+	case n.OpenTasksUnknown:
+		return "<p><b>Open tasks: could not be read.</b> Check the account in the admin panel — a supporter may be with them.</p>\n"
+	case len(n.OpenTasks) == 0:
+		return "<p>No open tasks.</p>\n"
+	}
+	var b strings.Builder
+	b.WriteString("<p><b>Open tasks (a supporter may be with them):</b></p>\n<ul>\n")
+	for _, t := range n.OpenTasks {
+		fmt.Fprintf(&b, "  <li>%s <code>%s</code></li>\n", html.EscapeString(t.Title), html.EscapeString(t.ID))
+	}
+	b.WriteString("</ul>\n")
+	return b.String()
 }
 
 // optOutTasksShort is the open-task part of the subject and the ops text.
@@ -395,6 +427,8 @@ func reasonLabelOps(r channel.HandoffReason) string {
 		return "stopped texts"
 	case channel.HandoffBookingFailed:
 		return "a text booking failed"
+	case channel.HandoffScopeAlert:
+		return "a romantic, sexual or physical request was declined"
 	case channel.HandoffAgentEscalated:
 		return "the assistant judged a person should handle it (safety, dispute, legal/medical or repeated confusion)"
 	}

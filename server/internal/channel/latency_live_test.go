@@ -118,7 +118,7 @@ func TestLiveLatency(t *testing.T) {
 	}
 	searches := []string{prodPizza, prodSoho, prodDryCleaner, "pizza places in soho?", "need a hardware store close to Prospect Park", "know any good bagel places in the East Village?"}
 	errands := []string{"pick up my dry cleaning at 12 Bedford Ave at 5pm", "get me two bagels from Ess-a-Bagel at 831 3rd Ave",
-		"can someone sit with my grandmother for two hours tomorrow at 10, 300 E 10th St", "take my suit to the dry cleaners at 120 E 23rd St",
+		"can someone sit with me in Tompkins Square Park for two hours tomorrow at 10", "take my suit to the dry cleaners at 120 E 23rd St",
 		"I need you to mail a package at the post office on 3rd Ave"}
 	for _, m := range searches {
 		one("search", m)

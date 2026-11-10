@@ -256,6 +256,9 @@ type Router struct {
 	// QuestionReader tells an answer to a draft's question from a question
 	// asked back, when the rules cannot (answers.go). Nil: rules only.
 	QuestionReader llm.QuestionReader
+	// Scope reads words the scope rules leave (scope.go): "allow" or a
+	// refusal id, on the small model. Nil: the rules alone.
+	Scope llm.ScopeChecker
 	// Agent, when set, replaces InContext (D-18, behind CHANNEL_AGENT): it
 	// proposes what a message is; the rules decide. nil = today's routing.
 	Agent llm.Agent
@@ -419,6 +422,13 @@ func (r *Router) routeMessage(ctx context.Context, in Inbound, id Identity, conv
 	// HELP / INFO alone: the info line, or ops when a task is under way
 	// (help.go). Rule only, ahead of every reading of the words.
 	if handled, err := r.routeHelp(ctx, in, id, conv, text); handled {
+		return err
+	}
+	// What HO:RA does not do about people and homes (scope.go): declined
+	// with a fixed reply before anything can draft, search or relay it —
+	// a romantic or sexual request never reaches a supporter. Rules first,
+	// the small model for words they leave.
+	if handled, err := r.scopeGate(ctx, in, id, conv, text); handled {
 		return err
 	}
 	// Inline replies (relay.go, routeReply): the bubble decides. A "yes"
@@ -702,6 +712,12 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 	if r.Parser == nil || r.Prompt == nil || r.Booker == nil {
 		return fmt.Errorf("start draft: router not fully configured")
 	}
+	// Each message was checked as it came (scopeGate); everything said for
+	// this draft, together, is checked again by rule ("come over" then
+	// "keep me company" in two messages). No model call here.
+	if ref := refusedByRule(source); ref != nil && o.prebuilt == nil {
+		return r.refuseScope(ctx, in, id, conv, llm.ScopeDecision{Refusal: ref, Decided: true, By: "refuse:" + ref.ID + " (draft words)"})
+	}
 	// A draft from a discovery choice keeps its places through every
 	// re-draft (a correction re-parses the words, not the place).
 	if prev := conv.Pending; prev != nil && len(o.places) == 0 && o.prebuilt == nil {
@@ -790,6 +806,9 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 			applyPlaces(&draft, o.places, o.check, namesDuration(source))
 		}
 		applyPlaybookNotes(&draft, pb)
+		if n := r.homeEntryNote(text); n != "" && !strings.Contains(draft.Description, n) {
+			draft.Description = strings.TrimSpace(strings.TrimSpace(draft.Description) + "\n\n" + n)
+		}
 		if len(errands) == 1 && o.prebuilt == nil {
 			// The newest line that is only a duration ("15 mins", "ASAP 15
 			// mins", "make it 45 minutes") sets it, whatever the model read
@@ -889,9 +908,11 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 	}
 	if pb != nil {
 		p.Playbook = pb.ID
-		if prev := conv.Pending; prev != nil && prev.Playbook == pb.ID {
-			p.PlaybookAsked = prev.PlaybookAsked
-		}
+	}
+	if prev := conv.Pending; prev != nil && prev.Playbook == p.Playbook {
+		// Asked once per draft — also with no type, for the home-entry
+		// question alone.
+		p.PlaybookAsked = prev.PlaybookAsked
 	}
 	p.SetItems(items)
 	p.AreaStops = areaStops
@@ -949,11 +970,12 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		}
 		return r.Reply(ctx, in, lead+detailsQuestion(p), "")
 	}
-	if pb != nil && !p.PlaybookAsked {
+	if r.Playbooks != nil && !p.PlaybookAsked {
 		// The type's questions, once per draft, before the summary
-		// (playbooks.json asks): only the ones the words have not answered.
+		// (playbooks.json asks): only the ones the words have not answered,
+		// and the home-entry access question when a supporter goes inside.
 		words := source + "\n" + strings.Join(p.Notes, "\n")
-		if asks := pb.AsksFor(words); len(asks) > 0 {
+		if asks := r.Playbooks.DraftAsks(pb, words); len(asks) > 0 {
 			p.PlaybookAsked = true
 			for _, a := range asks {
 				p.PlaybookAsk = append(p.PlaybookAsk, a.Key)
@@ -966,7 +988,7 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 			if done, err := r.preempted(ctx, in, conv.IdentityID, p); done {
 				return err
 			}
-			log.Printf("[channel] draft identity=%s: playbook %s asks %v", id.ID, pb.ID, p.PlaybookAsk)
+			log.Printf("[channel] draft identity=%s: playbook %q asks %v", id.ID, p.Playbook, p.PlaybookAsk)
 			return r.Reply(ctx, in, lead+playbookAsksText(asks), "")
 		}
 	}

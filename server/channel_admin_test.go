@@ -205,3 +205,36 @@ func (s *stubAdapter) Send(_ context.Context, out channel.Outbound) (string, err
 	s.sent = append(s.sent, out)
 	return "pid", nil
 }
+
+// A declined romantic/sexual request (scope rules, 2026-11-10): urgent in
+// the subject, the text and the email; says nothing was drafted and the
+// chat is still with the bot; lists the open task a supporter may be on.
+func TestOpsNoticeScopeAlert(t *testing.T) {
+	prev := sendOpsEmail
+	defer func() { sendOpsEmail = prev }()
+	var subject, body string
+	sendOpsEmail = func(p notify.EmailPayload) error { subject, body = p.Subject, p.Html; return nil }
+	t.Setenv("CHANNEL_OPS_EMAILS", "ops@example.com")
+	t.Setenv("CHANNEL_OPS_NUMBERS", "+1 (555) 010-0199")
+	sms := &stubAdapter{}
+	n := newOpsNotifier(nil, sms, &stubToucher{})
+	n.lookup = func(context.Context, string) (string, error) { return "+15550100777", nil }
+	notice := channel.HandoffNotice{IdentityID: "i", Channel: channel.IMessage, PhoneHint: "•••• 0777", Reason: channel.HandoffScopeAlert,
+		Urgent: true, UrgentReason: "romantic, sexual or physical request", Detail: "declined by refuse:intimate; no draft was made",
+		OpenTasks: []channel.TaskRef{{ID: "task-9", Title: "Bagel <run>"}},
+		Thread:    []channel.ThreadMessage{{Direction: "inbound", Text: "spend the night with me"}}}
+	if err := n.NotifyOps(context.Background(), notice); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(subject, "[HO:RA] URGENT (romantic, sexual or physical request) — declined") || !strings.Contains(subject, "HAS 1 OPEN TASK") {
+		t.Fatalf("subject %q", subject)
+	}
+	if len(sms.sent) != 1 || !strings.Contains(sms.sent[0].Text, "URGENT") || !strings.Contains(sms.sent[0].Text, "nothing drafted") {
+		t.Fatalf("text %+v", sms.sent)
+	}
+	for _, want := range []string{"URGENT (romantic, sexual or physical request)", "drafted nothing", "still with the bot", "check on the supporter", "Bagel &lt;run&gt;", "task-9", "spend the night with me"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("email lacks %q", want)
+		}
+	}
+}

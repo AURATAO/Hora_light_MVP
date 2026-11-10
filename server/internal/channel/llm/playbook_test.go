@@ -6,20 +6,20 @@ import (
 	"testing"
 )
 
-// The embedded file parses, every entry is complete, the scope-rules slot
-// is there (empty until its own prompt fills it), and the discovery prompt
+// The embedded file parses, every entry is complete, the scope rules are
+// filled (scope_test.go grades them), and the discovery prompt
 // and schema name every entry — a new entry reaches the model with no code.
 func TestPlaybooksFile(t *testing.T) {
 	s, err := Playbooks()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"gifts", "friend", "check", "packages", "small_services", "laundry", "food", "groceries", "repeat_multi"}
+	want := []string{"companionship", "gifts", "friend", "check", "packages", "small_services", "laundry", "food", "groceries", "repeat_multi"}
 	if got := s.IDs(); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("ids %v", got)
 	}
-	if s.ScopeRules.Status == "" || !strings.Contains(s.ScopeRules.Status, "PLACEHOLDER") {
-		t.Fatal("scope_rules placeholder missing")
+	if len(s.ScopeRules.Refusals) == 0 || len(s.ScopeRules.People) == 0 || len(s.ScopeRules.Homes) == 0 {
+		t.Fatal("scope_rules not filled")
 	}
 	enum := DiscoverySchema(0)["properties"].(map[string]any)["playbook"].(map[string]any)["enum"].([]string)
 	for _, id := range want {
@@ -122,19 +122,28 @@ func TestParsePlaybooksRefusesBadEntries(t *testing.T) {
 	}
 }
 
-// The prompt block carries the entry's guidance and limits, and the scope
-// rules first once they are filled.
+// The prompt block carries the scope rules first (what is allowed about
+// people and homes, then every refusal), then the entry's guidance and
+// limits; with no scope rules, the entry alone.
 func TestPlaybookPromptBlock(t *testing.T) {
 	s, _ := Playbooks()
 	food := s.ByID("food")
 	b := s.PromptBlock(food)
-	if !strings.Contains(b, "Allergies") || !strings.Contains(b, "Food & restaurants") || strings.Contains(b, "Scope rules") {
+	if !strings.HasPrefix(b, "Scope rules:\n- Companionship in PUBLIC places only") || !strings.Contains(b, "Allergies") || !strings.Contains(b, "Food & restaurants") {
 		t.Fatalf("block:\n%s", b)
 	}
+	for _, r := range s.ScopeRules.Refusals {
+		if !strings.Contains(b, "- Not done: "+r.Rule) {
+			t.Errorf("block lacks %s", r.ID)
+		}
+	}
+	if strings.Index(b, "Scope rules") > strings.Index(b, "Errand type") {
+		t.Fatal("scope rules not first")
+	}
 	c := *s
-	c.ScopeRules.Refusals = []string{"Never enter a customer's home."}
-	if b := c.PromptBlock(food); !strings.HasPrefix(b, "Scope rules:\n- Never enter") {
-		t.Fatalf("scope rules not first:\n%s", b)
+	c.ScopeRules = ScopeRules{}
+	if b := c.PromptBlock(food); strings.Contains(b, "Scope rules") {
+		t.Fatalf("empty scope rules shown:\n%s", b)
 	}
 }
 

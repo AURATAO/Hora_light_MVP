@@ -129,7 +129,7 @@ func TestClassifierDecidesWhenRulesDoNot(t *testing.T) {
 	}
 
 	// new_task with the classifier's playbook: no rule word names a type
-	// ("sit with my grandmother"), the model's type is used.
+	// ("take care of my stuff"), the model's type is used.
 	pbs, _ := llm.Playbooks()
 	g = newDiscoRig(llm.IntentNewTask)
 	g.ids.link(me, "user-1")

@@ -77,15 +77,6 @@ type Playbook struct {
 	unless           *regexp.Regexp
 }
 
-// ScopeRules is the section a separate prompt fills (people, homes,
-// refusals). Empty lists add nothing.
-type ScopeRules struct {
-	Status   string   `json:"_status"`
-	People   []string `json:"people"`
-	Homes    []string `json:"homes"`
-	Refusals []string `json:"refusals"`
-}
-
 // EvalPlace is a fixture place for the answer evals (invented data).
 type EvalPlace struct {
 	ID                 string   `json:"id"`
@@ -165,6 +156,9 @@ func ParsePlaybooks(b []byte) (*PlaybookSet, error) {
 	}
 	if len(s.Playbooks) == 0 {
 		return nil, fmt.Errorf("playbooks: no entries")
+	}
+	if err := s.ScopeRules.compile(); err != nil {
+		return nil, fmt.Errorf("playbooks: %w", err)
 	}
 	seen := map[string]bool{}
 	for i := range s.Playbooks {
@@ -280,6 +274,33 @@ func (p *Playbook) AsksFor(words string) []PlaybookAsk {
 	return out
 }
 
+// AsksOf: every question a draft of this type may be asked — the
+// home-entry access question first (scope_rules; any type, or none, gets it
+// when a supporter goes inside a home), then the entry's own.
+func (s *PlaybookSet) AsksOf(p *Playbook) []PlaybookAsk {
+	var out []PlaybookAsk
+	if s != nil && s.ScopeRules.HomeEntry.Ask.Key != "" {
+		out = append(out, s.ScopeRules.HomeEntry.Ask)
+	}
+	if p != nil {
+		out = append(out, p.Asks...)
+	}
+	return out
+}
+
+// DraftAsks: the questions the person's words have not answered yet — the
+// access question when the words send a supporter inside a home without
+// saying who is there or how to get in, then the entry's (AsksFor).
+func (s *PlaybookSet) DraftAsks(p *Playbook, words string) []PlaybookAsk {
+	var out []PlaybookAsk
+	if s != nil {
+		if a := s.ScopeRules.HomeEntryAsk(words); a != nil {
+			out = append(out, *a)
+		}
+	}
+	return append(out, p.AsksFor(words)...)
+}
+
 // HasSource: the entry allows this source.
 func (p *Playbook) HasSource(src string) bool {
 	if p == nil {
@@ -301,7 +322,10 @@ func (s *PlaybookSet) PromptBlock(p *Playbook) string {
 	}
 	var b strings.Builder
 	if s != nil {
-		rules := append(append(append([]string{}, s.ScopeRules.People...), s.ScopeRules.Homes...), s.ScopeRules.Refusals...)
+		rules := append(append([]string{}, s.ScopeRules.People...), s.ScopeRules.Homes...)
+		for _, r := range s.ScopeRules.Refusals {
+			rules = append(rules, "Not done: "+r.Rule)
+		}
 		if len(rules) > 0 {
 			b.WriteString("Scope rules:\n")
 			for _, r := range rules {

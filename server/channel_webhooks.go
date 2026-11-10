@@ -58,8 +58,11 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		InContext:     steps.Small,
 		// An answer to a draft's question, or a question asked back.
 		QuestionReader: steps.Small,
-		Booker:         &chatBooker{sqlDB: sqlDB, model: steps.Small},
-		Purchases:      steps.Small,
+		// Words the scope rules leave (people, homes, regulated things):
+		// "allow" or a refusal id (internal/channel/scope.go).
+		Scope:     steps.Small,
+		Booker:    &chatBooker{sqlDB: sqlDB, model: steps.Small},
+		Purchases: steps.Small,
 		// The over-run window the summary states is the billing config's
 		// own value (S-11/5: the YES is to the real exposure).
 		AutoExtendMinutes: Billing.AutoExtendMinutes,
