@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url'
 import {
   BETA_NOTICE_COPY,
   PRICING_LINE,
+  pricingLineFor,
   SERVICE_AREA,
   TRACTION_3_CONFIG,
   betaSettlementLine,
@@ -333,4 +334,23 @@ test('the round config no longer carries notice fields', () => {
     Object.keys(TRACTION_3_CONFIG).sort(),
     ['endsAt', 'perMinuteRate', 'pricingSummary', 'round', 'startsAt', 'window']
   )
+})
+
+test('the live price line is built from the server schedule, and falls back whole', () => {
+  assert.equal(
+    pricingLineFor({
+      base_fee_default_cents: 1500, per_minute_rate_cents: 60, base_fee_companionship_cents: 2500,
+      surge_rate_cents_per_min: 100, included_minutes: 15, surge_window: '9 PM–8 AM',
+    }),
+    PRICING_LINE,
+  )
+  assert.equal(
+    pricingLineFor({
+      base_fee_default_cents: 1750, per_minute_rate_cents: 65, base_fee_companionship_cents: 2500,
+      surge_rate_cents_per_min: 110, included_minutes: 15, surge_window: '9 PM–8 AM',
+    }),
+    '$17.50 base fee includes the first 15 minutes, then $0.65/min ($25 base for companionship; $1.10/min for tasks starting 9 PM–8 AM)',
+  )
+  assert.equal(pricingLineFor(null), PRICING_LINE)
+  assert.equal(pricingLineFor({ base_fee_default_cents: 0 }), PRICING_LINE)
 })

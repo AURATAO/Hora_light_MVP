@@ -45,6 +45,30 @@ export const PRICING_LINE =
   '$15 base fee includes the first 15 minutes, then $0.60/min ' +
   '($25 base for companionship; $1.00/min for tasks starting 9 PM–8 AM)'
 
+/** "$15" for whole dollars, "$0.60" otherwise. */
+function dollars(cents) {
+  const n = Number(cents) || 0
+  return n % 100 === 0 ? `$${n / 100}` : `$${(n / 100).toFixed(2)}`
+}
+
+/**
+ * The same sentence from the LIVE schedule (GET /pricing, server/pricing.go),
+ * now that prices can change from the Ops page without a release. Falls back
+ * to PRICING_LINE — the schedule this build shipped with — when the schedule
+ * has not loaded or is malformed, never to a sentence with a $0 in it.
+ */
+export function pricingLineFor(p) {
+  const ok = p && ['base_fee_default_cents', 'per_minute_rate_cents', 'base_fee_companionship_cents', 'surge_rate_cents_per_min']
+    .every(k => Number.isFinite(p[k]) && p[k] > 0)
+  if (!ok) return PRICING_LINE
+  const included = Number.isFinite(p.included_minutes) && p.included_minutes > 0 ? p.included_minutes : 15
+  const evening = (p.surge_rate_cents_per_min / 100).toFixed(2)
+  const window = typeof p.surge_window === 'string' && p.surge_window ? p.surge_window : '9 PM–8 AM'
+  return `${dollars(p.base_fee_default_cents)} base fee includes the first ${included} minutes, then ` +
+    `$${(p.per_minute_rate_cents / 100).toFixed(2)}/min ` +
+    `(${dollars(p.base_fee_companionship_cents)} base for companionship; $${evening}/min for tasks starting ${window})`
+}
+
 /**
  * How purchases are settled — and WHICH of the two sentences below is true
  * depends on a server flag, never on a guess.

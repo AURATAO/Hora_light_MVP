@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { usePaymentGate } from '../hooks/usePaymentGate'
-import { BETA_NOTICE_COPY, betaSettlementLine } from '../lib/traction'
+import { BETA_NOTICE_COPY, PRICING_LINE, betaSettlementLine, pricingLineFor } from '../lib/traction'
+import { usePublicPricing } from '../hooks/usePublicPricing'
 
 /**
  * The beta welcome, shown once per account until it is accepted.
@@ -33,6 +34,24 @@ import { BETA_NOTICE_COPY, betaSettlementLine } from '../lib/traction'
  * betaSettlementLine returns null and the bullet is simply absent, which is
  * the safe direction (see its doc comment).
  */
+// The price bullet, from the live schedule (prices change from Ops now):
+// rendered only with the notice, like SettlementPoint, so the fetch happens on
+// the one screen that shows it.
+function PriceList() {
+  const live = usePublicPricing()
+  const line = pricingLineFor(live)
+  return (
+    <>
+      {BETA_NOTICE_COPY.points.map((item) => (
+        <li key={item} className="flex gap-3">
+          <span className="text-secondary mt-0.5 shrink-0">•</span>
+          <span>{item === PRICING_LINE ? line : item}</span>
+        </li>
+      ))}
+    </>
+  )
+}
+
 function SettlementPoint() {
   const { enforced, loading } = usePaymentGate()
   const line = betaSettlementLine(loading ? null : enforced)
@@ -100,12 +119,7 @@ export default function BetaModal() {
               <p key={paragraph}>{paragraph}</p>
             ))}
             <ul className="space-y-2.5 pl-1">
-              {BETA_NOTICE_COPY.points.map((item) => (
-                <li key={item} className="flex gap-3">
-                  <span className="text-secondary mt-0.5 shrink-0">•</span>
-                  <span>{item}</span>
-                </li>
-              ))}
+              <PriceList />
               <SettlementPoint />
             </ul>
             <p className="text-white/50 text-sm pt-1">

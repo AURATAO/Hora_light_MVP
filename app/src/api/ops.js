@@ -199,3 +199,17 @@ export function claimChannelChat(identityId) {
 export function releaseChannelChat(identityId) {
   return opsFetch(`/admin/channel/${encodeURIComponent(identityId)}/release`, { method: 'POST' })
 }
+
+// ── Pricing (server/pricing.go) ──────────────────────────────────────────
+//
+// GET /admin/pricing — { live, history[], bounds }. history is newest first;
+// each row names its author and note.
+export function getPricing() {
+  return opsFetch('/admin/pricing')
+}
+
+// POST /admin/pricing — a new schedule for tasks posted from now on. Tasks
+// already posted keep the prices they were posted at.
+export function setPricing(body) {
+  return opsFetch('/admin/pricing', { method: 'POST', body: JSON.stringify(body) })
+}

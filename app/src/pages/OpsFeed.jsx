@@ -6,6 +6,7 @@ import { opsFetch as fetchJSON, removeTask, reassignTask, listApprovedSupporters
          forceCompleteTask, adminCancelTask, adjustTaskTime, REMOVAL_REASONS } from '../api/ops'
 import OpsSupporters from './OpsSupporters.jsx'
 import OpsPromoCodes from './OpsPromoCodes.jsx'
+import OpsPricing from './OpsPricing.jsx'
 import OpsReports from './OpsReports.jsx'
 import OpsChats from './OpsChats.jsx'
 import Modal from '../components/Modal.jsx'
@@ -27,6 +28,7 @@ const TABS = [
   { key: 'tasks', label: 'Task feed' },
   { key: 'supporters', label: 'Supporter applications' },
   { key: 'promo', label: 'Promo codes' },
+  { key: 'pricing', label: 'Pricing' },
   { key: 'reports', label: 'User reports' },
   { key: 'chats', label: 'Chats' },
 ];
@@ -231,6 +233,8 @@ export default function OpsFeed() {
           <div className="py-4"><OpsSupporters /></div>
         ) : tab === 'promo' ? (
           <div className="py-4"><OpsPromoCodes /></div>
+        ) : tab === 'pricing' ? (
+          <div className="py-4"><OpsPricing /></div>
         ) : tab === 'reports' ? (
           <div className="py-4"><OpsReports /></div>
         ) : tab === 'chats' ? (
