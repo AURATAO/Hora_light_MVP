@@ -340,10 +340,9 @@ func adminSetPricing(c *gin.Context) {
 // GET /pricing — the requester-facing prices for the clients' marketing
 // sentences. The platform fee is not one of them (it is the supporter side's
 // business; Earnings carries it).
-//
-// GET /pricing — the live schedule for the clients' marketing sentences
-// ("$15 base fee includes the first 15 minutes…"), so no client hardcodes a
-// price that can now change without a release. Public: prices are public.
+ ("$15 base fee includes the first
+// 15 minutes…"), so no client hardcodes a price that can now change without a
+// release. Public: prices are public.
 func getPublicPricing(c *gin.Context) {
 	p := pricing()
 	c.JSON(http.StatusOK, gin.H{
