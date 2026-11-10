@@ -268,8 +268,11 @@ func (b *chatBooker) ResolveExtension(ctx context.Context, userID, extensionID s
 // announcements phrase it: "15 more minutes on “Laundry pickup”".
 func (b *chatBooker) extensionAsk(ctx context.Context, e ExtensionRequest) string {
 	ask := fmt.Sprintf("%d more minutes", derefInt(e.RequestedMinutes))
-	if e.Kind == extensionKindBudget {
+	switch e.Kind {
+	case extensionKindBudget:
 		ask = formatCentsUSD(derefInt(e.RequestedCents)) + " more budget"
+	case extensionKindItem:
+		ask = e.AlternativeName + " instead of " + e.ItemName
 	}
 	var title string
 	if err := b.sqlDB.QueryRowContext(ctx,
@@ -526,4 +529,31 @@ func cancelResultFrom(status int, raw []byte) channel.CancelResult {
 	}
 	log.Printf("[channel-booker] cancel failed status=%d", status)
 	return channel.CancelResult{}
+}
+
+// ItemQuestion is the request when it is an item question (item.go): the
+// structured fields the chat's digit answer and re-ask need. ok=false for a
+// budget or time request.
+func (b *chatBooker) ItemQuestion(ctx context.Context, userID, extensionID string) (channel.PendingApproval, bool, error) {
+	var q channel.PendingApproval
+	var kind string
+	var cents sql.NullInt64
+	err := b.sqlDB.QueryRowContext(ctx, `
+		SELECT e.id::text, e.kind, coalesce(e.item_name,''), coalesce(e.store_name,''),
+		       coalesce(e.alternative_name,''), e.alternative_cents
+		  FROM public.extension_requests e
+		  JOIN public.tasks t ON t.id = e.task_id
+		 WHERE e.id = $1::uuid AND t.requester_id = $2::uuid`,
+		extensionID, userID).Scan(&q.ID, &kind, &q.Item, &q.Store, &q.Alternative, &cents)
+	if errors.Is(err, sql.ErrNoRows) {
+		return q, false, nil
+	}
+	if err != nil {
+		return q, false, fmt.Errorf("item question: %w", err)
+	}
+	if kind != extensionKindItem {
+		return channel.PendingApproval{}, false, nil
+	}
+	q.Kind, q.Cents = kind, int(cents.Int64)
+	return q, true, nil
 }

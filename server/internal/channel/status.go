@@ -47,10 +47,12 @@ type StatusEvent struct {
 // PendingApproval is the structured request behind an approval question.
 type PendingApproval struct {
 	ID      string
-	Kind    string // "time" | "budget"
+	Kind    string // "time" | "budget" | "item"
 	Minutes int    // kind=time
-	Cents   int    // kind=budget
+	Cents   int    // kind=budget: the extra amount; kind=item: the alternative's price
 	Reason  string // the supporter's words, shown quoted and labelled as theirs
+	// kind=item (an out-of-stock item, answered 1 or 2 — item.go in the app).
+	Item, Store, Alternative string
 }
 
 // StatusText is the chat message for an event, and false for events the chat
@@ -102,8 +104,14 @@ func StatusText(ev StatusEvent) (string, bool) {
 		}
 		b.WriteString("\n\nYour payment receipt is on its way by email. Need something else? Just text me.")
 		return b.String(), true
-	case evTimeRequested, evBudgetRequested:
+	case evTimeRequested, evBudgetRequested, evItemProposed:
 		return approvalText(ev)
+	case evItemUnavailable:
+		// A notice, never a question: nothing to answer (item.go).
+		if strings.TrimSpace(ev.Body) == "" {
+			return "", false
+		}
+		return strings.TrimSpace(ev.Body), true
 	case evResolved:
 		// The person's own answer was confirmed when they gave it (here or
 		// in the app); only the timeout is news. Deterministic on the app's

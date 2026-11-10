@@ -303,6 +303,7 @@ export function cancelGraceCountdown(graceEndsAt, nowMs = Date.now()) {
  */
 export function extensionAskLabel(request) {
   if (!request) return ''
+  if (request.kind === 'item') return 'Out-of-stock item'
   if (request.kind === 'budget') {
     return `${formatCents(request.requested_cents || 0)} more budget`
   }
@@ -348,6 +349,12 @@ export function extensionDecidedAt(request) {
  */
 export function extensionResolutionTitle(request) {
   if (!request) return null
+  if (request.kind === 'item') {
+    if (request.status === 'approved') return 'Alternative chosen'
+    if (request.status === 'denied') return 'Skip it'
+    if (request.status === 'expired') return 'No answer'
+    return null
+  }
   if (request.status === 'expired') return 'No response'
   if (request.status === 'denied') return 'Denied'
   return null
@@ -368,6 +375,7 @@ export function extensionResolutionTitle(request) {
  */
 export function extensionResolutionDetail(request) {
   if (!extensionResolutionTitle(request)) return null
+  if (request.kind === 'item') return request.fallback_instruction || null
   if (request.fallback_instruction) {
     return request.status === 'expired'
       ? `Proceed with your fallback: ${request.fallback_instruction}`
@@ -380,6 +388,7 @@ export function extensionResolutionDetail(request) {
  *  re-ask, labelled for the kind that was just refused so it is obviously the
  *  same request rather than a new idea. */
 export function extensionReaskLabel(request) {
+  if (request?.kind === 'item') return 'Problem with another item'
   return request?.kind === 'time' ? 'Ask for more time again' : 'Ask for more budget again'
 }
 

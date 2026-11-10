@@ -32,9 +32,16 @@ const (
 	evTimeRequested   = "TIME_EXTENSION_REQUESTED"
 	evBudgetRequested = "BUDGET_INCREASE_REQUESTED"
 	evResolved        = "EXTENSION_RESOLVED"
+	// An out-of-stock item with an alternative inside the budget: a
+	// question answered 1 (the alternative) or 2 (skip it), never YES/NO.
+	evItemProposed = "ITEM_ALTERNATIVE_PROPOSED"
+	// Out of stock with nothing similar: a notice only.
+	evItemUnavailable = "ITEM_UNAVAILABLE"
 )
 
-func isApprovalRequest(typ string) bool { return typ == evTimeRequested || typ == evBudgetRequested }
+func isApprovalRequest(typ string) bool {
+	return typ == evTimeRequested || typ == evBudgetRequested || typ == evItemProposed
+}
 
 // approvalText is the chat's own approval question, composed from the
 // structured request: the vetted supporter name, the amount or minutes the
@@ -51,6 +58,8 @@ func approvalText(ev StatusEvent) (string, bool) {
 	title := firstNonEmpty(strings.TrimSpace(ev.TaskTitle), "your task")
 	var body string
 	switch a.Kind {
+	case "item":
+		return itemQuestionText(a, who, ev.ApprovalMinutes)
 	case "budget":
 		if a.Cents <= 0 {
 			return "", false
@@ -181,6 +190,17 @@ func DecideApproval(f ApprovalFacts) ApprovalVerdict {
 
 // onAwaitingApproval answers the pending request with this message.
 func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) error {
+	// An item question (kind=item) is answered 1 or 2 and nothing else;
+	// every other armed question keeps YES/NO (DecideItemChoice).
+	item, isItem, lookupFailed := r.armedItem(ctx, id, conv)
+	if lookupFailed {
+		// Which kind of question is armed is unknown: decide nothing.
+		return r.Reply(ctx, in, CopyApprovalTryAgain, "")
+	}
+	reask := approvalReask(conv)
+	if isItem {
+		reask = itemReask(conv, item)
+	}
 	var approve bool
 	var passOn string // the person's words to pass to the supporter after a YES (R-3)
 	facts := ApprovalFacts{
@@ -200,7 +220,11 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 		// looked up then, not on every message (round 5).
 		facts.Supporter = func() string { return r.supporterFirstName(ctx, id, conv.ApprovalTaskID) }
 	}
-	switch DecideApproval(facts) {
+	verdict := DecideApproval(facts)
+	if isItem {
+		verdict = DecideItemChoice(facts)
+	}
+	switch verdict {
 	case VerdictUnconfirmed:
 		// Claimed but never confirmed delivered: nothing can answer it.
 		// Re-sent from the hold once the claim is old enough; until then
@@ -235,12 +259,12 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 		// send returned, so a tap made after reading is later than it by
 		// the person's own reaction time; no margin is applied.
 		log.Printf("[channel] approval identity=%s ext=%s: answer refused, sent %s before the question", id.ID, conv.PendingExtensionID, sentBefore(in, conv.ApprovalArmedAt))
-		return r.Reply(ctx, in, approvalReask(conv), "")
+		return r.Reply(ctx, in, reask, "")
 	case VerdictReask:
 		// A swipe on another message (round 4), or a reaction word after a
 		// later message of ours (R-3): asked again; nothing moves.
 		log.Printf("[channel] approval identity=%s ext=%s: reaction or swipe not on the question, re-asked", id.ID, conv.PendingExtensionID)
-		return r.Reply(ctx, in, approvalReask(conv), "")
+		return r.Reply(ctx, in, reask, "")
 	case VerdictApprove:
 		approve = true
 	case VerdictApprovePassOn:
@@ -271,14 +295,14 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 		if handled, err := r.routeInContext(ctx, in, id, conv, text); handled {
 			return err
 		}
-		return r.Reply(ctx, in, approvalReask(conv), "")
+		return r.Reply(ctx, in, reask, "")
 	}
 	if r.Booker == nil {
 		return fmt.Errorf("onAwaitingApproval: router not fully configured")
 	}
 	if passOn != "" && conv.ApprovalTaskID == "" {
 		// Nowhere to pass the words: do not approve on half a message.
-		return r.Reply(ctx, in, approvalReask(conv), "")
+		return r.Reply(ctx, in, reask, "")
 	}
 	res := r.Booker.ResolveExtension(ctx, id.UserID, conv.PendingExtensionID, approve)
 	log.Printf("[channel] approval identity=%s ext=%s approve=%t outcome=%d status=%s",
@@ -298,16 +322,27 @@ func (r *Router) onAwaitingApproval(ctx context.Context, in Inbound, id Identity
 	var reply string
 	switch res.Outcome {
 	case ExtResolved:
+		if isItem {
+			who := firstNonEmpty(r.supporterFirstName(ctx, id, conv.ApprovalTaskID), "Your supporter")
+			if approve {
+				reply = fmt.Sprintf(CopyItemChoseAlternative, who, inlineText(item.Alternative, 80))
+			} else {
+				reply = fmt.Sprintf(CopyItemChoseSkip, who, inlineText(item.Item, 80))
+			}
+			break
+		}
 		if approve {
 			reply = fmt.Sprintf(CopyApproved, res.Ask)
 		} else {
 			reply = fmt.Sprintf(CopyDeclined, res.Ask)
 		}
 	case ExtAlready:
-		switch res.Status {
-		case "expired":
+		switch {
+		case isItem && res.Status == "expired":
+			reply = CopyItemExpired
+		case res.Status == "expired":
 			reply = CopyApprovalExpired
-		case "approved", "denied":
+		case res.Status == "approved" || res.Status == "denied":
 			reply = fmt.Sprintf(CopyApprovalAlready, res.Status)
 		default:
 			reply = CopyApprovalGone

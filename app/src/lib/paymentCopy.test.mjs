@@ -464,3 +464,16 @@ test('no message ever hedges about the amount, and none says "refund"', () => {
     }
   }
 })
+
+test('item questions resolve in item words', () => {
+  const base = { kind: 'item', item_name: 'oat milk', alternative_name: 'almond milk' }
+  assert.equal(extensionResolutionTitle({ ...base, status: 'approved' }), 'Alternative chosen')
+  assert.equal(extensionResolutionTitle({ ...base, status: 'denied' }), 'Skip it')
+  assert.equal(extensionResolutionTitle({ ...base, status: 'expired' }), 'No answer')
+  assert.equal(extensionResolutionTitle({ ...base, status: 'pending' }), null)
+  assert.equal(
+    extensionResolutionDetail({ ...base, status: 'denied', fallback_instruction: 'Skip oat milk.' }),
+    'Skip oat milk.'
+  )
+  assert.equal(extensionReaskLabel({ ...base, status: 'denied' }), 'Problem with another item')
+})

@@ -1,7 +1,7 @@
 import { Alert, Linking, Text, View } from "react-native";
 import { CircleX, Clock } from "lucide-react-native";
 import { Badge, Button, PressableScale } from "./ui";
-import { SUPPORT_EMAIL } from "../lib/constants";
+import { BOOKING_URL, SUPPORT_EMAIL } from "../lib/constants";
 import type { SupporterStatus } from "../lib/types";
 import { color, size } from "../theme/tokens";
 
@@ -16,6 +16,14 @@ async function contactSupport() {
     await Linking.openURL(url);
   } catch {
     Alert.alert("No mail app", `Write to us at ${SUPPORT_EMAIL}.`);
+  }
+}
+
+async function openBookingSite() {
+  try {
+    await Linking.openURL(BOOKING_URL);
+  } catch {
+    // No browser to open: the label already names the address.
   }
 }
 
@@ -64,6 +72,11 @@ export function SupporterStatusBanner({ status, onApply }: SupporterStatusBanner
         </Text>
       </View>
       <Button label="Apply now" onPress={onApply} />
+      {/* The app is for supporters only now (PLAN §13b-3). Somebody who used
+          it to book help lands here; tell them where booking went. */}
+      <PressableScale onPress={openBookingSite} hitSlop={8} className="min-h-[44px] items-center justify-center">
+        <Text className="text-caption font-semibold text-brand">Looking to book help? Go to horaapp.co</Text>
+      </PressableScale>
     </View>
   );
 }

@@ -195,6 +195,10 @@ var reassignMigrationPaths = []string{
 	// lands and PAYOUT_DEPOSITED by payout.paid, so both enum values have to
 	// exist in the fixture for the same reason every earlier one does.
 	"../supabase/migrations/20260923104029_notification_types_receipt_deposit.sql",
+	// Item problem (item.go): the two notification types, then the item
+	// columns and the third kind on extension_requests.
+	"../supabase/migrations/20261107115900_notification_types_item_problem.sql",
+	"../supabase/migrations/20261107120000_item_problem.sql",
 }
 
 func setupReassignDB(t *testing.T) {

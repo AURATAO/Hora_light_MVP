@@ -462,6 +462,10 @@ func main() {
 	// announced within a minute of being reached, GPS heartbeat or not
 	// (web-app supporters send none).
 	go watchLiveTimeCaps(context.Background(), time.Minute)
+	if dispatchEnabled() {
+		log.Printf("[dispatch] supporter push dispatch ON (D-24): borough round, +%s everyone, +%s ops", dispatchWidenAfter, dispatchOpsAfter)
+		go watchDispatches(context.Background(), dispatchSweepEvery)
+	}
 
 	pgxCfg, err := pgx.ParseConfig(dbURL)
 	if err != nil {
@@ -761,7 +765,14 @@ func main() {
 		// In-app account deletion (App Store 5.1.1(v)); see account_deletion.go.
 		meAPI.GET("/deletion", accountDeletionPreview)
 		meAPI.DELETE("", deleteMyAccount)
+		// Supporter dispatch settings (D-24): boroughs and "I'm available".
+		meAPI.GET("/dispatch", getMyDispatch)
+		meAPI.PUT("/dispatch", putMyDispatch)
+		meAPI.POST("/availability", postMyAvailability)
 	}
+
+	// What the apps may show (D-24). No auth: nothing in it is private.
+	r.GET("/config", getAppConfig)
 
 	r.GET("/talkjs/signature", dualAuth(sqldb), talkjsSignatureHandler)
 
@@ -813,6 +824,7 @@ func main() {
 		tasksAPI.GET("/:id/extensions", listTaskExtensions)
 		tasksAPI.POST("/:id/budget-increase", requestBudgetIncrease)
 		tasksAPI.POST("/:id/time-extension", requestTimeExtension)
+		tasksAPI.POST("/:id/item-problem", reportItemProblem)
 		tasksAPI.POST("/:id/extensions/:eid/approve", approveExtension)
 		tasksAPI.POST("/:id/extensions/:eid/deny", denyExtension)
 
@@ -2104,6 +2116,8 @@ func createTask(c *gin.Context) {
 // announcement that only fires on the straight-through path would silently
 // skip every task that needed a card challenge.
 func announceNewTaskInput(ctx context.Context, taskID string, in createTaskInput, email string, when *time.Time) {
+	// Supporters, by push (D-24); off unless DISPATCH_PUSH_ENABLED=1.
+	startDispatch(taskID)
 	requesterName := resolveDisplayName(ctx, email)
 	go notify.NotifyAdminNewTask(notify.AdminNewTaskInput{
 		TaskID:           taskID,
@@ -2868,6 +2882,14 @@ func listAvailableTasks(c *gin.Context) {
 	if !isVerified {
 		c.JSON(403, gin.H{"error": "verification_required"})
 		return
+	}
+
+	// The App Review account's board refills itself: the supporter-only app
+	// cannot post, so a reviewer who worked through the demo tasks (or whose
+	// login seed failed) gets new ones on the next pull to refresh. First page
+	// only; background; a no-op for every real account (review_seed.go).
+	if c.Query("before_id") == "" && meEmail != "" && canSelfAccept(c.Request.Context(), meUID) {
+		kickReviewBoard(meUID, meEmail)
 	}
 
 	limit := parseLimit(c.Query("limit"), 10, 50)

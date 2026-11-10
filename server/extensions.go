@@ -59,6 +59,10 @@ import (
 const (
 	extensionKindBudget = "budget"
 	extensionKindTime   = "time"
+	// An out-of-stock item with an alternative inside the budget (item.go):
+	// approved = buy the alternative, denied = skip it, expired = the
+	// supporter decides. Moves no ceiling on any outcome.
+	extensionKindItem = "item"
 
 	extensionStatusPending  = "pending"
 	extensionStatusApproved = "approved"
@@ -109,6 +113,21 @@ type ExtensionRequest struct {
 	// The sentence the supporter's screen shows when this expired: their own
 	// fallback, read back to them. Empty for a time request, which has none.
 	FallbackInstruction string `json:"fallback_instruction,omitempty"`
+
+	// kind=item only (item.go). AlternativePhotoURL is the canonical stored
+	// URL and is never sent: listTaskExtensions signs it into
+	// AlternativePhotoSignedURL for the task's two parties.
+	ItemName                  string `json:"item_name,omitempty"`
+	StoreName                 string `json:"store_name,omitempty"`
+	AlternativeName           string `json:"alternative_name,omitempty"`
+	AlternativeCents          *int   `json:"alternative_cents,omitempty"`
+	AlternativePhotoURL       string `json:"-"`
+	AlternativePhotoSignedURL string `json:"alternative_photo_url,omitempty"`
+	// What the requester said to do when something is out of stock (the
+	// text channel's groceries playbook writes "Substitution preference: …"
+	// into the task description). Sent on kind=item, for the supporter's
+	// decision when the question goes unanswered.
+	SubstitutionPreference string `json:"substitution_preference,omitempty"`
 }
 
 // Why a supporter needs more money, as a closed set.
@@ -199,16 +218,23 @@ const extensionSelect = `
 	select id::text, task_id::text, supporter_id::text, kind,
 	       requested_cents, requested_minutes,
 	       coalesce(reason,''), coalesce(fallback,''), coalesce(fallback_note,''),
-	       status, created_at, resolved_at
+	       status, created_at, resolved_at,
+	       ` + extensionItemCols + `
 	  from public.extension_requests
 `
+
+// extensionItemCols are the item-problem columns (kind='item'), read by every
+// query scanExtension scans. ” / null on the other kinds.
+const extensionItemCols = `coalesce(item_name,''), coalesce(store_name,''), coalesce(alternative_name,''),
+	       alternative_cents, coalesce(alternative_photo_url,'')`
 
 func scanExtension(row interface{ Scan(dest ...any) error }) (ExtensionRequest, error) {
 	var e ExtensionRequest
 	err := row.Scan(&e.ID, &e.TaskID, &e.SupporterID, &e.Kind,
 		&e.RequestedCents, &e.RequestedMinutes,
 		&e.Reason, &e.Fallback, &e.FallbackNote,
-		&e.Status, &e.CreatedAt, &e.ResolvedAt)
+		&e.Status, &e.CreatedAt, &e.ResolvedAt,
+		&e.ItemName, &e.StoreName, &e.AlternativeName, &e.AlternativeCents, &e.AlternativePhotoURL)
 	if err != nil {
 		return e, err
 	}
@@ -216,6 +242,10 @@ func scanExtension(row interface{ Scan(dest ...any) error }) (ExtensionRequest, 
 	e.ReasonLabel = reasonLabel(e.Reason)
 	if e.Status == extensionStatusExpired || e.Status == extensionStatusDenied {
 		e.FallbackInstruction = fallbackInstruction(e.Fallback, e.FallbackNote)
+	}
+	if e.Kind == extensionKindItem {
+		e.ReasonLabel = itemProblemLabel(e)
+		e.FallbackInstruction = itemInstruction(e)
 	}
 	return e, nil
 }
@@ -240,7 +270,7 @@ func expireStaleExtensions(ctx context.Context, taskID string) []ExtensionReques
 		returning id::text, task_id::text, supporter_id::text, kind,
 		          requested_cents, requested_minutes,
 		          coalesce(reason,''), coalesce(fallback,''), coalesce(fallback_note,''),
-		          status, created_at, resolved_at
+		          status, created_at, resolved_at, `+extensionItemCols+`
 	`, taskID, extensionStatusExpired, extensionStatusPending, Billing.ApprovalTimeoutMinutes)
 	if err != nil {
 		log.Printf("[extensions][expire] task=%s: %v", taskID, err)
@@ -360,6 +390,7 @@ func listTaskExtensions(c *gin.Context) {
 		}
 		items = append(items, e)
 	}
+	itemExtras(ctx, taskID, items)
 
 	var approvedBudget int
 	_ = db.QueryRow(ctx,
@@ -519,14 +550,17 @@ func createExtension(c *gin.Context, draft ExtensionRequest) {
 	row := db.QueryRow(ctx, `
 		insert into public.extension_requests
 		  (task_id, supporter_id, kind, requested_cents, requested_minutes,
-		   reason, fallback, fallback_note, status)
-		values ($1::uuid, $2::uuid, $3, $4, $5, nullif($6,''), nullif($7,''), nullif($8,''), $9)
+		   reason, fallback, fallback_note, status,
+		   item_name, store_name, alternative_name, alternative_cents, alternative_photo_url)
+		values ($1::uuid, $2::uuid, $3, $4, $5, nullif($6,''), nullif($7,''), nullif($8,''), $9,
+		        nullif($10,''), nullif($11,''), nullif($12,''), $13, nullif($14,''))
 		returning id::text, task_id::text, supporter_id::text, kind,
 		          requested_cents, requested_minutes,
 		          coalesce(reason,''), coalesce(fallback,''), coalesce(fallback_note,''),
-		          status, created_at, resolved_at
+		          status, created_at, resolved_at, `+extensionItemCols+`
 	`, taskID, meUID, draft.Kind, draft.RequestedCents, draft.RequestedMinutes,
-		draft.Reason, draft.Fallback, draft.FallbackNote, extensionStatusPending)
+		draft.Reason, draft.Fallback, draft.FallbackNote, extensionStatusPending,
+		draft.ItemName, draft.StoreName, draft.AlternativeName, draft.AlternativeCents, draft.AlternativePhotoURL)
 
 	e, err = scanExtension(row)
 	if err != nil {
@@ -615,7 +649,7 @@ func decideExtension(ctx context.Context, taskID, extID, requesterUID, decision 
 		returning id::text, task_id::text, supporter_id::text, kind,
 		          requested_cents, requested_minutes,
 		          coalesce(reason,''), coalesce(fallback,''), coalesce(fallback_note,''),
-		          status, created_at, resolved_at
+		          status, created_at, resolved_at, `+extensionItemCols+`
 	`, extID, taskID, decision, requesterUID, extensionStatusPending)
 
 	e, err := scanExtension(row)
@@ -778,6 +812,12 @@ func announceExtensionRequest(ctx context.Context, e ExtensionRequest, t adminTa
 		}
 		body += fmt.Sprintf(" Approve or decline in the app — after %d minutes it's automatically declined.",
 			Billing.ApprovalTimeoutMinutes)
+	case extensionKindItem:
+		ntype = "ITEM_ALTERNATIVE_PROPOSED"
+		title = "An item is out of stock"
+		body = fmt.Sprintf("%s %s found %s (%s) instead for %q. Choose in the app: get the alternative, or skip it. After %d minutes, %s decides.",
+			itemOutOfLine(e), t.AssigneeName, e.AlternativeName, formatCentsUSD(derefInt(e.AlternativeCents)), t.Title,
+			Billing.ApprovalTimeoutMinutes, t.AssigneeName)
 	default:
 		ntype = "TIME_EXTENSION_REQUESTED"
 		title = "Your supporter needs more time"
@@ -810,6 +850,11 @@ func announceExtensionResolution(ctx context.Context, e ExtensionRequest) {
 	t, err := loadAdminTask(ctx, e.TaskID)
 	if err != nil {
 		log.Printf("[extensions][notify] task=%s gone: %v", e.TaskID, err)
+		return
+	}
+
+	if e.Kind == extensionKindItem {
+		announceItemResolution(ctx, e, t)
 		return
 	}
 
@@ -922,7 +967,7 @@ func truncateRunes(s string, max int) string {
 // resolved decision is a different, smaller thing.
 type ExtensionRecord struct {
 	ID   string `json:"id"`
-	Kind string `json:"kind"` // budget | time
+	Kind string `json:"kind"` // budget | time | item
 
 	// Exactly one is set, by kind. Both are the ADDITIONAL amount asked for.
 	RequestedCents   *int `json:"requested_cents,omitempty"`
@@ -979,7 +1024,7 @@ func taskExtensionRecords(ctx context.Context, taskID string) []ExtensionRecord 
 	rows, err := db.Query(ctx, `
 		select id::text, kind, requested_cents, requested_minutes,
 		       coalesce(reason,''), coalesce(fallback,''), coalesce(fallback_note,''),
-		       status, created_at, resolved_at
+		       status, created_at, resolved_at, `+extensionItemCols+`
 		  from public.extension_requests
 		 where task_id = $1::uuid
 		 order by created_at asc
@@ -993,9 +1038,11 @@ func taskExtensionRecords(ctx context.Context, taskID string) []ExtensionRecord 
 	for rows.Next() {
 		var r ExtensionRecord
 		var reason, fallback, fallbackNote string
+		var it ExtensionRequest
 		if err := rows.Scan(&r.ID, &r.Kind, &r.RequestedCents, &r.RequestedMinutes,
 			&reason, &fallback, &fallbackNote,
-			&r.Status, &r.RequestedAt, &r.ResolvedAt); err != nil {
+			&r.Status, &r.RequestedAt, &r.ResolvedAt,
+			&it.ItemName, &it.StoreName, &it.AlternativeName, &it.AlternativeCents, &it.AlternativePhotoURL); err != nil {
 			log.Printf("[extensions][records] task=%s scan: %v", taskID, err)
 			return out
 		}
@@ -1005,6 +1052,21 @@ func taskExtensionRecords(ctx context.Context, taskID string) []ExtensionRecord 
 		// happened, so it is carried on exactly the statuses where it ran.
 		if r.Status == extensionStatusExpired || r.Status == extensionStatusDenied {
 			r.Fallback = fallbackInstruction(fallback, fallbackNote)
+		}
+		if r.Kind == extensionKindItem {
+			// "Out of oat milk at Trader Joe's. Alternative: almond milk
+			// ($4.49)." — and what the outcome meant, in the same words.
+			it.Kind, it.Status = r.Kind, r.Status
+			r.ReasonLabel = itemProblemLabel(it)
+			r.Fallback = ""
+			switch r.Status {
+			case extensionStatusApproved:
+				r.Outcome = "Alternative chosen"
+			case extensionStatusDenied:
+				r.Outcome = "Skipped"
+			case extensionStatusExpired:
+				r.Outcome = "No response: supporter decided"
+			}
 		}
 		out = append(out, r)
 	}

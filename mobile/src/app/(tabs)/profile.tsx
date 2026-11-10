@@ -6,9 +6,9 @@ import * as SecureStore from "expo-secure-store";
 import * as WebBrowser from "expo-web-browser";
 import Constants from "expo-constants";
 import {
-  Banknote,
+  Hand,
+  MapPin,
   ChevronRight,
-  CreditCard,
   FileText,
   MessageCircle,
   ShieldCheck,
@@ -22,6 +22,7 @@ import { SupporterStatusRow } from "../../components/SupporterStatusBanner";
 import { Avatar, Card, EmptyState, PressableScale, Screen, Skeleton } from "../../components/ui";
 import {
   ApiError,
+  getAppConfig,
   getMe,
   getProfile,
   getSupporterReviews,
@@ -67,6 +68,8 @@ export default function Profile() {
   const router = useRouter();
 
   const [profile, setProfile] = useState<Profile | null>(null);
+  // Task areas only mean something while task offers are on (D-24).
+  const [dispatchOn, setDispatchOn] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -92,6 +95,9 @@ export default function Profile() {
       const p = await getProfile();
       setProfile(p);
       setError(null);
+      getAppConfig()
+        .then((cfg) => setDispatchOn(cfg.dispatch === true))
+        .catch(() => setDispatchOn(false));
 
       // The supporter's own star average and review list. Deliberately the
       // very same GET /profiles/:id/reviews the public profile uses, called
@@ -377,35 +383,23 @@ export default function Profile() {
         </Card>
       </View>
 
-      {/* Cards on file. Its own section rather than a row inside "Contact &
-          about": it is the only thing on this tab that moves money, and it is
-          where a declined post sends the requester. Always shown — a backend
-          with no Stripe configured says so on the screen itself, which is more
-          useful than a row that silently isn't there. */}
-      <View className="mb-6">
-        <Text className="mb-2 text-title font-semibold text-ink">Payments</Text>
-        <Card>
-          <ListRow
-            icon={CreditCard}
-            label="Payment methods"
-            onPress={() => router.push("/profile/payment-methods")}
-          />
-          {/* Getting paid, for approved supporters only. Below payment methods
-              because the two are opposite directions of the same tab — money
-              leaving, then money arriving — and a payouts row on a requester's
-              profile is an invitation to a flow that does not apply to them. */}
-          {profile.supporter_status === "approved" ? (
-            <>
-              <View className="h-px bg-line" />
-              <ListRow
-                icon={Banknote}
-                label="Earnings"
-                onPress={() => router.push("/profile/earnings")}
-              />
-            </>
-          ) : null}
-        </Card>
-      </View>
+      {/* Where task offers come from (D-24). Approved supporters only — the
+          areas decide who hears about a new task first. Payment methods used
+          to live here; the app no longer posts tasks, so it holds no card, and
+          Earnings has its own tab. */}
+      {profile.supporter_status === "approved" ? (
+        <View className="mb-6">
+          <Text className="mb-2 text-title font-semibold text-ink">Work</Text>
+          <Card>
+            <ListRow icon={Hand} label="Supporter rules" onPress={() => router.push("/profile/rules")} />
+            {/* Task areas only mean something while task offers are on (D-24). */}
+            {dispatchOn ? <View className="h-px bg-line" /> : null}
+            {dispatchOn ? (
+              <ListRow icon={MapPin} label="Task areas" onPress={() => router.push("/profile/areas")} />
+            ) : null}
+          </Card>
+        </View>
+      ) : null}
 
       <View className="mb-6">
         <Text className="mb-2 text-title font-semibold text-ink">Contact & about</Text>

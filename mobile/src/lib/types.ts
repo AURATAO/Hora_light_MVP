@@ -68,6 +68,9 @@ export type NotificationType =
   | "EXTENSION_RESOLVED"
   | "TIME_CAP_WARNING"
   | "TIME_CAP_REACHED"
+  // Item problem (server/item.go): to the requester, deep-linking to the task.
+  | "ITEM_ALTERNATIVE_PROPOSED"
+  | "ITEM_UNAVAILABLE"
   // Stripe Phase 3. Deep-links to the task like the rest: the supporter's cut
   // is shown on the settlement card there, and Profile → Earnings is where the
   // running total lives.
@@ -399,7 +402,7 @@ export interface TimeCapState {
  */
 export interface ExtensionRecord {
   id: string;
-  kind: "budget" | "time";
+  kind: "budget" | "time" | "item";
   requested_cents?: number | null;
   requested_minutes?: number | null;
   reason_label?: string;
@@ -483,7 +486,7 @@ export interface WorklogsSummary {
 }
 
 /** A supporter's mid-task ask, and the requester's answer (Stripe Phase 2b). */
-export type ExtensionKind = "budget" | "time";
+export type ExtensionKind = "budget" | "time" | "item";
 export type ExtensionStatus = "pending" | "approved" | "denied" | "expired";
 export type ExtensionFallback = "buy_alternative" | "skip_item";
 
@@ -514,6 +517,17 @@ export interface ExtensionRequest {
   /** The supporter's own fallback read back to them, once this was denied or
    * expired. Empty on a time request, which has no fallback. */
   fallback_instruction?: string;
+  /** kind=item (an out-of-stock item, server/item.go). The price is the
+   *  alternative's — it fits the budget, or it would be a budget request. */
+  item_name?: string;
+  store_name?: string;
+  alternative_name?: string;
+  alternative_cents?: number;
+  /** Signed, short-lived link to the supporter's photo of the alternative. */
+  alternative_photo_url?: string;
+  /** What the requester said to do when something is out of stock, for the
+   *  supporter's own call when the question goes unanswered. */
+  substitution_preference?: string;
 }
 
 // GET /tasks/:id/extensions
