@@ -75,6 +75,10 @@ type Outbound struct {
 	// Relay marks a supporter's chat message passed on to the person. An
 	// inline reply to it is for the supporter (relay.go).
 	Relay bool
+	// Verbatim: words that are not HO:RA's to reword — what ops typed, or
+	// a supporter's request a YES approves. The voice layer never touches
+	// them (voice.go, D-28).
+	Verbatim bool
 }
 
 // RecordedText is the body to store for o.

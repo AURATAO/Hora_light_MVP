@@ -385,7 +385,7 @@ func (r *Router) OpsSend(ctx context.Context, id Identity, text string) error {
 	// Queued, not awaited (S-32): a slow provider must not hold the ops
 	// request open. Delivery failures are logged by dispatch.
 	return r.dispatch(ctx, true, func(c context.Context) error {
-		return r.Send(c, Outbound{Channel: id.Channel, To: id.Address, Text: text}, "")
+		return r.Send(c, Outbound{Channel: id.Channel, To: id.Address, Text: text, Verbatim: true}, "")
 	})
 }
 

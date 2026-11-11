@@ -372,6 +372,7 @@ func main() {
 		routing   = flag.Bool("routing", false, "search vs errand: rules, then the classifier on LLM_SMALL_MODEL (internal/channel/testdata/routing_paraphrases.json)")
 		scope     = flag.Bool("scope", false, "scope rules (people, homes): rules, then LLM_SMALL_MODEL on what they leave (scope_rules.evals in playbooks.json)")
 		supporter = flag.Bool("supporter", false, "supporter interest: rules, then the classifier on LLM_SMALL_MODEL (internal/channel/testdata/supporter_phrasings.json)")
+		voiceFlag = flag.Bool("voice", false, "voice layer (D-28): rewrite real router replies on LLM_SMALL_MODEL, run the rule check, report pass/fallback rates and latency (VOICE_PAIRS=1 prints before/after)")
 		scopeAll  = flag.Bool("scope-all", false, "scope: ask the model on every case, also those a rule decides (measures the model alone)")
 	)
 	flag.Parse()
@@ -387,7 +388,7 @@ func main() {
 		os.Exit(3)
 	}
 	defModel := orDefault(os.Getenv("LLM_AGENT_MODEL"), "anthropic:"+llm.DefaultAnthropicModel)
-	if *routing || *scope || *supporter {
+	if *routing || *scope || *supporter || *voiceFlag {
 		defModel = orDefault(os.Getenv("LLM_SMALL_MODEL"), "anthropic:"+llm.DefaultAnthropicModel)
 	}
 	spec, err := llm.ParseSpec(orDefault(*modelFlag, defModel))
@@ -406,6 +407,9 @@ func main() {
 	if (spec.Provider == "anthropic" && providers.AnthropicKey == "") || (spec.Provider == "baseten" && providers.BasetenKey == "") {
 		fmt.Fprintf(os.Stderr, "set the %s key (ANTHROPIC_API_KEY / LLM_API_KEY; never commit it, never paste it in chat)\n", spec.Provider)
 		os.Exit(1)
+	}
+	if *voiceFlag {
+		os.Exit(runVoice(spec, providers, *runs, *verbose, *delay/4))
 	}
 	if *routing {
 		os.Exit(runRouting(spec, providers, *delay/4))

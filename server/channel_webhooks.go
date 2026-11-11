@@ -94,6 +94,11 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		router.Agent = steps.Agent
 		log.Printf("[channel] requester agent ON (D-18)")
 	}
+	// The voice layer (D-28, internal/channel/voice.go): only with
+	// CHANNEL_VOICE=1. Sonnet (the small step's primary) rewrites the free
+	// words of each reply; fixed blocks are masked and the rewrite is
+	// checked by rule, else the copy goes out as written.
+	configureVoice(router, steps.Small)
 	// Place discovery (channel_discovery.go): only with CHANNEL_DISCOVERY=1.
 	configureDiscovery(router, sqlDB, store)
 	// Chat relay both ways (channel_relay.go) — only with TalkJS REST
@@ -143,6 +148,31 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 	// and bookings stuck in flight are settled (posting.go, 3 minutes).
 	go watchHandoffs(context.Background(), store, router, time.Minute)
 	log.Printf("[channel] webhooks enabled: sendblue, whatsapp; setup base=%s", base)
+}
+
+// configureVoice turns the voice layer on with CHANNEL_VOICE=1.
+// CHANNEL_VOICE_TIMEOUT (a Go duration, e.g. "2500ms") overrides how long
+// a reply waits for its rewrite (default channel.DefaultVoiceTimeout).
+func configureVoice(router *channel.Router, small *llm.Model) {
+	if os.Getenv("CHANNEL_VOICE") != "1" {
+		return
+	}
+	router.Voice = small
+	if v := strings.TrimSpace(os.Getenv("CHANNEL_VOICE_TIMEOUT")); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 && d <= 10*time.Second {
+			router.VoiceTimeout = d
+		} else {
+			log.Printf("[channel] WARNING: CHANNEL_VOICE_TIMEOUT %q is not a duration up to 10s — using %s", v, channel.DefaultVoiceTimeout)
+		}
+	}
+	log.Printf("[channel] voice layer ON (D-28): %s, timeout %s, prompt %s", small.Primary.Name(), firstNonZeroDur(router.VoiceTimeout, channel.DefaultVoiceTimeout), llm.VoicePromptVersion)
+}
+
+func firstNonZeroDur(a, b time.Duration) time.Duration {
+	if a > 0 {
+		return a
+	}
+	return b
 }
 
 // chatModelsFromEnv is the model behind each chat step (PLAN §9: chosen by

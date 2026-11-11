@@ -656,7 +656,7 @@ func (r *Router) sendClaimedLead(ctx context.Context, id Identity, d DeferredApp
 	if lead != "" {
 		text = lead + "\n\n" + text
 	}
-	questionOut, questionPID, err := r.sendStamped(ctx, Outbound{Channel: id.Channel, To: id.Address, Text: text}, d.TaskID)
+	questionOut, questionPID, err := r.sendStamped(ctx, Outbound{Channel: id.Channel, To: id.Address, Text: text, Verbatim: true}, d.TaskID)
 	if err != nil {
 		var pe *ProviderStatusError
 		definite := errors.As(err, &pe) && pe.Status >= 400 && pe.Status <= 499 && pe.Status != 408 && pe.Status != 409 && pe.Status != 429

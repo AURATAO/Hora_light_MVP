@@ -272,6 +272,12 @@ func (r *Router) NotifyStatus(ctx context.Context, userID string, ev StatusEvent
 		}
 	}
 	out := Outbound{Channel: t.Identity.Channel, To: t.Identity.Address, Text: text}
+	switch ev.Type {
+	case evTimeRequested, evBudgetRequested, evItemProposed, evItemUnavailable:
+		// A supporter's request (what a YES or a 1/2 answers) and their
+		// item notice: word for word (D-28).
+		out.Verbatim = true
+	}
 	if ev.Type == "COMPLETED" && ev.PhotoURL != "" {
 		out.MediaURL, out.MediaExpires = ev.PhotoURL, true
 	}

@@ -306,6 +306,12 @@ type Router struct {
 	// "I can only read text" reply).
 	Photos PhotoStore
 	Blobs  PhotoBlobs
+	// Voice rewrites the free words of each reply in HO:RA's voice (D-28,
+	// voice.go; behind CHANNEL_VOICE). Nil = off: every reply is the copy
+	// as written. VoiceTimeout: how long a reply waits for its rewrite
+	// before the original is sent (0 = DefaultVoiceTimeout).
+	Voice        llm.Voicer
+	VoiceTimeout time.Duration
 }
 
 // dispatch runs a reply: inline when routing a webhook message (already off
@@ -319,8 +325,9 @@ func (r *Router) dispatch(ctx context.Context, async bool, f func(context.Contex
 	if run == nil {
 		run = func(fn func()) { go fn() }
 	}
+	words := customerWords(ctx)
 	run(func() {
-		c, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		c, cancel := context.WithTimeout(withCustomerWords(context.Background(), words), 60*time.Second)
 		defer cancel()
 		if err := f(c); err != nil {
 			log.Printf("[channel] async reply: %v", err)
@@ -380,6 +387,8 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 		return fmt.Errorf("HandleInbound: %w", err)
 	}
 	text := strings.TrimSpace(in.Text)
+	// The voice layer reads the person's words for tone and language only.
+	ctx = withCustomerWords(ctx, text)
 	// Photos are downloaded and stored first, whatever happens next:
 	// provider links expire (photos.go).
 	hasPhotos := false
@@ -1811,6 +1820,9 @@ func (r *Router) sendStamped(ctx context.Context, out Outbound, taskID string) (
 			return time.Time{}, "", fmt.Errorf("send to %s: %w", Redact(out.To), ErrRecipientOptedOut)
 		}
 	}
+	// The voice layer (D-28): before the stamp, so the stamp still moves
+	// only for a message that is about to go out as it will be read.
+	out.Text = r.voiceText(ctx, out)
 	stamp, err := r.Conversations.TouchOutbound(ctx, out.Channel, out.To)
 	if err != nil {
 		return time.Time{}, "", fmt.Errorf("send to %s: %w", Redact(out.To), err)

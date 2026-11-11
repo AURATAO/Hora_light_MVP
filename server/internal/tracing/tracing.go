@@ -300,7 +300,28 @@ func identityAttrs(m *message) []attribute.KeyValue {
 // Span is a step under the message trace. Its text methods redact; all of
 // them are no-ops when the span is not recording (tracing off, or no message
 // trace with a known conversation above it).
-type Span struct{ s trace.Span }
+type Span struct {
+	s trace.Span
+	// noText: an LLM span opened under WithoutText — the prompt's user
+	// turn and the model's output are not recorded.
+	noText bool
+}
+
+type noTextKey struct{}
+
+// WithoutText marks ctx so that LLM spans opened under it record the model,
+// parameters, tokens and latency but no message text: neither the user turn
+// nor the output. For a step whose input and accepted output are already on
+// another span (channel.voice: the reply is on channel.send), so a rejected
+// output is never kept.
+func WithoutText(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noTextKey{}, true)
+}
+
+func textOff(ctx context.Context) bool {
+	off, _ := ctx.Value(noTextKey{}).(bool)
+	return off
+}
 
 // StartSpan opens a child span of the message trace in ctx. Outside one — the
 // app's own endpoints, a background job, a message whose conversation is not
@@ -308,17 +329,17 @@ type Span struct{ s trace.Span }
 func StartSpan(ctx context.Context, name, kind string) (context.Context, Span) {
 	m := msgFrom(ctx)
 	if m == nil {
-		return ctx, Span{trace.SpanFromContext(context.Background())}
+		return ctx, Span{s: trace.SpanFromContext(context.Background())}
 	}
 	m.mu.Lock()
 	known := m.sessionID != ""
 	attrs := identityAttrs(m)
 	m.mu.Unlock()
 	if !known {
-		return ctx, Span{trace.SpanFromContext(context.Background())}
+		return ctx, Span{s: trace.SpanFromContext(context.Background())}
 	}
 	ctx, sp := tracer().Start(ctx, name, trace.WithAttributes(append(attrs, attribute.String(attrKind, kind))...))
-	return ctx, Span{sp}
+	return ctx, Span{s: sp}
 }
 
 // StartRootSpan is StartSpan for work that may run outside a message trace
@@ -330,7 +351,7 @@ func StartRootSpan(ctx context.Context, name, kind, channel, userID, sessionID s
 		return StartSpan(ctx, name, kind)
 	}
 	if !Enabled() || sessionID == "" {
-		return ctx, Span{trace.SpanFromContext(context.Background())}
+		return ctx, Span{s: trace.SpanFromContext(context.Background())}
 	}
 	kv := []attribute.KeyValue{
 		attribute.String(attrKind, kind),
@@ -341,7 +362,7 @@ func StartRootSpan(ctx context.Context, name, kind, channel, userID, sessionID s
 		kv = append(kv, attribute.String(attrUser, userID))
 	}
 	ctx, sp := tracer().Start(ctx, name, trace.WithNewRoot(), trace.WithAttributes(kv...))
-	return ctx, Span{sp}
+	return ctx, Span{s: sp}
 }
 
 // Recording reports whether anything set on s is kept; check it before
@@ -368,14 +389,14 @@ func (s Span) OutputValue(v any) {
 }
 
 func (s Span) text(key, mimeKey, mime, v string) {
-	if s.Recording() {
+	if s.Recording() && !s.noText {
 		s.s.SetAttributes(attribute.String(key, Redact(v)), attribute.String(mimeKey, mime))
 	}
 }
 
 // Text sets a string attribute that may hold personal text, redacted.
 func (s Span) Text(key, v string) {
-	if s.Recording() {
+	if s.Recording() && !s.noText {
 		s.s.SetAttributes(attribute.String(key, Redact(v)))
 	}
 }
@@ -464,6 +485,16 @@ func StartLLM(ctx context.Context, name string, c LLMCall) (context.Context, Spa
 	if !s.Recording() {
 		return ctx, s
 	}
+	if textOff(ctx) {
+		s.noText = true
+		s.s.SetAttributes(
+			attribute.String(attrModel, c.Model),
+			attribute.String(attrProvider, c.Provider),
+			attribute.String(attrParams, jsonString(c.Params)),
+			attribute.Bool("hora.llm.text_omitted", true),
+		)
+		return ctx, s
+	}
 	user := Redact(c.User)
 	s.s.SetAttributes(
 		attribute.String(attrModel, c.Model),
@@ -482,6 +513,14 @@ func StartLLM(ctx context.Context, name string, c LLMCall) (context.Context, Spa
 // LLMResult records the model's raw output (redacted) and token usage.
 func (s Span) LLMResult(output string, promptTokens, completionTokens int) {
 	if !s.Recording() {
+		return
+	}
+	if s.noText {
+		s.s.SetAttributes(
+			attribute.Int(attrTokPrompt, promptTokens),
+			attribute.Int(attrTokComplete, completionTokens),
+			attribute.Int(attrTokTotal, promptTokens+completionTokens),
+		)
 		return
 	}
 	out := Redact(output)

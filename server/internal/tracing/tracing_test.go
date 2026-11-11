@@ -241,3 +241,31 @@ func TestErrorEvent(t *testing.T) {
 		t.Fatal("inside a message trace the error span is its child")
 	}
 }
+
+// Under WithoutText an LLM span keeps model, params and tokens, and no text.
+func TestLLMSpanWithoutText(t *testing.T) {
+	exp := tracetest.NewInMemoryExporter()
+	stop := StartWithExporter(exp)
+	defer func() { _ = stop(context.Background()) }()
+	ctx := StartMessage(context.Background(), "imessage", "m-nt", "hello")
+	WithIdentity(ctx, "user-uuid", "identity-uuid")
+	_, sp := StartLLM(WithoutText(ctx), "llm.voice", LLMCall{Model: "m", Provider: "p", System: "sys", User: "the reply text"})
+	sp.LLMResult("the rewrite", 10, 5)
+	sp.Text("hora.llm.truncated_output", "the rewrite")
+	sp.Output("the rewrite")
+	sp.End()
+	EndMessage(ctx, nil)
+	s, ok := byName(exp.GetSpans(), "llm.voice")
+	if !ok {
+		t.Fatal("no span")
+	}
+	a := attrs(s)
+	for k, v := range a {
+		if strings.Contains(v, "reply text") || strings.Contains(v, "rewrite") || strings.Contains(v, "sys") {
+			t.Errorf("text on the span: %s=%q", k, v)
+		}
+	}
+	if a["llm.token_count.total"] != "15" || a["llm.model_name"] != "m" {
+		t.Errorf("attrs %v", a)
+	}
+}
