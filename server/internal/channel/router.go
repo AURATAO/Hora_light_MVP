@@ -325,9 +325,9 @@ func (r *Router) dispatch(ctx context.Context, async bool, f func(context.Contex
 	if run == nil {
 		run = func(fn func()) { go fn() }
 	}
-	words := customerWords(ctx)
+	parent := ctx
 	run(func() {
-		c, cancel := context.WithTimeout(withCustomerWords(context.Background(), words), 60*time.Second)
+		c, cancel := context.WithTimeout(withSignalOf(context.Background(), parent), 60*time.Second)
 		defer cancel()
 		if err := f(c); err != nil {
 			log.Printf("[channel] async reply: %v", err)

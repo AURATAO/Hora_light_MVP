@@ -1479,6 +1479,12 @@ func (r *Router) agentHandOff(ctx context.Context, in Inbound, id Identity, p ll
 		return fmt.Errorf("agentHandOff: %w", err)
 	}
 	log.Printf("[channel] agent escalation identity=%s reason=%s state=%s", id.ID, p.Escalation, fresh.State)
+	// The agent was asked anyway: a dispute or the same misunderstanding
+	// again reads as a frustrated customer for the voice layer (D-28).
+	switch p.Escalation {
+	case llm.EscalateDispute, llm.EscalateConfused:
+		markStressed(ctx, "agent:"+string(p.Escalation))
+	}
 	switch fresh.State {
 	case StatePosting:
 		// Handed off mid-booking: ops are told now and hold the thread; the

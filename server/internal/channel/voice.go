@@ -19,10 +19,20 @@ import (
 	"hora-auth/internal/tracing"
 )
 
-// The voice layer (D-28, behind CHANNEL_VOICE=1). After the router has
-// decided WHAT to say, Router.Voice (Sonnet, the small step) rewrites the
-// free words of a customer-facing reply in HO:RA's voice
-// (llm/voice.md). It decides nothing:
+// The voice layer (D-28, behind CHANNEL_VOICE=1). Warm English lives in the
+// copy itself (copy.go); at runtime Router.Voice (Sonnet, the small step)
+// rewrites a reply only when the customer needs something the copy cannot
+// give (voiceTrigger):
+//
+//   - language: their latest message is not in English (rules:
+//     DetectLanguage) — the reply is written in it, Chinese in the script
+//     they used;
+//   - stressed: they sound stressed or frustrated (rules: StressedBy; or
+//     the agent's own escalation of this message, when it was asked
+//     anyway) — the reply may open with one short acknowledgement.
+//
+// Every other reply is sent as written: no model call, no added latency.
+// When it does run, it decides nothing:
 //
 //  1. Whole messages that must go word for word are never sent: supporter
 //     relays, ops' own words, a supporter's request (what a YES approves),
@@ -36,8 +46,8 @@ import (
 //     filled into a Copy* format (voiceFormats).
 //  3. The rewrite is checked by rule (CheckVoice) against the original.
 //     Any failure, a model error, or no answer within VoiceTimeout sends
-//     the original text unchanged. The reason is logged and put on the
-//     channel.voice span; no message text is.
+//     the original text unchanged. The trigger and the reason are logged
+//     and put on the channel.voice span; no message text is.
 
 // DefaultVoiceTimeout is how long a reply may wait for its rewrite: 2.5 s.
 // Measured on Sonnet 5.5 (agenttest -voice, D-28, 2026-11-11): one run of
@@ -54,7 +64,14 @@ const DefaultVoiceTimeout = 2500 * time.Millisecond
 const (
 	VoiceRewritten = "rewritten"
 	VoiceFallback  = "fallback"
-	VoiceFixed     = "fixed" // never sent to the model
+	VoiceFixed     = "fixed"   // never sent to the model
+	VoiceSkipped   = "skipped" // no trigger: English, calm — sent as written
+)
+
+// Voice triggers.
+const (
+	VoiceTriggerLanguage = "language"
+	VoiceTriggerStressed = "stressed"
 )
 
 func (r *Router) voiceTimeout() time.Duration {
@@ -64,25 +81,108 @@ func (r *Router) voiceTimeout() time.Duration {
 	return DefaultVoiceTimeout
 }
 
-// customerWordsKey carries the person's latest message to the voice layer
-// (tone and language only).
-type customerWordsKey struct{}
+// voiceSignal is what the voice layer knows about the customer for this
+// reply: their latest words, and whether anything already asked about the
+// message (the agent) found them upset. Shared by pointer down the ctx so
+// a later step can mark it.
+type voiceSignal struct {
+	mu    sync.Mutex
+	words string
+	// fromThread: the words are the thread's last inbound, not a message
+	// this reply answers (a status update) — good for the language only.
+	fromThread bool
+	stressBy   string // set by a model step that was asked anyway
+}
+
+type voiceSignalKey struct{}
 
 func withCustomerWords(ctx context.Context, text string) context.Context {
-	return context.WithValue(ctx, customerWordsKey{}, text)
+	return context.WithValue(ctx, voiceSignalKey{}, &voiceSignal{words: text})
+}
+
+// withThreadWords: the language of the thread, for a reply that answers
+// no message of theirs.
+func withThreadWords(ctx context.Context, text string) context.Context {
+	return context.WithValue(ctx, voiceSignalKey{}, &voiceSignal{words: text, fromThread: true})
+}
+
+func signalFrom(ctx context.Context) *voiceSignal {
+	s, _ := ctx.Value(voiceSignalKey{}).(*voiceSignal)
+	return s
+}
+
+// withSignalOf carries ctx's signal onto a fresh context (dispatch).
+func withSignalOf(dst, src context.Context) context.Context {
+	if s := signalFrom(src); s != nil {
+		return context.WithValue(dst, voiceSignalKey{}, s)
+	}
+	return dst
 }
 
 func customerWords(ctx context.Context) string {
-	s, _ := ctx.Value(customerWordsKey{}).(string)
-	return s
+	if s := signalFrom(ctx); s != nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.words
+	}
+	return ""
+}
+
+// markStressed records that a model step already run for this message
+// read the customer as upset (by: "agent:dispute").
+func markStressed(ctx context.Context, by string) {
+	if s := signalFrom(ctx); s != nil {
+		s.mu.Lock()
+		if s.stressBy == "" {
+			s.stressBy = by
+		}
+		s.mu.Unlock()
+	}
+}
+
+// voiceTrigger says whether this reply goes to the model, and why.
+type voiceTrigger struct {
+	Reason   string // "" none | language | stressed | language+stressed
+	Lang     string // DetectLanguage: "" English
+	StressBy string // the rule or step that found stress
+	Words    string
+	Formal   bool // Chinese: the customer used 您
+}
+
+func voiceTriggerFor(ctx context.Context) voiceTrigger {
+	s := signalFrom(ctx)
+	if s == nil {
+		return voiceTrigger{}
+	}
+	s.mu.Lock()
+	words, fromThread, by := s.words, s.fromThread, s.stressBy
+	s.mu.Unlock()
+	t := voiceTrigger{Words: words, Lang: DetectLanguage(words), Formal: strings.Contains(words, "您")}
+	if !fromThread {
+		if rule := StressedBy(words); rule != "" {
+			by = "rule:" + rule
+		}
+		t.StressBy = by
+	}
+	switch {
+	case t.Lang != "" && t.StressBy != "":
+		t.Reason = VoiceTriggerLanguage + "+" + VoiceTriggerStressed
+	case t.Lang != "":
+		t.Reason = VoiceTriggerLanguage
+	case t.StressBy != "":
+		t.Reason = VoiceTriggerStressed
+	}
+	return t
 }
 
 // VoiceResult is what the voice layer did with one reply.
 type VoiceResult struct {
 	Text     string // what to send
-	Outcome  string // VoiceRewritten | VoiceFallback | VoiceFixed
+	Outcome  string // VoiceRewritten | VoiceFallback | VoiceFixed | VoiceSkipped
 	Reason   string // why fixed / why it fell back
-	Language string
+	Trigger  string // why it ran: language | stressed | language+stressed
+	StressBy string
+	Language string // what the rules detected ("" English)
 	Latency  time.Duration
 	Blocks   int
 	// Rejected is the model's rewrite that failed the check — for the eval
@@ -90,8 +190,8 @@ type VoiceResult struct {
 	Rejected string
 }
 
-// voiceText is the text to send for out: the rewrite when the voice is on
-// and every rule holds, else out.Text unchanged.
+// voiceText is the text to send for out: the rewrite when the voice is on,
+// triggered, and every rule holds; else out.Text unchanged.
 func (r *Router) voiceText(ctx context.Context, out Outbound) string {
 	if r.Voice == nil {
 		return out.Text
@@ -101,6 +201,8 @@ func (r *Router) voiceText(ctx context.Context, out Outbound) string {
 	sp.Attr(
 		attribute.String("hora.voice.outcome", res.Outcome),
 		attribute.String("hora.voice.reason", res.Reason),
+		attribute.String("hora.voice.trigger", res.Trigger),
+		attribute.String("hora.voice.stress_by", res.StressBy),
 		attribute.Int64("hora.voice.latency_ms", res.Latency.Milliseconds()),
 		attribute.String("hora.voice.language", res.Language),
 		attribute.Int("hora.voice.blocks", res.Blocks),
@@ -110,8 +212,9 @@ func (r *Router) voiceText(ctx context.Context, out Outbound) string {
 		attribute.String("hora.channel", string(out.Channel)),
 	)
 	sp.End()
-	if res.Outcome == VoiceFallback {
-		log.Printf("[channel] voice fallback channel=%s reason=%s latency_ms=%d", out.Channel, res.Reason, res.Latency.Milliseconds())
+	if res.Trigger != "" {
+		log.Printf("[channel] voice channel=%s trigger=%s stress_by=%s lang=%s outcome=%s reason=%s latency_ms=%d",
+			out.Channel, res.Trigger, res.StressBy, res.Language, res.Outcome, res.Reason, res.Latency.Milliseconds())
 	}
 	return res.Text
 }
@@ -119,18 +222,30 @@ func (r *Router) voiceText(ctx context.Context, out Outbound) string {
 // VoiceRewrite runs the voice layer on one reply (exported for the eval).
 func (r *Router) VoiceRewrite(ctx context.Context, out Outbound) VoiceResult {
 	orig := out.Text
+	tr := voiceTriggerFor(ctx)
+	base := VoiceResult{Text: orig, Trigger: tr.Reason, StressBy: tr.StressBy, Language: tr.Lang}
+	if tr.Reason == "" {
+		base.Outcome, base.Reason = VoiceSkipped, "english_calm"
+		return base
+	}
 	if reason := r.voiceFixedReason(out); reason != "" {
-		return VoiceResult{Text: orig, Outcome: VoiceFixed, Reason: reason}
+		base.Outcome, base.Reason = VoiceFixed, reason
+		return base
 	}
 	masked, blocks := MaskForVoice(orig)
+	base.Blocks = len(blocks)
 	if !hasFreeWords(masked) {
-		return VoiceResult{Text: orig, Outcome: VoiceFixed, Reason: "nothing_free", Blocks: len(blocks)}
+		base.Outcome, base.Reason = VoiceFixed, "nothing_free"
+		return base
 	}
 	cctx, cancel := context.WithTimeout(ctx, r.voiceTimeout())
 	defer cancel()
 	start := time.Now()
-	got, err := r.Voice.Voice(cctx, llm.VoiceInput{Text: masked, Customer: customerWords(ctx)})
-	res := VoiceResult{Text: orig, Outcome: VoiceFallback, Latency: time.Since(start), Blocks: len(blocks), Language: got.Language}
+	got, err := r.Voice.Voice(cctx, llm.VoiceInput{
+		Text: masked, Customer: tr.Words, Language: tr.Lang, Stressed: tr.StressBy != "", Formal: tr.Formal,
+	})
+	res := base
+	res.Outcome, res.Latency = VoiceFallback, time.Since(start)
 	switch {
 	case err != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, llm.ErrTimeout) || cctx.Err() != nil):
 		res.Reason = "timeout"
@@ -144,7 +259,8 @@ func (r *Router) VoiceRewrite(ctx context.Context, out Outbound) VoiceResult {
 		res.Reason, res.Rejected = "tokens", got.Text
 		return res
 	}
-	if reason := CheckVoice(orig, restored, blocks, got.Language); reason != "" {
+	opts := VoiceCheck{Lang: tr.Lang, Wrote: got.Language, Stressed: tr.StressBy != "", Formal: tr.Formal}
+	if reason := CheckVoice(orig, restored, blocks, opts); reason != "" {
 		res.Reason, res.Rejected = reason, restored
 		return res
 	}
@@ -259,7 +375,27 @@ type span struct{ a, b int }
 // MaskForVoice replaces the fixed spans of text with ⟦1⟧, ⟦2⟧, … and
 // returns the masked text and the blocks, in order.
 func MaskForVoice(text string) (string, []string) {
-	var spans []span
+	return maskVoice(text, nil)
+}
+
+// MaskTemplateForVoice is MaskForVoice for a Copy* template: its format
+// verbs (%s, %[2]s, %d …) are fixed too (agenttest -voice-copy).
+func MaskTemplateForVoice(tmpl string) (string, []string) {
+	var verbs []span
+	for _, m := range fmtVerbRE.FindAllStringIndex(tmpl, -1) {
+		verbs = append(verbs, span{m[0], m[1]})
+	}
+	return maskVoice(tmpl, verbs)
+}
+
+// UnmaskVoice puts n blocks back into a masked text (false: a token is
+// missing, repeated or invented).
+func UnmaskVoice(text string, blocks []string) (string, bool) {
+	return unmaskVoice(text, len(blocks), blocks)
+}
+
+func maskVoice(text string, extra []span) (string, []string) {
+	spans := append([]span(nil), extra...)
 	// Whole lines.
 	off := 0
 	for _, line := range strings.SplitAfter(text, "\n") {
@@ -312,6 +448,9 @@ func sentences(line string) []span {
 		if j < len(line) && line[j] != ' ' {
 			continue
 		}
+		if c == '.' && (strings.HasSuffix(line[:i+1], "e.g.") || strings.HasSuffix(line[:i+1], "i.e.")) {
+			continue
+		}
 		for j < len(line) && line[j] == ' ' {
 			j++
 		}
@@ -350,10 +489,25 @@ func mergeSpans(s []span) []span {
 
 // formatValueSpans: the values filled into any Copy* format that appears
 // in text — a draft's title, an address, a supporter's name, a count.
+// Where two formats match the same words, the one with more literal text
+// is the one that was sent ("%s is on the way for %s. I'll text you …"
+// over "%s is on the way%s%s."); the other is ignored.
 func formatValueSpans(text string) []span {
-	var out []span
-	for _, re := range voiceFormatREs() {
-		for _, m := range re.FindAllStringSubmatchIndex(text, -1) {
+	var out, taken []span
+	for _, f := range voiceFormatREs() {
+		for _, m := range f.re.FindAllStringSubmatchIndex(text, -1) {
+			whole := span{m[0], m[1]}
+			clash := false
+			for _, t := range taken {
+				if whole.a < t.b && t.a < whole.b {
+					clash = true
+					break
+				}
+			}
+			if clash {
+				continue
+			}
+			taken = append(taken, whole)
 			for g := 2; g+1 < len(m); g += 2 {
 				if m[g] >= 0 && m[g+1] > m[g] {
 					out = append(out, span{m[g], m[g+1]})
@@ -364,16 +518,21 @@ func formatValueSpans(text string) []span {
 	return out
 }
 
+type voiceFormatRE struct {
+	re      *regexp.Regexp
+	literal int
+}
+
 var (
 	voiceFormatOnce sync.Once
-	voiceFormatRx   []*regexp.Regexp
+	voiceFormatRx   []voiceFormatRE
 	fmtVerbRE       = regexp.MustCompile(`%(?:\[\d+\])?[-+# 0]*\d*(?:\.\d+)?[sdvfq]`)
 )
 
 // voiceFormatREs compiles each line of each format with a verb into a
-// regexp whose groups are the values. A line with under six literal
-// characters ("%s") would match anything and is skipped.
-func voiceFormatREs() []*regexp.Regexp {
+// regexp whose groups are the values, longest literal first. A line with
+// under six literal characters ("%s") would match anything and is skipped.
+func voiceFormatREs() []voiceFormatRE {
 	voiceFormatOnce.Do(func() {
 		for _, f := range voiceFormats {
 			for _, piece := range strings.Split(f, "\n") {
@@ -385,21 +544,26 @@ func voiceFormatREs() []*regexp.Regexp {
 				if literal < 6 {
 					continue
 				}
+				// A value may be empty (an optional " — 2 blocks away"); one
+				// at the end of the line stops at the end of its sentence, so
+				// a copy glued on after it ("… — I've asked them") is not
+				// taken for the value.
 				var b strings.Builder
+				b.WriteString(`(?m)`)
 				last := 0
 				for i, l := range locs {
 					b.WriteString(regexp.QuoteMeta(strings.ReplaceAll(piece[last:l[0]], "%%", "%")))
+					b.WriteString(`([^\n]*?)`)
 					if i == len(locs)-1 && l[1] == len(piece) {
-						b.WriteString(`([^\n]+)`)
-					} else {
-						b.WriteString(`([^\n]+?)`)
+						b.WriteString(`(?:[.!?](?:\s|$)|\s—|$)`)
 					}
 					last = l[1]
 				}
 				b.WriteString(regexp.QuoteMeta(strings.ReplaceAll(piece[last:], "%%", "%")))
-				voiceFormatRx = append(voiceFormatRx, regexp.MustCompile(b.String()))
+				voiceFormatRx = append(voiceFormatRx, voiceFormatRE{regexp.MustCompile(b.String()), literal})
 			}
 		}
+		sort.SliceStable(voiceFormatRx, func(i, j int) bool { return voiceFormatRx[i].literal > voiceFormatRx[j].literal })
 	})
 	return voiceFormatRx
 }
@@ -454,16 +618,44 @@ var (
 	voiceNameRE   = regexp.MustCompile(`\b[A-Z][A-Za-z0-9'’&.:-]*[A-Za-z0-9]|\b[A-Z]\b`)
 	voiceAIRE     = regexp.MustCompile(`(?i)\bas an ai\b|\blanguage model\b|\bi'?m (?:just )?(?:a|an) (?:bot|ai)\b`)
 	// English words that would change what was decided or promised.
-	voiceCommitRE  = regexp.MustCompile(`(?i)\b(?:book(?:ed|ing)?|confirm(?:ed)?|cancel(?:led|ed)?|refund(?:ed)?|free|guarantee[ds]?|promise[ds]?|charge[ds]?|discount|waive[ds]?|minutes?|hours?|asap|right away|immediately)\b`)
+	voiceCommitRE  = regexp.MustCompile(`(?i)\b(?:book(?:ed|ing)?|confirm(?:ed)?|cancel(?:led|ed)?|refund(?:ed)?|free|guarantee[ds]?|promise[ds]?|charge[ds]?|discount|waive[ds]?|minutes?|hours?|asap|as soon as|right away|immediately)\b`)
 	voiceNumWordRE = regexp.MustCompile(`(?i)\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty|fifty|hundred|half|dozen|couple)\b`)
 )
 
+// VoiceCheck is what the check knows besides the two texts.
+type VoiceCheck struct {
+	// Lang is what the rules detected in the customer's words ("" English);
+	// Wrote, what the model says it wrote (ISO 639-1).
+	Lang, Wrote string
+	// Stressed: one opening acknowledgement of up to voiceAckChars more is
+	// allowed.
+	Stressed bool
+	// Formal: the customer wrote 您 (Chinese); otherwise the reply uses 你.
+	Formal bool
+}
+
+// voiceAckChars: the room an opening acknowledgement may take for a
+// stressed customer ("Sorry for the wait — ", "Totally understand — ").
+const voiceAckChars = 25
+
 // CheckVoice is the rule check on a rewrite (restored: blocks back in).
 // It returns "" when the rewrite may be sent, else the first reason it may
-// not. lang is the language the model says it wrote.
-func CheckVoice(original, rewritten string, blocks []string, lang string) string {
+// not.
+func CheckVoice(original, rewritten string, blocks []string, o VoiceCheck) string {
 	if strings.TrimSpace(rewritten) == "" {
 		return "empty"
+	}
+	if reason := checkLanguage(rewritten, o); reason != "" {
+		return reason
+	}
+	if voiceGarbledRE.MatchString(rewritten) && !voiceGarbledRE.MatchString(original) {
+		return "garbled"
+	}
+	if o.Lang != "" && untranslated(rewritten, blocks) {
+		return "untranslated"
+	}
+	if gendered(original, rewritten) {
+		return "gendered"
 	}
 	// Every fixed block, unchanged, in order.
 	pos := 0
@@ -525,6 +717,9 @@ func CheckVoice(original, rewritten string, blocks []string, lang string) string
 	if voiceAIRE.MatchString(rewritten) && !voiceAIRE.MatchString(original) {
 		return "as_an_ai"
 	}
+	if newName(original, rewritten) {
+		return "name_added"
+	}
 	if strings.Contains(rewritten, "!!") || strings.Count(rewritten, "!") > max(1, strings.Count(original, "!")) {
 		return "exclamation"
 	}
@@ -532,7 +727,7 @@ func CheckVoice(original, rewritten string, blocks []string, lang string) string
 	if re > max(1, oe) {
 		return "emoji"
 	}
-	english := lang == "" || lang == "en"
+	english := o.Lang == ""
 	if english {
 		if len(voiceCommitRE.FindAllString(rewritten, -1)) > len(voiceCommitRE.FindAllString(original, -1)) {
 			return "commitment_added"
@@ -540,12 +735,128 @@ func CheckVoice(original, rewritten string, blocks []string, lang string) string
 		if len(voiceNumWordRE.FindAllString(rewritten, -1)) > len(voiceNumWordRE.FindAllString(original, -1)) {
 			return "number_added"
 		}
+		if n := len(voiceSorryRE.FindAllString(rewritten, -1)); n > max(1, len(voiceSorryRE.FindAllString(original, -1))) {
+			return "over_apology"
+		}
 	}
 	// Same length or shorter; a 10% margin (at least 10 characters) for a
-	// warmer word. Another language may run longer than English.
-	ol, rl := utf8.RuneCountInString(original), utf8.RuneCountInString(rewritten)
-	if english && rl > ol+max(10, ol/10) || !english && rl > ol*8/5+10 {
-		return "too_long"
+	// warmer word. Another language may run longer than English. A
+	// stressed customer's reply may also open with one acknowledgement.
+	ol := utf8.RuneCountInString(original)
+	limit := ol + max(10, ol/10)
+	if !english {
+		limit = ol*8/5 + 10
+	}
+	if utf8.RuneCountInString(rewritten) > limit {
+		if !o.Stressed {
+			return "too_long"
+		}
+		ack, rest, ok := openingAck(rewritten)
+		if !ok || utf8.RuneCountInString(ack) > voiceAckChars || utf8.RuneCountInString(rest) > limit {
+			return "too_long"
+		}
+		if questions(ack) > 0 || voiceNumberRE.MatchString(ack) || english && voiceCommitRE.MatchString(ack) {
+			return "ack_not_plain"
+		}
+	}
+	return ""
+}
+
+// voiceGarbledRE: text decoded in the wrong charset ("ÂżEn quĂ©",
+// "â€™"), or the replacement character.
+var voiceGarbledRE = regexp.MustCompile(`[ÃÂĂĹ][\x{80}-\x{24F}]|â€|\x{FFFD}`)
+
+// voiceEnglishRE: English words that no other language writes — left in a
+// translated reply outside the fixed blocks, they are untranslated copy.
+var voiceEnglishRE = regexp.MustCompile(`(?i)\b(?:the|and|for|you|your|is|are|with|they|them|this|that|what|when|where|how|i'?ll|i'?m|won'?t|can'?t|couldn'?t|just|please|here)\b`)
+
+func untranslated(rewritten string, blocks []string) bool {
+	free := rewritten
+	for _, b := range blocks {
+		free = strings.Replace(free, b, " ", 1)
+	}
+	return voiceEnglishRE.MatchString(free)
+}
+
+// gendered: a supporter's gender is never known; the copy says "they".
+// A reply that adds "he" or "she" (他 / 她 / él / ella / il / elle …)
+// guesses it.
+var voiceGenderRE = regexp.MustCompile(`(?i)\b(?:he|she|him|his|her|hers|él|ella|il|elle|lui|lei|ele|ela|er|sie)\b|他(?:[^们們]|$)|她`)
+
+func gendered(original, rewritten string) bool {
+	return len(voiceGenderRE.FindAllString(rewritten, -1)) > len(voiceGenderRE.FindAllString(original, -1))
+}
+
+// newName: a capitalised Latin word in the middle of a sentence that the
+// original does not have ("de Nueva York") — a fact the router did not
+// give.
+func newName(original, rewritten string) bool {
+	for _, m := range voiceMidCapRE.FindAllStringSubmatch(rewritten, -1) {
+		w := strings.TrimSuffix(strings.TrimSuffix(m[1], "'s"), "’s")
+		if w == "I" || strings.HasPrefix(w, "I'") || strings.HasPrefix(w, "I’") || voiceKeywordRE.MatchString(w) {
+			continue
+		}
+		if !containsWord(original, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// voiceMidCapRE: a capitalised word after a lower-case word or a comma —
+// not at the start of a sentence, a line or a quote.
+var voiceMidCapRE = regexp.MustCompile(`[\p{Ll},]\s+([A-Z][A-Za-z0-9'’&-]*)`)
+
+var voiceSorryRE = regexp.MustCompile(`(?i)\bsorry\b|\bapologi[sz]e`)
+
+// openingAck splits a reply into its opening clause and the rest: the
+// clause ends at the first dash, comma, period, "!" or colon (or their
+// full-width forms) within the first voiceAckChars+5 characters.
+func openingAck(s string) (ack, rest string, ok bool) {
+	n := 0
+	for i, c := range s {
+		if n > voiceAckChars+5 {
+			return "", "", false
+		}
+		n++
+		switch c {
+		case '—', '–', ',', '.', '!', ':', '，', '。', '！', '：', '、':
+			j := i + utf8.RuneLen(c)
+			return s[:j], strings.TrimLeft(s[j:], " "), true
+		case '-':
+			if i > 0 && s[i-1] == ' ' {
+				j := i + 1
+				return s[:j], strings.TrimLeft(s[j:], " "), true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// checkLanguage: the reply is in the customer's language, Chinese in their
+// script and their form of "you".
+func checkLanguage(rewritten string, o VoiceCheck) string {
+	wrote := strings.ToLower(o.Wrote)
+	want := strings.ToLower(o.Lang)
+	switch {
+	case want == "" && wrote != "" && wrote != "en":
+		return "language_mismatch"
+	case want == "other" && wrote == "en":
+		return "language_mismatch"
+	case want != "" && want != "other" && !strings.HasPrefix(wrote, want[:2]):
+		return "language_mismatch"
+	}
+	if strings.HasPrefix(want, "zh") {
+		trad, simp := chineseScript(rewritten)
+		switch {
+		case want == LangZhHant && simp > 0:
+			return "script_mismatch"
+		case want == LangZhHans && trad > 0:
+			return "script_mismatch"
+		}
+		if !o.Formal && strings.Contains(rewritten, "您") {
+			return "formality"
+		}
 	}
 	return ""
 }
@@ -571,7 +882,9 @@ func emojiCount(s string) int {
 }
 
 func containsWord(s, w string) bool {
-	re, err := regexp.Compile(`(?:^|[^\p{L}\p{N}])` + regexp.QuoteMeta(w) + `(?:$|[^\p{L}\p{N}])`)
+	// A Latin-letter boundary only: Chinese writes "Bea已经到了" with no
+	// space, and the name is still there.
+	re, err := regexp.Compile(`(?:^|[^A-Za-z0-9])` + regexp.QuoteMeta(w) + `(?:$|[^A-Za-z0-9])`)
 	if err != nil {
 		return strings.Contains(s, w)
 	}
@@ -594,6 +907,7 @@ func voiceNames(s string) map[string]bool {
 	out := map[string]bool{}
 	for _, w := range voiceNameRE.FindAllString(s, -1) {
 		w = strings.TrimRight(w, ".:")
+		w = strings.TrimSuffix(strings.TrimSuffix(w, "'s"), "’s")
 		if voiceStarters[w] || w == "" {
 			continue
 		}
@@ -609,4 +923,9 @@ func voiceNames(s string) map[string]bool {
 // HandleInbound does (cmd/agenttest -voice).
 func WithCustomerWordsForEval(ctx context.Context, text string) context.Context {
 	return withCustomerWords(ctx, text)
+}
+
+// WithThreadWordsForEval: a status update, whose language is the thread's.
+func WithThreadWordsForEval(ctx context.Context, text string) context.Context {
+	return withThreadWords(ctx, text)
 }

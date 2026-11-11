@@ -271,6 +271,7 @@ func (r *Router) NotifyStatus(ctx context.Context, userID string, ev StatusEvent
 			return nil
 		}
 	}
+	ctx = r.withThreadLanguage(ctx, t.Identity)
 	out := Outbound{Channel: t.Identity.Channel, To: t.Identity.Address, Text: text}
 	switch ev.Type {
 	case evTimeRequested, evBudgetRequested, evItemProposed, evItemUnavailable:
@@ -334,4 +335,30 @@ func (r *Router) sendWithMediaFallback(ctx context.Context, out Outbound, taskID
 		out.Text = textOnly
 	}
 	return r.Send(ctx, out, taskID)
+}
+
+// withThreadLanguage: a status update answers no message, so the voice
+// layer takes the language of the person's last message in the thread —
+// the language only, never its mood (D-28). Only when the voice is on.
+func (r *Router) withThreadLanguage(ctx context.Context, id Identity) context.Context {
+	if r.Voice == nil || r.Thread == nil || signalFrom(ctx) != nil {
+		return ctx
+	}
+	msgs, err := r.Thread.RecentMessages(ctx, id.Channel, id.Address, 10)
+	if err != nil {
+		log.Printf("[channel] voice: thread language identity=%s: %v", id.ID, err)
+		return ctx
+	}
+	// The newest inbound that says something about language: "YES" or "2"
+	// does not, so an older Spanish sentence still counts.
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if m.Direction != "inbound" || strings.TrimSpace(m.Text) == "" {
+			continue
+		}
+		if DetectLanguage(m.Text) != "" || len(langTokenRE.FindAllString(m.Text, -1)) >= 3 {
+			return withThreadWords(ctx, m.Text)
+		}
+	}
+	return ctx
 }
