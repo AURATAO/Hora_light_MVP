@@ -141,7 +141,7 @@ func TestCompletedCarriesPhotoAndReceipt(t *testing.T) {
 	if !strings.HasPrefix(done.Text, "Done: “Bagel run”.") || !strings.Contains(done.Text, "Purchases: $12.40 (receipt photo follows)") || done.MediaURL != ev.PhotoURL {
 		t.Fatalf("done: %+v", done)
 	}
-	if receipt.Text != "Receipt: $12.40." || receipt.MediaURL != ev.ReceiptPhotoURL {
+	if receipt.Text != "Here's your receipt: $12.40." || receipt.MediaURL != ev.ReceiptPhotoURL {
 		t.Fatalf("receipt: %+v", receipt)
 	}
 	if g.st.lastOutboundTask() != "task-1" {
@@ -202,7 +202,7 @@ func TestCompletedCarriesPhotoAndReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(g.ad.sent) != 2 || g.ad.sent[0].MediaURL != "" || !strings.HasPrefix(g.ad.sent[0].Text, "Done: “Bagel run”.") ||
-		g.ad.sent[1].MediaURL != "" || g.ad.sent[1].Text != "Receipt: $12.40. (The photo couldn't be sent here.)" {
+		g.ad.sent[1].MediaURL != "" || g.ad.sent[1].Text != "Here's your receipt: $12.40. (The photo couldn't be sent here.)" {
 		t.Fatalf("%+v", g.ad.sent)
 	}
 

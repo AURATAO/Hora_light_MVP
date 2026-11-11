@@ -1,5 +1,7 @@
 # D-28: warmer English copy — proposals for review
 
+> **Reviewed and applied 2026-11-11 (Aura).** Applied: all proposals except `CopyWhichTaskBadPick` (kept; no "Hmm,"), and 17 from "Refused by the rule check", as refused (`CopyApprovalFirst`, `CopyReceipt`, `CopyReceiptNoPhoto`, `CopyStillWaitingBudget`, `CopyStillWaitingGeneric`, `CopyWhichSupporterMidQuestion`, `CopyHoldGone`, `CopyRelayGone`, `CopySummaryStale`, `CopyPostingLost`, `CopyCancelNothing`, `CopyWhereWorkingHere`, `CopyWhereWorkingStale`, `CopyCancelConfirmFree`, `CopyApprovalAskTimed`, `CopyApproved`, `CopyApprovalAlready`). The 10% length rule is for runtime rewrites; these were reviewed by a person. Not applied: `CopyDeclined` (changes meaning), `CopyCancelFailed` (adds a promise to retry), `CopyCancelWhyReask`. Separately: `CopyPhotoNotImage` reworded and `CopyTextAndPhotos` added (D-28 amendment 2).
+
 Generated 2026-11-11 by `go run ./cmd/agenttest -voice-copy` (anthropic:claude-sonnet-5-5, voice.md v0.5). **Not applied to copy.go.**
 
 Every proposal passed the runtime rule check (`CheckVoice`): placeholders, prices, times, YES/STOP/HELP lines, links, quoted titles and names unchanged; no new number, link, question or promise; at most 10% longer. 167 templates: **42 proposed**, 53 the model kept as they are, 20 proposals refused by the check (listed, with the refused text), 34 with nothing to reword, 18 excluded.

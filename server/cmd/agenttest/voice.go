@@ -197,6 +197,25 @@ func runVoice(spec llm.Spec, providers llm.Providers, runs int, verbose bool, de
 	fmt.Printf("fallback: %d/%d of the replies sent to the model (%.0f%%) — rule check %d, model error/timeout %d\n", fallbackRule+errs, asked, 100*float64(fallbackRule+errs)/float64(max(1, asked)), fallbackRule, errs)
 	fmt.Printf("  at the production timeout (%s) another %d would fall back\n", channel.DefaultVoiceTimeout, overTimeout)
 	fmt.Printf("added latency (replies sent to the model): median %dms, p90 %dms, p95 %dms, max %dms; every other reply: 0\n", pct(0.5).Milliseconds(), pct(0.9).Milliseconds(), pct(0.95).Milliseconds(), pct(1).Milliseconds())
+	// The glossary (voice.md), checked on what would be sent: "supporter"
+	// and "HO:RA" never translated. CheckVoice refuses a rewrite that
+	// breaks it ("glossary"); this counts both, independently.
+	glossSent, glossRefused, glossApplies := 0, 0, 0
+	for _, rw := range rows {
+		if rw.res.Outcome != channel.VoiceRewritten && rw.res.Outcome != channel.VoiceFallback {
+			continue
+		}
+		if strings.Contains(strings.ToLower(rw.c.Text), "supporter") || strings.Contains(rw.c.Text, "HO:RA") {
+			glossApplies++
+		}
+		if !channel.GlossaryKept(rw.c.Text, rw.res.Text) {
+			glossSent++
+		}
+		if rw.res.Reason == "glossary" {
+			glossRefused++
+		}
+	}
+	fmt.Printf("glossary (supporter, HO:RA): %d of the replies sent to the model contain a term; broken in sent text: %d; rewrites refused for it: %d\n", glossApplies, glossSent, glossRefused)
 	var keys []string
 	for k := range outcomes {
 		keys = append(keys, k)

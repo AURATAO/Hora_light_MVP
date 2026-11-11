@@ -657,6 +657,9 @@ func CheckVoice(original, rewritten string, blocks []string, o VoiceCheck) strin
 	if gendered(original, rewritten) {
 		return "gendered"
 	}
+	if !glossaryKept(original, rewritten) {
+		return "glossary"
+	}
 	// Every fixed block, unchanged, in order.
 	pos := 0
 	for _, b := range blocks {
@@ -776,6 +779,26 @@ func untranslated(rewritten string, blocks []string) bool {
 		free = strings.Replace(free, b, " ", 1)
 	}
 	return voiceEnglishRE.MatchString(free)
+}
+
+// The glossary (voice.md): "supporter" and "HO:RA" are never translated.
+var (
+	voiceSupporterRE  = regexp.MustCompile(`(?i)\bsupporters?\b`)
+	voiceTranslatedRE = regexp.MustCompile(`跑腿|配送員|配送员|(?i)\b(?:repartidor|ayudante|asistente|recadero|mensajero|livreur|fattorino|entregador|helfer)\w*`)
+)
+
+// GlossaryKept: every "supporter" and "HO:RA" of the original is still
+// there, untranslated (exported for the eval's own check).
+func GlossaryKept(original, rewritten string) bool { return glossaryKept(original, rewritten) }
+
+func glossaryKept(original, rewritten string) bool {
+	if len(voiceSupporterRE.FindAllString(rewritten, -1)) < len(voiceSupporterRE.FindAllString(original, -1)) {
+		return false
+	}
+	if strings.Count(rewritten, "HO:RA") < strings.Count(original, "HO:RA") {
+		return false
+	}
+	return !voiceTranslatedRE.MatchString(rewritten) || voiceTranslatedRE.MatchString(original)
 }
 
 // gendered: a supporter's gender is never known; the copy says "they".

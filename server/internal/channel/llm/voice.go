@@ -22,7 +22,7 @@ import (
 var voicePrompt string
 
 // VoicePromptVersion labels voice.md on the trace. Bump it with the file.
-const VoicePromptVersion = "v0.5"
+const VoicePromptVersion = "v0.6"
 
 // VoicePrompt is the tone guide, the system prompt of every rewrite.
 func VoicePrompt() string { return voicePrompt }

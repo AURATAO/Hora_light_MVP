@@ -121,7 +121,7 @@ func TestYesWithAMessage(t *testing.T) {
 	g.arm(t, "ext-2")
 	got := g.say(t, "yes but tell him to hurry")
 	if len(g.booker.resolved) != 1 || !strings.HasSuffix(g.booker.resolved[0], ":ext-2:true") ||
-		len(chat.posted) != 1 || chat.posted[0] != "task-2:"+CopyToSupporterHurry || !strings.Contains(got, "speed up") { // polite template (Arbiter 2026-10-24)
+		len(chat.posted) != 1 || chat.posted[0] != "task-2:"+CopyToSupporterHurry || !strings.Contains(got, "pick up the pace") { // polite template (Arbiter 2026-10-24)
 		t.Fatalf("resolved %v posted %v reply %q", g.booker.resolved, chat.posted, got)
 	}
 	for _, msg := range []string{"yes but max $5", "yes if it's organic", "ok but not the money", "sure, why?"} {
@@ -892,9 +892,9 @@ func TestLeadingInterjection(t *testing.T) {
 // told what was said.
 func TestApprovalPassOnTemplates(t *testing.T) {
 	for _, tc := range []struct{ msg, toSupporter, toPerson string }{
-		{"Yes but hurry up", CopyToSupporterHurry, "I've asked Sam to speed up a little."},
-		{"Well ok, but hurry up!", CopyToSupporterHurry, "I've asked Sam to speed up a little."},
-		{"yes, tell him to hurry", CopyToSupporterHurry, "I've asked Sam to speed up a little."},
+		{"Yes but hurry up", CopyToSupporterHurry, "I've asked Sam to pick up the pace a little."},
+		{"Well ok, but hurry up!", CopyToSupporterHurry, "I've asked Sam to pick up the pace a little."},
+		{"yes, tell him to hurry", CopyToSupporterHurry, "I've asked Sam to pick up the pace a little."},
 		{"great, thanks Sam!", CopyToSupporterThanks, "I passed your thanks to Sam."},
 		{"ok, let him know", CopyToSupporterLetKnow, "I've let Sam know."},
 	} {

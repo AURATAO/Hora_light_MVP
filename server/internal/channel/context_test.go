@@ -69,7 +69,7 @@ func TestContextClassifierAndTheWayOut(t *testing.T) {
 
 	fc.intent = llm.IntentNewTask
 	got := g.say(t, "pick up my laundry tomorrow at 3")
-	if g.state() != StateAwaitingConfirm || !strings.HasPrefix(got, "Booking this as a new errand. If it was for your supporter instead, reply “for Sam”.") {
+	if g.state() != StateAwaitingConfirm || !strings.HasPrefix(got, "I'll book this as a new errand. If it was for your supporter instead, reply “for Sam”.") {
 		t.Fatalf("state %s reply %q", g.state(), got)
 	}
 	got = g.say(t, "for Sam")
@@ -299,7 +299,7 @@ func TestForSupporterKeepsTheDraftWhenRelayFails(t *testing.T) {
 	if got != CopyRelayFailed || g.state() != StateAwaitingConfirm || len(chat.posted) != 0 {
 		t.Fatalf("reply %q state %s posted %v", got, g.state(), chat.posted)
 	}
-	if sentText(g, "Passed that on to Sam. The new errand is dropped.") {
+	if sentText(g, "Passed that on to Sam. I've dropped the new errand.") {
 		t.Fatal("must not claim delivery")
 	}
 	chat.post = nil
@@ -315,7 +315,7 @@ func TestForSupporterKeepsTheDraftWhenRelayFails(t *testing.T) {
 func TestEscapePhraseIsNarrow(t *testing.T) {
 	g, chat, _, fc := contextRig(llm.IntentNewTask, bagelT)
 	got := g.say(t, "For her birthday I need flowers delivered Friday")
-	if len(chat.posted) != 0 || g.state() == StateIdle || !strings.Contains(got, "Booking this as a new errand") {
+	if len(chat.posted) != 0 || g.state() == StateIdle || !strings.Contains(got, "book this as a new errand") {
 		t.Fatalf("posted %v state %s reply %q", chat.posted, g.state(), got)
 	}
 	fc.intent = llm.IntentCorrection
@@ -873,7 +873,7 @@ func TestDeferredApprovalFollowsTheBooking(t *testing.T) {
 	if g.booker.posts != 1 || c.State != StateAwaitingApproval || c.PendingExtensionID != "ext-4" || len(c.Deferred) != 0 || !strings.Contains(g.ad.last(), "15 more minutes") {
 		t.Fatalf("booked %d conv %+v last %q", g.booker.posts, c, g.ad.last())
 	}
-	if n := len(g.ad.sent); !strings.Contains(g.ad.sent[n-2].Text, "Booked") && !strings.Contains(g.ad.sent[n-2].Text, "Posted") {
+	if n := len(g.ad.sent); !strings.Contains(strings.ToLower(g.ad.sent[n-2].Text), "booked") && !strings.Contains(g.ad.sent[n-2].Text, "Posted") {
 		t.Fatalf("the question follows the booking, not the other way: %q", g.ad.sent[n-2].Text)
 	}
 }

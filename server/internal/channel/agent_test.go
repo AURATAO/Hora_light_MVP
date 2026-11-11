@@ -812,13 +812,13 @@ func TestWhereWhileWorkingGivesTheFreshPosition(t *testing.T) {
 		{"fresh fix, away from the address", LiveStatus{State: LiveWorking, WorkedMinutes: 13, Lat: &lat, Lng: &lng, DistanceMeters: &far, LastSeen: seen},
 			"Sam is working on “Bagel run” (13 min so far) — about 0.8 mi from the task's address, last seen 1 min ago. Map: https://www.google.com/maps?q=40.758,-73.986", 0},
 		{"fresh fix, at the address (GPS jitter)", LiveStatus{State: LiveWorking, WorkedMinutes: 13, Lat: &lat, Lng: &lng, DistanceMeters: &near, LastSeen: seen},
-			"Sam is at the task's address, clocked in on “Bagel run” — 13 min so far.", 0},
+			"Sam has arrived at the task's address and clocked in on “Bagel run” — 13 min so far.", 0},
 		{"stale fix: said, not asked of a working supporter", LiveStatus{State: LiveWorking, WorkedMinutes: 13, LastSeen: time.Now().Add(-7 * time.Minute)},
-			"Sam is clocked in on “Bagel run” (13 min so far); no fresh location from their phone, last seen 7 min ago.", 0},
+			"Sam is clocked in on “Bagel run” (13 min so far), but there's no fresh location from their phone, last seen 7 min ago.", 0},
 		{"stale for hours", LiveStatus{State: LiveWorking, WorkedMinutes: 13, LastSeen: time.Now().Add(-3 * time.Hour)},
-			"Sam is clocked in on “Bagel run” (13 min so far); no fresh location from their phone, last seen 3 h ago.", 0},
+			"Sam is clocked in on “Bagel run” (13 min so far), but there's no fresh location from their phone, last seen 3 h ago.", 0},
 		{"never a fix: the clock alone, not \"there\"", LiveStatus{State: LiveWorking, WorkedMinutes: 13},
-			"Sam is clocked in on “Bagel run” — 13 min so far.", 0},
+			"Sam is clocked in on “Bagel run”, 13 min so far.", 0},
 	} {
 		g, chat, _, _ := contextRig(llm.IntentToSupporter, bagelT)
 		g.r.Live = &fakeLive{st: tc.st}

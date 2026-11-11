@@ -52,3 +52,14 @@ Aura, after the first eval: the English rewrites were light and cost ~1.3 s on e
 - Known and accepted: fixed English blocks (money sentences, YES/reply lines) stay English inside a translated reply ("¿Tu supporter va a comprar algo para esto? About how much should I set aside, e.g. $20? Reply "nothing"…"). Spanish keeps the word "supporter".
 - `-voice-copy`: 167 templates. 42 proposed, 53 kept by the model, 20 refused by the check (mostly too long; two added a question), 34 with nothing to reword, 18 excluded.
 - `go test`: triggers (language, script, 您, stress, the agent's dispute, thread language without mood), calm English skipped with no model call, the status path, every new check, the masking fixes.
+
+## Amendment 2 2026-11-11 — copy applied, photo copy, glossary
+1. **Copy applied** to copy.go after Aura's review of `D-28-copy-proposals.md`: 41 proposals (all but `CopyWhichTaskBadPick`) and 17 of the refused ones, as refused. `CopyDeclined`, `CopyCancelFailed` and `CopyCancelWhyReask` were not applied. Placeholders, YES/NO lines and quoted titles were checked to be identical before and after for all 58. The 13 test assertions that quoted the old wording were updated.
+2. **"Text only" copy.** `CopyTextOnly` is sent when a message has no words and no photo was kept. With photos off (`CHANNEL_PHOTOS_ENABLED` unset), that is every attachment, so "I can only read text" stays true there. With photos on, attachments are answered earlier, by the photo path. A voice note, a video or a file is not an image, so it got `CopyPhotoNotImage` ("…send it as a photo or a screenshot"). What remains is a location, a contact card and the like. Now:
+   - photos on: `CopyTextAndPhotos` ("I can read text and photos, but not that kind of message…");
+   - `CopyPhotoNotImage` says text and photos work, and voice notes, videos and other files do not.
+3. **Glossary** (voice.md v0.6): "supporter" and "HO:RA" are never translated, in any language. `CheckVoice` refuses a rewrite with fewer of either than the original, or with a translation of supporter (跑腿, repartidor, ayudante, …): reason `glossary`. The eval also counts glossary breaks in the text that would be sent.
+
+### Evidence (amendment 2)
+- `agenttest -voice -runs 2` (v0.6, the new copy): 46/114 through the layer, **46/46 passed**, fallback 0, 0 over 2.5 s. **Median 1.32 s, p90 1.69 s, p95 1.80 s, max 2.35 s** on those 46. Glossary: 18 of the 46 contain a term, with 0 broken and 0 refused. Seen: Spanish now leaves "borough" in English ("¿En qué borough está…?"). The check allows it.
+- `REQUIRE_DB_TESTS=1 go test -p 1 -race -count=1 ./...` with Postgres: green. Without `-race`, one run hit an existing flake on main, `cancellation_policy_test.go:411`: the deadline was 11 ms past the 2m30s bound, likely DB `now()` against the Go clock. That file is untouched; it passed 3 reruns and the race run.

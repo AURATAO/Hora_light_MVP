@@ -47,7 +47,7 @@ func TestItemQuestionText(t *testing.T) {
 		ID: "e1", Kind: "item", Item: "oat milk", Store: "Trader Joe's", Alternative: "almond milk", Cents: 449,
 	}}
 	got, ok := StatusText(ev)
-	want := "Trader Joe's is out of oat milk. Your supporter found almond milk ($4.49).\n\nReply 1 for almond milk, 2 to skip it. No answer within 5 minutes: your supporter will decide."
+	want := "Trader Joe's is out of oat milk. Your supporter found almond milk ($4.49).\n\nReply 1 for almond milk, 2 to skip it. No answer within 5 minutes, so your supporter will decide."
 	if !ok || got != want {
 		t.Fatalf("got %q\nwant %q", got, want)
 	}
@@ -106,7 +106,7 @@ func TestItemQuestionIsAnsweredByDigits(t *testing.T) {
 	if len(g.booker.resolved) != 1 || g.booker.resolved[0] != "user-1:ext-9:true" {
 		t.Fatalf("resolved %v", g.booker.resolved)
 	}
-	if !strings.HasPrefix(reply, "Got it:") || !strings.Contains(reply, "almond milk instead") {
+	if !strings.HasPrefix(reply, "Got it —") || !strings.Contains(reply, "almond milk instead") {
 		t.Fatalf("%q", reply)
 	}
 	if g.state() != StateIdle {

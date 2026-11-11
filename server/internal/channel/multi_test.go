@@ -41,7 +41,7 @@ func TestOneMessageSeveralErrandsOneSummaryOneYes(t *testing.T) {
 	if g.booker.posts != 3 || strings.Join(g.booker.posted, ",") != "Laundry pickup,Grocery run,Return a package" {
 		t.Fatalf("posted %v", g.booker.posted)
 	}
-	if !strings.Contains(got, "Booked all 3") || g.state() != StateIdle {
+	if !strings.Contains(got, "All 3 are booked") || g.state() != StateIdle {
 		t.Fatalf("%q state %s", got, g.state())
 	}
 }
@@ -78,7 +78,7 @@ func TestPartialFailureKeepsOnlyTheUnbooked(t *testing.T) {
 	if strings.Join(g.booker.posted, ",") != "Laundry pickup,Grocery run,Grocery run,Return a package" {
 		t.Fatalf("posted %v", g.booker.posted)
 	}
-	if !strings.Contains(got, "Booked all 2") || g.state() != StateIdle {
+	if !strings.Contains(got, "All 2 are booked") || g.state() != StateIdle {
 		t.Fatalf("%q state %s", got, g.state())
 	}
 }
@@ -111,7 +111,7 @@ func TestTooManyErrandsIsRefusedBeforeParsing(t *testing.T) {
 	g := multiRig(t)
 	msg := strings.Repeat("pick up my laundry and then ", llm.MaxErrands) + "get groceries"
 	got := g.say(t, msg)
-	if !strings.Contains(got, "more than I can book in one go") || len(g.parser.sources) > 1 || (len(g.parser.sources) == 1 && g.parser.sources[0] != msg) || g.state() != StateIdle {
+	if !strings.Contains(got, "more than I can book at once") || len(g.parser.sources) > 1 || (len(g.parser.sources) == 1 && g.parser.sources[0] != msg) || g.state() != StateIdle {
 		t.Fatalf("%q parsed %d state %s", got, len(g.parser.sources), g.state())
 	}
 }

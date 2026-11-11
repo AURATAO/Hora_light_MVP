@@ -63,7 +63,7 @@ func TestExtraTimeAckKeepsTheDraft(t *testing.T) {
 	if len(g.parser.sources) != parses || g.booker.quotes != quotes || len(fa.calls) != 0 {
 		t.Fatalf("re-parsed %d re-quoted %d agent %d", len(g.parser.sources)-parses, g.booker.quotes-quotes, len(fa.calls))
 	}
-	if got := g.say(t, "YES"); g.booker.posts != 1 || g.booker.opts[0].QuotedCents == 0 || !strings.HasPrefix(got, "Booked") {
+	if got := g.say(t, "YES"); g.booker.posts != 1 || g.booker.opts[0].QuotedCents == 0 || !strings.HasPrefix(got, "You're booked") {
 		t.Fatalf("YES: %q posts %d", got, g.booker.posts)
 	}
 

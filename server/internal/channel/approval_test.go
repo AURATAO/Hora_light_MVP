@@ -51,7 +51,7 @@ func TestYesApprovesThroughTheAppsOwnCode(t *testing.T) {
 	if len(g.booker.resolved) != 1 || g.booker.resolved[0] != "user-1:ext-1:true" {
 		t.Fatalf("resolved %v", g.booker.resolved)
 	}
-	if !strings.HasPrefix(got, "Approved: 15 more minutes") {
+	if !strings.HasPrefix(got, "All set: 15 more minutes on “Laundry pickup” is approved.") {
 		t.Fatalf("%q", got)
 	}
 	if g.state() != StateIdle {
@@ -103,7 +103,7 @@ func TestApprovalInterruptsADraftAndResumesIt(t *testing.T) {
 	if g.booker.posts != 0 {
 		t.Fatal("the YES answered the approval, it must not book the draft")
 	}
-	if !strings.Contains(got, "Approved:") || !strings.Contains(got, CopyBackToDraft) || !strings.Contains(got, "Reply YES to book") {
+	if !strings.Contains(got, "is approved.") || !strings.Contains(got, CopyBackToDraft) || !strings.Contains(got, "Reply YES to book") {
 		t.Fatalf("%q", got)
 	}
 	if g.state() != StateAwaitingConfirm {

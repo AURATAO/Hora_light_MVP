@@ -408,6 +408,12 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 		}
 	}
 	if text == "" && !hasPhotos {
+		// Photos off: every attachment lands here, and "text only" is
+		// true. Photos on: attachments were answered above, so this is a
+		// location, a contact card or the like.
+		if r.photosOn() {
+			return r.Reply(ctx, in, CopyTextAndPhotos, "")
+		}
 		return r.Reply(ctx, in, CopyTextOnly, "")
 	}
 	if text == "" {

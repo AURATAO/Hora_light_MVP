@@ -86,7 +86,7 @@ func TestCancelChoosingAndNegation(t *testing.T) {
 		t.Fatalf("pick → reason: %q", got)
 	}
 	got = g.say(t, "6")
-	if !strings.Contains(got, "Cancel “Laundry pickup”") || g.state() != StateAwaitingCancel {
+	if !strings.Contains(got, "Want to cancel “Laundry pickup”") || g.state() != StateAwaitingCancel {
 		t.Fatalf("reason → quote: %q", got)
 	}
 	if IsCancelRequest("don't cancel it") || !IsCancelRequest("取消任務") {
