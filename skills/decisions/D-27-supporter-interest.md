@@ -29,3 +29,10 @@
 - `go run ./cmd/agenttest -supporter -runs 3` (Sonnet 5.5): 132/132, 81 by rule, 51 by the model, p50 1.2 s.
 - `go test`: every phrasing through the router; near-misses are drafted; follow-ups, ops once per day, approved supporter, mixed messages; no routing paraphrase matches the rule.
 - `REQUIRE_DB_TESTS=1 go test -p 1 ./... -race`: green.
+
+## Amendment 2026-11-11 — approved supporters and referrals
+Production 2026-11-10 15:20–15:26: an approved supporter's number asked "Can I be a supporter?" and then "Can you share me the apply link that I can send to my friends". Both got "You're already a HO:RA supporter!…", and the second asked for the link.
+- A request for the link, or to share, refer or invite someone (`SupporterReferral`: "send me the apply link", "can my friend join?", "how can my friend apply?"; otherwise the classifier's `supporter_referral`, Sonnet) counts as supporter interest. An approved supporter gets `CopySupporterShare` ("Here's the link to share: <link>") with no "already" line and no ops notice. Anyone else gets the usual application answer.
+- Only questions about their own work get `CopySupporterAlready`, and never twice in a row: asked again right after it, the reply is the link to share.
+- "share the link with my friends" does not say which link. It counts as a referral only for an approved supporter, or right after HO:RA's last line was the application link or the "already" line. A link named as something else ("the restaurant link") is never ours.
+- Evidence: `agenttest -supporter -runs 2` 128/128 (12 referral phrasings, 2 by the model; 8 referral errands); `agenttest -routing` 64/64 + 10/10; `REQUIRE_DB_TESTS=1 go test -p 1 -race ./...` green.

@@ -11,6 +11,9 @@ package main
 //	errand    → never supporter_interest (near-misses: "I need someone to
 //	            work on my furniture assembly")
 //	mixed     → the rule splits off the errand words (no model call)
+//	referral  → supporter_interest with supporter_referral (the link to
+//	            pass on, a friend joining); own interest is never a referral
+//	referral_errand → someone else in it, still not supporter_interest
 //
 //	go run ./cmd/agenttest -supporter [-runs 3]
 
@@ -36,6 +39,9 @@ func runSupporter(spec llm.Spec, providers llm.Providers, runs int, delay time.D
 		Interest []struct{ Msg, By string }
 		Errand   []string
 		Mixed    []struct{ Msg, Rest string }
+		Referral []struct{ Msg, By string }
+		// referral_errand
+		ReferralErrand []string `json:"referral_errand"`
 	}
 	if err := json.Unmarshal(b, &p); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -74,8 +80,8 @@ func runSupporter(spec llm.Spec, providers llm.Providers, runs int, delay time.D
 				continue
 			}
 			cl, d, err := classify(c.Msg)
-			ok := err == nil && cl.Intent == llm.IntentSupporter
-			fmt.Printf("%s interest model %-18s %5dms %q\n", mark(ok), cl.Intent, d.Milliseconds(), c.Msg)
+			ok := err == nil && cl.Intent == llm.IntentSupporter && !cl.Referral
+			fmt.Printf("%s interest model %-18s ref=%-5t %5dms %q\n", mark(ok), cl.Intent, cl.Referral, d.Milliseconds(), c.Msg)
 		}
 		for _, m := range p.Errand {
 			if channel.SupporterInterest(m) {
@@ -86,6 +92,26 @@ func runSupporter(spec llm.Spec, providers llm.Providers, runs int, delay time.D
 			cl, d, err := classify(m)
 			ok := err == nil && cl.Intent != llm.IntentSupporter
 			fmt.Printf("%s errand   model %-18s %5dms %q\n", mark(ok), cl.Intent, d.Milliseconds(), m)
+		}
+		for _, c := range p.Referral {
+			if channel.SupporterReferral(c.Msg) {
+				rule++
+				fmt.Printf("%s referral rule                    %q\n", mark(true), c.Msg)
+				continue
+			}
+			cl, d, err := classify(c.Msg)
+			ok := err == nil && cl.Intent == llm.IntentSupporter && cl.Referral
+			fmt.Printf("%s referral model %-18s ref=%-5t %5dms %q\n", mark(ok), cl.Intent, cl.Referral, d.Milliseconds(), c.Msg)
+		}
+		for _, m := range p.ReferralErrand {
+			if channel.SupporterInterest(m) {
+				rule++
+				fmt.Printf("%s ref-errand rule says supporter      %q\n", mark(false), m)
+				continue
+			}
+			cl, d, err := classify(m)
+			ok := err == nil && cl.Intent != llm.IntentSupporter
+			fmt.Printf("%s ref-errand model %-16s %5dms %q\n", mark(ok), cl.Intent, d.Milliseconds(), m)
 		}
 		for _, m := range p.Mixed {
 			rest, mixed := channel.SplitSupporterInterest(m.Msg)

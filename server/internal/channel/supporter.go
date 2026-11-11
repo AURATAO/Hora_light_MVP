@@ -13,7 +13,13 @@ package channel
 //     earnings, rate or number of tasks). After that, any question about
 //     being a supporter — pay, requirements, "did you get my application?" —
 //     gets CopySupporterFollowUp and the link again. Never a hand-off.
-//   - A number whose account is an approved supporter: CopySupporterAlready.
+//   - A number whose account is an approved supporter: CopySupporterAlready
+//     for questions about their own work, CopySupporterShare (the link to
+//     pass on) when they ask for the link or about a friend joining
+//     (SupporterReferral; the classifier's supporter_referral), and
+//     CopySupporterShare too when they ask again right after
+//     CopySupporterAlready: the same fixed line never twice in a row
+//     (production 2026-11-10 15:20–15:26).
 //   - A mixed message ("book a laundry pickup, and are you hiring?"): the
 //     errand as usual, then CopySupporterLine once.
 //   - Ops get one non-urgent notice per number per New York day (email; the
@@ -49,6 +55,9 @@ const (
 	CopySupporterLine = "About becoming a supporter: you can apply here: %s"
 	// CopySupporterAlready: the number is an approved supporter's.
 	CopySupporterAlready = "You're already a HO:RA supporter! Please use the supporter app for tasks and your account. This number is for booking errands."
+	// CopySupporterShare: an approved supporter asking for the link to pass
+	// on, or asking again after CopySupporterAlready.
+	CopySupporterShare = "Here's the link to share: %s"
 )
 
 // SupporterFollowUpWindow: how long after the link a vague question ("how
@@ -92,6 +101,21 @@ var (
 		`)`)
 	// notSupporterRE: the customer side of the same words.
 	notSupporterRE = regexp.MustCompile(`(?i)\b(?:i'?m hiring|we'?re hiring|hiring (?:someone|somebody|a|an)\s+(?:mover|cleaner|handyman|person|supporter|plumber)|(?:someone|somebody|a supporter|a person|you)\s+to\s+work\s+on|work (?:done|on my|on the)|(?:tasks|errands) (?:done|for me)|get (?:my |some |a few )?(?:errands|tasks) (?:done|run)|apply (?:for|to) (?:my|a|the) (?:passport|visa|license|permit|loan|lease|apartment)|(?:drop(?:ping)? off|deliver|print|mail|bring|take|fax|submit) (?:my|the|a|this) (?:job |rental |visa |passport |school |college )?application)\b`)
+	// referralLinkRE: the application link itself ("send me the apply
+	// link", "is there a referral link?").
+	referralLinkRE = regexp.MustCompile(`(?i)\b(?:(?:apply|application|applying|sign[- ]?up|supporter|referral|recruiting|join(?:ing)?)\s+(?:form\s+|page\s+)?link|link\s+(?:to|for)\s+(?:apply|the application|applying|become|becoming|join|sign(?:ing)? up)|referral\s+(?:program\w*|bonus\w*|code)|refer(?:ring)?\s+(?:a\s+|my\s+|some\s+)?(?:friends?|someone|somebody|people|others|folks)\b|invit(?:e|ing)\s+(?:a\s+|my\s+|some\s+)?(?:friends?|people|others|folks)\s+to\s+(?:join|apply|work))`)
+	// referralWhoRE: someone else who would apply.
+	referralWhoRE = regexp.MustCompile(`(?i)\b(?:(?:my|a|our)\s+(?:friends?|buddy|buddies|cousins?|brothers?|sisters?|siblings?|roommates?|partner|wife|husband|girlfriend|boyfriend|son|daughter|kids?|mom|dad|neighbou?rs?|co-?workers?|colleagues?|classmates?|family(?: members?)?)|friends|(?:someone|somebody|people|others|folks)\s+(?:i know|else|who'?d|who would|who want)|others)\b`)
+	// referralAskRE: what that someone would do — join, apply, become one —
+	// or the link to pass on.
+	referralAskRE = regexp.MustCompile(`(?i)\b(?:join(?:\s+(?:you|hora|ho:ra|the team|as|too|in)\b|\s*[?.!]*$)|apply(?:ing)?\b|sign(?:ing)?\s*up\s+(?:as|to be|to work)\b|be(?:come|coming)?\s+(?:a |an |one of (?:your|the) )?(?:hora |ho:ra )?(?:supporter|runner|tasker)s?\b|become one|work(?:ing)?\s+(?:for|with)\s+(?:you|hora|ho:ra)|get hired)`)
+	// referralShareRE: passing a link on to someone else ("share the link
+	// with my friends"). Which link the words do not say ("send the
+	// restaurant link to my friends" is a search's): read so only for an
+	// approved supporter or right after the application link went out
+	// (shareLinkReferral).
+	// A link named as something else ("the restaurant link") is not ours.
+	referralShareRE = regexp.MustCompile(`(?i)\b(?:share|send|forward|pass)\b[^.?!]*\b(?:the|a|that|this|your|ur)\s+link\b|\b(?:the|a|that|this|your|ur)\s+link\b[^.?!]*\b(?:share|send|forward|pass)\b`)
 	// supporterFollowUpRE: a question about being a supporter, read so only
 	// shortly after the link went out.
 	supporterFollowUpRE = regexp.MustCompile(`(?i)\b(?:pay|paid|pays|payment|earn\w*|make|money|rate|hourly|per hour|tips?|wages?|salary|requirements?|require\w*|qualif\w*|background|checkr|id|license|licence|insurance|car|bike|vehicle|schedule|hours|shifts?|flexible|full[- ]time|part[- ]time|start|how (?:does|do) (?:it|this|that) work|how it works|apply|applied|application|form|link|hear back|status|approved|approval|interview|age|old enough|visa|work permit|ssn|tax(?:es)?|1099|w-?2|contractor|employee|training|onboarding|payouts?|stripe|areas?|boroughs?|neighbou?rhoods?|requirements|experience|students?)\b`)
@@ -107,10 +131,61 @@ var (
 	customerAskRE = regexp.MustCompile(`(?i)\b(?:book|booking|need (?:someone|somebody|a supporter|you)|want (?:someone|somebody|you|a supporter)|can (?:someone|somebody|you|a supporter))\b`)
 )
 
-// SupporterInterest: the words ask about working as a supporter (rule).
+// SupporterInterest: the words ask about working as a supporter (rule),
+// for themselves or for someone else (SupporterReferral).
 func SupporterInterest(text string) bool {
 	t := strings.ReplaceAll(text, "’", "'")
-	return supporterInterestRE.MatchString(t) && !notSupporterRE.MatchString(t)
+	return (supporterInterestRE.MatchString(t) || referral(t)) && !notSupporterRE.MatchString(t)
+}
+
+// SupporterReferral: the words ask for the application link to pass on,
+// or about someone else joining ("send me the apply link", "can my friend
+// join?", "share the link with my friends") — rule.
+func SupporterReferral(text string) bool {
+	t := strings.ReplaceAll(text, "’", "'")
+	return referral(t) && !notSupporterRE.MatchString(t)
+}
+
+func referral(t string) bool {
+	if referralLinkRE.MatchString(t) {
+		return true
+	}
+	if !referralWhoRE.MatchString(t) {
+		return false
+	}
+	return referralAskRE.MatchString(t)
+}
+
+// shareLinkWords: "share the link with my friends" — a link to pass on,
+// which link unsaid.
+func shareLinkWords(text string) bool {
+	t := strings.ReplaceAll(text, "’", "'")
+	return referralShareRE.MatchString(t) && referralWhoRE.MatchString(t) && !notSupporterRE.MatchString(t)
+}
+
+// shareLinkReferral: such words are about the application link — the
+// number is an approved supporter's, or HO:RA's last line was the link or
+// the "already a supporter" line.
+func (r *Router) shareLinkReferral(ctx context.Context, id Identity, text string) bool {
+	if !shareLinkWords(text) || IsClearErrand(text) {
+		return false
+	}
+	if last := r.lastReply(ctx, id); last == CopySupporterAlready || strings.Contains(last, r.applyURL()) {
+		return true
+	}
+	return r.approved(ctx, id)
+}
+
+// approved: the number's account is an approved supporter.
+func (r *Router) approved(ctx context.Context, id Identity) bool {
+	if !id.Linked() || r.Supporters == nil {
+		return false
+	}
+	st, err := r.Supporters.SupporterStatus(ctx, id.UserID)
+	if err != nil {
+		log.Printf("[channel] supporter interest identity=%s: status: %v", id.ID, err)
+	}
+	return st == "approved"
 }
 
 // SplitSupporterInterest: a mixed message's errand part, with the interest
@@ -172,6 +247,24 @@ func (r *Router) lastApplyLink(ctx context.Context, id Identity) *time.Time {
 	return nil
 }
 
+// lastReply: HO:RA's own last message to this number ("" none).
+func (r *Router) lastReply(ctx context.Context, id Identity) string {
+	if r.Thread == nil {
+		return ""
+	}
+	msgs, err := r.Thread.RecentMessages(ctx, id.Channel, id.Address, 12)
+	if err != nil {
+		log.Printf("[channel] supporter interest identity=%s: thread: %v", id.ID, err)
+		return ""
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if m := msgs[i]; m.Direction == "outbound" && !m.Relay {
+			return m.Text
+		}
+	}
+	return ""
+}
+
 // supporterFollowUp: a vague question about being a supporter, shortly
 // after the link ("how much does it pay?", "do I need a car?").
 func (r *Router) supporterFollowUp(ctx context.Context, id Identity, text string) bool {
@@ -187,8 +280,11 @@ func (r *Router) supporterFollowUp(ctx context.Context, id Identity, text string
 // for the usual routing (the line follows its reply).
 func (r *Router) routeSupporterRules(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) (rest string, handled bool, err error) {
 	if !SupporterInterest(text) {
+		if r.shareLinkReferral(ctx, id, text) {
+			return "", true, r.answerSupporter(ctx, in, id, "rule", true)
+		}
 		if r.supporterFollowUp(ctx, id, text) {
-			return "", true, r.answerSupporter(ctx, in, id, "follow_up")
+			return "", true, r.answerSupporter(ctx, in, id, "follow_up", false)
 		}
 		return text, false, nil
 	}
@@ -201,21 +297,22 @@ func (r *Router) routeSupporterRules(ctx context.Context, in Inbound, id Identit
 		log.Printf("[channel] supporter interest identity=%s: mixed, the errand goes on", id.ID)
 		return rest, false, nil
 	}
-	return "", true, r.answerSupporter(ctx, in, id, "rule")
+	return "", true, r.answerSupporter(ctx, in, id, "rule", SupporterReferral(text))
 }
 
 // answerSupporter replies to supporter interest: the approved supporter's
-// line, the first answer, or the follow-up line; then ops, once a day.
-func (r *Router) answerSupporter(ctx context.Context, in Inbound, id Identity, by string) error {
-	if id.Linked() && r.Supporters != nil {
-		st, err := r.Supporters.SupporterStatus(ctx, id.UserID)
-		if err != nil {
-			log.Printf("[channel] supporter interest identity=%s: status: %v", id.ID, err)
+// line (or the link to share: referral, or asked again), the first answer,
+// or the follow-up line; then ops, once a day.
+func (r *Router) answerSupporter(ctx context.Context, in Inbound, id Identity, by string, referral bool) error {
+	if r.approved(ctx, id) {
+		// Asking for the link to pass on, or asking again right after the
+		// "already" line: the link (never the same line twice in a row).
+		if referral || r.lastReply(ctx, id) == CopySupporterAlready {
+			log.Printf("[channel] supporter interest identity=%s by=%s referral=%t: already a supporter, the link to share", id.ID, by, referral)
+			return r.Reply(ctx, in, fmt.Sprintf(CopySupporterShare, r.applyURL()), "")
 		}
-		if st == "approved" {
-			log.Printf("[channel] supporter interest identity=%s by=%s: already a supporter", id.ID, by)
-			return r.Reply(ctx, in, CopySupporterAlready, "")
-		}
+		log.Printf("[channel] supporter interest identity=%s by=%s: already a supporter", id.ID, by)
+		return r.Reply(ctx, in, CopySupporterAlready, "")
 	}
 	last := r.lastApplyLink(ctx, id)
 	copy, kind := fmt.Sprintf(CopySupporterApply, r.applyURL()), "first"

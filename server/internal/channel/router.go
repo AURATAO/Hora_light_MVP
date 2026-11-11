@@ -687,7 +687,7 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 	// application link, never a draft. Also asked beside an errand: the
 	// line follows the errand's reply.
 	if intent == llm.IntentSupporter {
-		return r.answerSupporter(ctx, in, id, "model")
+		return r.answerSupporter(ctx, in, id, "model", c.Referral || SupporterReferral(text))
 	}
 	if c.AlsoSupporter {
 		wantSupporterLine(ctx)

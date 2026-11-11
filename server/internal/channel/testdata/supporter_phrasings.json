@@ -1,5 +1,5 @@
 {
-  "_readme": "Supporter interest (2026-11-10, supporter.go). interest: someone who wants to WORK as a supporter — by: 'rule' (SupporterInterest matches) or 'model' (no rule; the classifier must say supporter_interest). errand: near-misses that ARE errands or customer questions — no rule may match, and the classifier must not say supporter_interest. follow_up: sent after the application link went out — the follow-up line by rule. after_link_errand: after the link, still an errand. mixed: an errand plus interest — rest is the errand words the router keeps. Run by go test (rules, router) and agenttest -supporter (rules, then LLM_SMALL_MODEL).",
+  "_readme": "Supporter interest (2026-11-10, supporter.go). interest: someone who wants to WORK as a supporter — by: 'rule' (SupporterInterest matches) or 'model' (no rule; the classifier must say supporter_interest). errand: near-misses that ARE errands or customer questions — no rule may match, and the classifier must not say supporter_interest. follow_up: sent after the application link went out — the follow-up line by rule. after_link_errand: after the link, still an errand. mixed: an errand plus interest — rest is the errand words the router keeps. Run by go test (rules, router) and agenttest -supporter (rules, then LLM_SMALL_MODEL). referral (2026-11-11): asks for the application link to pass on, or about someone else joining — by 'rule' (SupporterReferral) or 'model' (the classifier's supporter_referral). An approved supporter gets the link to share; anyone else the usual application answer. referral_errand: someone else is in it, still an errand or a search — no referral rule may match. share_link: a link to pass on, which link unsaid — a referral only for an approved supporter or right after the link went out.",
   "interest": [
     {
       "msg": "are you hiring?",
@@ -157,5 +157,69 @@
       "msg": "buy me oat milk from Trader Joe's and bring it to 12 Bedford Ave, btw how do I apply to be a supporter?",
       "rest": "buy me oat milk from Trader Joe's and bring it to 12 Bedford Ave"
     }
+  ],
+  "referral": [
+    {
+      "msg": "Can you share me the apply link that I can send to my friends",
+      "by": "rule"
+    },
+    {
+      "msg": "send me the apply link",
+      "by": "rule"
+    },
+    {
+      "msg": "can my friend join?",
+      "by": "rule"
+    },
+    {
+      "msg": "how can my friend apply?",
+      "by": "rule"
+    },
+    {
+      "msg": "what's the application link? my roommate wants to apply",
+      "by": "rule"
+    },
+    {
+      "msg": "my sister wants to become a supporter",
+      "by": "rule"
+    },
+    {
+      "msg": "Do you have a referral program?",
+      "by": "rule"
+    },
+    {
+      "msg": "can I refer a friend?",
+      "by": "rule"
+    },
+    {
+      "msg": "my cousin would love to work for you, how does she sign up as a supporter?",
+      "by": "rule"
+    },
+    {
+      "msg": "is there a link to apply I can forward?",
+      "by": "rule"
+    },
+    {
+      "msg": "I know a few people who'd be great at this, what should I tell them?",
+      "by": "model"
+    },
+    {
+      "msg": "my buddy's looking for gigs like mine, where does he go?",
+      "by": "model"
+    }
+  ],
+  "referral_errand": [
+    "my friend sent me a link to your site, can you pick up my dry cleaning?",
+    "pick up a birthday gift for my friend at Macy's",
+    "my friend recommended you, can someone grab my groceries?",
+    "can my friend come along to the appointment tomorrow?",
+    "my friend is a supporter, can she do my laundry pickup?",
+    "send the restaurant link to my friends",
+    "can you deliver flowers to my sister at 20 W 4th St?",
+    "my mom needs someone to join her for a walk in Central Park"
+  ],
+  "share_link": [
+    "share the link with my friends",
+    "can you send me the link so I can forward it to my friends?"
   ]
 }
