@@ -164,7 +164,7 @@ export default function SupporterApply() {
           <View className="gap-1">
             <Text className="text-title font-semibold text-ink">Application submitted</Text>
             <Text className="text-body text-muted">
-              We&apos;ll review it and send you a background check link within 1–2 business days.
+              We&apos;ll review it and send you an ID verification link within 1–2 business days.
             </Text>
           </View>
           <Button label="Done" onPress={() => router.back()} />
@@ -187,7 +187,7 @@ export default function SupporterApply() {
       </View>
 
       <Text className="mb-4 text-body text-muted">
-        We&apos;ll review your application and send you a background check link within 1–2 business days.
+        We&apos;ll review your application and send you an ID verification link within 1–2 business days.
       </Text>
 
       <View className="mb-6 gap-1 rounded-card bg-gold-tint p-4">

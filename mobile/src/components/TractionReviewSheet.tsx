@@ -2,7 +2,6 @@ import { useState } from "react";
 import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, Text, View, useWindowDimensions } from "react-native";
 import { Star } from "lucide-react-native";
 import { Button, Input, Pill, PressableScale } from "./ui";
-import { TRACTION_3_CONFIG } from "../lib/beta-notice";
 import type { EaseRating, RaterRole, WouldUseAgain } from "../lib/types";
 import { color, size, space } from "../theme/tokens";
 
@@ -23,20 +22,18 @@ const USE_AGAIN_OPTIONS: { value: WouldUseAgain; label: string }[] = [
   { value: "no", label: "No" },
 ];
 
-const pricing = TRACTION_3_CONFIG.pricingSummary;
-
 // Both roles answer the same two multiple-choice questions with the same slugs;
 // only the wording differs, because "the flow" means something different from
 // each side of a task.
 const QUESTIONS: Record<RaterRole, { ease: string; useAgain: string; open: string }> = {
   requester: {
     ease: "How easy was it to create, follow and complete this mission through HO:RA?",
-    useAgain: `HO:RA — ${pricing}. Would you use it for a local errand?`,
+    useAgain: "Would you use HO:RA again for a local errand?",
     open: "What is the one thing we should improve before the public launch?",
   },
   supporter: {
     ease: "How clear and easy was the complete mission flow, from acceptance to clock-out?",
-    useAgain: `With HO:RA pricing (${pricing}), would you take on tasks like this again as a supporter?`,
+    useAgain: "Would you take on tasks like this again as a supporter?",
     open:
       "What is the one operational or app-related improvement that would help you " +
       "complete future missions more efficiently?",

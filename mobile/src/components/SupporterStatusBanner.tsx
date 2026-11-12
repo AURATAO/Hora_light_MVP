@@ -68,14 +68,14 @@ export function SupporterStatusBanner({ status, onApply }: SupporterStatusBanner
       <View className="gap-1">
         <Text className="text-title font-semibold text-ink">Become a verified supporter</Text>
         <Text className="text-body text-muted">
-          To accept tasks on HO:RA, complete a quick background check.
+          To accept tasks on HO:RA, apply and verify your ID.
         </Text>
       </View>
       <Button label="Apply now" onPress={onApply} />
       {/* The app is for supporters only now (PLAN §13b-3). Somebody who used
           it to book help lands here; tell them where booking went. */}
       <PressableScale onPress={openBookingSite} hitSlop={8} className="min-h-[44px] items-center justify-center">
-        <Text className="text-caption font-semibold text-brand">Looking to book help? Go to horaapp.co</Text>
+        <Text className="text-caption font-semibold text-brand">Looking to book help? Text us — see my-hora.com</Text>
       </PressableScale>
     </View>
   );

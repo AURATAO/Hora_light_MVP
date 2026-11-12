@@ -1,5 +1,5 @@
 import { Text, View } from "react-native";
-import { DoorOpen, Hand, ShieldAlert, Users } from "lucide-react-native";
+import { DoorOpen, Footprints, Hand, ShieldAlert } from "lucide-react-native";
 import type { LucideIcon } from "lucide-react-native";
 import { Card } from "./ui";
 import { color, size } from "../theme/tokens";
@@ -24,9 +24,11 @@ export const SUPPORTER_RULES: { icon: LucideIcon; title: string; body: string }[
     body: "If you would be left alone with someone under 18, stop and leave the task.",
   },
   {
-    icon: Users,
-    title: "Companionship in public places",
-    body: "Companionship tasks happen only in public places, such as a café, a park or a clinic waiting room.",
+    // Pilot scope (lawyers, 2026-11-11): no task that needs driving, and no
+    // companionship. The companionship rule comes back with the feature.
+    icon: Footprints,
+    title: "No driving",
+    body: "Go on foot, by transit or by bike. Never drive for a task, even if you're asked to.",
   },
 ];
 
