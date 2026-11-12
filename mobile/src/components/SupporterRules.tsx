@@ -24,11 +24,12 @@ export const SUPPORTER_RULES: { icon: LucideIcon; title: string; body: string }[
     body: "If you would be left alone with someone under 18, stop and leave the task.",
   },
   {
-    // Pilot scope (lawyers, 2026-11-11): no task that needs driving, and no
-    // companionship. The companionship rule comes back with the feature.
+    // Pilot (Aura, 2026-11-12): never transport people. A Supporter may use
+    // their own vehicle to carry ITEMS when the task says so. Companionship is
+    // off for the pilot; its rule comes back with the feature.
     icon: Footprints,
-    title: "No driving",
-    body: "Go on foot, by transit or by bike. Never drive for a task, even if you're asked to.",
+    title: "Never drive a customer",
+    body: "Never give anyone a ride. You can use your own car to carry items when the task says so.",
   },
 ];
 
