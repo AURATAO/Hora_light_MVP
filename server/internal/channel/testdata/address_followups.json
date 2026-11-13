@@ -1,0 +1,24 @@
+{
+  "_about": "Answers to HO:RA's address question (2026-11-12). transcripts: real conversations, the customer's messages in order (the first starts the request; every later one answers our question). Read by address_followup_test.go (rules: no follow-up is a search, a decline or a cancel, so each reaches the open request), by cmd/agenttest -address (the live parse of everything said never gives a placeholder title; the address model's guess, rules below) and by the liveeval replay TestLiveAddressFollowup (the whole router on the live models, the map stubbed). guesses: what the address model must propose from what was said — want: words the guess must contain; null: no guess (no single address, or no building number); or_null: ambiguous — the right guess or none both pass (\"6 street\" after \"335 e 3 ave\" may be 335 E 6th St or a building on 3rd Ave).",
+  "transcripts": [
+    {
+      "id": "prod-2026-11-12-east-village-medicine",
+      "area": "East Village",
+      "messages": ["I’m in east village I need medicine", "335 e 3 ave", "6 street", "335 6 st 3 ave"],
+      "production_replies": [
+        "I couldn't find \"East Village\" exactly. Could you send the full address with the borough or ZIP code? (We run errands in all five NYC boroughs.)",
+        "Sorry, I couldn't work that out. Could you say what you need, where, and when?",
+        "Where should the supporter go for “x”? An address or a place name is enough.",
+        "Let me get a HO:RA teammate for you. They'll text you here shortly — you can keep writing in the meantime."
+      ]
+    }
+  ],
+  "guesses": [
+    {"said": ["I’m in east village I need medicine", "335 e 3 ave", "6 street", "335 6 st 3 ave"], "unclear": "335 6 st 3 ave", "area": "East Village", "want": ["335", "6th St", "New York, NY 100"]},
+    {"said": ["I’m in east village I need medicine", "335 e 3 ave", "6 street"], "unclear": "6 street", "area": "East Village", "want": ["335", "6th St"], "or_null": true},
+    {"said": ["bring me groceries", "420 w 46"], "unclear": "420 w 46", "area": "", "want": ["420", "46th St", "New York, NY 100"]},
+    {"said": ["laundry pickup in williamsburg", "88 bedford"], "unclear": "88 bedford", "area": "Williamsburg", "want": ["88", "Bedford Ave", "Brooklyn"]},
+    {"said": ["I'm in east village I need tylenol", "6 street and 3 ave"], "unclear": "6 street and 3 ave", "area": "East Village", "null": true},
+    {"said": ["I need medicine", "near the park"], "unclear": "near the park", "area": "", "null": true}
+  ]
+}

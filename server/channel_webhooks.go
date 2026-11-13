@@ -59,6 +59,9 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		InContext:     steps.Small,
 		// An answer to a draft's question, or a question asked back.
 		QuestionReader: steps.Small,
+		// A messy address the map cannot place: the most likely full one,
+		// checked with Google and put to the person to confirm.
+		Addresses: steps.Small,
 		// Words the scope rules leave (people, homes, regulated things):
 		// "allow" or a refusal id (internal/channel/scope.go).
 		Scope: steps.Small,

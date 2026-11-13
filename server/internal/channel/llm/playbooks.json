@@ -1940,6 +1940,93 @@
    ]
   },
   {
+   "id": "pharmacy",
+   "name": "Pharmacy & over-the-counter items",
+   "match": [
+    "medicines?",
+    "meds",
+    "medications?",
+    "pharmac(?:y|ies|ist)",
+    "drug ?stores?",
+    "cvs",
+    "walgreens",
+    "duane reade",
+    "rite ?aid",
+    "tylenol",
+    "advil",
+    "motrin",
+    "aleve",
+    "ibuprofen",
+    "acetaminophen",
+    "aspirin",
+    "nyquil",
+    "dayquil",
+    "cough (?:drops|syrup)",
+    "cold medicine",
+    "allergy (?:pills|medicine|tablets)",
+    "benadryl",
+    "claritin",
+    "zyrtec",
+    "pepto(?:-bismol)?",
+    "tums",
+    "band-?aids?",
+    "bandages"
+   ],
+   "typical_questions": [
+    "which pharmacy near me is open now?",
+    "is the CVS on 2nd Ave open 24 hours?"
+   ],
+   "sources": [
+    "places_facts",
+    "places_summary"
+   ],
+   "guidance": "Pharmacy errands: a supporter can buy over-the-counter items (pain relief, cold and allergy medicine, bandages, vitamins, toiletries). Prescriptions of any kind are out of scope (scope_rules). Never suggest which medicine to take or give medical advice. HO:RA can't see a store's stock or prices.",
+   "asks": [
+    {
+     "key": "otc_items",
+     "question": "What do you need from the pharmacy? Over-the-counter things like Tylenol, cold medicine or bandages are fine — supporters can't pick up prescriptions.",
+     "optional": false,
+     "answer": "redraft",
+     "first": true,
+     "skip_if": "(?i)\\b(?:tylenol|advil|motrin|aleve|ibuprofen|acetaminophen|aspirin|paracetamol|nyquil|dayquil|mucinex|sudafed|robitussin|cough (?:drops|syrup|medicine)|cold (?:medicine|and flu)|flu (?:medicine|tablets)|allergy|benadryl|claritin|zyrtec|allegra|pepto|tums|imodium|antacids?|band-?aids?|bandages?|gauze|vitamins?|eye ?drops|nasal spray|thermometer|pain ?(?:killers?|relief|reliever)|heating pad|ice pack|condoms|pregnancy test|tampons|pads|sunscreen|toothpaste|shampoo|deodorant|lotion|neosporin|hydrocortisone|melatonin|zinc|electrolytes?|pedialyte|gatorade)\\b"
+    }
+   ],
+   "supporter_notes": [
+    "Over-the-counter items only: never pick up a prescription."
+   ],
+   "summary_lines": [],
+   "limits": [
+    "Prescriptions stay refused by the scope rules; this entry only asks what over-the-counter items to buy.",
+    "Never suggest a medicine or a dose."
+   ],
+   "evals": [
+    {
+     "kind": "asks",
+     "msg": "I’m in east village I need medicine",
+     "expect_asks": [
+      "otc_items"
+     ]
+    },
+    {
+     "kind": "asks",
+     "msg": "can someone bring me some meds",
+     "expect_asks": [
+      "otc_items"
+     ]
+    },
+    {
+     "kind": "asks",
+     "msg": "get me Tylenol and cough drops from the CVS on 2nd Ave",
+     "expect_asks": []
+    },
+    {
+     "kind": "asks",
+     "msg": "I need cold medicine delivered to 120 E 7th St",
+     "expect_asks": []
+    }
+   ]
+  },
+  {
    "id": "groceries",
    "name": "Groceries & specific items",
    "match": [

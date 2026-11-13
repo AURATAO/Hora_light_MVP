@@ -1495,3 +1495,41 @@ func TestPGHandoffActivity(t *testing.T) {
 		t.Fatal("clock not started")
 	}
 }
+
+// A timed-out hand-off over a draft's details (2026-11-12): the release
+// marks the draft SimplerAsk with one try left, in the same statement; a
+// draft not waiting on details, or a release without Simpler, is untouched.
+func TestPGReleaseSimplerAsk(t *testing.T) {
+	db := testDB(t)
+	s := &PGStore{DB: db}
+	ctx := context.Background()
+	a, err := s.UpsertIdentity(ctx, IMessage, "+15550000724")
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := &PendingDraft{Draft: llm.TaskDraft{Title: "Pick up medicine", Category: "delivery", Location2: "335 6 st 3 ave"},
+		Source: "I need medicine\n335 6 st 3 ave", DetailsAsked: true, DetailsTries: MaxDetailsTries, UnclearStop: "335 6 st 3 ave", Area: "East Village"}
+	for _, tc := range []struct {
+		simpler, details bool
+		want             bool
+	}{{true, true, true}, {false, true, false}, {true, false, false}} {
+		d := *draft
+		d.DetailsAsked = tc.details
+		if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateHandoff, Pending: &d}); err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := s.ReleaseHandoff(ctx, a.ID, ReleaseOpts{Resume: StateAwaitingConfirm, AnyClock: true, Simpler: tc.simpler}); err != nil || !ok {
+			t.Fatalf("release: %v %v", ok, err)
+		}
+		c, err := s.GetConversation(ctx, a.ID)
+		if err != nil || c.Pending == nil {
+			t.Fatalf("%v %+v", err, c)
+		}
+		if c.Pending.SimplerAsk != tc.want || (tc.want && c.Pending.DetailsTries != MaxDetailsTries-1) || (!tc.want && c.Pending.DetailsTries != MaxDetailsTries) {
+			t.Fatalf("%+v: simpler %v tries %d", tc, c.Pending.SimplerAsk, c.Pending.DetailsTries)
+		}
+		if c.Pending.Area != "East Village" || c.Pending.UnclearStop != "335 6 st 3 ave" || c.Pending.Draft.Title != "Pick up medicine" {
+			t.Fatalf("the rest of the draft changed: %+v", c.Pending)
+		}
+	}
+}

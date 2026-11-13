@@ -71,7 +71,7 @@ func (b *chatBooker) CheckArea(ctx context.Context, d llm.TaskDraft) channel.Are
 	case res.Verdict == helpers.AreaWhichBorough:
 		return channel.AreaCheck{Outcome: channel.AreaWhichBorough, Stop: res.Stop}
 	}
-	return channel.AreaCheck{Outcome: channel.AreaUnclear, Stop: res.Stop}
+	return channel.AreaCheck{Outcome: channel.AreaUnclear, Stop: res.Stop, Area: res.Neighborhood}
 }
 
 // draftToCreateInput maps a chat draft onto the POST /tasks body the app sends.
@@ -81,7 +81,11 @@ func (b *chatBooker) CheckArea(ctx context.Context, d llm.TaskDraft) channel.Are
 func draftToCreateInput(d llm.TaskDraft, opts channel.PostOptions) createTaskInput {
 	autoExtend := opts.AutoExtend
 	loc := strings.TrimSpace(d.Location1)
-	if l2 := strings.TrimSpace(d.Location2); l2 != "" {
+	if l2 := strings.TrimSpace(d.Location2); l2 != "" && loc == "" {
+		// Only the drop-off: one stop (bought anywhere in the person's
+		// area — the chat's neighbourhood rule, 2026-11-12).
+		loc = l2
+	} else if l2 != "" {
 		// The same " | " encoding both clients use for a two-stop task.
 		loc = loc + " | " + l2
 	}

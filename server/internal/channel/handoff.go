@@ -305,6 +305,16 @@ func (r *Router) release(ctx context.Context, id Identity, anyClock bool, text s
 	}
 	resumed := conv
 	resumed.State = conv.ResumeState()
+	// Timed out over a draft's details (no one answered): the question
+	// that failed is not repeated word for word — it is put the simpler
+	// way, and the next answer gets one more try before another hand-off
+	// (production 2026-11-12).
+	simpler := timedOut && resumed.State == StateAwaitingConfirm && conv.Pending != nil && conv.Pending.DetailsAsked
+	if simpler {
+		p := *conv.Pending
+		p.SimplerAsk, p.DetailsTries = true, MaxDetailsTries-1
+		resumed.Pending = &p
+	}
 	// Our earlier question is put again — unless a supporter's question is
 	// about to be asked (resumeDeferred below): two YES-able questions in
 	// one burst invite a YES for the wrong one. Ours comes back after.
@@ -317,7 +327,7 @@ func (r *Router) release(ctx context.Context, id Identity, anyClock bool, text s
 	// the supporter's: a YES to something ops asked must not book the old
 	// draft (review r2 F2).
 	putAgain := back != "" || awaitingAnswer(resumed.State)
-	won, err := r.Conversations.ReleaseHandoff(ctx, id.ID, ReleaseOpts{Resume: resumed.State, Seen: conv.HandoffActivityAt, AnyClock: anyClock, PutAgain: putAgain})
+	won, err := r.Conversations.ReleaseHandoff(ctx, id.ID, ReleaseOpts{Resume: resumed.State, Seen: conv.HandoffActivityAt, AnyClock: anyClock, PutAgain: putAgain, Simpler: simpler})
 	if err != nil {
 		return false, fmt.Errorf("release: %w", err)
 	}

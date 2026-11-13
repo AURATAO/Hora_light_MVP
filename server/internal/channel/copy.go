@@ -17,8 +17,16 @@ const (
 	CopyOutOfArea         = "Sorry, HO:RA only runs errands in New York City's five boroughs right now. If you have an errand in NYC, send it over!"
 	CopyAskClearerAddress = "I couldn't find \"%s\" exactly. Could you send the full address with the borough or ZIP code? (We run errands in all five NYC boroughs.)"
 	CopyWhichBorough      = "Which borough is %s in?"
-	CopyAreaCheckDown     = "I can't check that address right now, so I can't book it yet. Please send it again in a few minutes."
-	CopyAbout             = "HO:RA sends a vetted local supporter to do the errand for you. You see the estimate before anything is booked, " +
+	// The address questions of 2026-11-12 (router.go detailsQuestion).
+	CopyConfirmAddressGuess = "Did you mean %s? Reply YES or send the right address."
+	CopyAskAddressIn        = "Got it, the %s. What's the exact address? A building number and street is enough, like “120 E 7th St”."
+	CopyAskAddressSimpler   = "Let's try it a simpler way: what's the building number and street, with the nearest cross street or the ZIP code? For example: “120 E 7th St at 1st Ave” or “120 E 7th St, 10009”."
+	CopyAskRightAddress     = "No problem. What's the right address? A building number and street is enough."
+	CopyDidntCatch          = "Sorry, I didn't catch that."
+	CopyRedraftFailed       = "Sorry, I didn't catch that. Your request “%s” is still open: what would you like to change?"
+	CopyBuyInArea           = "Where to buy: anywhere in or near the %s (where the customer is)."
+	CopyAreaCheckDown       = "I can't check that address right now, so I can't book it yet. Please send it again in a few minutes."
+	CopyAbout               = "HO:RA sends a vetted local supporter to do the errand for you. You see the estimate before anything is booked, " +
 		"and you pay for the time actually used.\n\nTell me what you need and when, and I'll price it."
 	CopyHelloAgain           = "Hi again! It's your HO:RA concierge. What can I help you with today?"
 	CopyAck                  = "Got it! I'm here whenever you need a hand."

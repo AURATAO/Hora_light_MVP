@@ -115,6 +115,10 @@ type AreaCheck struct {
 	Outcome  AreaOutcome
 	Stop     string
 	Resolved []string
+	// Area, on AreaUnclear: Stop is a NYC neighbourhood ("East Village") —
+	// where the person is, not a door. Kept as the draft's area, never a
+	// failed answer (2026-11-12).
+	Area string
 }
 
 // CancelQuote is what cancelling a task now would charge.
@@ -259,6 +263,10 @@ type Router struct {
 	// QuestionReader tells an answer to a draft's question from a question
 	// asked back, when the rules cannot (answers.go). Nil: rules only.
 	QuestionReader llm.QuestionReader
+	// Addresses proposes the most likely full address when the map cannot
+	// place what the person wrote (llm.AddressGuesser, the small step's
+	// model); nil = the clearer-address question alone.
+	Addresses llm.AddressGuesser
 	// Scope reads words the scope rules leave (scope.go): "allow" or a
 	// refusal id, on the small model. Nil: the rules alone.
 	Scope llm.ScopeChecker
@@ -780,6 +788,10 @@ type draftOpts struct {
 	// playbookHint: the type the classifier named, used only when no
 	// playbook rule matches the words (rules first, the model otherwise).
 	playbookHint string
+	// filled: the pending errands with an answer already put in place by
+	// rule (a YES to "Did you mean …?"): not split or parsed again, priced
+	// and checked like any re-draft.
+	filled []llm.TaskDraft
 }
 
 // startDraftOpts parses the request, prices it and moves to the name or
@@ -804,13 +816,19 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 	// on its own; all of them wait on the one YES. Chosen places make one
 	// errand: one supporter for the whole trip.
 	errands := []string{source}
+	if o.filled != nil {
+		errands = make([]string, len(o.filled))
+		for i := range errands {
+			errands[i] = source
+		}
+	}
 	var pre *draftPrefetch
-	if o.prebuilt == nil {
+	if o.prebuilt == nil && o.filled == nil {
 		// The parse of the whole words runs alongside the split: one errand
 		// (the common case) is parsed from everything said anyway.
 		pre = r.prefetched(ctx, source, len(o.places) == 0)
 	}
-	if r.Splitter != nil && len(o.places) == 0 && o.prebuilt == nil {
+	if r.Splitter != nil && len(o.places) == 0 && o.prebuilt == nil && o.filled == nil {
 		sr := pre.splitResult()
 		got, usage, err := sr.errands, sr.usage, sr.err
 		if err != nil {
@@ -848,6 +866,8 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		var draft llm.TaskDraft
 		if o.prebuilt != nil {
 			draft = *o.prebuilt
+		} else if o.filled != nil {
+			draft = o.filled[i]
 		} else {
 			var usage llm.Usage
 			var err error
@@ -857,12 +877,33 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 			} else {
 				draft, usage, err = r.Parser.ParseTask(ctx, prompt, text)
 			}
+			if err == nil && PlaceholderTitle(draft.Title) {
+				// "x", "-", "task": never a title (production 2026-11-12:
+				// "Where should the supporter go for “x”?"). The pending
+				// request's own title stands; with none, it is no parse.
+				if t := pendingTitle(prev, len(errands), i); t != "" {
+					log.Printf("[channel] draft identity=%s: placeholder title %q — the pending title stands", id.ID, draft.Title)
+					draft.Title = t
+				} else {
+					err = fmt.Errorf("placeholder title %q", draft.Title)
+				}
+			}
 			if err != nil {
 				log.Printf("[channel] parse failed model=%s latency=%s: %v", usage.Model, usage.Latency, err)
-				unparsed = append(unparsed, text)
-				continue
+				// An answer to our question about the pending request
+				// fills that request, by rule — it is never dropped, and
+				// never read as an errand of its own (production
+				// 2026-11-12: "335 e 3 ave" was lost to "empty title").
+				d, ok := fillPending(conv.Pending, latestLine(source))
+				if !ok || len(errands) != 1 {
+					unparsed = append(unparsed, text)
+					continue
+				}
+				log.Printf("[channel] re-draft identity=%s: parse failed — the answer fills the pending request", id.ID)
+				draft = d
+			} else {
+				log.Printf("[channel] parsed model=%s latency=%s in=%d out=%d category=%s", usage.Model, usage.Latency.Round(time.Millisecond), usage.InputTokens, usage.OutputTokens, draft.Category)
 			}
-			log.Printf("[channel] parsed model=%s latency=%s in=%d out=%d category=%s", usage.Model, usage.Latency.Round(time.Millisecond), usage.InputTokens, usage.OutputTokens, draft.Category)
 		}
 		if o.prebuilt != nil {
 			// The usual: the past errand's own length stands.
@@ -950,6 +991,15 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		return r.dropDraftWith(ctx, in, conv, CopyDroppedCancelHint)
 	}
 	if len(items) == 0 {
+		if prev := conv.Pending; prev != nil && o.prebuilt == nil {
+			// A request is open: it stays as it was, and the reply names
+			// it — never "say what you need, where, and when", which reads
+			// as starting over (production 2026-11-12).
+			if prev.DetailsAsked && len(prev.PlaybookAsk) == 0 {
+				return r.Reply(ctx, in, CopyDidntCatch+" "+detailsQuestion(prev), "")
+			}
+			return r.Reply(ctx, in, fmt.Sprintf(CopyRedraftFailed, prev.Headline()), "")
+		}
 		if r.lastReplyWasParseFailure(ctx, id) {
 			return r.handOff(ctx, in, id, conv, HandoffNotUnderstood)
 		}
@@ -962,10 +1012,34 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		applyBorough(items, prev.UnclearStop, latestLine(source))
 	}
 	var known map[string]string
+	areaName := ""
 	if conv.Pending != nil {
 		known = conv.Pending.AreaStops
+		areaName = conv.Pending.Area
 	}
+	// The neighbourhood the person is in is an area, never a stop: the
+	// parser reads "I'm in east village" as a place every time.
+	clearStop(items, areaName)
 	area, areaStops := r.checkArea(ctx, items, known)
+	if area.Outcome == AreaUnclear && area.Area != "" {
+		// "East Village": where the person is — not a failure, and not
+		// "I couldn't find it". Kept as the area; the stop goes, and the
+		// rest is checked again (2026-11-12).
+		log.Printf("[channel] draft identity=%s: a neighbourhood, kept as the area", id.ID)
+		areaName = area.Area
+		clearStop(items, area.Stop)
+		merged := map[string]string{}
+		for k, v := range known {
+			merged[k] = v
+		}
+		for k, v := range areaStops {
+			merged[k] = v
+		}
+		area, areaStops = r.checkArea(ctx, items, merged)
+	}
+	if areaName != "" {
+		buyInArea(items, areaName)
+	}
 	switch area.Outcome {
 	case AreaOutside:
 		return r.refuseOutOfArea(ctx, in, conv)
@@ -1002,13 +1076,33 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 	}
 	p.SetItems(items)
 	p.AreaStops = areaStops
+	p.Area = areaName
+	if prev := conv.Pending; prev != nil && o.prebuilt == nil {
+		p.RejectedGuesses, p.SimplerAsk, p.GuessesShown = prev.RejectedGuesses, prev.SimplerAsk, prev.GuessesShown
+	}
 	unclear := area.Outcome == AreaUnclear || area.Outcome == AreaWhichBorough
 	if unclear {
 		p.UnclearStop, p.WhichBorough = area.Stop, area.Outcome == AreaWhichBorough
 	}
-	p.DetailsAsked = needsDetails(items) || unclear
-	if prev := conv.Pending; p.DetailsAsked && prev != nil && prev.DetailsAsked {
-		p.DetailsTries = prev.DetailsTries + 1
+	if area.Outcome == AreaUnclear {
+		// The map could not place it: the model reads everything said
+		// for the most likely address, Google checks it, and the person
+		// is asked to confirm it (2026-11-12).
+		p.AddressGuess = r.proposeAddress(ctx, id, source, area.Stop, areaName, p.RejectedGuesses)
+		if p.AddressGuess != "" {
+			p.GuessesShown++
+		}
+	}
+	p.DetailsAsked = needsDetailsIn(items, areaName) || unclear
+	if prev := conv.Pending; p.DetailsAsked && prev != nil && prev.DetailsAsked && !prev.AskedFirst {
+		// A failed answer counts toward the hand-off; a question that
+		// moves the request on does not: "Did you mean …?", a YES to it,
+		// or a neighbourhood newly read as the area.
+		p.DetailsTries = prev.DetailsTries
+		free := p.AddressGuess != "" && p.GuessesShown <= MaxFreeGuesses
+		if !free && o.filled == nil && (areaName == "" || areaName == prev.Area) {
+			p.DetailsTries++
+		}
 	}
 	conv.Pending = p
 	if conv.State == StateAwaitingApproval {
@@ -1039,6 +1133,28 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		}
 	}
 
+	if r.Playbooks != nil && !p.PlaybookAsked && p.DetailsAsked {
+		// The type's "first" questions come before where: "I need
+		// medicine" is asked what they need before anything else
+		// (2026-11-12). The answer re-drafts; the details question follows.
+		words := source + "\n" + strings.Join(p.Notes, "\n")
+		if asks := withoutPhotoAsks(r.Playbooks.DraftAsks(pb, words), len(p.Photos) > 0); hasFirstAsk(asks) {
+			p.PlaybookAsked, p.AskedFirst = true, true
+			for _, a := range asks {
+				p.PlaybookAsk = append(p.PlaybookAsk, a.Key)
+			}
+			conv.State = StateAwaitingConfirm
+			lead := r.leadIn(p)
+			if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+				return fmt.Errorf("startDraft: %w", err)
+			}
+			if done, err := r.preempted(ctx, in, conv.IdentityID, p); done {
+				return err
+			}
+			log.Printf("[channel] draft identity=%s: playbook %q asks %v first", id.ID, p.Playbook, p.PlaybookAsk)
+			return r.Reply(ctx, in, lead+playbookAsksText(asks), "")
+		}
+	}
 	if p.DetailsAsked {
 		// Nothing concrete or no place: ask before any summary — a summary
 		// of "book another task" was booked on staging (2026-10-24).
@@ -1282,6 +1398,15 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 		return r.answerPlaybookAsk(ctx, in, id, conv, text)
 	}
 	if conv.Pending.DetailsAsked {
+		if conv.Pending.AddressGuess != "" {
+			// "Did you mean …? Reply YES or send the right address."
+			switch {
+			case IsYes(text):
+				return r.acceptAddressGuess(ctx, in, id, conv)
+			case IsNo(text):
+				return r.rejectAddressGuess(ctx, in, conv)
+			}
+		}
 		switch {
 		case IsNo(text) || IsDraftDecline(text):
 			return r.dropDraft(ctx, in, conv)
@@ -2060,6 +2185,11 @@ func (r *Router) supporterSpokeSince(ctx context.Context, in Inbound, id Identit
 // draft without a place before the thread goes to a person.
 const MaxDetailsTries = 2
 
+// MaxFreeGuesses: "Did you mean …?" questions that do not count toward
+// MaxDetailsTries. Past them a guess still goes out, but an answer that
+// leaves the address unplaced counts again, so the thread reaches a person.
+const MaxFreeGuesses = 3
+
 // needsDetails: a draft that names no place for some errand, or came from a
 // request with nothing in it.
 func needsDetails(items []DraftItem) bool {
@@ -2075,16 +2205,284 @@ func needsDetails(items []DraftItem) bool {
 // clearer address for a stop that could not be placed, what and where for an empty request, where for a draft
 // without a place.
 func detailsQuestion(p *PendingDraft) string {
+	if p.AddressGuess != "" {
+		return fmt.Sprintf(CopyConfirmAddressGuess, p.AddressGuess)
+	}
 	if p.WhichBorough {
 		return fmt.Sprintf(CopyWhichBorough, p.UnclearStop)
 	}
+	if p.SimplerAsk && (p.UnclearStop != "" || p.Area != "") {
+		// After a hand-off that timed out: never the question that
+		// failed, word for word.
+		return CopyAskAddressSimpler
+	}
 	if p.UnclearStop != "" {
 		return fmt.Sprintf(CopyAskClearerAddress, p.UnclearStop)
+	}
+	if p.Area != "" && !hasStop(p.Items()) {
+		return fmt.Sprintf(CopyAskAddressIn, p.Area)
 	}
 	if vagueRequestRE.MatchString(p.Source) {
 		return CopyAskWhatWhere
 	}
 	return fmt.Sprintf(CopyAskWhere, p.Headline())
+}
+
+// needsDetailsIn is needsDetails with the person's area: a purchase with
+// only a drop-off is bought anywhere in the area they named ("I'm in East
+// Village, I need Tylenol" → no "where should they buy it?").
+func needsDetailsIn(items []DraftItem, area string) bool {
+	if area == "" {
+		return needsDetails(items)
+	}
+	for _, it := range items {
+		if strings.TrimSpace(it.Draft.Location1) != "" {
+			continue
+		}
+		if it.NeedsBudget && strings.TrimSpace(it.Draft.Location2) != "" {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// hasStop: some errand names a place.
+func hasStop(items []DraftItem) bool {
+	for _, it := range items {
+		if where(it.Draft.Location1, it.Draft.Location2) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// clearStop blanks every stop that is exactly these words (stopKey): the
+// person's neighbourhood, which is an area, not a door.
+func clearStop(items []DraftItem, stop string) {
+	if strings.TrimSpace(stop) == "" {
+		return
+	}
+	k := stopKey(stop)
+	for i := range items {
+		for _, s := range []*string{&items[i].Draft.Location1, &items[i].Draft.Location2} {
+			if t := stopKey(*s); t == k || t == "the "+k {
+				*s = ""
+			}
+		}
+	}
+}
+
+// buyInArea: a purchase with only a drop-off tells the supporter where to
+// buy — the person's area (CopyBuyInArea, once).
+func buyInArea(items []DraftItem, area string) {
+	note := fmt.Sprintf(CopyBuyInArea, area)
+	for i := range items {
+		d := &items[i].Draft
+		if !items[i].NeedsBudget || strings.TrimSpace(d.Location1) != "" || strings.TrimSpace(d.Location2) == "" || strings.Contains(d.Description, note) {
+			continue
+		}
+		d.Description = strings.TrimSpace(strings.TrimSpace(d.Description) + "\n\n" + note)
+	}
+}
+
+// placeholderTitleRE: what a model writes when it has no title — never one.
+var placeholderTitleRE = regexp.MustCompile(`(?i)^(?:x+|-+|_+|\?+|\.+|n/?a|none|null|nil|tbd|todo|untitled|title|task|placeholder)$`)
+
+// PlaceholderTitle: an empty title, or one that names nothing ("x", "-",
+// "task"). Exported for the eval runner.
+func PlaceholderTitle(t string) bool {
+	t = strings.TrimSpace(strings.Trim(strings.TrimSpace(t), `"'“”‘’.!`))
+	return t == "" || placeholderTitleRE.MatchString(t) || utf8.RuneCountInString(t) < 3
+}
+
+// pendingTitle: the pending request's title for errand i of n, when the
+// request is the same shape; "" otherwise.
+func pendingTitle(prev []DraftItem, n, i int) string {
+	var t string
+	switch {
+	case len(prev) == n && i < n:
+		t = prev[i].Draft.Title
+	case len(prev) == 1 && n == 1:
+		t = prev[0].Draft.Title
+	}
+	if PlaceholderTitle(t) {
+		return ""
+	}
+	return t
+}
+
+// fillPending puts the answer to our details question into the pending
+// request by rule, for when the parse of everything said failed: the
+// address that could not be placed is replaced, else the missing place is
+// filled (the drop-off when the person's area is known and nothing else
+// is, the place to go otherwise). ok=false: no single request waiting on
+// a place (several errands, a summary being corrected, or "what do you
+// need?" still open).
+func fillPending(prev *PendingDraft, answer string) (llm.TaskDraft, bool) {
+	answer = strings.TrimSpace(answer)
+	if prev == nil || !prev.DetailsAsked || len(prev.More) > 0 || len(prev.PlaybookAsk) > 0 || answer == "" || PlaceholderTitle(prev.Draft.Title) {
+		return llm.TaskDraft{}, false
+	}
+	if prev.AskedFirst && !looksLikeStreetAddress(answer) {
+		// The question was what to buy: only an address is put in as one
+		// (production: "335 e 3 ave" answered "what do you need?").
+		return llm.TaskDraft{}, false
+	}
+	d := prev.Draft
+	if prev.UnclearStop != "" {
+		for _, s := range []*string{&d.Location1, &d.Location2} {
+			if stopKey(*s) == stopKey(prev.UnclearStop) {
+				*s = answer
+				return d, true
+			}
+		}
+	}
+	if vagueRequestRE.MatchString(prev.Source) {
+		return llm.TaskDraft{}, false
+	}
+	switch {
+	case strings.TrimSpace(d.Location1) == "" && strings.TrimSpace(d.Location2) == "" && prev.Area != "" && dropOffErrand(d):
+		d.Location2 = answer
+	case strings.TrimSpace(d.Location1) == "":
+		d.Location1 = answer
+	default:
+		return llm.TaskDraft{}, false
+	}
+	return d, true
+}
+
+// streetAddressRE: a building number and a street word ("335 e 3 ave",
+// "12 Bedford", "88 W 10th St") or a ZIP.
+var streetAddressRE = regexp.MustCompile(`(?i)^\s*\d+[a-z]?(?:-\d+)?\s+\S.*\b(?:st|street|ave?|avenue|rd|road|blvd|boulevard|pl|place|dr|drive|ln|lane|ct|court|ter|terrace|pkwy|parkway|broadway|way|sq|square|\d+(?:st|nd|rd|th))\b|\b\d{5}\b`)
+
+func looksLikeStreetAddress(s string) bool { return streetAddressRE.MatchString(s) }
+
+// dropOffErrand: something is brought to the person.
+func dropOffErrand(d llm.TaskDraft) bool {
+	return d.Category == "delivery" || d.Category == "grocery"
+}
+
+// hasFirstAsk: one of the questions is asked before where.
+func hasFirstAsk(asks []llm.PlaybookAsk) bool {
+	for _, a := range asks {
+		if a.First {
+			return true
+		}
+	}
+	return false
+}
+
+// proposeAddress asks the address model for the most likely full address
+// of stop, from everything said (source) and the person's area, and keeps
+// it only if the area check places it inside the boroughs: the address as
+// Google found it, or "" (no model, no guess, a guess the person already
+// turned down, or one the map cannot place either).
+func (r *Router) proposeAddress(ctx context.Context, id Identity, source, stop, area string, rejected []string) string {
+	if r.Addresses == nil || r.Booker == nil || strings.TrimSpace(stop) == "" {
+		return ""
+	}
+	gctx, cancel := context.WithTimeout(ctx, addressGuessTimeout)
+	g, err := r.Addresses.GuessAddress(gctx, strings.Split(source, "\n"), stop, area)
+	cancel()
+	if err != nil {
+		log.Printf("[channel] address guess identity=%s: %v", id.ID, err)
+		return ""
+	}
+	if g == "" || stopKey(g) == stopKey(stop) {
+		return ""
+	}
+	got := r.Booker.CheckArea(ctx, llm.TaskDraft{Location1: g})
+	if got.Outcome != AreaInside || len(got.Resolved) != 1 || strings.TrimSpace(got.Resolved[0]) == "" {
+		log.Printf("[channel] address guess identity=%s: not placed (%s)", id.ID, areaOutcomeName(got.Outcome))
+		return ""
+	}
+	found := got.Resolved[0]
+	for _, x := range rejected {
+		if stopKey(x) == stopKey(found) || stopKey(x) == stopKey(g) {
+			return ""
+		}
+	}
+	log.Printf("[channel] address guess identity=%s: placed, asking to confirm", id.ID)
+	return found
+}
+
+// addressGuessTimeout bounds the guess (p90 ~5s on Sonnet, 2026-11-13): past
+// it the clearer-address question goes out alone.
+const addressGuessTimeout = 8 * time.Second
+
+// acceptAddressGuess: YES to "Did you mean …?" — the guess replaces the
+// stop the map could not place, and the request goes on from there with
+// no new parse (the address is already checked).
+func (r *Router) acceptAddressGuess(ctx context.Context, in Inbound, id Identity, conv Conversation) error {
+	p := *conv.Pending
+	guess, stop := p.AddressGuess, p.UnclearStop
+	items := p.Items()
+	drafts := make([]llm.TaskDraft, len(items))
+	placed := false
+	for i, it := range items {
+		d := it.Draft
+		for _, s := range []*string{&d.Location1, &d.Location2} {
+			if stop != "" && stopKey(*s) == stopKey(stop) {
+				*s, placed = guess, true
+			}
+		}
+		if placed {
+			// The parser often keeps every way the person wrote the
+			// address, one per stop ("335 e 3 ave" → "335 6 st 3 ave"):
+			// another stop the map has not placed, with the same building
+			// number, is the same place (live replay 2026-11-13). Two
+			// stops at one address are one: the drop-off.
+			for _, s := range []*string{&d.Location1, &d.Location2} {
+				if _, ok := p.AreaStops[stopKey(*s)]; !ok && *s != guess && sameBuilding(*s, guess) {
+					*s = guess
+				}
+			}
+			if d.Location1 != "" && stopKey(d.Location1) == stopKey(d.Location2) {
+				d.Location1 = ""
+			}
+		}
+		drafts[i] = d
+	}
+	if !placed {
+		p.AddressGuess = ""
+		conv.Pending = &p
+		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+			return fmt.Errorf("acceptAddressGuess: %w", err)
+		}
+		return r.Reply(ctx, in, detailsQuestion(&p), "")
+	}
+	known := map[string]string{}
+	for k, v := range p.AreaStops {
+		known[k] = v
+	}
+	known[stopKey(guess)] = guess
+	p.AreaStops, p.AddressGuess, p.UnclearStop = known, "", ""
+	conv.Pending = &p
+	log.Printf("[channel] draft identity=%s: address guess confirmed", id.ID)
+	return r.startDraftOpts(ctx, in, id, conv, p.Source+"\n"+guess, draftOpts{filled: drafts})
+}
+
+// buildingRE: the building number an address starts with ("335", "12-14").
+var buildingRE = regexp.MustCompile(`^\s*(\d+(?:-\d+)?[a-zA-Z]?)\b`)
+
+// sameBuilding: both start with the same building number.
+func sameBuilding(a, b string) bool {
+	ma, mb := buildingRE.FindStringSubmatch(a), buildingRE.FindStringSubmatch(b)
+	return ma != nil && mb != nil && strings.EqualFold(ma[1], mb[1])
+}
+
+// rejectAddressGuess: NO to "Did you mean …?" — never proposed again; the
+// person is asked for the right address (not a failed answer).
+func (r *Router) rejectAddressGuess(ctx context.Context, in Inbound, conv Conversation) error {
+	p := *conv.Pending
+	p.RejectedGuesses = append(p.RejectedGuesses, p.AddressGuess)
+	p.AddressGuess = ""
+	conv.Pending = &p
+	if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+		return fmt.Errorf("rejectAddressGuess: %w", err)
+	}
+	return r.Reply(ctx, in, CopyAskRightAddress, "")
 }
 
 // draftDeclineRE: a no in words to a pending draft, as the whole message.

@@ -457,3 +457,30 @@ func TestEchoWinsOverTheBoroughs(t *testing.T) {
 		t.Fatalf("%+v, %v", r, err)
 	}
 }
+
+// A NYC neighbourhood is unclear (no door to stand at) and named as one;
+// a borough or a place outside is not (2026-11-12, "East Village").
+func TestServiceAreaNamesANeighborhood(t *testing.T) {
+	hood := `{"status":"OK","results":[{"types":["neighborhood","political"],"partial_match":false,"formatted_address":"East Village, New York, NY, USA",` +
+		`"address_components":[{"long_name":"East Village","short_name":"East Village","types":["neighborhood","political"]},` +
+		`{"long_name":"Manhattan","short_name":"Manhattan","types":["sublocality_level_1","sublocality","political"]},` +
+		`{"long_name":"New York","short_name":"New York","types":["locality","political"]},` +
+		`{"long_name":"New York County","short_name":"New York County","types":["administrative_area_level_2","political"]},` +
+		`{"long_name":"New York","short_name":"NY","types":["administrative_area_level_1","political"]},` +
+		`{"long_name":"United States","short_name":"US","types":["country","political"]}],` +
+		`"geometry":{"location":{"lat":40.726,"lng":-73.981},"location_type":"APPROXIMATE"}}]}`
+	geocodeServer(t, hood, 200)
+	r, err := ServiceArea(context.Background(), "East Village")
+	if err != nil || r.Verdict != AreaUnclear || r.Neighborhood != "East Village" {
+		t.Fatalf("%+v, %v", r, err)
+	}
+	geocodeServer(t, googleSays(googleResult{county: "Kings County", state: "NY", formatted: "12 Bedford Ave, Brooklyn, NY 11211, USA"}), 200)
+	if r, err := ServiceArea(context.Background(), "12 Bedford Ave, Brooklyn"); err != nil || r.Verdict != AreaInside || r.Neighborhood != "" {
+		t.Fatalf("an address: %+v, %v", r, err)
+	}
+	jc := strings.Replace(strings.Replace(hood, "New York County", "Hudson County", 2), `"short_name":"NY"`, `"short_name":"NJ"`, 1)
+	geocodeServer(t, jc, 200)
+	if r, err := ServiceArea(context.Background(), "East Village"); err != nil || r.Neighborhood != "" {
+		t.Fatalf("outside: %+v, %v", r, err)
+	}
+}
