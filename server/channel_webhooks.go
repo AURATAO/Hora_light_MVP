@@ -62,6 +62,9 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		// A messy address the map cannot place: the most likely full one,
 		// checked with Google and put to the person to confirm.
 		Addresses: steps.Small,
+		// An ops note during a hand-off, as an edit of the pending request
+		// (D-30): the customer still confirms with YES.
+		OpsEditor: steps.Small,
 		// Words the scope rules leave (people, homes, regulated things):
 		// "allow" or a refusal id (internal/channel/scope.go).
 		Scope: steps.Small,

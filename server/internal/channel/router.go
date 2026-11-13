@@ -267,6 +267,9 @@ type Router struct {
 	// place what the person wrote (llm.AddressGuesser, the small step's
 	// model); nil = the clearer-address question alone.
 	Addresses llm.AddressGuesser
+	// OpsEditor reads an ops note as an edit of the pending request during
+	// a hand-off (opsedit.go, D-30); nil = no ops edits.
+	OpsEditor llm.DraftEditor
 	// Scope reads words the scope rules leave (scope.go): "allow" or a
 	// refusal id, on the small model. Nil: the rules alone.
 	Scope llm.ScopeChecker

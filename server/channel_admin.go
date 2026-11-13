@@ -531,6 +531,86 @@ func registerChannelAdminRoutes(r *gin.Engine, sqlDB *sql.DB, store *channel.PGS
 		// Queued: delivery runs off the request path (S-32).
 		c.JSON(http.StatusAccepted, gin.H{"queued": true})
 	})
+	// D-30: ops fix the pending request with an internal note (never sent
+	// to the customer), then hand back with the summary. Nothing here
+	// books, posts or charges: only the customer's YES to the summary does.
+	r.GET("/admin/channel/:identity/draft", dualAuth(sqlDB), requireOpsAdmin(), func(c *gin.Context) {
+		id, ok := loadIdentityParam(c, store)
+		if !ok {
+			return
+		}
+		d, missing, err := router.OpsDraft(c.Request.Context(), id)
+		if err != nil {
+			log.Printf("[channel-admin] draft identity=%s: %v", id.ID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "server_error"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"draft": d, "missing": missing, "ready": d != nil && missing == ""})
+	})
+	r.POST("/admin/channel/:identity/draft-edit", dualAuth(sqlDB), requireOpsAdmin(), func(c *gin.Context) {
+		id, ok := loadIdentityParam(c, store)
+		if !ok {
+			return
+		}
+		var body struct {
+			Note string `json:"note"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.Note) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "missing_note"})
+			return
+		}
+		if len(body.Note) > 1000 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "note_too_long", "message": "Keep the note under 1000 characters."})
+			return
+		}
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 45*time.Second)
+		defer cancel()
+		res, err := router.OpsEditDraft(ctx, id, body.Note)
+		if status, code, msg := opsEditError(err); status != 0 {
+			if status >= 500 {
+				log.Printf("[channel-admin] draft edit identity=%s by=%s: %v", id.ID, c.GetString("uid"), err)
+			}
+			writeAudit(ctx, systemActorUID, c.GetString("uid"), "CHANNEL_OPS_DRAFT_EDIT_REFUSED", "", map[string]any{
+				"identity_id": id.ID, "channel": id.Channel, "code": code,
+			})
+			c.JSON(status, gin.H{"error": code, "message": msg})
+			return
+		}
+		// Who changed what: the ops user, each field, before and after. The
+		// note itself is not kept (it may quote the customer).
+		writeAudit(ctx, systemActorUID, c.GetString("uid"), "CHANNEL_OPS_DRAFT_EDIT", "", map[string]any{
+			"identity_id": id.ID, "channel": id.Channel, "created": res.Created, "changes": res.Changes, "ready": res.Ready,
+		})
+		c.JSON(http.StatusOK, res)
+	})
+	r.POST("/admin/channel/:identity/hand-back-summary", dualAuth(sqlDB), requireOpsAdmin(), func(c *gin.Context) {
+		id, ok := loadIdentityParam(c, store)
+		if !ok {
+			return
+		}
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
+		defer cancel()
+		sent, err := router.OpsHandBack(ctx, id)
+		switch {
+		case errors.Is(err, channel.ErrNotInHandoff):
+			c.JSON(http.StatusConflict, gin.H{"error": "not_handed_off", "message": "This chat is already with the bot."})
+			return
+		case errors.Is(err, channel.ErrOpsNoPending):
+			c.JSON(http.StatusConflict, gin.H{"error": "no_draft", "message": "There is no request to summarise. Add a note first."})
+			return
+		case errors.Is(err, channel.ErrOpsIncomplete):
+			c.JSON(http.StatusConflict, gin.H{"error": "draft_incomplete", "message": "The request still needs an address. Add it in a note first."})
+			return
+		case err != nil:
+			log.Printf("[channel-admin] hand back identity=%s by=%s: %v", id.ID, c.GetString("uid"), err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "server_error"})
+			return
+		}
+		writeAudit(ctx, systemActorUID, c.GetString("uid"), "CHANNEL_OPS_HAND_BACK_SUMMARY", "", map[string]any{
+			"identity_id": id.ID, "channel": id.Channel, "sent": sent,
+		})
+		c.JSON(http.StatusOK, gin.H{"released": true, "sent": sent})
+	})
 	r.POST("/admin/channel/:identity/claim", dualAuth(sqlDB), requireOpsAdmin(), func(c *gin.Context) {
 		// Ops are on it without writing yet: the 10-minute timeout restarts.
 		id, ok := loadIdentityParam(c, store)
@@ -693,6 +773,34 @@ func sweepOptedOutForwards(ctx context.Context, store *channel.PGStore, router *
 		}
 		cancel()
 	}
+}
+
+// opsEditError maps an ops edit's error to the response (status 0: none).
+func opsEditError(err error) (int, string, string) {
+	var ae *channel.OpsAddressError
+	switch {
+	case err == nil:
+		return 0, "", ""
+	case errors.Is(err, channel.ErrNotInHandoff):
+		return http.StatusConflict, "not_handed_off", "This chat is with the bot. Claim a hand-off to fix its request."
+	case errors.Is(err, channel.ErrOpsCannotBook):
+		return http.StatusForbidden, "ops_cannot_book", "Ops can't book, post or confirm for the customer. Fix the request, then send the summary: only their YES books."
+	case errors.Is(err, channel.ErrOpsSeveral):
+		return http.StatusConflict, "several_errands", "This request has several errands. Sort it out with the customer in the chat."
+	case errors.Is(err, channel.ErrOpsNoDraft):
+		return http.StatusUnprocessableEntity, "cannot_draft", "Couldn't make a request from the chat and the note. Say what the errand is in the note."
+	case errors.As(err, &ae):
+		switch ae.Outcome {
+		case channel.AreaOutside:
+			return http.StatusUnprocessableEntity, "address_outside", fmt.Sprintf("“%s” is outside the five boroughs. Nothing was changed.", ae.Stop)
+		case channel.AreaUnavailable:
+			return http.StatusServiceUnavailable, "address_check_unavailable", "The address check is down. Nothing was changed; try again in a minute."
+		case channel.AreaWhichBorough:
+			return http.StatusUnprocessableEntity, "address_which_borough", fmt.Sprintf("“%s” exists in more than one borough. Add the borough or ZIP. Nothing was changed.", ae.Stop)
+		}
+		return http.StatusUnprocessableEntity, "address_unclear", fmt.Sprintf("Google couldn't place “%s”. Send the full address with the ZIP. Nothing was changed.", ae.Stop)
+	}
+	return http.StatusInternalServerError, "server_error", "Something went wrong. Nothing was changed."
 }
 
 func loadIdentityParam(c *gin.Context, store *channel.PGStore) (channel.Identity, bool) {

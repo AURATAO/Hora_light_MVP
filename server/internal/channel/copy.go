@@ -127,6 +127,7 @@ const (
 	CopyPostNotDoneHandedOff      = "That booking didn't go through. A HO:RA teammate is with you and can help finish it."
 	CopyHandoffWhileBooking       = "Let me get a HO:RA teammate for you. They'll text you here shortly. The booking you confirmed is still going through, and I'll tell you how it went."
 	CopyHandoffHolding            = "A HO:RA teammate will get back to you shortly."
+	CopyOpsHandBack               = "Thanks for waiting. A HO:RA teammate has updated your request. Nothing is booked until you reply YES to it."
 	CopyCancelNone                = "You have no open tasks to cancel right now."
 	CopyCancelWhich               = "Which task do you want to cancel?%s\nReply with the number."
 	CopyCancelNothing             = "OK, nothing cancelled."

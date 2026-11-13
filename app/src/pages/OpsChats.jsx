@@ -16,6 +16,11 @@
 //     for a linked number, the account's display name (S-12).
 //   - A reply only goes out on a handed-off chat (409 otherwise). The box is
 //     disabled for every other state rather than hiding the rule.
+//   - "Fix the request" (D-30): an internal note — never sent to the person —
+//     that the server reads as an edit of their pending request, every address
+//     checked like theirs. "Send summary and hand back" gives the chat back
+//     and sends them the normal summary with its price: nothing is booked or
+//     charged until they reply YES. There is no button that books.
 //   - A hand-off times out: HandoffTimeout (10 minutes) without ops activity
 //     and the bot takes the chat back and tells the person. The countdown
 //     shown here is derived from the server's handoff_activity_at and its
@@ -28,6 +33,9 @@ import {
   sendChannelMessage,
   claimChannelChat,
   releaseChannelChat,
+  getChannelDraft,
+  editChannelDraft,
+  handBackWithSummary,
 } from '../api/ops'
 
 const REFRESH_MS = 10_000
@@ -64,6 +72,53 @@ const STATE_LABEL = {
   handoff: 'With a person',
 }
 
+const FIELD_LABEL = {
+  title: 'Errand',
+  category: 'Type',
+  description: 'Details for the supporter',
+  pickup: 'Pickup',
+  drop_off: 'Drop-off',
+  when: 'When',
+  budget: 'Shopping budget',
+  notes: 'Notes',
+  quote: 'Estimate',
+}
+
+const NOTE_EXAMPLES = 'e.g. “address: 335 E 6th St, New York, NY 10003” · “it’s Advil, 1 box, from any pharmacy” · “time: today 6pm”'
+
+function money(c) {
+  if (!c) return ''
+  return c % 100 === 0 ? `$${c / 100}` : `$${(c / 100).toFixed(2)}`
+}
+
+// The request as the person will see it summarised: one row per field.
+function DraftCard({ d, title }) {
+  if (!d) return null
+  const rows = [
+    ['Errand', d.title],
+    ['Pickup', d.pickup || (d.needs_budget && d.drop_off ? 'Any store near the drop-off' : '—')],
+    ['Drop-off', d.drop_off || '—'],
+    ['When', d.when],
+    ['Shopping budget', d.budget_cents ? money(d.budget_cents) : d.needs_budget ? 'Not set — they will be asked' : '—'],
+    ['Estimate', `${money(d.quote_cents) || '—'}${d.quote_minutes ? ` · about ${d.quote_minutes} min` : ''}`],
+    ['Details for the supporter', d.description || '—'],
+  ]
+  if (d.notes?.length) rows.push(['Notes', d.notes.join(' | ')])
+  return (
+    <div className="rounded-md border border-white/15 p-2 text-xs">
+      <div className="mb-1 font-semibold opacity-80">{title}</div>
+      <dl className="grid grid-cols-3 gap-x-2 gap-y-1">
+        {rows.map(([k, v]) => (
+          <div key={k} className="contents">
+            <dt className="opacity-60">{k}</dt>
+            <dd className="col-span-2 whitespace-pre-wrap break-words">{v}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  )
+}
+
 function who(c) {
   return c.user_name ? `${c.user_name} · ${c.phone_hint}` : c.phone_hint
 }
@@ -79,6 +134,9 @@ export default function OpsChats() {
   const [text, setText] = useState('')
   const [busy, setBusy] = useState('')            // 'send' | 'claim' | 'release'
   const [now, setNow] = useState(Date.now())
+  const [draft, setDraft] = useState(null)        // { draft, missing, ready } — the pending request
+  const [note, setNote] = useState('')            // internal: never sent
+  const [edit, setEdit] = useState(null)          // the last edit: { before, after, changes, ready, missing }
   const bottomRef = useRef(null)
 
   async function loadList() {
@@ -91,6 +149,15 @@ export default function OpsChats() {
       toast(err.message || "Couldn't load chats")
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function loadDraft(id) {
+    if (!id) return
+    try {
+      setDraft(await getChannelDraft(id))
+    } catch (err) {
+      console.error('[ops/chats] draft', err)
     }
   }
 
@@ -125,9 +192,12 @@ export default function OpsChats() {
   }, [selected])
 
   useEffect(() => {
-    if (!selected) { setThread(null); return }
+    if (!selected) { setThread(null); setDraft(null); return }
     setText('')
+    setNote('')
+    setEdit(null)
     loadThread(selected)
+    loadDraft(selected)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected])
 
@@ -202,6 +272,52 @@ export default function OpsChats() {
       setBusy('')
     }
   }
+
+  async function applyNote() {
+    const t = note.trim()
+    if (!t || !selected) return
+    setBusy('edit')
+    try {
+      const res = await editChannelDraft(selected, t)
+      setEdit(res)
+      setNote('')
+      if (res.ignored?.length) toast(`Couldn't read: ${res.ignored.join(', ')} — nothing changed there.`)
+      await loadDraft(selected)
+      await loadList()
+    } catch (err) {
+      // 422 (address), 403 (asked to book), 409 (with the bot): the server's
+      // sentence says what happened; nothing was saved.
+      toast(err.message || "Couldn't apply the note")
+      if (err.status === 409) await loadList()
+    } finally {
+      setBusy('')
+    }
+  }
+
+  async function sendSummary() {
+    if (!selected) return
+    if (!window.confirm('Hand the chat back and send them the summary? Nothing is booked until they reply YES.')) return
+    setBusy('summary')
+    try {
+      const res = await handBackWithSummary(selected)
+      const what = res.sent === 'summary' ? 'the summary'
+        : res.sent === 'budget' ? 'the budget question (then the summary)'
+          : 'the name question (then the summary)'
+      toast(`Back with the bot — sent ${what}. Waiting for their YES.`, 'success')
+      setEdit(null)
+      await loadList()
+      await loadThread(selected, { quiet: true })
+      await loadDraft(selected)
+    } catch (err) {
+      toast(err.message || "Couldn't hand back")
+      if (err.status === 409) await loadList()
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const ready = edit ? edit.ready : !!draft?.ready
+  const missing = edit ? edit.missing : draft?.missing
 
   function Row({ c }) {
     const left = minutesLeft(c)
@@ -330,6 +446,74 @@ export default function OpsChats() {
               )}
               <div ref={bottomRef} />
             </div>
+
+            {heldNow && (
+              <div className="border-t border-white/10 p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide opacity-70">Fix the request</h3>
+                  <span className="text-[10px] opacity-60">Internal — never sent to them</span>
+                </div>
+                {edit ? (
+                  <div className="space-y-2">
+                    {edit.changes?.length ? (
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="opacity-60 text-left"><th className="pr-2">Field</th><th className="pr-2">Before</th><th>After</th></tr>
+                        </thead>
+                        <tbody>
+                          {edit.changes.map((c) => (
+                            <tr key={c.field} className="align-top">
+                              <td className="pr-2 opacity-70">{FIELD_LABEL[c.field] || c.field}</td>
+                              <td className="pr-2 line-through opacity-60 whitespace-pre-wrap break-words">{c.before || '—'}</td>
+                              <td className="whitespace-pre-wrap break-words">{c.after || '—'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    ) : (
+                      <p className="text-xs opacity-70">Nothing changed.</p>
+                    )}
+                    <DraftCard d={edit.after} title={edit.created ? 'New request (from the chat and your note)' : 'After your note'} />
+                  </div>
+                ) : draft?.draft ? (
+                  <DraftCard d={draft.draft} title="Their request now" />
+                ) : (
+                  <p className="text-xs opacity-60">No request yet. A note starts one from what they wrote plus your note.</p>
+                )}
+                <div className="flex gap-2">
+                  <textarea
+                    className="flex-1 rounded-md border border-amber-300/30 bg-transparent px-3 py-2 text-sm"
+                    rows={2}
+                    maxLength={1000}
+                    placeholder={NOTE_EXAMPLES}
+                    value={note}
+                    onChange={(e) => setNote(e.target.value)}
+                    disabled={busy !== ''}
+                  />
+                  <button
+                    className="rounded-md border border-white/30 px-3 text-sm hover:bg-white/10 disabled:opacity-50"
+                    disabled={busy !== '' || !note.trim()}
+                    onClick={applyNote}
+                  >
+                    {busy === 'edit' ? 'Applying…' : 'Apply'}
+                  </button>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] opacity-60">
+                    {ready
+                      ? 'They get the summary with the price and reply YES themselves. Nothing is booked before that.'
+                      : missing ? `Still missing: ${missing}.` : ''}
+                  </span>
+                  <button
+                    className="rounded-md border border-emerald-400/40 bg-emerald-500/10 px-3 py-1 text-xs hover:bg-emerald-500/20 disabled:opacity-50"
+                    disabled={busy !== '' || !ready}
+                    onClick={sendSummary}
+                  >
+                    {busy === 'summary' ? '…' : 'Send summary and hand back'}
+                  </button>
+                </div>
+              </div>
+            )}
 
             <div className="border-t border-white/10 p-3">
               {heldNow ? (

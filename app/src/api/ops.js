@@ -200,6 +200,33 @@ export function releaseChannelChat(identityId) {
   return opsFetch(`/admin/channel/${encodeURIComponent(identityId)}/release`, { method: 'POST' })
 }
 
+// D-30: fix the pending request during a hand-off. The note is internal —
+// never sent to the customer. Nothing here books: the hand-back sends the
+// customer the summary and only their YES books.
+
+// GET /admin/channel/:identity/draft — { draft | null, missing, ready }.
+export function getChannelDraft(identityId) {
+  return opsFetch(`/admin/channel/${encodeURIComponent(identityId)}/draft`)
+}
+
+// POST /admin/channel/:identity/draft-edit — { created, before, after,
+// changes[], ready, missing, ignored[] }. 403 ops_cannot_book, 409 when the
+// chat is with the bot, 422 when an address can't be placed (nothing saved).
+export function editChannelDraft(identityId, note) {
+  return opsFetch(`/admin/channel/${encodeURIComponent(identityId)}/draft-edit`, {
+    method: 'POST',
+    body: JSON.stringify({ note }),
+  })
+}
+
+// POST /admin/channel/:identity/hand-back-summary — releases the chat and
+// sends the customer the next question of their request (the summary with
+// the price and YES line; the budget or their name first when still
+// missing). { released, sent: 'summary' | 'budget' | 'name' }.
+export function handBackWithSummary(identityId) {
+  return opsFetch(`/admin/channel/${encodeURIComponent(identityId)}/hand-back-summary`, { method: 'POST' })
+}
+
 // ── Pricing (server/pricing.go) ──────────────────────────────────────────
 //
 // GET /admin/pricing — { live, history[], bounds }. history is newest first;

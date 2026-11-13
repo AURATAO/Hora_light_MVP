@@ -29,6 +29,9 @@ func TestChannelAdminRoutesRequireASession(t *testing.T) {
 		{http.MethodGet, "/admin/channel/00000000-0000-0000-0000-000000000001/thread"},
 		{http.MethodPost, "/admin/channel/00000000-0000-0000-0000-000000000001/send"},
 		{http.MethodPost, "/admin/channel/00000000-0000-0000-0000-000000000001/release"},
+		{http.MethodGet, "/admin/channel/00000000-0000-0000-0000-000000000001/draft"},
+		{http.MethodPost, "/admin/channel/00000000-0000-0000-0000-000000000001/draft-edit"},
+		{http.MethodPost, "/admin/channel/00000000-0000-0000-0000-000000000001/hand-back-summary"},
 	} {
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, httptest.NewRequest(rt.method, rt.path, strings.NewReader(`{"text":"hi"}`)))
@@ -266,5 +269,38 @@ func TestOpsNoticeScopeUnchecked(t *testing.T) {
 	}
 	if !strings.HasPrefix(subject, "[HO:RA] URGENT chat handoff (unchecked message with a romantic/sexual pattern)") || !strings.Contains(sms.sent[1].Text, "URGENT") {
 		t.Fatalf("urgent: subject %q text %q", subject, sms.sent[1].Text)
+	}
+}
+
+// D-30: what ops see when an edit is refused. A note that books is a 403
+// with the reason; an address that fails the area check names it; the bot
+// holding the chat is a 409. No route here books.
+func TestOpsEditErrorResponses(t *testing.T) {
+	for _, c := range []struct {
+		err    error
+		status int
+		code   string
+	}{
+		{channel.ErrOpsCannotBook, http.StatusForbidden, "ops_cannot_book"},
+		{channel.ErrNotInHandoff, http.StatusConflict, "not_handed_off"},
+		{&channel.OpsAddressError{Stop: "335 Nowhere Lane", Outcome: channel.AreaUnclear}, http.StatusUnprocessableEntity, "address_unclear"},
+		{&channel.OpsAddressError{Stop: "30 Hudson St, Jersey City", Outcome: channel.AreaOutside}, http.StatusUnprocessableEntity, "address_outside"},
+		{&channel.OpsAddressError{Stop: "x", Outcome: channel.AreaUnavailable}, http.StatusServiceUnavailable, "address_check_unavailable"},
+		{channel.ErrOpsNoDraft, http.StatusUnprocessableEntity, "cannot_draft"},
+	} {
+		status, code, msg := opsEditError(c.err)
+		if status != c.status || code != c.code || msg == "" {
+			t.Errorf("%v: %d %s %q", c.err, status, code, msg)
+		}
+	}
+	if s, _, _ := opsEditError(nil); s != 0 {
+		t.Fatal("nil error")
+	}
+	r := gin.New()
+	registerChannelAdminRoutes(r, nil, &channel.PGStore{}, &channel.Router{})
+	for _, rt := range r.Routes() {
+		if strings.Contains(rt.Path, "book") || strings.Contains(rt.Path, "post") {
+			t.Errorf("an ops route that books: %s %s", rt.Method, rt.Path)
+		}
 	}
 }

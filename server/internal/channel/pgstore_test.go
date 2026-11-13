@@ -1533,3 +1533,43 @@ func TestPGReleaseSimplerAsk(t *testing.T) {
 		}
 	}
 }
+
+// D-30 on the real store: an ops edit saves the pending request while the
+// chat stays handed off (state and clock kept), and the hand-back release
+// keeps it for the summary.
+func TestPGOpsEditKeepsHandoff(t *testing.T) {
+	db := testDB(t)
+	s := &PGStore{DB: db}
+	ctx := context.Background()
+	a, err := s.UpsertIdentity(ctx, IMessage, "+15550000725")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &PendingDraft{Draft: llm.TaskDraft{Title: "Pick up medicine", Category: "delivery", Location2: "6 street"},
+		Source: "I need medicine\n6 street", DetailsAsked: true, DetailsTries: 2, UnclearStop: "6 street", BudgetAskIndex: -1}
+	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateHandoff, Pending: p}); err != nil {
+		t.Fatal(err)
+	}
+	c1, _ := s.GetConversation(ctx, a.ID)
+	edited := *c1.Pending
+	edited.Draft.Location2, edited.DetailsAsked, edited.UnclearStop = "335 E 6th St, New York, NY 10003", false, ""
+	edited.Source += "\naddress: 335 E 6th St, New York, NY 10003"
+	c1.Pending = &edited
+	if err := s.SaveConversation(ctx, c1); err != nil {
+		t.Fatal(err)
+	}
+	c2, _ := s.GetConversation(ctx, a.ID)
+	if c2.State != StateHandoff || c2.HandoffActivityAt == nil || !c2.HandoffActivityAt.Equal(*c1.HandoffActivityAt) {
+		t.Fatalf("the edit moved the chat: %s %v", c2.State, c2.HandoffActivityAt)
+	}
+	if c2.Pending == nil || c2.Pending.Draft.Location2 != "335 E 6th St, New York, NY 10003" || c2.Pending.DetailsAsked {
+		t.Fatalf("pending %+v", c2.Pending)
+	}
+	if ok, err := s.ReleaseHandoff(ctx, a.ID, ReleaseOpts{Resume: StateAwaitingConfirm, AnyClock: true, PutAgain: true}); err != nil || !ok {
+		t.Fatalf("release %v %v", ok, err)
+	}
+	c3, _ := s.GetConversation(ctx, a.ID)
+	if c3.State != StateAwaitingConfirm || c3.Pending == nil || c3.Pending.Draft.Location2 != "335 E 6th St, New York, NY 10003" || c3.TermsAcceptedAt != nil {
+		t.Fatalf("after release %+v", c3)
+	}
+}
