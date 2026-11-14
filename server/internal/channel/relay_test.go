@@ -198,7 +198,7 @@ func TestNoActiveTaskFallsBackToTheAck(t *testing.T) {
 	// A stranger with nothing linked is never relayed anywhere.
 	g = newRig(llm.IntentOther)
 	g.r.Chat = &fakeChat{active: []ActiveTask{laundryT}}
-	if got := g.say(t, "thanks!"); got != CopyWelcome {
+	if got := g.say(t, "thanks!"); got != CopyAck {
 		t.Fatalf("%q", got)
 	}
 }

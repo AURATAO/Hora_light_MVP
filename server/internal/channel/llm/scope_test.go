@@ -29,6 +29,9 @@ func TestScopeRulesOnEvals(t *testing.T) {
 	}
 	model := 0
 	for _, e := range sr.Evals {
+		if e.After != "" {
+			continue // read with the refused message (TestScopeClarifiesEvalsByRule)
+		}
 		d := sr.Rule(e.Msg)
 		if !d.Decided {
 			model++
@@ -36,7 +39,7 @@ func TestScopeRulesOnEvals(t *testing.T) {
 			// A plain refusal category is the rules' job; an allowed errand
 			// that only sounds close ("wine glasses") and a rephrasing are
 			// the model's.
-			if e.Group != "rephrase" && e.Group != "allowed" {
+			if e.Group != "rephrase" && e.Group != "allowed" && e.Group != "ambiguous" && e.Group != "production" {
 				t.Errorf("%s case left to the model (%s): %q", e.Group, e.Want, e.Msg)
 			}
 			continue
@@ -57,7 +60,7 @@ func TestScopeBorderline(t *testing.T) {
 		"can you keep me company for a walk in Washington Square Park?": "allow",
 		"can someone keep my grandma company?":                          "third_person",
 		"come keep me company, I'm home alone":                          "private_company",
-		"grab a drink with me":                                          "alcohol",
+		"grab a beer with me":                                           "alcohol",
 		"pick up my laundry, the bag is with my doorman":                "allow",
 		"pick up the keys from my friend Sarah in Brooklyn":             "allow",
 		"just hang out at my place":                                     "private_company",
@@ -193,5 +196,98 @@ func TestScopeReplies(t *testing.T) {
 		if !strings.HasPrefix(r.Reply, "Sorry") || strings.Contains(low, "yes") || strings.Contains(r.Reply, "$") || len(r.Reply) > 320 {
 			t.Errorf("%s reply: %q", r.ID, r.Reply)
 		}
+	}
+}
+
+// threadFake is a thread-reading model with a fixed reading.
+type threadFake struct {
+	r     ScopeReading
+	err   error
+	asked []ScopeQuery
+}
+
+func (f *threadFake) CheckScope(context.Context, string) (string, error) { return f.r.Verdict, f.err }
+func (f *threadFake) CheckScopeIn(_ context.Context, q ScopeQuery) (ScopeReading, error) {
+	f.asked = append(f.asked, q)
+	return f.r, f.err
+}
+
+// DecideIn (2026-11-14): the thread goes to the model with an ambiguous
+// message; after a refusal the message is read as a possible
+// clarification, and an unambiguous word in the two together still
+// refuses.
+func TestScopeDecideIn(t *testing.T) {
+	s, _ := Playbooks()
+	sr := &s.ScopeRules
+	ctx := context.Background()
+	thread := []string{"Customer: hi", "HO:RA: welcome"}
+
+	m := &threadFake{r: ScopeReading{Verdict: "allow"}}
+	if d, _ := sr.DecideIn(ctx, m, ScopeQuery{Text: "pick up beer", Thread: thread}); d.ID() != "alcohol" || len(m.asked) != 0 {
+		t.Fatalf("rule refusal: %+v asked %d", d, len(m.asked))
+	}
+	if d, _ := sr.DecideIn(ctx, m, ScopeQuery{Text: "grab me a drink from Starbucks", Thread: thread}); !d.Allowed() || len(m.asked) != 1 || len(m.asked[0].Thread) != 2 || m.asked[0].Refused != "" {
+		t.Fatalf("ambiguous: %+v asked %+v", d, m.asked)
+	}
+
+	// A clarification the model allows: Clarifies, allowed.
+	m = &threadFake{r: ScopeReading{Verdict: "allow", Clarifies: true}}
+	d, err := sr.DecideIn(ctx, m, ScopeQuery{Text: "Hay tea is a bubble tea", Refused: "grab a drink from Hay Tea"})
+	if err != nil || !d.Allowed() || !d.Clarifies || len(m.asked) != 1 {
+		t.Fatalf("clarified: %+v %v", d, err)
+	}
+	// The two together hold an unambiguous word: refused, whatever the model.
+	d, _ = sr.DecideIn(ctx, m, ScopeQuery{Text: "it's for a gift", Refused: "buy me a bottle of wine"})
+	if d.ID() != "alcohol" || !d.Clarifies {
+		t.Fatalf("wine + gift: %+v", d)
+	}
+	// A new request (not a clarification) is judged alone.
+	m = &threadFake{r: ScopeReading{Verdict: "allow"}}
+	d, _ = sr.DecideIn(ctx, m, ScopeQuery{Text: "pick up my dry cleaning at 5th Ave Cleaners", Refused: "buy me a bottle of wine"})
+	if !d.Allowed() || d.Clarifies {
+		t.Fatalf("new request: %+v", d)
+	}
+	// A new request refused by rule is refused as itself, no model.
+	m = &threadFake{r: ScopeReading{Verdict: "allow", Clarifies: true}}
+	d, _ = sr.DecideIn(ctx, m, ScopeQuery{Text: "get me cigarettes", Refused: "find me a husband"})
+	if d.ID() != "alcohol" || d.Clarifies || len(m.asked) != 0 {
+		t.Fatalf("refused new request: %+v asked %d", d, len(m.asked))
+	}
+	// The model down after a refusal: plain words are read alone (allowed,
+	// nothing of the refused one); sensitive words fail closed.
+	m = &threadFake{err: errors.New("down")}
+	if d, err := sr.DecideIn(ctx, m, ScopeQuery{Text: "ok thanks", Refused: "buy me a bottle of wine"}); err != nil || !d.Allowed() || d.Clarifies {
+		t.Fatalf("model down, plain: %+v %v", d, err)
+	}
+	if _, err := sr.DecideIn(ctx, m, ScopeQuery{Text: "it's a drink", Refused: "grab a drink"}); err == nil {
+		t.Fatal("model down, sensitive: no error")
+	}
+	// A checker without the thread: Decide on the words alone.
+	pm := &fakeScope{verdict: "allow"}
+	if d, _ := sr.DecideIn(ctx, pm, ScopeQuery{Text: "grab me a drink from Starbucks", Refused: "x"}); !d.Allowed() || pm.calls != 1 {
+		t.Fatalf("plain checker: %+v calls %d", d, pm.calls)
+	}
+}
+
+// The clarification evals, by rule: a case that must stay refused is
+// refused by rule on the two together when its words are unambiguous.
+func TestScopeClarifiesEvalsByRule(t *testing.T) {
+	s, _ := Playbooks()
+	sr := &s.ScopeRules
+	n := 0
+	for _, e := range sr.Evals {
+		if e.After == "" {
+			continue
+		}
+		n++
+		if sr.RefusalByReply(sr.Refusal(e.AfterRefused).Reply) == nil {
+			t.Errorf("%q: the refusal's reply is not recognised", e.After)
+		}
+		if q := e.Query(sr); q.Refused != e.After || len(q.Thread) != 2 {
+			t.Errorf("%q: query %+v", e.Msg, q)
+		}
+	}
+	if n < 5 {
+		t.Fatalf("%d clarification evals", n)
 	}
 }

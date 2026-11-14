@@ -2,7 +2,8 @@ package main
 
 // -scope: what HO:RA does and does not do about people and homes
 // (2026-11-10). Every case in playbooks.json scope_rules.evals goes the
-// production way (llm.ScopeRules.Decide): the rules first, and only what
+// production way (llm.ScopeRules.DecideIn: after_refused cases are read
+// with the message HO:RA just declined): the rules first, and only what
 // they leave goes to the small step's model (LLM_SMALL_MODEL, default
 // anthropic:claude-sonnet-5-5; -model overrides), with no fallback.
 // -scope-all also asks the model on the cases a rule decides, to measure
@@ -54,6 +55,9 @@ func runScope(spec llm.Spec, providers llm.Providers, runs int, all bool, delay 
 			var d llm.ScopeDecision
 			var err error
 			rule := sr.Rule(e.Msg)
+			if e.After != "" {
+				rule = llm.ScopeDecision{} // read with the refused message: the model's
+			}
 			if all && rule.Decided {
 				// The model alone, for comparison.
 				id, merr := model.CheckScope(ctx, e.Msg)
@@ -63,7 +67,7 @@ func runScope(spec llm.Spec, providers llm.Providers, runs int, all bool, delay 
 					err = fmt.Errorf("unknown verdict %q", id)
 				}
 			} else {
-				d, err = sr.Decide(ctx, model, e.Msg)
+				d, err = sr.DecideIn(ctx, model, e.Query(sr))
 			}
 			took := time.Since(start)
 			cancel()
@@ -95,6 +99,10 @@ func runScope(spec llm.Spec, providers llm.Providers, runs int, all bool, delay 
 				ok = false
 				alertWrong++
 			}
+			if e.Clarifies != nil && err == nil && d.Clarifies != *e.Clarifies {
+				ok = false
+				how += fmt.Sprintf(" clarifies=%t", d.Clarifies)
+			}
 			mark := "PASS"
 			if ok {
 				pass++
@@ -118,7 +126,11 @@ func runScope(spec llm.Spec, providers llm.Providers, runs int, all bool, delay 
 			if err != nil {
 				errs = " ERROR " + err.Error()
 			}
-			fmt.Printf("%s %-15s %-26s got %-16s %-24s%s%s  %q\n", mark, e.Group, e.Want, got, how, ms, errs, e.Msg)
+			msg := fmt.Sprintf("%q", e.Msg)
+			if e.After != "" {
+				msg = fmt.Sprintf("%q (after refused %q)", e.Msg, e.After)
+			}
+			fmt.Printf("%s %-15s %-26s got %-16s %-24s%s%s  %s\n", mark, e.Group, e.Want, got, how, ms, errs, msg)
 		}
 	}
 	fmt.Printf("\nscope: %d/%d pass; %d decided by rule (no model call), %d by the model; allow/refuse wrong %d; alert wrong %d; %s\n",
