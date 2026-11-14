@@ -72,6 +72,26 @@ type ScopeEval struct {
 	Group string `json:"group"`
 	Msg   string `json:"msg"`
 	Want  string `json:"want"`
+	// After: Msg is sent right after HO:RA refused this message (as
+	// AfterRefused); Want is the verdict on the two read together when
+	// Msg clarifies it. Clarifies, when set, is what the model must say.
+	After        string `json:"after,omitempty"`
+	AfterRefused string `json:"after_refused,omitempty"`
+	Clarifies    *bool  `json:"clarifies,omitempty"`
+}
+
+// Query is the case as the chat asks it: after a refusal, the refused
+// message and our reply are the thread.
+func (e ScopeEval) Query(s *ScopeRules) ScopeQuery {
+	q := ScopeQuery{Text: e.Msg}
+	if e.After != "" {
+		q.Refused = e.After
+		q.Thread = []string{"Customer: " + e.After}
+		if r := s.Refusal(e.AfterRefused); r != nil {
+			q.Thread = append(q.Thread, "HO:RA: "+r.Reply)
+		}
+	}
+	return q
 }
 
 // ScopeRules is the scope section of playbooks.json.
@@ -155,6 +175,9 @@ func (s *ScopeRules) compile() error {
 		}
 	}
 	for i, e := range s.Evals {
+		if (e.After == "") != (e.AfterRefused == "") || (e.AfterRefused != "" && s.Refusal(e.AfterRefused) == nil) {
+			return fmt.Errorf("scope_rules: eval %d (%q): after and a known after_refused go together", i, e.Msg)
+		}
 		for _, w := range strings.Split(e.Want, "|") {
 			if !seen[w] {
 				return fmt.Errorf("scope_rules: eval %d (%q): unknown want %q", i, e.Msg, w)
@@ -195,6 +218,11 @@ type ScopeDecision struct {
 	// By names what decided: "refuse:<id>", "allow:<id>", "no_scope_words",
 	// "model", "model_error" (the model failed: allowed, logged).
 	By string
+	// Clarifies: the message was read as a clarification of the request
+	// HO:RA declined just before (ScopeQuery.Refused), and the decision is
+	// on the two together. Allowed and Clarifies: the earlier request goes
+	// on as if it had been allowed, with these words added.
+	Clarifies bool
 }
 
 // Allowed reports an in-scope decision.
@@ -288,6 +316,111 @@ type ScopeChecker interface {
 	CheckScope(ctx context.Context, text string) (string, error)
 }
 
+// ScopeQuery is one message with what the model reads it with.
+type ScopeQuery struct {
+	Text string
+	// Thread: the conversation before Text, oldest first, each line
+	// "Customer: …" or "HO:RA: …". Context only: Text is what is judged.
+	Thread []string
+	// Refused: HO:RA's last line declined this earlier message of the
+	// person's. Text may clarify or correct it ("it's bubble tea", "no, I
+	// meant…"); then the two are judged together.
+	Refused string
+}
+
+// ScopeReading is the model's answer to a ScopeQuery.
+type ScopeReading struct {
+	Verdict string
+	// Clarifies: Text clarifies or corrects Refused (only with Refused).
+	Clarifies bool
+}
+
+// ThreadScopeChecker reads a message with its conversation (the chat's
+// check). A checker without it is asked about the words alone.
+type ThreadScopeChecker interface {
+	CheckScopeIn(ctx context.Context, q ScopeQuery) (ScopeReading, error)
+}
+
+// JoinClarified is a refused request and the words that clarify it, as one
+// request: what is drafted when the two together are allowed.
+func JoinClarified(refused, text string) string {
+	return strings.TrimSpace(refused) + "\n" + strings.TrimSpace(text)
+}
+
+// DecideIn is Decide for a chat message: the model, when asked, gets the
+// thread; and right after a refusal the message is first read as a
+// possible clarification of the refused one.
+//
+// After a refusal: the rules on the message alone first (a new request
+// that is refused by rule is refused as itself). Then the model reads
+// both and says whether the message clarifies the refused one. If not,
+// the message is judged alone. If it does, the rules on the two together
+// (an unambiguous word is not undone by a clarification: "buy wine" +
+// "it's for a gift" is still wine), then the model's verdict on both.
+func (s *ScopeRules) DecideIn(ctx context.Context, m ScopeChecker, q ScopeQuery) (ScopeDecision, error) {
+	tc, threaded := m.(ThreadScopeChecker)
+	if q.Refused == "" || !threaded {
+		if d := s.Rule(q.Text); d.Decided || !threaded {
+			return s.Decide(ctx, m, q.Text) // the same order ("no_model" when m is nil)
+		}
+		r, err := tc.CheckScopeIn(ctx, ScopeQuery{Text: q.Text, Thread: q.Thread})
+		return s.fromModel(r.Verdict, false, err)
+	}
+	alone := s.Rule(q.Text)
+	if alone.Decided && alone.Refusal != nil {
+		return alone, nil // a request refused as itself
+	}
+	r, err := tc.CheckScopeIn(ctx, q)
+	if err != nil {
+		if alone.Decided {
+			// The words alone need no model: read as a new message (the
+			// refusal stands; nothing of the refused one is drafted).
+			return alone, nil
+		}
+		return ScopeDecision{By: "model_error"}, err
+	}
+	if !r.Clarifies {
+		if alone.Decided {
+			return alone, nil
+		}
+		return s.fromModel(r.Verdict, false, nil)
+	}
+	// A clarification: an unambiguous word in the two together still
+	// refuses, whatever the model says ("buy wine" + "it's for a gift").
+	if d := s.Rule(JoinClarified(q.Refused, q.Text)); d.Decided && d.Refusal != nil {
+		d.Clarifies = true
+		return d, nil
+	}
+	return s.fromModel(r.Verdict, true, nil)
+}
+
+func (s *ScopeRules) fromModel(verdict string, clarifies bool, err error) (ScopeDecision, error) {
+	if err != nil {
+		return ScopeDecision{By: "model_error"}, err
+	}
+	if verdict == ScopeAllowID {
+		return ScopeDecision{By: "model", Clarifies: clarifies}, nil
+	}
+	if r := s.Refusal(verdict); r != nil {
+		return ScopeDecision{Refusal: r, By: "model", Clarifies: clarifies}, nil
+	}
+	return ScopeDecision{By: "model_error"}, fmt.Errorf("scope: unknown verdict %q", verdict)
+}
+
+// RefusalByReply is the category whose fixed reply begins line (a
+// refusal may carry "Your earlier booking is still waiting." after it).
+func (s *ScopeRules) RefusalByReply(line string) *ScopeRefusal {
+	if s == nil {
+		return nil
+	}
+	for i := range s.Refusals {
+		if r := &s.Refusals[i]; r.Reply != "" && strings.HasPrefix(line, r.Reply) {
+			return r
+		}
+	}
+	return nil
+}
+
 // Decide is the production order: the rules, then the model when they
 // leave it. A model error (or an unknown verdict) comes back as By
 // "model_error" with the error: the words touch the scope and nothing
@@ -350,9 +483,14 @@ Everyday errands are fine: pickups, deliveries, groceries, laundry, waiting in l
 HO:RA does not do (answer with the id):
 SCOPE_REFUSED
 
-Judge what is being asked, not single words: "buy wine glasses" is fine, "grab a drink with me" is "alcohol"; "drop off groceries for my grandma" is fine, "keep my grandma company" is "third_person". Rephrasings that ask for the same thing count ("just hang out at my place" is "private_company", "a friendly massage" is "intimate", "my 12-year-old needs someone to walk her home" is "minors"). When one message asks for something allowed and something not, return the id of the part that is not. When a request could be read as romantic, sexual or physical, return "intimate".
+Judge what is being asked, not single words. Many words have an everyday meaning and are fine on their own: a drink, drinks, a bar, a club, a shot, a pot, a joint, pills, high, a party, spirits ("grab me a drink from Starbucks", "drinks for the party, sodas only", "a chocolate bar", "club soda", "a burger joint", "vitamin pills from CVS", "a high chair", "rubbing alcohol", "shrimp cocktail" are all fine). Refuse only what is actually asked for: "buy wine glasses" is fine, "grab a beer with me" is "alcohol"; "drop off groceries for my grandma" is fine, "keep my grandma company" is "third_person".
+When the message names a shop, café or restaurant, judge by what that place sells. HeyTea (also typed "Hay Tea"), Starbucks, Dunkin', Blue Bottle, Joe & The Juice, Joe Coffee, Gong Cha, Kung Fu Tea, Chatime and other coffee, tea, boba, juice and smoothie shops sell non-alcoholic drinks, so "a drink from" one is an everyday pickup: "allow". A drink from a liquor store, a bar or a wine shop is "alcohol". Rephrasings that ask for the same thing count ("just hang out at my place" is "private_company", "a friendly massage" is "intimate", "my 12-year-old needs someone to walk her home" is "minors"). When one message asks for something allowed and something not, return the id of the part that is not. When a request could be read as romantic, sexual or physical, return "intimate".
 
-Return {"verdict": X}, X exactly "allow" or one of the ids above.`
+The conversation before the message may be given. It is context for what the message means (what "it" or "that" is, which place was named). Judge the message itself, not what was said before it.
+
+"Refused earlier" may be given: HO:RA just declined that earlier message of the customer's. Decide whether the message clarifies or corrects it: says what was meant, what the place is, or narrows the request ("it's a bubble tea shop", "no, I meant coffee", "sodas only", "it's for my cat"). If it does, set "clarifies" true and judge the two TOGETHER: a request that was misread is now fine ("grab a drink from Hay Tea" + "Hay tea is a bubble tea" is "allow"); a request that is still for something HO:RA does not do keeps its id ("buy me wine" + "it's for a gift" is "alcohol"). If it is a new request or anything else, set "clarifies" false and judge the message alone. Without "Refused earlier", "clarifies" is false.
+
+Return {"verdict": X, "clarifies": B}, X exactly "allow" or one of the ids above, B true or false.`
 
 // ScopePrompt is the system prompt with the section's sentences filled in.
 func ScopePrompt() string {
@@ -378,34 +516,63 @@ func scopeSchema() map[string]any {
 	}
 	return map[string]any{
 		"type":                 "object",
-		"properties":           map[string]any{"verdict": map[string]any{"type": "string", "enum": ids}},
-		"required":             []string{"verdict"},
+		"properties":           map[string]any{"verdict": map[string]any{"type": "string", "enum": ids}, "clarifies": map[string]any{"type": "boolean"}},
+		"required":             []string{"verdict", "clarifies"},
 		"additionalProperties": false,
 	}
 }
 
-func checkScope(ctx context.Context, m Provider, text string) (got string, err error) {
+func checkScope(ctx context.Context, m Provider, text string) (string, error) {
+	r, err := checkScopeIn(ctx, m, ScopeQuery{Text: text})
+	return r.Verdict, err
+}
+
+// scopeUserMessage is the model's input: the thread (data, quoted), the
+// refused message, then the message.
+func scopeUserMessage(q ScopeQuery) string {
+	var b strings.Builder
+	if len(q.Thread) > 0 {
+		b.WriteString("Conversation before the message (oldest first):\n")
+		for _, l := range q.Thread {
+			fmt.Fprintf(&b, "%q\n", l)
+		}
+		b.WriteString("\n")
+	}
+	if q.Refused != "" {
+		fmt.Fprintf(&b, "Refused earlier: %q\n", q.Refused)
+	}
+	fmt.Fprintf(&b, "Message: %q", q.Text)
+	return b.String()
+}
+
+func checkScopeIn(ctx context.Context, m Provider, q ScopeQuery) (got ScopeReading, err error) {
 	ctx, sp := tracing.StartSpan(ctx, "llm.CheckScope", tracing.KindChain)
 	defer func() {
-		sp.Input(text)
-		sp.OutputValue(map[string]any{"verdict": got, "model": m.Name(), "fallback": err != nil})
+		sp.Input(q.Text)
+		sp.OutputValue(map[string]any{"verdict": got.Verdict, "clarifies": got.Clarifies, "after_refusal": q.Refused != "", "thread": len(q.Thread), "model": m.Name(), "fallback": err != nil})
 		sp.Fail(err)
 		sp.End()
 	}()
-	out, _, err := m.CompleteJSON(ctx, ScopePrompt(), fmt.Sprintf("Message: %q", text), "scope", scopeSchema(), 256)
+	out, _, err := m.CompleteJSON(ctx, ScopePrompt(), scopeUserMessage(q), "scope", scopeSchema(), 256)
 	if err != nil {
-		return "", fmt.Errorf("check scope: %w", err)
+		return ScopeReading{}, fmt.Errorf("check scope: %w", err)
 	}
 	var r struct {
-		Verdict string `json:"verdict"`
+		Verdict   string `json:"verdict"`
+		Clarifies bool   `json:"clarifies"`
 	}
 	if err := json.Unmarshal([]byte(extractJSONObject(out)), &r); err != nil {
-		return "", fmt.Errorf("check scope decode: %w", err)
+		return ScopeReading{}, fmt.Errorf("check scope decode: %w", err)
 	}
-	return r.Verdict, nil
+	return ScopeReading{Verdict: r.Verdict, Clarifies: r.Clarifies && q.Refused != ""}, nil
 }
 
 // CheckScope is the small step's scope reading.
 func (m *Model) CheckScope(ctx context.Context, text string) (string, error) {
 	return checkScope(ctx, m.provider(), text)
+}
+
+// CheckScopeIn reads the message with its conversation.
+func (m *Model) CheckScopeIn(ctx context.Context, q ScopeQuery) (ScopeReading, error) {
+	return checkScopeIn(ctx, m.provider(), q)
 }

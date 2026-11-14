@@ -203,7 +203,7 @@ type PostResult struct {
 
 // Router is the conversation state machine (PLAN §6, flow agreed 2026-10-20):
 //
-//	idle ──greeting/question──▶ welcome
+//	idle ──greeting (start of a conversation)──▶ welcome; question ──▶ about
 //	idle ──request──▶ draft + quote ──(no account, no name)──▶ awaiting_name
 //	                                 └────────────────────────▶ awaiting_confirm
 //	awaiting_confirm ──YES──▶ linked: post now │ not linked: one setup link
@@ -496,8 +496,10 @@ func (r *Router) routeMessage(ctx context.Context, in Inbound, id Identity, conv
 	// with a fixed reply before anything can draft, search or relay it —
 	// a romantic or sexual request never reaches a supporter. Rules first,
 	// the small model for words they leave.
-	if handled, err := r.scopeGate(ctx, in, id, conv, text); handled {
+	if handled, rest, err := r.scopeGate(ctx, in, id, conv, text); handled {
 		return err
+	} else {
+		text = rest
 	}
 	// Photos with the words (photos.go): onto the open draft, into the
 	// task chat with the words, or kept for the next draft. Only after the
@@ -649,7 +651,7 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 			}
 			return r.Reply(ctx, in, CopyAck, "")
 		}
-		return r.Reply(ctx, in, CopyWelcome, "")
+		return r.replyNoRequest(ctx, in, conv, text, false)
 	}
 	// "The usual", a pick from places just shown, or where to look: ours,
 	// unless a supporter has written since (discovery.go).
@@ -732,7 +734,7 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 		if id.Linked() {
 			return r.relayOr(ctx, in, id, conv, text, CopyHelloAgain)
 		}
-		return r.Reply(ctx, in, CopyWelcome, "")
+		return r.replyNoRequest(ctx, in, conv, text, true)
 	default:
 		// "good", "thanks", "ok" — a reaction to a status update, or a word
 		// for the supporter when one is on the job. A customer is not
@@ -740,8 +742,52 @@ func (r *Router) onIdle(ctx context.Context, in Inbound, id Identity, conv Conve
 		if id.Linked() {
 			return r.relayOr(ctx, in, id, conv, text, CopyAck)
 		}
-		return r.Reply(ctx, in, CopyWelcome, "")
+		return r.replyNoRequest(ctx, in, conv, text, false)
 	}
+}
+
+// WelcomeGap: a conversation starts when nothing of ours was sent to the
+// number for this long.
+var WelcomeGap = 12 * time.Hour
+
+// conversationStart: no reply of ours in the last WelcomeGap.
+func (r *Router) conversationStart(conv Conversation) bool {
+	return conv.LastOutboundAt == nil || r.now().Sub(*conv.LastOutboundAt) > WelcomeGap
+}
+
+// requestWordsRE: words that ask for something. A greeting with any of
+// them is not a greeting alone ("Hi — I need help with…").
+var requestWordsRE = regexp.MustCompile(`(?i)\b(?:need|needs|want|wanna|help|can you|could you|would you|can someone|please|pls|looking for|find|get|bring|pick|buy|deliver|send|book|grab|order|drop|i'?d like|how much|price)\b`)
+
+// reactionRE: a thanks or a reaction word alone.
+var reactionRE = regexp.MustCompile(`(?i)^\W*(?:thanks?|thank you|thx|ty|good|great|cool|nice|ok(?:ay)?|perfect|awesome|amazing|got it|sounds good|noted|👍|🙏|❤️)(?:\s+(?:you|so much|a lot|again))?[\s!.\p{So}]*$`)
+
+// GreetingOnly: a hello with no request in it.
+func GreetingOnly(text string) bool {
+	t := strings.TrimSpace(text)
+	if llm.HeuristicIntent(t) == llm.IntentGreeting {
+		return true
+	}
+	return len(strings.Fields(t)) <= 6 && !requestWordsRE.MatchString(t)
+}
+
+// replyNoRequest answers an unlinked person's message that asks nothing
+// we can act on. The welcome (who HO:RA is, the five boroughs) only for a
+// greeting with no request, at the start of a conversation; never
+// mid-conversation, and never in reply to a request or a clarification
+// (production 2026-11-13/14: "Hay tea is a bubble tea" and "I need help
+// with finding a perfect man" were both welcomed).
+func (r *Router) replyNoRequest(ctx context.Context, in Inbound, conv Conversation, text string, greeting bool) error {
+	switch {
+	case greeting && GreetingOnly(text) && r.conversationStart(conv):
+		return r.Reply(ctx, in, CopyWelcome, "")
+	case greeting && GreetingOnly(text):
+		return r.Reply(ctx, in, CopyHelloAgain, "")
+	}
+	if reactionRE.MatchString(text) || IsAffirmation(stripFiller(text)) {
+		return r.Reply(ctx, in, CopyAck, "") // "thanks", "good": not re-introduced
+	}
+	return r.Reply(ctx, in, CopyNotSure, "")
 }
 
 // startDraft parses the request, prices it and moves to the name or
@@ -1377,7 +1423,7 @@ func (r *Router) onName(ctx context.Context, in Inbound, id Identity, conv Conve
 		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
 			return fmt.Errorf("onName: %w", err)
 		}
-		return r.Reply(ctx, in, CopyWelcome, "")
+		return r.Reply(ctx, in, fmt.Sprintf(CopyNameNoted, name), "")
 	}
 	return r.continueDraft(ctx, in, id, conv)
 }

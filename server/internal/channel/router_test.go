@@ -1119,7 +1119,7 @@ func TestLinkedCustomerIsNotReintroduced(t *testing.T) {
 		t.Fatalf("linked + greeting: %q", got)
 	}
 	g = newRig(llm.IntentOther)
-	if got := g.say(t, "good"); got != CopyWelcome {
+	if got := g.say(t, "good"); got != CopyAck {
 		t.Fatalf("stranger + other: %q", got)
 	}
 }

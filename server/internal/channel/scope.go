@@ -19,6 +19,7 @@ package channel
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 
 	"hora-auth/internal/channel/llm"
@@ -51,14 +52,85 @@ func scopeRules() *llm.ScopeRules {
 	return &s.ScopeRules
 }
 
+// ScopeFollowupWindow: how long after a refusal the person's next message
+// is first read as a clarification of the refused one ("it's bubble tea").
+var ScopeFollowupWindow = 30 * time.Minute
+
+// scopeThreadLines: how much of the conversation the model reads with an
+// ambiguous message.
+const scopeThreadLines = 6
+
+// scopeContext is the thread before this message, as the model reads it,
+// and the message HO:RA declined just before it ("" when our last line was
+// not a refusal, or is older than ScopeFollowupWindow). It reads the
+// thread only when it can matter: words the rules leave to the model, or
+// a reply of ours recent enough to be a refusal being answered.
+func (r *Router) scopeContext(ctx context.Context, in Inbound, id Identity, conv Conversation, sr *llm.ScopeRules, text string) (thread []string, refused string) {
+	if r.Thread == nil {
+		return nil, ""
+	}
+	recentReply := conv.LastOutboundAt != nil && r.now().Sub(*conv.LastOutboundAt) <= ScopeFollowupWindow
+	if sr.Rule(text).Decided && !recentReply {
+		return nil, ""
+	}
+	msgs, err := r.Thread.RecentMessages(ctx, id.Channel, id.Address, scopeThreadLines+1)
+	if err != nil {
+		log.Printf("[channel] scope thread identity=%s: %v", id.ID, err)
+		return nil, ""
+	}
+	// This message is already recorded: the thread is what came before it.
+	if n := len(msgs); n > 0 && msgs[n-1].Direction == "inbound" &&
+		(msgs[n-1].ProviderID == in.ProviderMessageID || strings.TrimSpace(msgs[n-1].Text) == strings.TrimSpace(in.Text)) {
+		msgs = msgs[:n-1]
+	}
+	if len(msgs) > scopeThreadLines {
+		msgs = msgs[len(msgs)-scopeThreadLines:]
+	}
+	for _, m := range msgs {
+		who := "Customer: "
+		if m.Direction == "outbound" {
+			who = "HO:RA: "
+			if m.Relay {
+				who = "Supporter (relayed by HO:RA): "
+			}
+		}
+		if t := strings.TrimSpace(m.Text); t != "" {
+			thread = append(thread, who+t)
+		}
+	}
+	// Our last line a refusal, recent, with the person's message before it.
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if m.Direction != "outbound" || m.Relay {
+			continue
+		}
+		if sr.RefusalByReply(m.Text) == nil || (!m.At.IsZero() && r.now().Sub(m.At) > ScopeFollowupWindow) {
+			break
+		}
+		for j := i - 1; j >= 0; j-- {
+			if msgs[j].Direction == "inbound" && strings.TrimSpace(msgs[j].Text) != "" {
+				refused = strings.TrimSpace(msgs[j].Text)
+				break
+			}
+		}
+		break
+	}
+	return thread, refused
+}
+
 // scopeGate checks one message. handled: it was refused (and answered).
-func (r *Router) scopeGate(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) (bool, error) {
+// Otherwise text is the words to go on with: the message itself, or —
+// when it clarified a request declined just before and the two together
+// are allowed — that request with the clarification, so the errand goes
+// on as if the first message had been allowed.
+func (r *Router) scopeGate(ctx context.Context, in Inbound, id Identity, conv Conversation, text string) (bool, string, error) {
 	sr := scopeRules()
 	if sr == nil {
-		return false, nil
+		return false, text, nil
 	}
+	thread, refused := r.scopeContext(ctx, in, id, conv, sr, text)
 	sctx, cancel := context.WithTimeout(ctx, ScopeTimeout)
-	d, err := sr.Decide(sctx, r.Scope, text)
+	d, err := sr.DecideIn(sctx, r.Scope, llm.ScopeQuery{Text: text, Thread: thread, Refused: refused})
 	cancel()
 	if err != nil {
 		// Sensitive words and no reading of them: fail closed. Ops take
@@ -66,18 +138,23 @@ func (r *Router) scopeGate(ctx context.Context, in Inbound, id Identity, conv Co
 		// is there at all. The log carries the failure's kind only.
 		urgent := sr.MatchesAlertPattern(text)
 		log.Printf("[channel] scope check FAILED identity=%s kind=%s urgent=%t: handed to ops", id.ID, llm.ErrorKind(err), urgent)
-		return true, r.handOffWith(ctx, in, id, conv, HandoffScopeUnchecked, handoffWith{
+		return true, text, r.handOffWith(ctx, in, id, conv, HandoffScopeUnchecked, handoffWith{
 			copy: CopyScopeHolding, detail: "the scope check could not read a message (" + llm.ErrorKind(err) + ")",
 			urgent: urgent, urgentReason: "unchecked message with a romantic/sexual pattern",
 		})
 	}
-	if d.By != "no_scope_words" {
-		log.Printf("[channel] scope identity=%s: %s by=%s", id.ID, d.ID(), d.By)
+	if d.By != "no_scope_words" || refused != "" {
+		log.Printf("[channel] scope identity=%s: %s by=%s after_refusal=%t clarifies=%t thread=%d", id.ID, d.ID(), d.By, refused != "", d.Clarifies, len(thread))
 	}
 	if d.Allowed() {
-		return false, nil
+		if d.Clarifies {
+			// The refused request, now understood: it goes on with the
+			// clarification as one request.
+			return false, llm.JoinClarified(refused, text), nil
+		}
+		return false, text, nil
 	}
-	return true, r.refuseScope(ctx, in, id, conv, d)
+	return true, text, r.refuseScope(ctx, in, id, conv, d)
 }
 
 // refusedByRule: the rules alone on everything said for a draft (the
