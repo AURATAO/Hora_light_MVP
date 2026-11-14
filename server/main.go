@@ -536,7 +536,7 @@ func main() {
 	// handshake sends hub.verify_token in the query. Every other path is
 	// logged exactly as before.
 	r := gin.New()
-	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{SkipPaths: []string{"/webhooks/channel/whatsapp", "/webhooks/whatsapp", "/channel/setup"}}), gin.Recovery())
+	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{SkipPaths: []string{"/webhooks/channel/whatsapp", "/channel/setup"}}), gin.Recovery())
 	r.SetTrustedProxies(nil)
 	origins := os.Getenv("CORS_ALLOW_ORIGINS") // comma-separated exact origins
 	exactOrigins := strings.Split(origins, ",")
@@ -563,7 +563,6 @@ func main() {
 	r.OPTIONS("/*path", func(c *gin.Context) { c.Status(http.StatusNoContent) })
 
 	// --- 路由 ---
-	RegisterWhatsAppWebhooks(r)
 	// TalkJS message.sent → Expo push. Unauthenticated but HMAC-signed; see
 	// talkjs_webhook.go.
 	RegisterTalkJSWebhooks(r, sqldb)
@@ -847,18 +846,6 @@ func main() {
 		tasksAPI.GET("/:id/live", getLiveLocation)
 		tasksAPI.POST("/:id/estimate-travel", estimateTravel)
 		tasksAPI.POST("/:id/review", createReview)
-	}
-
-	// dev-only WhatsApp test route
-	if os.Getenv("GO_ENV") == "development" {
-		r.GET("/test-whatsapp", func(c *gin.Context) {
-			to := os.Getenv("TEST_WHATSAPP_NUMBER")
-			if err := helpers.SendWhatsAppMessage(to, "Hi! This is Hora. WhatsApp integration is working!"); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
-				return
-			}
-			c.JSON(http.StatusOK, gin.H{"success": true})
-		})
 	}
 
 	port := os.Getenv("PORT")

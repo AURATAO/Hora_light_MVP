@@ -32,9 +32,9 @@ import (
 // authenticated by its adapter's VerifyRequest (shared secret / HMAC) before
 // anything is read. The setup link/finish routes are behind dualAuth.
 //
-// The paths are new on purpose. The legacy stub at /webhooks/whatsapp
-// (whatsapp_webhook.go) stays untouched during the App Store review freeze and
-// is removed when this route goes live.
+// The legacy stub at /webhooks/whatsapp was removed on 2026-11-14, once this
+// route was live in production (it checked no signature and logged numbers
+// and message text, S-12).
 func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 	if !channel.Enabled() {
 		return
