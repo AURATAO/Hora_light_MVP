@@ -21,6 +21,8 @@ import { askForPushInContext } from "../../lib/push";
 import { UserSafetyMenu } from "../../components/UserSafetyMenu";
 import { safetyCounterpart } from "../../lib/safety";
 import { CancelTaskSheet } from "../../components/CancelTaskSheet";
+import { AcceptAckSheet } from "../../components/AcceptAckSheet";
+import { acknowledgedPayload, type AcceptRequirements } from "../../lib/accept-ack";
 import { CompleteTaskSheet, type CompleteTaskPayload } from "../../components/CompleteTaskSheet";
 import { approvedBudgetCentsFor } from "../../lib/task-budget";
 import { LiveTrackingCard } from "../../components/LiveTrackingCard";
@@ -40,6 +42,8 @@ import {
 import {
   ApiError,
   acceptTask,
+  acknowledgmentRequired,
+  getAcceptRequirements,
   isPayoutsOnboardingRequired,
   cancelTask,
   clockIn,
@@ -240,6 +244,8 @@ export default function TaskDetail() {
   // have nowhere for the money to land yet, and the only useful response is a
   // route into onboarding rather than the same button again.
   const [payoutsGate, setPayoutsGate] = useState<string | null>(null);
+  // The confirmation sheet before accepting; null = closed.
+  const [ackSheet, setAckSheet] = useState<AcceptRequirements | null>(null);
   const [clockLoading, setClockLoading] = useState(false);
   // In flight on the "On my way" tap. The server is idempotent, but a button
   // that still looks unpressed after being pressed is its own bug.
@@ -443,11 +449,37 @@ export default function TaskDetail() {
     else router.replace("/(tabs)/work");
   }
 
+  // "Accept task": first ask the server what this supporter must confirm for
+  // this task (accept-ack.ts). Something to confirm opens the sheet, and the
+  // accept happens from its button; nothing to confirm accepts at once. A
+  // failed read is "nothing": when a confirmation is required the server
+  // refuses the accept itself and sends the items (see below).
   async function handleAccept() {
     setAccepting(true);
     setAcceptError(null);
+    let reqs: AcceptRequirements | null = null;
     try {
-      await acceptTask(id);
+      reqs = await getAcceptRequirements(id);
+    } catch (e) {
+      if (handleAuthError(e)) {
+        setAccepting(false);
+        return;
+      }
+    }
+    if (reqs && reqs.items.length > 0) {
+      setAckSheet(reqs);
+      setAccepting(false);
+      return;
+    }
+    await doAccept(null);
+  }
+
+  async function doAccept(confirmed: AcceptRequirements | null) {
+    setAccepting(true);
+    setAcceptError(null);
+    try {
+      await acceptTask(id, confirmed ? acknowledgedPayload(confirmed.items) : []);
+      setAckSheet(null);
       await load();
       // The first moment a push makes sense to a supporter: they now have a
       // requester who can message, approve and cancel while the app is closed.
@@ -459,9 +491,19 @@ export default function TaskDetail() {
         // claiming update, so nothing was taken off the board and coming back
         // after onboarding finds it exactly as it was.
         const body = (e as ApiError).body as Record<string, unknown> | undefined;
+        setAckSheet(null);
         setPayoutsGate(typeof body?.message === "string" ? body.message : "");
         return;
       }
+      // The server wants a confirmation this accept did not carry (a new
+      // item, or a newer version than the sheet showed): show what it sent.
+      const required = acknowledgmentRequired(e);
+      if (required) {
+        setAckSheet(required);
+        return;
+      }
+      // Anything else ends the sheet: its outcome belongs to the screen.
+      setAckSheet(null);
       if (e instanceof ApiError && e.message === ACCEPT_LOST_ERROR) {
         // Someone else won. Say so plainly, refetch so this screen stops
         // offering a task that is gone, then hand them back to the feed.
@@ -1894,6 +1936,12 @@ export default function TaskDetail() {
         ) : null}
       </ScrollView>
 
+      <AcceptAckSheet
+        requirements={ackSheet}
+        busy={accepting}
+        onClose={() => setAckSheet(null)}
+        onAccept={() => doAccept(ackSheet)}
+      />
       <CancelTaskSheet
         visible={cancelOpen}
         cancellation={task.cancellation}

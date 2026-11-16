@@ -1,4 +1,5 @@
 import { ApiError } from "./api-error";
+import { normalizeAcceptRequirements, type AcceptRequirements } from "./accept-ack";
 import type {
   AppNotification,
   EaseRating,
@@ -802,8 +803,35 @@ export function getDonePage(params?: KeysetParams): Promise<TaskPage> {
   return apiFetch<KeysetEnvelope<Task>>(`/tasks/done${toQueryString(params)}`).then(unwrapPage);
 }
 
-export function acceptTask(id: string): Promise<Task> {
-  return apiFetch<Task>(`/tasks/${id}/accept`, { method: "POST" });
+/**
+ * `acknowledged` is what the supporter confirmed on the sheet before
+ * accepting (accept-ack.ts). Sent only when there was something to confirm;
+ * the server records each item with the version shown.
+ */
+export function acceptTask(
+  id: string,
+  acknowledged: { key: string; version: string }[] = [],
+): Promise<Task> {
+  return apiFetch<Task>(`/tasks/${id}/accept`, {
+    method: "POST",
+    ...(acknowledged.length > 0 ? { body: { acknowledged } } : {}),
+  });
+}
+
+/** What this supporter must confirm to accept this task. The words are the
+ *  server's; an empty list means accept as usual. */
+export async function getAcceptRequirements(id: string): Promise<AcceptRequirements> {
+  return normalizeAcceptRequirements(await apiFetch<unknown>(`/tasks/${id}/accept-requirements`));
+}
+
+/** The server refused an accept because a required confirmation was missing
+ *  (ACCEPT_ACK_ENFORCED). Its body carries the items to show. */
+export function acknowledgmentRequired(e: unknown): AcceptRequirements | null {
+  if (!(e instanceof ApiError) || e.status !== 409) return null;
+  const body = (e.body ?? {}) as Record<string, unknown>;
+  if (body.error !== "acknowledgment_required") return null;
+  const reqs = normalizeAcceptRequirements(body);
+  return reqs.items.length > 0 ? reqs : null;
 }
 
 // server/main.go's WorkLog struct serializes as `start`/`end` (not
