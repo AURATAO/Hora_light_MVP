@@ -690,3 +690,11 @@ func postMyAvailability(c *gin.Context) {
 func getAppConfig(c *gin.Context) {
 	c.JSON(200, gin.H{"dispatch": dispatchEnabled()})
 }
+
+// registerDispatchRoutes: a supporter's dispatch settings and availability.
+// Mounted under /me (what the apps call) and /profile (main.go).
+func registerDispatchRoutes(g *gin.RouterGroup) {
+	g.GET("/dispatch", getMyDispatch)
+	g.PUT("/dispatch", putMyDispatch)
+	g.POST("/availability", postMyAvailability)
+}
