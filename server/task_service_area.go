@@ -63,6 +63,8 @@ type areaCheck struct {
 	Stop     string
 	Resolved []string
 	Err      error
+	// Neighborhood: Stop is a NYC neighbourhood, not an address (Unclear).
+	Neighborhood string
 }
 
 // taskStops splits a task's location text into its stops.
@@ -108,7 +110,7 @@ func checkStops(ctx context.Context, locationText string) areaCheck {
 		case res.Verdict == helpers.AreaOutside:
 			return areaCheck{Verdict: helpers.AreaOutside, Stop: stop}
 		case res.Verdict != helpers.AreaInside && worst.Err == nil:
-			worst = areaCheck{Verdict: res.Verdict, Stop: stop}
+			worst = areaCheck{Verdict: res.Verdict, Stop: stop, Neighborhood: res.Neighborhood}
 		}
 		if res.Resolved != "" {
 			stop = res.Resolved

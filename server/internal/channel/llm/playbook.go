@@ -35,6 +35,10 @@ type PlaybookAsk struct {
 	// Photo: a photo answers it (the return label or QR code): asked only
 	// when the draft has none, and dropped when one arrives.
 	Photo bool `json:"photo,omitempty"`
+	// First: asked before the details question (where), not after it —
+	// "I need medicine" is asked what they need before anything is
+	// drafted (2026-11-12).
+	First bool `json:"first,omitempty"`
 	skip  *regexp.Regexp
 }
 

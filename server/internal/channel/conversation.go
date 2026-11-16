@@ -82,7 +82,30 @@ type PendingDraft struct {
 	// WhichBorough: UnclearStop exists in more than one borough, so the
 	// question is which one.
 	WhichBorough bool `json:"which_borough,omitempty"`
-	// AreaStops: this draft's stops that passed the area check, by the words
+	// Area: the NYC neighbourhood the person said they are in ("East
+	// Village"), read by the area check (AreaCheck.Area). Never a stop:
+	// the draft asks for the exact address, and a purchase with a drop-off
+	// in it is bought anywhere in the area (2026-11-12).
+	Area string `json:"area,omitempty"`
+	// AddressGuess: the full address a model proposed for UnclearStop
+	// from everything said, checked by the area check, and put to the
+	// person as "Did you mean …?". A YES uses it; it is not a failed
+	// answer (DetailsTries does not count it). RejectedGuesses are never
+	// proposed again for this draft.
+	AddressGuess    string   `json:"address_guess,omitempty"`
+	RejectedGuesses []string `json:"rejected_guesses,omitempty"`
+	// GuessesShown: how many guesses this draft has put to the person; past
+	// MaxFreeGuesses they count toward the hand-off again.
+	GuessesShown int `json:"guesses_shown,omitempty"`
+	// SimplerAsk: a hand-off over the details timed out with no one
+	// answering — the address question is put the simpler way from then
+	// on, never the exact one that failed (2026-11-12).
+	SimplerAsk bool `json:"simpler_ask,omitempty"`
+	// AskedFirst: this draft's last question was a playbook "first" ask
+	// (what to buy), not the details question — its answer is not a
+	// failed details answer.
+	AskedFirst bool `json:"asked_first,omitempty"`
+	// AreaStops:this draft's stops that passed the area check, by the words
 	// they were checked as (stopKey) with the address found. A re-draft that
 	// keeps a stop uses it, so changing the time geocodes nothing. Lives and
 	// dies with the draft; createTask still checks at the post.
@@ -287,6 +310,10 @@ type ReleaseOpts struct {
 	Seen     *time.Time
 	AnyClock bool
 	PutAgain bool
+	// Simpler: a timed-out hand-off over a draft's details — the draft
+	// gets SimplerAsk and one more answer before it would hand off again
+	// (details_tries = MaxDetailsTries-1).
+	Simpler bool
 }
 
 // CancelTTL: how long a cancel question stays answerable.
@@ -913,10 +940,13 @@ func (s *PGStore) ReleaseHandoff(ctx context.Context, identityID string, o Relea
 	var one int
 	err := s.DB.QueryRowContext(ctx, `
 		UPDATE channel_conversations SET state = $2, handoff_activity_at = NULL,
-		  question_shown_at = GREATEST(question_shown_at, $5::timestamptz), updated_at = now()
+		  question_shown_at = GREATEST(question_shown_at, $5::timestamptz), updated_at = now(),
+		  pending_draft = CASE WHEN $7 AND pending_draft IS NOT NULL AND (pending_draft->>'details_asked')::boolean
+		    THEN pending_draft || jsonb_build_object('simpler_ask', true, 'details_tries', $8::int)
+		    ELSE pending_draft END
 		WHERE identity_id = $1 AND state = $4 AND ($6 OR handoff_activity_at IS NOT DISTINCT FROM $3::timestamptz)
 		RETURNING 1
-	`, identityID, string(o.Resume), seenV, string(StateHandoff), shownV, o.AnyClock).Scan(&one)
+	`, identityID, string(o.Resume), seenV, string(StateHandoff), shownV, o.AnyClock, o.Simpler, MaxDetailsTries-1).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}

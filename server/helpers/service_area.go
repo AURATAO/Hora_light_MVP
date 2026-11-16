@@ -31,6 +31,11 @@ type AreaResult struct {
 	// the county Google returned; empty when it could not be told. Supporter
 	// dispatch reads it (D-24); nothing decides the area on it.
 	Borough string
+	// Neighborhood, on Unclear: the words name a NYC neighbourhood ("East
+	// Village") — inside the boroughs, but an area, not a door. The chat
+	// keeps it as where the person is (where to buy) and asks for the
+	// exact address; it never passes the check (2026-11-12).
+	Neighborhood string
 }
 
 // BoroughOfCounty: the borough a NYC county is, by the names in nycBoroughs;
@@ -116,6 +121,9 @@ func ServiceArea(ctx context.Context, address string) (AreaResult, error) {
 func asWritten(ctx context.Context, address string, results []geocodeResult) (AreaResult, error) {
 	top := classifyArea(results[0])
 	inside := AreaResult{Verdict: top}
+	if top == AreaUnclear {
+		inside.Neighborhood = neighborhoodOf(results[0])
+	}
 	if top == AreaInside {
 		inside.Resolved = resolvedAddress(address, results[0])
 		_, _, county := areaParts(results[0])
@@ -267,6 +275,25 @@ func echoesPlace(address string, res geocodeResult) bool {
 		}
 	}
 	return false
+}
+
+// neighborhoodOf: the neighbourhood a result is, when it is one inside the
+// five boroughs by the county rule; "" otherwise. A borough itself
+// ("Brooklyn") is not one: it is answered by the borough question.
+func neighborhoodOf(res geocodeResult) string {
+	isHood := false
+	for _, ty := range res.Types {
+		isHood = isHood || ty == "neighborhood"
+	}
+	if !isHood || AreaOfParts(areaParts(res)) != AreaInside {
+		return ""
+	}
+	for _, c := range res.AddressComponents {
+		if hasType(c, "neighborhood") {
+			return c.LongName
+		}
+	}
+	return ""
 }
 
 func hasType(c geocodeComponent, want string) bool {

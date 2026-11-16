@@ -1047,6 +1047,10 @@ func (r *Router) answerPlaybookAsk(ctx context.Context, in Inbound, id Identity,
 	case IsCancelRequest(text) || IsWithdrawal(text):
 		// "cancel the draft": dropped by rule, never read as the answer.
 		return r.dropDraftWith(ctx, in, conv, CopyDroppedCancelHint)
+	case (skipRE.MatchString(text) || len(r.Playbooks.AsksOf(pb)) == 0) && p.DetailsAsked:
+		// Asked before where ("first"): skipping it leaves the place
+		// still to ask — the request goes on to the details question.
+		return r.startDraft(ctx, in, id, conv, p.Source)
 	case skipRE.MatchString(text) || len(r.Playbooks.AsksOf(pb)) == 0:
 		return r.afterAsks(ctx, in, id, conv)
 	case IsBookingYes(text) || IsAffirmation(text):
