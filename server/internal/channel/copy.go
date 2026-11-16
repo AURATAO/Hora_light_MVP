@@ -28,6 +28,12 @@ const (
 	CopyAreaCheckDown       = "I can't check that address right now, so I can't book it yet. Please send it again in a few minutes."
 	CopyAbout               = "HO:RA sends a vetted local supporter to do the errand for you. You see the estimate before anything is booked, " +
 		"and you pay for the time actually used.\n\nTell me what you need and when, and I'll price it."
+	// CopyNotSure answers an unlinked person's message that asks for
+	// nothing we can act on, mid-conversation or not a greeting: never
+	// the welcome again (2026-11-14).
+	CopyNotSure = "Sorry, I didn't quite get that. What can I help you with? Supporters run everyday errands: pickups, deliveries, groceries, laundry, waiting in line."
+	// CopyNameNoted: a first name given with nothing to book.
+	CopyNameNoted            = "Thanks, %s! What can I help you with?"
 	CopyHelloAgain           = "Hi again! It's your HO:RA concierge. What can I help you with today?"
 	CopyAck                  = "Got it! I'm here whenever you need a hand."
 	CopyAckShort             = "Got it."

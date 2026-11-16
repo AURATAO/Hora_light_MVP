@@ -346,8 +346,8 @@ func TestDispatchSettingsEndpoints(t *testing.T) {
 	}
 	var until time.Time
 	if err := db.QueryRow(context.Background(), `select available_until from public.profiles where id = $1::uuid`, supporter).Scan(&until); err != nil ||
-		until.Before(time.Now().Add(availabilityLasts-time.Minute)) || until.After(time.Now().Add(availabilityLasts+time.Minute)) {
-		t.Fatalf("available_until %v, want now + %s", until, availabilityLasts)
+		until.Before(time.Now().Add(availabilityLasts()-time.Minute)) || until.After(time.Now().Add(availabilityLasts()+time.Minute)) {
+		t.Fatalf("available_until %v, want now + %s", until, availabilityLasts())
 	}
 	if code, body := call(supporter, "POST", "/me/availability", `{"on":false}`); code != 200 || !strings.Contains(body, `"available":false`) {
 		t.Fatalf("go unavailable: %d %s", code, body)

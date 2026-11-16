@@ -45,7 +45,7 @@ export default function SupporterStatusBanner({ status, onApply }) {
       <div className="space-y-1">
         <h2 className="font-heading text-xl text-white">Become a verified supporter</h2>
         <p className="text-sm text-white/60 max-w-sm">
-          To accept tasks on HO:RA, complete a quick background check.
+          To accept tasks on HO:RA, apply and verify your ID.
         </p>
       </div>
       <button

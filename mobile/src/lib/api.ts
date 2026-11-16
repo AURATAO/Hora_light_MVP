@@ -1,4 +1,5 @@
 import { ApiError } from "./api-error";
+import { normalizeAcceptRequirements, type AcceptRequirements } from "./accept-ack";
 import type {
   AppNotification,
   EaseRating,
@@ -352,6 +353,9 @@ export interface DispatchSettings {
   available_until: string | null;
   enabled: boolean;
   all_boroughs: string[];
+  /** How long "available" lasts, from the server, so the card states the
+   *  real number. Absent from an older backend. */
+  available_for_minutes?: number;
   /** The task this supporter is on right now; offers that clash with it are
    *  held back by the server, so the card says so. */
   on_task_id?: string | null;
@@ -802,8 +806,35 @@ export function getDonePage(params?: KeysetParams): Promise<TaskPage> {
   return apiFetch<KeysetEnvelope<Task>>(`/tasks/done${toQueryString(params)}`).then(unwrapPage);
 }
 
-export function acceptTask(id: string): Promise<Task> {
-  return apiFetch<Task>(`/tasks/${id}/accept`, { method: "POST" });
+/**
+ * `acknowledged` is what the supporter confirmed on the sheet before
+ * accepting (accept-ack.ts). Sent only when there was something to confirm;
+ * the server records each item with the version shown.
+ */
+export function acceptTask(
+  id: string,
+  acknowledged: { key: string; version: string }[] = [],
+): Promise<Task> {
+  return apiFetch<Task>(`/tasks/${id}/accept`, {
+    method: "POST",
+    ...(acknowledged.length > 0 ? { body: { acknowledged } } : {}),
+  });
+}
+
+/** What this supporter must confirm to accept this task. The words are the
+ *  server's; an empty list means accept as usual. */
+export async function getAcceptRequirements(id: string): Promise<AcceptRequirements> {
+  return normalizeAcceptRequirements(await apiFetch<unknown>(`/tasks/${id}/accept-requirements`));
+}
+
+/** The server refused an accept because a required confirmation was missing
+ *  (ACCEPT_ACK_ENFORCED). Its body carries the items to show. */
+export function acknowledgmentRequired(e: unknown): AcceptRequirements | null {
+  if (!(e instanceof ApiError) || e.status !== 409) return null;
+  const body = (e.body ?? {}) as Record<string, unknown>;
+  if (body.error !== "acknowledgment_required") return null;
+  const reqs = normalizeAcceptRequirements(body);
+  return reqs.items.length > 0 ? reqs : null;
 }
 
 // server/main.go's WorkLog struct serializes as `start`/`end` (not
@@ -1147,6 +1178,12 @@ export interface EarningsTransfer {
   bank_paid_at?: string | null;
   /** Decided by the backend so both clients agree (S-05). */
   display_status?: TransferDisplayStatus;
+  /** The row in the server's words; shown instead of the line built here
+   *  when present (earnings-copy.ts). */
+  breakdown_label?: string;
+  /** One more line under it when the server has something to add (a
+   *  reimbursement paid early, a bonus). */
+  note?: string;
 }
 
 export interface Earnings {

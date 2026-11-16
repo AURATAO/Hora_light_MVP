@@ -15,7 +15,7 @@ import {
 } from "../../lib/api";
 import { HISTORY_PREVIEW_COUNT, HistorySection } from "../../components/HistorySection";
 import { TransferRow } from "../../components/TransferRow";
-import { earningsWhereaboutsLine, platformFeeExplainer } from "../../lib/earnings-copy";
+import { platformFeeExplainer } from "../../lib/earnings-copy";
 import { color, size } from "../../theme/tokens";
 
 /**
@@ -273,21 +273,29 @@ export function EarningsView({ asTab = false }: { asTab?: boolean }) {
 
           {done ? (
             <>
+              {/* WHERE THE MONEY IS, as two boxes (Aura 2026-11-16). A
+                  supporter opens this screen to answer one question, and in
+                  the days before a payout lands the answer is the left box.
+                  The lifetime total is still here, as the line under them:
+                  it is the sum, not the news. Both numbers are the server's. */}
               <View className="mb-6">
-                <Text className="mb-2 text-title font-semibold text-ink">Earned all time</Text>
-                <Card>
-                  <Text className="text-display text-ink">
-                    {formatCents(data?.lifetime_earned_cents ?? 0)}
-                  </Text>
-                  {/* Where the money is, as two numbers. "Earned" is every
-                      successful transfer; the bank sees it on Stripe's payout
-                      schedule, and the split says how much has got there. */}
-                  {earningsWhereaboutsLine(data) ? (
-                    <Text className="mt-0.5 text-caption text-muted">
-                      {earningsWhereaboutsLine(data)}
+                <View className="flex-row gap-3">
+                  <View className="flex-1 rounded-card bg-gold-tint p-4">
+                    <Text className="text-caption text-gold-text">On its way</Text>
+                    <Text className="mt-1 text-display text-ink" numberOfLines={1} adjustsFontSizeToFit>
+                      {formatCents(data?.in_transit_cents ?? 0)}
                     </Text>
-                  ) : null}
-                </Card>
+                  </View>
+                  <View className="flex-1 rounded-card bg-brand-tint p-4">
+                    <Text className="text-caption text-brand">Paid out</Text>
+                    <Text className="mt-1 text-display text-ink" numberOfLines={1} adjustsFontSizeToFit>
+                      {formatCents(data?.paid_out_cents ?? 0)}
+                    </Text>
+                  </View>
+                </View>
+                <Text className="mt-2 text-caption text-muted">
+                  {formatCents(data?.lifetime_earned_cents ?? 0)} earned all time
+                </Text>
               </View>
 
               <View className="mb-8">

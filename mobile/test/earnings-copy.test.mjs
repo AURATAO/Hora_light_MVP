@@ -53,3 +53,28 @@ test("a row says the rate it was cut at, and no number when it has none", () => 
     "$19.60 service (after platform fee)",
   )
 })
+
+// ── Money text worded by the server (PLAN 13c) ─────────────────────────────
+// Shown as sent when present; this file's own copy when not. That is what
+// lets a description change (a flat price, a bonus, a reimbursement paid
+// early) without an app release.
+{
+  const { serverText, transferBreakdownLine, earnedBreakdownLine } = await import("../src/lib/earnings-copy.ts");
+
+  test("server money text: a row shows the server's breakdown when it sends one", () => {
+    const row = { time_cents: 1960, receipt_cents: 1240, platform_fee_cents: 840, platform_fee_bps: 3000 };
+    const sent = "$19.60 service (after the 30% platform fee) + $12.40 reimbursement paid Nov 20";
+    assert.equal(transferBreakdownLine({ ...row, breakdown_label: sent }), sent);
+    assert.equal(earnedBreakdownLine({ time_cents: 1960, reimbursement_cents: 1240, total_cents: 3200, breakdown_label: ` ${sent} ` }), sent);
+  });
+
+  test("server money text: an older backend or an odd value falls back to the app's own line", () => {
+    const row = { time_cents: 1960, receipt_cents: 1240, platform_fee_cents: 840, platform_fee_bps: 3000 };
+    const own = transferBreakdownLine(row);
+    assert.match(own, /\$19\.60 service/);
+    for (const odd of [undefined, null, "", "   ", 42, {}]) {
+      assert.equal(transferBreakdownLine({ ...row, breakdown_label: odd }), own);
+      assert.equal(serverText(odd), "");
+    }
+  });
+}

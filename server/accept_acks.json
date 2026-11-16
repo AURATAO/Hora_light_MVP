@@ -1,0 +1,92 @@
+{
+ "_readme": [
+  "What a supporter confirms before accepting a task (PLAN 13c, Aura 2026-11-16). Served by GET /tasks/:id/accept-requirements; the app shows what it is sent, so wording, which task asks for what, and how often are changed HERE, with no app release.",
+  "Keys: 'baseline' (every supporter), one per playbook id (llm/playbooks.json) for the task's type, 'other' when no playbook matches, 'home_entry' on top when the task's words send the supporter inside a home (scope_rules.home_entry).",
+  "when: 'once' = asked until accepted at this version; 'always' = asked on every accept (the pilot's rule, Aura 2026-11-16).",
+  "version: bump it whenever title or body changes. Acceptances are recorded with the version and a hash of the text shown.",
+  "STATUS 2026-11-16: wording is a draft pending legal review."
+ ],
+ "version": "aa0.1",
+ "heading": "Before you accept",
+ "button": "I understand and accept",
+ "items": {
+  "baseline": {
+   "version": "1",
+   "when": "once",
+   "title": "Before your first task",
+   "body": "You decide how to get there and you take care on the way. Walk, take transit, bike or drive as you choose; if you drive, you use your own insured vehicle and never carry the requester or anyone else.\n\nNever carry more than you can carry safely: if something is too heavy, text the requester before you try.\n\nKeep every receipt and photograph it before you hand anything over.\n\nYou can decline any task, and you can stop a task and leave at any moment if you feel unsafe. Tell HO:RA through the app when you do."
+  },
+  "groceries": {
+   "version": "1",
+   "when": "always",
+   "title": "Groceries & items",
+   "body": "Buy only what is on the list, within the budget. If something is out or a swap is needed, text the requester before you change anything.\n\nYou can go up to $5 over the budget without asking. Anything more needs their OK in the chat first, or it may not be reimbursed.\n\nNever buy alcohol, tobacco, vapes, cannabis or anything that needs an ID check, even if asked.\n\nIf the load is too heavy to carry safely, tell the requester before you buy it."
+  },
+  "food": {
+   "version": "1",
+   "when": "always",
+   "title": "Food & drinks",
+   "body": "Never promise that food is safe for an allergy. If the requester names one, you can ask the staff and pass on exactly what they said, nothing more.\n\nCarry hot food and drinks lidded and upright, and go straight to the drop-off.\n\nNever open, taste or repack an order. If something isn't available, text the requester before you swap it."
+  },
+  "pharmacy": {
+   "version": "1",
+   "when": "always",
+   "title": "Pharmacy: over-the-counter only",
+   "body": "Buy over-the-counter items only, exactly as the requester named them.\n\nNever pick up a prescription, never show anyone's ID or insurance card, and never suggest which medicine to take or how much.\n\nIf the pharmacist asks about the requester's health, say you're running an errand and text the requester. What you learn about their health stays between you and them."
+  },
+  "laundry": {
+   "version": "1",
+   "when": "always",
+   "title": "Laundry & dry cleaning",
+   "body": "Check every pocket before anything goes in. Anything you find (cash, cards, keys, anything sharp) is set aside, photographed and reported to the requester.\n\nPhotograph the bags or items when you collect them and when you hand them back.\n\nYou are not responsible for what the laundry or dry cleaner does to a garment."
+  },
+  "packages": {
+   "version": "1",
+   "when": "always",
+   "title": "Packages & returns",
+   "body": "Only carry a box that is sealed and labelled, or a return with its label or QR code.\n\nDon't carry anything that leaks, smells of chemicals or that you suspect is hazardous (loose lithium batteries, flammables, aerosols). Text the requester instead.\n\nPhotograph the box and the drop-off receipt every time."
+  },
+  "small_services": {
+   "version": "1",
+   "when": "always",
+   "title": "Keys, repairs & tailoring",
+   "body": "Never sign anything for the requester (claim tickets, waivers, repair agreements). If the shop asks for a signature, text the requester.\n\nNever unlock, open or look through anyone's phone.\n\nHouse keys stay with you only for the errand: don't copy more than asked, don't label them with an address, and hand them back to the requester or the person they name. Keep the claim ticket and photograph it."
+  },
+  "check": {
+   "version": "1",
+   "when": "always",
+   "title": "Checking & waiting in line",
+   "body": "Dress for the weather. You can leave the line if it becomes unsafe or you feel unwell; tell the requester.\n\nDon't argue with staff or others in line. If you're asked to leave, leave.\n\nPhotos are of the sign, the shelf or the length of the line, from a public spot, never of people's faces.\n\nNever buy anything to resell, and follow the venue's rules about holding a place."
+  },
+  "friend": {
+   "version": "1",
+   "when": "always",
+   "title": "Pick up from or drop off with someone",
+   "body": "Hand the item only to the adult the requester named, and ask for their first name before you do.\n\nDon't go inside unless the task says so.\n\nIf you don't know what's in a bag or box and it looks or feels wrong, don't take it and text the requester.\n\nNever take sides or pass on messages beyond what the task says."
+  },
+  "gifts": {
+   "version": "1",
+   "when": "always",
+   "title": "Gifts & occasions",
+   "body": "Use the recipient's name and address only for this delivery.\n\nIf the recipient refuses the delivery or seems upset by it, don't insist: leave and tell the requester.\n\nHandle flowers and cakes with care and photograph them at hand-off."
+  },
+  "companionship": {
+   "version": "1",
+   "when": "always",
+   "title": "Company in a public place",
+   "body": "Meet the requester at the public place named in the task and stay in public places.\n\nNever go into a home, a hotel, a car or anywhere private, never a bar or a club, and never drink alcohol. Only the requester; no one else along.\n\nAny romantic, sexual or physical request ends the task: leave and report it to HO:RA in the app."
+  },
+  "other": {
+   "version": "1",
+   "when": "always",
+   "title": "Before you accept",
+   "body": "Do only what the task describes. If the requester asks for something else once you're there, text them in the chat first so it's on the record.\n\nKeep every receipt and photograph each hand-off.\n\nYou can stop and leave at any moment if you feel unsafe. Tell HO:RA through the app."
+  },
+  "home_entry": {
+   "version": "1",
+   "when": "always",
+   "title": "This task goes inside a home",
+   "body": "Go inside only for the errand in the task, and only that errand.\n\nThe requester or an adult they name is there, or the task gives clear access (a doorman, a lockbox, \"the bag is by the door\"). You are never alone with a child: if no adult is there, don't go in.\n\nDon't open drawers, cupboards or rooms the errand doesn't need. Photograph where you left things before you leave. If anything feels wrong, leave and tell HO:RA through the app."
+  }
+ }
+}

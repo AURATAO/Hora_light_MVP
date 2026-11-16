@@ -64,6 +64,9 @@ func firstWant(want string) string { return strings.Split(want, "|")[0] }
 func TestScopeEvalsThroughRouter(t *testing.T) {
 	sr := scopeSet(t)
 	for _, e := range sr.Evals {
+		if e.After != "" {
+			continue // two messages: TestScopeClarificationEvalsThroughRouter
+		}
 		g, ops, o := scopeRig(t, map[string]string{e.Msg: firstWant(e.Want)})
 		reply := g.say(t, e.Msg)
 		if firstWant(e.Want) == llm.ScopeAllowID && SupporterInterest(e.Msg) {
@@ -131,7 +134,7 @@ func TestScopeRefusalWithDraftOpen(t *testing.T) {
 		t.Fatal("no draft")
 	}
 	parses := len(g.parser.sources)
-	reply := g.say(t, "and grab me a six-pack too")
+	reply := g.say(t, "and grab me a six-pack of beer too")
 	if !strings.HasSuffix(reply, "\n\n"+CopyBookingStillWaiting) || g.state() != StateAwaitingConfirm || g.pending(t) == nil || len(g.parser.sources) != parses {
 		t.Fatalf("ordinary refusal: state %s parses %d reply %q", g.state(), len(g.parser.sources), reply)
 	}
@@ -216,7 +219,7 @@ func TestScopeFailsClosedOnModelError(t *testing.T) {
 		urgent bool
 	}{
 		{"my mom needs company on her walk, can someone go?", false},
-		{"pick up my massage gun from my friend's office", true}, // the unless spares it; the pattern is there
+		{"can you make out the address on my mom's letter", true}, // the unless spares it; the pattern is there
 	} {
 		if sr.Rule(c.msg).Decided {
 			t.Fatalf("%q: a rule decides — pick words left to the model", c.msg)

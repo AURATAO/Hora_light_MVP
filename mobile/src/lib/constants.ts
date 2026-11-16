@@ -14,5 +14,7 @@ export const LEGAL_URLS = {
   privacy: "https://www.my-hora.com/privacy",
 } as const;
 
-/** Where requesters book now that the app is supporter-only (PLAN §13b-3). */
-export const BOOKING_URL = "https://horaapp.co";
+/** Where requesters go now that the app is supporter-only (PLAN §13b-3): the
+ * site, whose every button opens iMessage. Requesters book by text during the
+ * pilot (lawyers' scope, 2026-11-11), not on the web app. */
+export const BOOKING_URL = "https://www.my-hora.com";

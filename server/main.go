@@ -131,6 +131,11 @@ type Task struct {
 	RequesterName string `json:"requester_name,omitempty"`
 	AssigneeName  string `json:"assignee_name,omitempty"`
 
+	// What the task would pay a supporter, worded here (money_text.go). Only
+	// on an open task shown to someone who could take it.
+	PayLabel string `json:"pay_label,omitempty"`
+	PayNote  string `json:"pay_note,omitempty"`
+
 	// uuid（後端查詢/權限全靠它）
 	RequesterID  string  `json:"requester_id"`
 	AssignedToID *string `json:"assigned_to_id,omitempty"`
@@ -536,7 +541,7 @@ func main() {
 	// handshake sends hub.verify_token in the query. Every other path is
 	// logged exactly as before.
 	r := gin.New()
-	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{SkipPaths: []string{"/webhooks/channel/whatsapp", "/webhooks/whatsapp", "/channel/setup"}}), gin.Recovery())
+	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{SkipPaths: []string{"/webhooks/channel/whatsapp", "/channel/setup"}}), gin.Recovery())
 	r.SetTrustedProxies(nil)
 	origins := os.Getenv("CORS_ALLOW_ORIGINS") // comma-separated exact origins
 	exactOrigins := strings.Split(origins, ",")
@@ -563,7 +568,6 @@ func main() {
 	r.OPTIONS("/*path", func(c *gin.Context) { c.Status(http.StatusNoContent) })
 
 	// --- 路由 ---
-	RegisterWhatsAppWebhooks(r)
 	// TalkJS message.sent → Expo push. Unauthenticated but HMAC-signed; see
 	// talkjs_webhook.go.
 	RegisterTalkJSWebhooks(r, sqldb)
@@ -814,6 +818,7 @@ func main() {
 		tasksAPI.GET("/posted/closed", listMyPostedClosed)
 
 		tasksAPI.POST("/:id/accept", acceptTask)
+		tasksAPI.GET("/:id/accept-requirements", getAcceptRequirements)
 		tasksAPI.POST("/:id/complete", completeTask)
 		tasksAPI.POST("/:id/completion-photo", uploadTaskCompletionPhoto)
 		tasksAPI.POST("/:id/cancel", cancelTask)
@@ -847,18 +852,6 @@ func main() {
 		tasksAPI.GET("/:id/live", getLiveLocation)
 		tasksAPI.POST("/:id/estimate-travel", estimateTravel)
 		tasksAPI.POST("/:id/review", createReview)
-	}
-
-	// dev-only WhatsApp test route
-	if os.Getenv("GO_ENV") == "development" {
-		r.GET("/test-whatsapp", func(c *gin.Context) {
-			to := os.Getenv("TEST_WHATSAPP_NUMBER")
-			if err := helpers.SendWhatsAppMessage(to, "Hi! This is Hora. WhatsApp integration is working!"); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
-				return
-			}
-			c.JSON(http.StatusOK, gin.H{"success": true})
-		})
 	}
 
 	port := os.Getenv("PORT")
@@ -2570,6 +2563,13 @@ func getTask(c *gin.Context) {
 		t.CanSelfAccept = canSelfAccept(ctx, uid)
 	}
 
+	// What it would pay, to someone who could take it (money_text.go): an
+	// open, unassigned task read by anyone but its requester, or by the App
+	// Review sandbox, which plays both sides of its own task.
+	if t.Status == "open" && t.AssignedToID == nil && (uid != t.RequesterID || t.CanSelfAccept) {
+		t.PayLabel, t.PayNote = taskPayText(ctx, id)
+	}
+
 	// A block between the viewer and the other party on this task: the chat
 	// renders read-only with an explanatory line (safety.go).
 	if uid != "" {
@@ -2980,6 +2980,11 @@ func listAvailableTasks(c *gin.Context) {
 		}
 		items = append(items, t)
 	}
+	rows.Close()
+	// After the rows are read: each label is its own read on the pool.
+	for i := range items {
+		items[i].PayLabel, _ = taskPayText(ctx, items[i].ID)
+	}
 
 	var next any = nil
 	if len(items) == limit {
@@ -3327,6 +3332,13 @@ func acceptTask(c *gin.Context) {
 			"error":   "payouts_onboarding_required",
 			"message": gateMsg,
 		})
+		return
+	}
+
+	// What the supporter confirmed before accepting (accept_acks.go). After
+	// the payout gate (set up payouts first, then read) and before the claim: a refusal must not take the task off
+	// the board.
+	if !acceptAckStep(c, id, meUID) {
 		return
 	}
 
@@ -4056,6 +4068,12 @@ type SupporterEarnings struct {
 	//	          notifySupporterPaid.
 	//	failed    ops have been told; nobody needs to do anything in-app
 	PayoutStatus string `json:"payout_status,omitempty"`
+
+	// The same money in the server's words (money_text.go): what it was made
+	// of, and one more line when there is something to add. The clients show
+	// these when present and their own copy when not.
+	BreakdownLabel string `json:"breakdown_label,omitempty"`
+	Note           string `json:"note,omitempty"`
 }
 
 // supporterEarningsView builds the supporter's half from the same TaskQuote
@@ -4113,6 +4131,7 @@ func supporterEarningsView(ctx context.Context, taskID, supporterID string, cost
 	`, taskID, supporterID, payoutStatusFailed, payoutStatusPending, payoutStatusPaid).Scan(&status); err == nil && status != nil {
 		e.PayoutStatus = *status
 	}
+	e.BreakdownLabel = payoutBreakdownLineBps(e.ServiceGrossCents, e.PlatformFeeCents, e.ReimbursementCents, e.PlatformFeeBps)
 	return e
 }
 

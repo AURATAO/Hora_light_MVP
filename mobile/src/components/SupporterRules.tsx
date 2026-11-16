@@ -1,5 +1,5 @@
 import { Text, View } from "react-native";
-import { DoorOpen, Hand, ShieldAlert, Users } from "lucide-react-native";
+import { DoorOpen, Footprints, Hand, ShieldAlert } from "lucide-react-native";
 import type { LucideIcon } from "lucide-react-native";
 import { Card } from "./ui";
 import { color, size } from "../theme/tokens";
@@ -24,9 +24,12 @@ export const SUPPORTER_RULES: { icon: LucideIcon; title: string; body: string }[
     body: "If you would be left alone with someone under 18, stop and leave the task.",
   },
   {
-    icon: Users,
-    title: "Companionship in public places",
-    body: "Companionship tasks happen only in public places, such as a café, a park or a clinic waiting room.",
+    // Pilot (Aura, 2026-11-12): never transport people. A Supporter may use
+    // their own vehicle to carry ITEMS when the task says so. Companionship is
+    // off for the pilot; its rule comes back with the feature.
+    icon: Footprints,
+    title: "Never drive a customer",
+    body: "Never give anyone a ride. You can use your own car to carry items when the task says so.",
   },
 ];
 

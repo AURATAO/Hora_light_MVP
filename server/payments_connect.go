@@ -978,6 +978,12 @@ type EarningsTransfer struct {
 	// The one word the row renders, decided here so both clients agree
 	// (S-05): paid / on_its_way / failed.
 	DisplayStatus string `json:"display_status"`
+	// The row in the server's words (money_text.go): what the payment was
+	// made of, and one more line under it when there is something to add
+	// (a reimbursement paid early, a bonus). The clients show these when
+	// present and their own copy when not.
+	BreakdownLabel string `json:"breakdown_label,omitempty"`
+	Note           string `json:"note,omitempty"`
 }
 
 // Row display statuses. "paid" is reserved for money in the BANK.
@@ -1122,6 +1128,7 @@ func earningsHandler(c *gin.Context) {
 			}
 		}
 		e.DisplayStatus = displayStatusFor(e.Status, e.BankPaidAt)
+		e.BreakdownLabel = transferBreakdownLabel(e)
 		out.Transfers = append(out.Transfers, e)
 	}
 	c.JSON(http.StatusOK, out)

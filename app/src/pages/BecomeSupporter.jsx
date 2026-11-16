@@ -80,7 +80,7 @@ export default function BecomeSupporter() {
           <div className="space-y-1 text-center">
             <h1 className="font-heading text-xl text-white">Apply to Become a Supporter</h1>
             <p className="text-sm text-white/50">
-              We'll review your application and send you a background check link within 1–2 business days.
+              We'll review your application and send you an ID verification link within 1–2 business days.
             </p>
           </div>
 
