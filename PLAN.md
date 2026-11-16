@@ -1016,6 +1016,9 @@ test of the dispatch push, submit.
   client that must not break.)
 - [ ] Same-day reimbursement from a float: ops records "advance paid", the
   settlement transfers service only, the row's `note` says so.
+  The note names the date and never the channel (Aura 2026-11-16: paid from
+  the company's bank account, so no "by Zelle"): "$31.75 reimbursement
+  paid Nov 20".
 - [ ] Per-category confirmation texts, after legal review
   (doc: "Supporter risk acknowledgments by task type").
 

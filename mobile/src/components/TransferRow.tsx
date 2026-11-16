@@ -32,13 +32,14 @@ export function TransferRow({ transfer }: { transfer: EarningsTransfer }) {
             <Text className="mt-0.5 text-caption text-ink">{serverText(transfer.note)}</Text>
           ) : null}
         </View>
-        <View className="items-end">
+        <View className="shrink-0 items-end">
           <Text className="text-body font-semibold text-ink">
             {formatCost(transfer.amount_cents)}
           </Text>
           {/* Always a word — Paid / On its way / Failed. A failed row used
               to render exactly like a paid one. */}
-          <Text className={`mt-0.5 text-caption ${failed ? "text-danger" : "text-muted"}`}>
+          {/* One line, always: "On its way" must never break in two. */}
+          <Text numberOfLines={1} className={`mt-0.5 text-caption ${failed ? "text-danger" : "text-muted"}`}>
             {status.label}
           </Text>
           {status.note ? (
