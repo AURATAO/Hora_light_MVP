@@ -778,10 +778,16 @@ func main() {
 		meAPI.GET("/deletion", accountDeletionPreview)
 		meAPI.DELETE("", deleteMyAccount)
 		// Supporter dispatch settings (D-24): boroughs and "I'm available".
-		meAPI.GET("/dispatch", getMyDispatch)
-		meAPI.PUT("/dispatch", putMyDispatch)
-		meAPI.POST("/availability", postMyAvailability)
+		registerDispatchRoutes(meAPI)
 	}
+	// The same three under /me, which is where the apps call them
+	// (mobile/src/lib/api.ts) and what D-24 and dispatch.go document. They
+	// were only ever registered under /profile, so the app's calls answered
+	// 404 and the availability card never appeared (found on TestFlight
+	// build 19, 2026-11-16). /profile stays for anything that learned it.
+	meDispatchAPI := r.Group("/me")
+	meDispatchAPI.Use(dualAuth(sqldb))
+	registerDispatchRoutes(meDispatchAPI)
 
 	// What the apps may show (D-24). No auth: nothing in it is private.
 	r.GET("/config", getAppConfig)
