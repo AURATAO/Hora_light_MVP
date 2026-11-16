@@ -340,3 +340,33 @@ func TestCompanionshipPlaybook(t *testing.T) {
 		t.Fatalf("category %q: public companionship must be priced as companionship", c)
 	}
 }
+
+// Companionship paused (llm/paused.go): the chat declines it with the fixed
+// reply, asks no model, drafts nothing and does not alert ops; an errand in
+// the same chat goes on as usual.
+func TestCompanionshipPausedThroughRouter(t *testing.T) {
+	t.Setenv("COMPANIONSHIP_ENABLED", "")
+	ask := "can someone keep me company for a walk in the park?"
+	g, ops, o := scopeRig(t, map[string]string{ask: llm.ScopeAllowID})
+	reply := g.say(t, ask)
+	pbs, _ := llm.Playbooks()
+	want := pbs.PausedRefusal(ask, "")
+	if want == nil || !strings.Contains(reply, want.Reply) {
+		t.Fatalf("reply %q, want the paused reply", reply)
+	}
+	if o.calls != 0 {
+		t.Errorf("the model was asked %d times; the pause decides alone", o.calls)
+	}
+	if len(g.parser.sources) != 0 {
+		t.Errorf("a draft was started for a paused request")
+	}
+	if len(ops.notices) != 0 {
+		t.Errorf("ops were told %+v; a paused ask is not an alert", ops.notices)
+	}
+
+	errand := "pick up my dry cleaning at 200 E 71st St"
+	g2, _, _ := scopeRig(t, map[string]string{errand: llm.ScopeAllowID})
+	if reply := g2.say(t, errand); strings.Contains(reply, want.Reply) {
+		t.Errorf("an errand got the paused reply: %q", reply)
+	}
+}

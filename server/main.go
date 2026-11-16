@@ -1667,6 +1667,12 @@ func createTask(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid category"})
 		return
 	}
+	// The category itself, while companionship is paused (llm/paused.go):
+	// the words were checked above, and this catches a companionship task
+	// whose words do not say so.
+	if refusePausedCategory(c, "createTask", in.Category) {
+		return
+	}
 	if in.PrepayAmountCents < 0 {
 		in.PrepayAmountCents = 0
 	}

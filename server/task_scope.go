@@ -65,6 +65,12 @@ func refuseTaskScope(c *gin.Context, route, words string) bool {
 	}
 	sr := &s.ScopeRules
 	words = s.StripFixedNotes(words)
+	// Companionship while it is paused (llm/paused.go), on every path.
+	if ref := s.PausedRefusal(words, ""); ref != nil {
+		log.Printf("[scope] %s: refused category=%s", route, ref.ID)
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "out_of_scope", "category": ref.ID, "message": ref.Reply})
+		return true
+	}
 	var model llm.ScopeChecker = taskScopeModel
 	if c.GetBool(ctxScopeChecked) {
 		model = nil // the chat's gate asked the model; rules only here
@@ -109,4 +115,16 @@ func aiParseScopeGuard(c *gin.Context) {
 		}
 	}
 	c.Next()
+}
+
+// refusePausedCategory answers a task posted in a category that is paused
+// (companionship, llm/paused.go). true = the response is written.
+func refusePausedCategory(c *gin.Context, route, category string) bool {
+	ref := (*llm.PlaybookSet)(nil).PausedRefusal("", category)
+	if ref == nil {
+		return false
+	}
+	log.Printf("[scope] %s: refused category=%s", route, ref.ID)
+	c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "out_of_scope", "category": ref.ID, "message": ref.Reply})
+	return true
 }

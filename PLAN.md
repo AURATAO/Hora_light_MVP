@@ -1022,6 +1022,23 @@ test of the dispatch push, submit.
 - [ ] Per-category confirmation texts, after legal review
   (doc: "Supporter risk acknowledgments by task type").
 
+### 13d. Companionship paused for the pilot (Aura, 2026-11-16)
+
+Off unless `COMPANIONSHIP_ENABLED=1` (server/internal/channel/llm/paused.go).
+A request for it gets a fixed reply ("HO:RA isn't offering companionship
+right now…") on every path a task can come from: the chat's gate, task
+creation (web app and assistant) and the AI parse. Words are recognised by
+the companionship playbook's own match words; a task posted in the
+companionship category is refused by the category alone. No alert to ops.
+
+**To bring it back:** set `COMPANIONSHIP_ENABLED=1` on Render. The playbook,
+scope sentences, prices, supporter notes and the accept acknowledgment are
+all still in place. Run the evals with the variable set (`agenttest -scope`):
+the scope and playbook evals describe companionship as offered.
+
+- [ ] Web app (`app/`): the category picker still lists Companion; a post
+  is refused with the reply above. Hide it while paused.
+
 ## 14. Paused
 
 App Store public release of the requester app; requester-side app features;
