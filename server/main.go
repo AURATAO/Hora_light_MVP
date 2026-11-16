@@ -813,6 +813,7 @@ func main() {
 		tasksAPI.GET("/posted/closed", listMyPostedClosed)
 
 		tasksAPI.POST("/:id/accept", acceptTask)
+		tasksAPI.GET("/:id/accept-requirements", getAcceptRequirements)
 		tasksAPI.POST("/:id/complete", completeTask)
 		tasksAPI.POST("/:id/completion-photo", uploadTaskCompletionPhoto)
 		tasksAPI.POST("/:id/cancel", cancelTask)
@@ -3314,6 +3315,13 @@ func acceptTask(c *gin.Context) {
 			"error":   "payouts_onboarding_required",
 			"message": gateMsg,
 		})
+		return
+	}
+
+	// What the supporter confirmed before accepting (accept_acks.go). After
+	// the payout gate (set up payouts first, then read) and before the claim: a refusal must not take the task off
+	// the board.
+	if !acceptAckStep(c, id, meUID) {
 		return
 	}
 
