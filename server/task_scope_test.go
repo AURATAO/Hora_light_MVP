@@ -201,3 +201,25 @@ func TestChatQuoteCompanionshipBase(t *testing.T) {
 		t.Fatalf("companionship %d, errand %d", comp, errand)
 	}
 }
+
+// Companionship paused (llm/paused.go): a post is refused by its words and
+// by its category, with the paused reply, on the web app's path too.
+func TestCreateTaskRefusesCompanionshipWhilePaused(t *testing.T) {
+	t.Setenv("COMPANIONSHIP_ENABLED", "")
+	withScopeModel(t, &stubScope{verdict: "allow"})
+	for _, body := range []string{
+		// the words say it
+		`{"title":"Keep me company for a walk in the park","category":"quick_errand","is_immediate":true}`,
+		// only the category says it
+		`{"title":"An hour at the museum","category":"companionship","is_immediate":true}`,
+		`{"title":"An hour at the museum","category":"companion","is_immediate":true}`,
+	} {
+		code, out := postTaskJSON(t, body)
+		if code != http.StatusUnprocessableEntity || out["error"] != "out_of_scope" || out["category"] != llm.CompanionshipPausedID {
+			t.Errorf("%s: %d %v, want 422 out_of_scope %s", body, code, out, llm.CompanionshipPausedID)
+		}
+		if msg, _ := out["message"].(string); !strings.Contains(msg, "isn't offering companionship right now") {
+			t.Errorf("%s: message %q", body, msg)
+		}
+	}
+}

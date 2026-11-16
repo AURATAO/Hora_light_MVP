@@ -128,6 +128,14 @@ func (r *Router) scopeGate(ctx context.Context, in Inbound, id Identity, conv Co
 	if sr == nil {
 		return false, text, nil
 	}
+	// Companionship while it is paused (llm/paused.go): declined by its own
+	// fixed reply, before the rules and the model, which still describe it
+	// as allowed for the day it comes back.
+	if pbs, err := llm.Playbooks(); err == nil {
+		if ref := pbs.PausedRefusal(text, ""); ref != nil {
+			return true, text, r.refuseScope(ctx, in, id, conv, llm.ScopeDecision{Refusal: ref, Decided: true, By: "paused:companionship"})
+		}
+	}
 	thread, refused := r.scopeContext(ctx, in, id, conv, sr, text)
 	sctx, cancel := context.WithTimeout(ctx, ScopeTimeout)
 	d, err := sr.DecideIn(sctx, r.Scope, llm.ScopeQuery{Text: text, Thread: thread, Refused: refused})

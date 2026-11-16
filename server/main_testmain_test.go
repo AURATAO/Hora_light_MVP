@@ -30,6 +30,9 @@ func TestMain(m *testing.M) {
 	// Nor does the service-area check, which is on the request path: every
 	// task in a test is in the area unless task_service_area_test.go says not.
 	checkTaskArea = func(context.Context, string) areaCheck { return areaCheck{Verdict: helpers.AreaInside} }
+	// The suite describes companionship as it works when it is offered; the
+	// pause (llm/paused.go) has its own tests, which switch this off.
+	os.Setenv("COMPANIONSHIP_ENABLED", "1")
 	os.Exit(m.Run())
 }
 
