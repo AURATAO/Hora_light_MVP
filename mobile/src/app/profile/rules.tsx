@@ -28,7 +28,7 @@ export default function SupporterRulesScreen() {
       <SupporterRules />
 
       <Text className="mt-6 text-caption text-muted">
-        To report someone, use the ⋯ menu on the task or in the chat. In an emergency, call 911.
+        To report or block someone, open the task or the chat and tap the three dots at the top. In an emergency, call 911.
       </Text>
       <PressableScale
         onPress={() => Linking.openURL("tel:911").catch(() => {})}

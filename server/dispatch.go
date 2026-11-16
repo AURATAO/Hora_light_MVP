@@ -688,7 +688,13 @@ func postMyAvailability(c *gin.Context) {
 
 // GET /config — what the apps may show. No auth: nothing in it is private.
 func getAppConfig(c *gin.Context) {
-	c.JSON(200, gin.H{"dispatch": dispatchEnabled()})
+	out := gin.H{"dispatch": dispatchEnabled()}
+	// The supporter rules, in the server's words (supporter_rules.go). Left
+	// out when unreadable: the apps then show their built-in copy.
+	if rules, err := supporterRules(); err == nil {
+		out["supporter_rules"] = rules
+	}
+	c.JSON(200, out)
 }
 
 // registerDispatchRoutes: a supporter's dispatch settings and availability.

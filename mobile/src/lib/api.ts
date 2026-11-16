@@ -341,6 +341,9 @@ export interface AppConfig {
   /** Whether new tasks are pushed to available supporters; the app shows the
    *  "I'm available" control only when this is on. */
   dispatch: boolean;
+  /** The supporter rules in the server's words (supporter-rules.ts reads
+   *  them). Absent from an older backend. */
+  supporter_rules?: unknown;
 }
 
 export function getAppConfig(): Promise<AppConfig> {
