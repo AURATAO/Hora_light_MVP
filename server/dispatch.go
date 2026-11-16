@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,7 +37,6 @@ const (
 	dispatchWidenAfter  = 3 * time.Minute
 	dispatchOpsAfter    = 5 * time.Minute
 	dispatchSweepEvery  = 30 * time.Second
-	availabilityLasts   = 4 * time.Hour
 	dispatchStepTimeout = 20 * time.Second // the reads and writes of one step
 	dispatchPushTimeout = 10 * time.Second // one supporter's push
 	dispatchPushWorkers = 8
@@ -46,6 +46,22 @@ const (
 )
 
 const pushTypeNewTaskOffer = "NEW_TASK_OFFER"
+
+// availabilityDefault is how long "Go available" lasts. AVAILABILITY_MINUTES
+// changes it without a build; the app words its card from the number this
+// server sends (available_for_minutes), so the two cannot disagree.
+const availabilityDefault = 4 * time.Hour
+
+func availabilityLasts() time.Duration {
+	if raw := strings.TrimSpace(os.Getenv("AVAILABILITY_MINUTES")); raw != "" {
+		// 30 minutes to 24 hours; anything else is a typo, not a setting.
+		if m, err := strconv.Atoi(raw); err == nil && m >= 30 && m <= 24*60 {
+			return time.Duration(m) * time.Minute
+		}
+		log.Printf("[dispatch] AVAILABILITY_MINUTES=%q ignored (want 30..1440); using %s", raw, availabilityDefault)
+	}
+	return availabilityDefault
+}
 
 func dispatchEnabled() bool {
 	return strings.TrimSpace(os.Getenv("DISPATCH_PUSH_ENABLED")) == "1"
@@ -521,7 +537,9 @@ type dispatchSettings struct {
 	Available      bool       `json:"available"`
 	AvailableUntil *time.Time `json:"available_until"`
 	Enabled        bool       `json:"enabled"`
-	AllBoroughs    []string   `json:"all_boroughs"`
+	// How long "Go available" lasts, so the app's card says the real number.
+	AvailableForMinutes int      `json:"available_for_minutes"`
+	AllBoroughs         []string `json:"all_boroughs"`
 	// The task this supporter is on right now, if any: offers that clash
 	// with it are not sent (eligibleSupporters), and the app says so rather
 	// than "You're available" while nothing arrives. Same window rule as the
@@ -530,7 +548,8 @@ type dispatchSettings struct {
 }
 
 func readDispatchSettings(ctx context.Context, uid string) (dispatchSettings, error) {
-	s := dispatchSettings{Enabled: dispatchEnabled(), AllBoroughs: helpers.BoroughNames()}
+	s := dispatchSettings{Enabled: dispatchEnabled(), AllBoroughs: helpers.BoroughNames(),
+		AvailableForMinutes: int(availabilityLasts() / time.Minute)}
 	err := db.QueryRow(ctx, `
 		select coalesce(dispatch_boroughs, '{}'), available_until
 		  from public.profiles where id = $1::uuid`, uid).Scan(&s.Boroughs, &s.AvailableUntil)
@@ -632,7 +651,7 @@ func normalizeBoroughs(in []string) ([]string, bool) {
 	return out, true
 }
 
-// POST /me/availability {"on": true|false}. On lasts availabilityLasts.
+// POST /me/availability {"on": true|false}. On lasts availabilityLasts().
 // Verified supporters only: nobody else can be dispatched to.
 func postMyAvailability(c *gin.Context) {
 	var in struct {
@@ -656,7 +675,7 @@ func postMyAvailability(c *gin.Context) {
 	}
 	var until *time.Time
 	if *in.On {
-		u := time.Now().Add(availabilityLasts)
+		u := time.Now().Add(availabilityLasts())
 		until = &u
 	}
 	if _, err := db.Exec(ctx, `update public.profiles set available_until = $2 where id = $1::uuid`, uid, until); err != nil {

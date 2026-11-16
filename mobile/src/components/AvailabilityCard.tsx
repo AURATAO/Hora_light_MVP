@@ -1,16 +1,17 @@
 import { useCallback, useRef, useState } from "react";
-import { Linking, Text, View } from "react-native";
+import { Linking, Switch, Text, View } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { BellRing, Briefcase, MapPin } from "lucide-react-native";
-import { Button, Card, PressableScale } from "./ui";
+import { Card, PressableScale } from "./ui";
 import { getDispatchSettings, setAvailability, type DispatchSettings } from "../lib/api";
+import { availabilityOffLine, availabilityOnLine } from "../lib/availability-copy";
 import { ensurePushForOffers } from "../lib/push";
 import { color, size } from "../theme/tokens";
 
 // "I'M AVAILABLE" (D-24). While it is on, new tasks are pushed to this phone:
 // the supporter's own boroughs first, everyone else three minutes later. It
-// switches itself off after four hours (the server sets available_until), so a
-// supporter who forgets is not paged at 3 a.m.
+// switches itself off after a few hours (the server sets available_until and
+// sends how long that is), so a supporter who forgets is not paged at 3 a.m.
 //
 // Rendered only for an approved supporter and only when the server says
 // dispatch is on (GET /config) — the parent decides that. Going available
@@ -110,51 +111,56 @@ export function AvailabilityCard() {
 
   return (
     <View className="mb-6">
+      {/* One compact row (Aura 2026-11-16): what it is, its one line, and a
+          switch. It used to be a card plus a full-width button and took a
+          third of the screen above the tasks it exists to bring. How long it
+          lasts is the server's number (availability-copy.ts). */}
       <Card>
-        <View className="flex-row items-start gap-3">
+        <View className="flex-row items-center gap-3">
           <Icon color={on ? color.brand : color.muted} size={18} strokeWidth={size.iconStroke} />
           <View className="flex-1">
             <Text className="text-body font-semibold text-ink">
               {onTask ? "You're on a task" : on ? "You're available" : "Get task offers"}
             </Text>
-            <Text className="mt-1 text-caption text-muted">
+            <Text className="mt-0.5 text-caption text-muted">
               {onTask
-                ? "Offers that clash with it are paused. You'll get them again when it's done."
+                ? "Offers that clash with it are paused."
                 : on
-                  ? `New tasks come to you as notifications until ${until || "later today"}.`
-                  : "Go available and new tasks come to you as notifications. It turns off after 4 hours."}
+                  ? availabilityOnLine(until)
+                  : availabilityOffLine(settings.available_for_minutes)}
             </Text>
-            {onTask ? (
-              <PressableScale
-                onPress={() => router.push(`/task/${onTask}`)}
-                hitSlop={8}
-                className="mt-2 min-h-[44px] justify-center"
-              >
-                <Text className="text-caption font-semibold text-brand">Open task</Text>
-              </PressableScale>
-            ) : null}
-            <PressableScale
-              onPress={() => router.push("/profile/areas")}
-              hitSlop={8}
-              className="mt-2 min-h-[44px] flex-row items-center gap-1"
-            >
-              <MapPin color={color.brand} size={14} strokeWidth={size.iconStroke} />
-              <Text className="flex-1 text-caption font-semibold text-brand" numberOfLines={1}>
-                {areasLine(settings)}
-              </Text>
-            </PressableScale>
           </View>
+          <Switch
+            value={on}
+            onValueChange={toggle}
+            disabled={busy}
+            trackColor={{ false: color.line, true: color.brand }}
+            ios_backgroundColor={color.line}
+            accessibilityLabel={on ? "Go offline" : "Go available"}
+          />
+        </View>
+        <View className="mt-2 flex-row items-center gap-4 border-t border-line pt-1">
+          <PressableScale
+            onPress={() => router.push("/profile/areas")}
+            hitSlop={8}
+            className="min-h-[44px] flex-1 flex-row items-center gap-1"
+          >
+            <MapPin color={color.brand} size={14} strokeWidth={size.iconStroke} />
+            <Text className="flex-1 text-caption font-semibold text-brand" numberOfLines={1}>
+              {areasLine(settings)}
+            </Text>
+          </PressableScale>
+          {onTask ? (
+            <PressableScale
+              onPress={() => router.push(`/task/${onTask}`)}
+              hitSlop={8}
+              className="min-h-[44px] justify-center"
+            >
+              <Text className="text-caption font-semibold text-brand">Open task</Text>
+            </PressableScale>
+          ) : null}
         </View>
       </Card>
-
-      <View className="mt-3">
-        <Button
-          label={on ? "Go offline" : "Go available"}
-          variant={on ? "secondary" : "primary"}
-          onPress={toggle}
-          loading={busy}
-        />
-      </View>
 
       {pushBlocked ? (
         <PressableScale onPress={() => Linking.openSettings()} hitSlop={8} className="mt-2 min-h-[44px] justify-center">

@@ -213,7 +213,7 @@ export default function Work() {
           title="New tasks post throughout the day"
           caption={
             dispatchOn
-              ? "Nothing open right now. Go available and new tasks come straight to your phone."
+              ? "Nothing open right now. Turn on task offers above and new tasks come straight to your phone."
               : "Nothing open right now. Pull down to check again."
           }
         />

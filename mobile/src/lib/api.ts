@@ -353,6 +353,9 @@ export interface DispatchSettings {
   available_until: string | null;
   enabled: boolean;
   all_boroughs: string[];
+  /** How long "available" lasts, from the server, so the card states the
+   *  real number. Absent from an older backend. */
+  available_for_minutes?: number;
   /** The task this supporter is on right now; offers that clash with it are
    *  held back by the server, so the card says so. */
   on_task_id?: string | null;
