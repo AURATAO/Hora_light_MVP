@@ -36,7 +36,22 @@ var (
 	// still asked); ErrOpsNoPending: nothing to summarise.
 	ErrOpsIncomplete = errors.New("channel: the request still lacks a place")
 	ErrOpsNoPending  = errors.New("channel: no pending request")
+	// ErrOpsScopeUnchecked: the scope check could not read the edit (the
+	// model failed or timed out). Failing closed, as for a customer's
+	// message: nothing was saved.
+	ErrOpsScopeUnchecked = errors.New("channel: the scope check could not read the edit")
 )
+
+// OpsScopeError: the edited request is outside what HO:RA does (D-31's
+// rules and model, the same check as a customer's message). Nothing was
+// saved; a note can't make a refused request allowed.
+type OpsScopeError struct {
+	ID, Name string
+}
+
+func (e *OpsScopeError) Error() string {
+	return fmt.Sprintf("channel: the request is out of scope (%s)", e.ID)
+}
 
 // OpsAddressError: an address in the edit did not pass the area check.
 // Nothing was saved.
@@ -149,11 +164,18 @@ func (r *Router) OpsEditDraft(ctx context.Context, id Identity, note string) (re
 		before := r.draftFields(conv.Pending)
 		res.Before = &before
 	} else {
-		d, source, err := r.opsNewDraft(ctx, id, note)
+		d, said, err := r.opsNewDraft(ctx, id, note)
 		if err != nil {
 			return OpsEdit{}, err
 		}
-		p = PendingDraft{Draft: d, Source: source, CreatedAtUnix: r.now().Unix(), BudgetAskIndex: -1}
+		// What the customer wrote is checked alone first, as their own
+		// message was: a note can't turn a refused request into an allowed
+		// one ("she means bubble tea" is theirs to say, not ops').
+		if err := r.opsScope(ctx, id, conv, said); err != nil {
+			return OpsEdit{}, err
+		}
+		// The note joins the source below, as for any edit.
+		p = PendingDraft{Draft: d, Source: said, CreatedAtUnix: r.now().Unix(), BudgetAskIndex: -1}
 		res.Created = true
 	}
 
@@ -207,6 +229,15 @@ func (r *Router) OpsEditDraft(ctx context.Context, id Identity, note string) (re
 	}
 	if err := d.Validate(); err != nil {
 		return OpsEdit{}, ErrOpsNoDraft
+	}
+	// The edited request goes through the scope check a customer's message
+	// does (D-31): the rules on everything said for it, then the rules and
+	// the model on the note and the request as edited, with the thread.
+	if ref := refusedByRule(p.Source + "\n" + note); ref != nil {
+		return OpsEdit{}, &OpsScopeError{ID: ref.ID, Name: ref.Name}
+	}
+	if err := r.opsScope(ctx, id, conv, strings.Join([]string{note, d.Title, d.Description}, "\n")); err != nil {
+		return OpsEdit{}, err
 	}
 
 	// Every address ops changed is checked like the customer's own: inside
@@ -278,7 +309,17 @@ func (r *Router) OpsEditDraft(ctx context.Context, id Identity, note string) (re
 	p.Source = strings.TrimSpace(p.Source + "\n" + note)
 	p.SetItems([]DraftItem{it})
 	p.AreaStops = areaStops
-	p.UnclearStop, p.WhichBorough, p.AddressGuess = "", false, ""
+	// A stop the map could not place (and the "Did you mean …?" guess for
+	// it) is settled once ops replaced it with a checked address; a note
+	// that left it in place leaves the question open — the hand-back
+	// waits for an address, and no unchecked stop reaches a summary.
+	if p.UnclearStop != "" {
+		if k := stopKey(p.UnclearStop); stopKey(d.Location1) != k && stopKey(d.Location2) != k {
+			p.UnclearStop, p.WhichBorough, p.AddressGuess = "", false, ""
+		}
+	} else {
+		p.WhichBorough, p.AddressGuess = false, ""
+	}
 	p.PlaybookAsk, p.PlaybookAsked = nil, true // ops answered what the type would ask
 	p.NameAsked, p.BudgetAskIndex = false, -1
 	p.DetailsAsked = missingPlace([]DraftItem{it})
@@ -310,7 +351,8 @@ func (r *Router) OpsEditDraft(ctx context.Context, id Identity, note string) (re
 }
 
 // opsNewDraft: no pending request — one is parsed from what the customer
-// wrote (their messages, oldest first) and the note.
+// wrote (their messages, oldest first) and the note. Returns the draft and
+// the customer's words alone.
 func (r *Router) opsNewDraft(ctx context.Context, id Identity, note string) (llm.TaskDraft, string, error) {
 	if r.Parser == nil || r.Prompt == nil {
 		return llm.TaskDraft{}, "", fmt.Errorf("opsNewDraft: not configured")
@@ -338,7 +380,31 @@ func (r *Router) opsNewDraft(ctx context.Context, id Identity, note string) (llm
 	if !namesDuration(source) {
 		d.DurationMinutes = 0 // the default estimate, as any draft
 	}
-	return d, source, nil
+	return d, strings.Join(lines, "\n"), nil
+}
+
+// opsScope checks words for an ops edit as scopeGate checks a customer's
+// message: rules first, the small model with the thread for what they
+// leave. A refused request is never a clarification here (ops can't
+// clarify for the customer). A model failure fails closed.
+func (r *Router) opsScope(ctx context.Context, id Identity, conv Conversation, text string) error {
+	sr := scopeRules()
+	if sr == nil || strings.TrimSpace(text) == "" {
+		return nil
+	}
+	thread, _ := r.scopeContext(ctx, Inbound{Channel: id.Channel, From: id.Address}, id, conv, sr, text)
+	sctx, cancel := context.WithTimeout(ctx, ScopeTimeout)
+	d, err := sr.DecideIn(sctx, r.Scope, llm.ScopeQuery{Text: text, Thread: thread})
+	cancel()
+	if err != nil {
+		log.Printf("[channel] ops edit identity=%s: scope check FAILED kind=%s: nothing saved", id.ID, llm.ErrorKind(err))
+		return ErrOpsScopeUnchecked
+	}
+	if !d.Allowed() {
+		log.Printf("[channel] ops edit identity=%s: scope refused category=%s by=%s: nothing saved", id.ID, d.Refusal.ID, d.By)
+		return &OpsScopeError{ID: d.Refusal.ID, Name: d.Refusal.Name}
+	}
+	return nil
 }
 
 // OpsHandBack: "Send summary and hand back". The chat goes back to the bot
@@ -473,6 +539,10 @@ func opsEditOutcome(err error) string {
 		return "address_" + areaOutcomeName(ae.Outcome)
 	case errors.Is(err, ErrOpsNoDraft):
 		return "no_draft"
+	case errors.Is(err, ErrOpsScopeUnchecked):
+		return "scope_unchecked"
+	case errors.As(err, new(*OpsScopeError)):
+		return "scope_refused"
 	}
 	return "error"
 }

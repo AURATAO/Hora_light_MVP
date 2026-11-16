@@ -287,6 +287,8 @@ func TestOpsEditErrorResponses(t *testing.T) {
 		{&channel.OpsAddressError{Stop: "30 Hudson St, Jersey City", Outcome: channel.AreaOutside}, http.StatusUnprocessableEntity, "address_outside"},
 		{&channel.OpsAddressError{Stop: "x", Outcome: channel.AreaUnavailable}, http.StatusServiceUnavailable, "address_check_unavailable"},
 		{channel.ErrOpsNoDraft, http.StatusUnprocessableEntity, "cannot_draft"},
+		{&channel.OpsScopeError{ID: "dating", Name: "Dating"}, http.StatusForbidden, "out_of_scope"},
+		{channel.ErrOpsScopeUnchecked, http.StatusServiceUnavailable, "scope_unchecked"},
 	} {
 		status, code, msg := opsEditError(c.err)
 		if status != c.status || code != c.code || msg == "" {

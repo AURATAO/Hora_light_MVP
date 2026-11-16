@@ -778,6 +778,7 @@ func sweepOptedOutForwards(ctx context.Context, store *channel.PGStore, router *
 // opsEditError maps an ops edit's error to the response (status 0: none).
 func opsEditError(err error) (int, string, string) {
 	var ae *channel.OpsAddressError
+	var se *channel.OpsScopeError
 	switch {
 	case err == nil:
 		return 0, "", ""
@@ -787,6 +788,10 @@ func opsEditError(err error) (int, string, string) {
 		return http.StatusForbidden, "ops_cannot_book", "Ops can't book, post or confirm for the customer. Fix the request, then send the summary: only their YES books."
 	case errors.Is(err, channel.ErrOpsSeveral):
 		return http.StatusConflict, "several_errands", "This request has several errands. Sort it out with the customer in the chat."
+	case errors.As(err, &se):
+		return http.StatusForbidden, "out_of_scope", fmt.Sprintf("This request is outside what HO:RA does (%s). A note can't change that. Nothing was changed.", se.Name)
+	case errors.Is(err, channel.ErrOpsScopeUnchecked):
+		return http.StatusServiceUnavailable, "scope_unchecked", "The scope check couldn't read this edit. Nothing was changed; try again in a minute."
 	case errors.Is(err, channel.ErrOpsNoDraft):
 		return http.StatusUnprocessableEntity, "cannot_draft", "Couldn't make a request from the chat and the note. Say what the errand is in the note."
 	case errors.As(err, &ae):
