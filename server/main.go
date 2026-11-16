@@ -131,6 +131,10 @@ type Task struct {
 	RequesterName string `json:"requester_name,omitempty"`
 	AssigneeName  string `json:"assignee_name,omitempty"`
 
+	// What the task would pay a supporter, worded here (money_text.go). Only
+	// on an open task shown to someone who could take it.
+	PayLabel string `json:"pay_label,omitempty"`
+
 	// uuid（後端查詢/權限全靠它）
 	RequesterID  string  `json:"requester_id"`
 	AssignedToID *string `json:"assigned_to_id,omitempty"`
@@ -2558,6 +2562,13 @@ func getTask(c *gin.Context) {
 		t.CanSelfAccept = canSelfAccept(ctx, uid)
 	}
 
+	// What it would pay, to someone who could take it (money_text.go): an
+	// open, unassigned task read by anyone but its requester, or by the App
+	// Review sandbox, which plays both sides of its own task.
+	if t.Status == "open" && t.AssignedToID == nil && (uid != t.RequesterID || t.CanSelfAccept) {
+		t.PayLabel = taskPayLabel(ctx, id)
+	}
+
 	// A block between the viewer and the other party on this task: the chat
 	// renders read-only with an explanatory line (safety.go).
 	if uid != "" {
@@ -2967,6 +2978,11 @@ func listAvailableTasks(c *gin.Context) {
 			return
 		}
 		items = append(items, t)
+	}
+	rows.Close()
+	// After the rows are read: each label is its own read on the pool.
+	for i := range items {
+		items[i].PayLabel = taskPayLabel(ctx, items[i].ID)
 	}
 
 	var next any = nil
@@ -4051,6 +4067,12 @@ type SupporterEarnings struct {
 	//	          notifySupporterPaid.
 	//	failed    ops have been told; nobody needs to do anything in-app
 	PayoutStatus string `json:"payout_status,omitempty"`
+
+	// The same money in the server's words (money_text.go): what it was made
+	// of, and one more line when there is something to add. The clients show
+	// these when present and their own copy when not.
+	BreakdownLabel string `json:"breakdown_label,omitempty"`
+	Note           string `json:"note,omitempty"`
 }
 
 // supporterEarningsView builds the supporter's half from the same TaskQuote
@@ -4108,6 +4130,7 @@ func supporterEarningsView(ctx context.Context, taskID, supporterID string, cost
 	`, taskID, supporterID, payoutStatusFailed, payoutStatusPending, payoutStatusPaid).Scan(&status); err == nil && status != nil {
 		e.PayoutStatus = *status
 	}
+	e.BreakdownLabel = payoutBreakdownLineBps(e.ServiceGrossCents, e.PlatformFeeCents, e.ReimbursementCents, e.PlatformFeeBps)
 	return e
 }
 

@@ -334,18 +334,8 @@ func dispatchSend(t dispatchTask, borough string, ids []string) {
 // estimated time, less the platform fee — never the requester's total.
 func dispatchCopy(t dispatchTask, borough string) (string, string) {
 	title := "New task near you"
-	if t.Minutes > 0 {
-		base, bps := t.BaseFeeCents, t.PlatformFeeBps
-		if base <= 0 {
-			// A task built without a read (tests, a direct call): priced
-			// as one posted now would be.
-			base, bps = newTaskPrice(t.Category)
-		}
-		q := quoteTaskBase(base, t.Minutes, 0, t.RateCents)
-		pay := supporterPayForBps(q.BaseFeeCents+q.TimeCostCents, 0, bps).ServiceNetCents()
-		if pay > 0 {
-			title = fmt.Sprintf("New task near you · ~%s", formatCentsUSD(pay))
-		}
+	if pay := estimatedSupporterPayCents(t); pay > 0 {
+		title = fmt.Sprintf("New task near you · ~%s", formatCentsUSD(pay))
 	}
 	// The category, never the requester's title: a title is free text and
 	// often carries the address ("Pick up a package at 350 5th Ave"), and a
