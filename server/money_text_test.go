@@ -13,7 +13,7 @@ func TestPayLabelMatchesThePush(t *testing.T) {
 	if cents <= 0 {
 		t.Fatalf("estimate = %d, want a positive amount", cents)
 	}
-	label := payLabel(cents)
+	label := payLabel(cents, task.Minutes)
 	title, _ := dispatchCopy(task, "Manhattan")
 	amount := formatCentsUSD(cents)
 	if !strings.Contains(label, amount) || !strings.Contains(title, amount) {
@@ -23,10 +23,15 @@ func TestPayLabelMatchesThePush(t *testing.T) {
 	if amount != "$16.80" {
 		t.Errorf("amount = %s, want $16.80", amount)
 	}
+	// Billed by the minute: the label names the time it is for, never a
+	// bare price.
+	if label != "About $16.80 for the 30 min booked" {
+		t.Errorf("label = %q", label)
+	}
 }
 
 func TestPayLabelSaysNothingWithoutAnEstimate(t *testing.T) {
-	if got := payLabel(estimatedSupporterPayCents(dispatchTask{Category: "delivery", Minutes: 0})); got != "" {
+	if got := payLabel(estimatedSupporterPayCents(dispatchTask{Category: "delivery", Minutes: 0}), 0); got != "" {
 		t.Errorf("label = %q, want empty: no estimate, nothing to promise", got)
 	}
 }

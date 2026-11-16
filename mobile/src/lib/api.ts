@@ -1175,6 +1175,12 @@ export interface EarningsTransfer {
   bank_paid_at?: string | null;
   /** Decided by the backend so both clients agree (S-05). */
   display_status?: TransferDisplayStatus;
+  /** The row in the server's words; shown instead of the line built here
+   *  when present (earnings-copy.ts). */
+  breakdown_label?: string;
+  /** One more line under it when the server has something to add (a
+   *  reimbursement paid early, a bonus). */
+  note?: string;
 }
 
 export interface Earnings {

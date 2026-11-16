@@ -12,7 +12,7 @@ import (
 // change here (a flat price, a bonus, a reimbursement paid early from the
 // float) without an app release, which needs App Review.
 //
-//	Task.pay_label                   an open task, to someone who could take it
+//	Task.pay_label / pay_note        an open task, to someone who could take it
 //	EarningsTransfer.breakdown_label what a payment was made of
 //	EarningsTransfer.note            one more line under it; "" today
 //	SupporterEarnings.breakdown_label / note   the same, on a task's settlement
@@ -36,21 +36,31 @@ func estimatedSupporterPayCents(t dispatchTask) int {
 }
 
 // payLabel is the line an offer carries. "" when there is nothing to say.
-func payLabel(cents int) string {
-	if cents <= 0 {
+//
+// HO:RA bills by the minute, so this is never a price: it is what the time
+// the requester booked would pay, and it says the time it is for (Aura
+// 2026-11-16). payNote, shown with it on the task screen, says why the final
+// amount can differ.
+func payLabel(cents, minutes int) string {
+	if cents <= 0 || minutes <= 0 {
 		return ""
 	}
-	return fmt.Sprintf("You'd earn about %s", formatCentsUSD(cents))
+	return fmt.Sprintf("About %s for the %d min booked", formatCentsUSD(cents), minutes)
 }
 
-// taskPayLabel reads the task and words its pay. "" on any error: the label
-// is an extra, and a board or a task screen must not fail over it.
-func taskPayLabel(ctx context.Context, taskID string) string {
+const payNote = "You're paid by the minute: less if it takes less time, more if the requester approves extra time. Anything you buy is paid back in full on top."
+
+// taskPayText reads the task and words its pay. Empty on any error: the
+// label is an extra, and a board or a task screen must not fail over it.
+func taskPayText(ctx context.Context, taskID string) (label, note string) {
 	t, err := loadDispatchTask(ctx, taskID)
 	if err != nil {
-		return ""
+		return "", ""
 	}
-	return payLabel(estimatedSupporterPayCents(t))
+	if label = payLabel(estimatedSupporterPayCents(t), t.Minutes); label == "" {
+		return "", ""
+	}
+	return label, payNote
 }
 
 // transferBreakdownLabel words an Earnings row. A row from before the fee

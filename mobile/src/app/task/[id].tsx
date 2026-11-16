@@ -67,7 +67,7 @@ import {
 } from "../../lib/api";
 import { TRACTION_3_CONFIG, isTractionWindowActive } from "../../lib/beta-notice";
 import { getCategoryMeta } from "../../lib/categories";
-import { earnedBreakdownLine } from "../../lib/earnings-copy";
+import { earnedBreakdownLine, serverText } from "../../lib/earnings-copy";
 import { broadcastPhase, shouldPollLive } from "../../lib/live-tracking";
 import {
   GAP_LABEL,
@@ -1917,6 +1917,20 @@ export default function TaskDetail() {
               </View>
             ) : (
               <>
+                {/* What it would pay, before the decision: the server's
+                    label and its one sentence on why the final amount can
+                    differ (billed by the minute). Absent from an older
+                    backend, and then nothing is shown. */}
+                {serverText(task.pay_label) ? (
+                  <View className="rounded-card bg-brand-tint p-4">
+                    <Text className="text-body font-semibold text-brand">
+                      {serverText(task.pay_label)}
+                    </Text>
+                    {serverText(task.pay_note) ? (
+                      <Text className="mt-1 text-caption text-brand">{serverText(task.pay_note)}</Text>
+                    ) : null}
+                  </View>
+                ) : null}
                 <Button label="Accept task" onPress={handleAccept} loading={accepting} />
                 {acceptError ? (
                   <Text className="text-caption text-danger">{acceptError}</Text>
@@ -2622,6 +2636,9 @@ function SettlementCard({
               {formatCost(settlement.earned.total_cents)}
             </Text>
           </View>
+          {serverText(settlement.earned.note) ? (
+            <Text className="text-caption text-ink">{serverText(settlement.earned.note)}</Text>
+          ) : null}
           {/* "On its way", never "paid". Stripe executes the transfer when the
               requester's charge settles, and the bank deposit is a further step
               on its daily payout schedule — telling somebody the money is in

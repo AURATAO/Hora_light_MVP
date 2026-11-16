@@ -83,6 +83,8 @@ export function earningsBreakdownLine(input: {
 
 /** The settlement card's `earned` block. */
 export function earnedBreakdownLine(earned: SupporterEarnings): string {
+  const fromServer = serverText(earned.breakdown_label);
+  if (fromServer) return fromServer;
   return earningsBreakdownLine({
     time: earned.time_cents,
     reimbursement: earned.reimbursement_cents,
@@ -93,10 +95,23 @@ export function earnedBreakdownLine(earned: SupporterEarnings): string {
 
 /** One Earnings transfer row. */
 export function transferBreakdownLine(transfer: EarningsTransfer): string {
+  const fromServer = serverText(transfer.breakdown_label);
+  if (fromServer) return fromServer;
   return earningsBreakdownLine({
     time: transfer.time_cents,
     reimbursement: transfer.receipt_cents,
     feeCents: transfer.platform_fee_cents,
     feeBps: transfer.platform_fee_bps,
   });
+}
+
+/**
+ * Money text the SERVER worded (server/money_text.go): shown as sent when
+ * present, so a flat price, a bonus or a reimbursement paid early can be
+ * described without an app release. Anything that is not a non-empty string
+ * (an older backend, an odd payload) is "", and the caller falls back to the
+ * copy built in this file.
+ */
+export function serverText(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
 }

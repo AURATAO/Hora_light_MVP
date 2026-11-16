@@ -7,6 +7,7 @@ import { askForPushInContext } from "../../lib/push";
 import { SupporterStatusBanner } from "../../components/SupporterStatusBanner";
 import { Card, EmptyState, Screen, Skeleton } from "../../components/ui";
 import { ApiError, getAppConfig, getAvailableTasks, getProfile } from "../../lib/api";
+import { serverText } from "../../lib/earnings-copy";
 import { getCategoryMeta } from "../../lib/categories";
 import { formatCost, formatMinutes, formatScheduledAt } from "../../lib/task-utils";
 import type { Profile, Task } from "../../lib/types";
@@ -41,6 +42,11 @@ function AvailableTaskRow({ task, onPress }: { task: Task; onPress: () => void }
           {task.title}
         </Text>
       </View>
+      {/* What it would pay, in the server's words (task.pay_label). The
+          one line a supporter chooses by, so it is ink, not muted. */}
+      {serverText(task.pay_label) ? (
+        <Text className="mt-2 text-body font-semibold text-brand">{serverText(task.pay_label)}</Text>
+      ) : null}
       <Text className="mt-2 text-caption text-muted">{metaParts.join(" · ")}</Text>
       {location ? (
         <View className="mt-1 flex-row items-center gap-1.5">

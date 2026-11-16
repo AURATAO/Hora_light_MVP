@@ -1,7 +1,7 @@
 import { Text, View } from "react-native";
 import { Card } from "./ui";
 import { formatCost } from "../lib/task-utils";
-import { transferBreakdownLine, transferStatusCopy } from "../lib/earnings-copy";
+import { serverText, transferBreakdownLine, transferStatusCopy } from "../lib/earnings-copy";
 import type { EarningsTransfer } from "../lib/api";
 
 /**
@@ -26,6 +26,11 @@ export function TransferRow({ transfer }: { transfer: EarningsTransfer }) {
               shopping task cannot tell what they MADE from what they are being
               handed back, and those are very different numbers. */}
           <Text className="mt-0.5 text-caption text-muted">{transferBreakdownLine(transfer)}</Text>
+          {/* The server's extra line, when it has one: a reimbursement paid
+              early from the float, a bonus. Its words, shown as sent. */}
+          {serverText(transfer.note) ? (
+            <Text className="mt-0.5 text-caption text-ink">{serverText(transfer.note)}</Text>
+          ) : null}
         </View>
         <View className="items-end">
           <Text className="text-body font-semibold text-ink">

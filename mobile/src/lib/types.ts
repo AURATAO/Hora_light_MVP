@@ -201,6 +201,14 @@ export interface OutstandingBalance {
 export interface Task {
   id: string;
   title: string;
+  /** What the task would pay, in the SERVER's words (server/money_text.go):
+   *  "About $16.80 for the 30 min booked". Only on an open task shown to
+   *  someone who could take it; absent from an older backend. Rendered as
+   *  sent, so how pay is described can change without an app release. */
+  pay_label?: string;
+  /** One sentence under it on the task screen: why the final amount can
+   *  differ (billed by the minute). */
+  pay_note?: string;
   description: string | null;
   category: TaskCategory;
   location_text: string | null;
@@ -478,6 +486,12 @@ export interface SupporterEarnings {
   platform_fee_bps?: number;
   /** Absent when no transfer exists yet: the figures above are what is OWED. */
   payout_status?: "pending" | "paid" | "failed";
+  /** The same money in the server's words; shown instead of the line built
+   *  here when present (earnings-copy.ts). */
+  breakdown_label?: string;
+  /** One more line when the server has something to add (a reimbursement
+   *  paid early, a bonus). */
+  note?: string;
 }
 
 // GET /tasks/:id/worklogs

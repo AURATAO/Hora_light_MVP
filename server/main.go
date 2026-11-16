@@ -134,6 +134,7 @@ type Task struct {
 	// What the task would pay a supporter, worded here (money_text.go). Only
 	// on an open task shown to someone who could take it.
 	PayLabel string `json:"pay_label,omitempty"`
+	PayNote  string `json:"pay_note,omitempty"`
 
 	// uuid（後端查詢/權限全靠它）
 	RequesterID  string  `json:"requester_id"`
@@ -2566,7 +2567,7 @@ func getTask(c *gin.Context) {
 	// open, unassigned task read by anyone but its requester, or by the App
 	// Review sandbox, which plays both sides of its own task.
 	if t.Status == "open" && t.AssignedToID == nil && (uid != t.RequesterID || t.CanSelfAccept) {
-		t.PayLabel = taskPayLabel(ctx, id)
+		t.PayLabel, t.PayNote = taskPayText(ctx, id)
 	}
 
 	// A block between the viewer and the other party on this task: the chat
@@ -2982,7 +2983,7 @@ func listAvailableTasks(c *gin.Context) {
 	rows.Close()
 	// After the rows are read: each label is its own read on the pool.
 	for i := range items {
-		items[i].PayLabel = taskPayLabel(ctx, items[i].ID)
+		items[i].PayLabel, _ = taskPayText(ctx, items[i].ID)
 	}
 
 	var next any = nil
