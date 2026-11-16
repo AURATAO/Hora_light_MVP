@@ -13,11 +13,13 @@ Your demo account is already an approved supporter, and a few demo tasks are wai
 Walkthrough
 1. Sign in: tick the Terms/Privacy checkbox, tap "Send code", enter the code above.
 2. On first opening the Tasks tab, the app explains why it wants notifications ("Turn on notifications so you don't miss jobs near you") before iOS asks. Either answer is fine.
-   Tasks tab → open any demo task → "Accept task". (If the tab is empty, wait a few seconds and pull down to refresh — new demo tasks are added automatically.)
+   Tasks tab → open any demo task. Each task shows what it would pay for the time booked ("About $… for the 30 min booked"); supporters are paid by the minute, so the final amount follows the time actually worked.
+   Tap "Accept task". A "Before you accept" sheet shows the safety notes for that kind of task (and, the first time, general notes for every task). Tap "I understand and accept" to accept the task. (If the tab is empty, wait a few seconds and pull down to refresh — new demo tasks are added automatically.)
+   The "I'm available" switch at the top of the Tasks tab turns on new-task alerts for 4 hours. Demo tasks are posted by the demo account itself, so no alert is sent for them.
 3. Tap "On my way". iOS asks for location permission here (see note c).
 4. Tap "Clock in" (timer starts), wait a moment, then "Clock out".
 5. Tap "Complete task" → choose any photo from the library (or take one) as the completion photo → confirm. An itemized summary appears.
-6. Earnings tab shows the payout for the same task. My jobs lists active and finished tasks.
+6. Earnings tab shows the payout for the same task, under "On its way" and "Paid out". My jobs lists active and finished tasks.
 7. Profile → Supporter rules shows the safety rules for supporters (also shown on the application form before applying): decline any task if you feel unsafe; enter a home only for a specific errand with the customer or a named adult present, or with clear access instructions; never alone with minors; never give anyone a ride.
 8. From the task or the chat, the "⋯" menu offers Report user / Block user (Guideline 1.2).
 9. Account deletion is available in-app under Profile (Guideline 5.1.1(v)).

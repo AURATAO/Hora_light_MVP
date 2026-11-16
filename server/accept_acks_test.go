@@ -257,3 +257,30 @@ func TestAcceptAck_RequirementsHiddenAcrossABlock(t *testing.T) {
 		t.Errorf("requirements across a block: %d, want 404", code)
 	}
 }
+
+// App Review walks the demo tasks (review_seed.go). Each one must show its
+// own type's notes (the sheet is part of what is being reviewed) and carry
+// a pay label, or the reviewer sees less than a supporter does.
+func TestReviewSeedTasksShowTheSheetAndThePay(t *testing.T) {
+	cfg, err := acceptAcks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"Pick up a coffee order": "food",
+		"Hold a place in line":   "check",
+		"Drop off a package":     "packages",
+	}
+	for _, seed := range reviewSeedTasks {
+		if got := ackTypeKey(cfg, seed.Category, seed.Title, seed.Description); got != want[seed.Title] {
+			t.Errorf("%q: type = %q, want %q", seed.Title, got, want[seed.Title])
+		}
+		if ackEntersHome(seed.Title, seed.Description) {
+			t.Errorf("%q: reads as entering a home; demo tasks are public places", seed.Title)
+		}
+		pay := estimatedSupporterPayCents(dispatchTask{Category: seed.Category, Minutes: seed.Minutes, RateCents: pricing().PerMinuteRateCents})
+		if payLabel(pay, seed.Minutes) == "" {
+			t.Errorf("%q: no pay label", seed.Title)
+		}
+	}
+}
