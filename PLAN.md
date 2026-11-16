@@ -977,6 +977,48 @@ Open, Aura's call before building:
 - A cap on pushes per supporter per hour, against fatigue.
 - Quiet hours, if the toggle proves not enough.
 
+### 13c. Server-driven accept confirmations and money text (Aura, 2026-11-16) — the last app change before submission
+
+Branch `feat/app-server-driven` (from `feat/app-pilot-scope` + main). Why:
+an app change needs App Review, a backend change does not, so the two places
+most likely to move after the pilot starts (what a supporter confirms before
+accepting; how a payment is described) take their words from the backend.
+
+**This submission (mobile app + backend only):**
+1. Spec (below). 2. Backend: confirmations + acceptance records (migration).
+3. App: the sheet before "Accept task". 4. Backend: money text.
+5. App: shows it, falls back to today's copy. 6. Review prep (demo task shows
+one confirmation; APP_REVIEW_NOTES). 7. Aura: migration, merge, build, device
+test of the dispatch push, submit.
+
+**Contract.**
+- `GET /tasks/:id/accept-requirements` → `{items: [{key, version, title, body, button}]}`.
+  Only the items this supporter has not accepted at that version. Empty list:
+  the app accepts as today.
+- `POST /tasks/:id/accept` takes an optional `{acknowledged: [{key, version}]}`
+  and records each (supporter, key, version, task, time). Not enforced until
+  `ACCEPT_ACK_ENFORCED=1`: a client that sends nothing still accepts.
+- Which items a task asks for, their wording, and once-per-version or every
+  time are the backend's (a config file, versioned). First content: one
+  baseline safety item. Per-category items wait for the lawyers.
+- Money text: task offers gain `pay_label`; earnings rows gain
+  `breakdown_label` and `note`. The app shows them when present and its own
+  copy when absent.
+
+**To do after the submission (Aura 2026-11-16: the web app waits):**
+- [ ] Web app (`app/`): the same confirmation before accepting
+  (`TaskDetail.jsx`), or a supporter accepting on the web skips it.
+- [ ] Web app: Earnings shows `breakdown_label` / `note` (`Earnings.jsx`,
+  `earningsCopy.js`).
+- [ ] Turn on `ACCEPT_ACK_ENFORCED` only once the web app and the approved
+  app build both send acknowledgments. (App 1.0 was approved but never
+  released, so there is no old app build to protect; the web app is the
+  client that must not break.)
+- [ ] Same-day reimbursement from a float: ops records "advance paid", the
+  settlement transfers service only, the row's `note` says so.
+- [ ] Per-category confirmation texts, after legal review
+  (doc: "Supporter risk acknowledgments by task type").
+
 ## 14. Paused
 
 App Store public release of the requester app; requester-side app features;
