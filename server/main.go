@@ -622,6 +622,11 @@ func main() {
 	r.POST("/admin/tasks/:id/cancel", dualAuth(sqldb), requireOpsAdmin(), adminCancelTaskHandler)
 	r.POST("/admin/tasks/:id/adjust-time", dualAuth(sqldb), requireOpsAdmin(), adminAdjustTime)
 
+	// One task's money for the ops panel: the receipt (amount + a signed photo
+	// link), what the requester was charged, and where the supporter's
+	// transfer stands. Read-only; see admin_task_money.go.
+	r.GET("/admin/tasks/:id/money", dualAuth(sqldb), requireOpsAdmin(), adminTaskMoney)
+
 	// Re-sending a transfer that Stripe refused — a supporter whose connected
 	// account was restricted or had requirements overdue at settlement time.
 	// Same allowlist and audit trail as the task actions above, and held to a

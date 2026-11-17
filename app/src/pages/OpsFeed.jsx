@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useToast } from '../providers/ToastProvider'
 import { opsFetch as fetchJSON, removeTask, reassignTask, listApprovedSupporters,
-         forceCompleteTask, adminCancelTask, adjustTaskTime, REMOVAL_REASONS } from '../api/ops'
+         forceCompleteTask, adminCancelTask, adjustTaskTime, getTaskMoney, REMOVAL_REASONS } from '../api/ops'
 import OpsSupporters from './OpsSupporters.jsx'
 import OpsPromoCodes from './OpsPromoCodes.jsx'
 import OpsPricing from './OpsPricing.jsx'
@@ -21,6 +21,23 @@ const ADMIN_EMAILS = new Set([
   'rollod4@gmail.com',
   'daniele@arcodiax.com'
 ]);
+
+// Where a supporter's transfer stands, in the words their Earnings screen uses.
+// `failed` is the only one that needs somebody to do something.
+const PAYOUT_STATES = {
+  none:       { label: 'No transfer yet', cls: 'border-white/20 opacity-60' },
+  pending:    { label: 'Sending',         cls: 'border-white/30' },
+  on_its_way: { label: 'On its way',      cls: 'border-amber-300/50 text-amber-200' },
+  paid_out:   { label: 'Paid out',        cls: 'border-emerald-300/50 text-emerald-200' },
+  failed:     { label: 'Transfer failed', cls: 'border-red-400/60 text-red-300' },
+}
+
+const usd = (cents) => (typeof cents === 'number' ? `$${(cents / 100).toFixed(2)}` : '—')
+
+function PayoutBadge({ state }) {
+  const s = PAYOUT_STATES[state] || PAYOUT_STATES.none
+  return <span className={`inline-block rounded border px-1 ${s.cls}`}>{s.label}</span>
+}
 
 const STATUS_FILTERS = ['all','accepted','completed','cancelled','removed'];
 
@@ -54,6 +71,13 @@ export default function OpsFeed() {
   const [supportersError, setSupportersError] = useState('')
   const [pickedSupporter, setPickedSupporter] = useState('')
   const [reassignBusy, setReassignBusy] = useState(false)
+
+  // Money dialog: the row it was opened for, and the detail once it arrives.
+  // Fetched on open rather than with the feed because the receipt photo is a
+  // signed link that expires — it is minted for the person about to look.
+  const [moneyRow, setMoneyRow] = useState(null)
+  const [money, setMoney] = useState(null)
+  const [moneyError, setMoneyError] = useState('')
 
   const allowed = !!user && ADMIN_EMAILS.has(user.email)
 
@@ -207,6 +231,18 @@ export default function OpsFeed() {
     }
   }
 
+  // --- 錢：收據與轉帳
+  async function openMoney(row) {
+    setMoneyRow(row)
+    setMoney(null)
+    setMoneyError('')
+    try {
+      setMoney(await getTaskMoney(row.task_id))
+    } catch (e) {
+      setMoneyError(e.message || 'Could not load the money details')
+    }
+  }
+
   if (!user) return <div className="p-6">Please sign in.</div>;
   if (!allowed) return <div className="p-6">You are not authorized to view Ops.</div>;
 
@@ -277,6 +313,7 @@ export default function OpsFeed() {
                 <th className="text-left p-2">Status</th>
                 <th className="text-left p-2">Timeline</th>
                 <th className="text-left p-2">Prepay</th>
+                <th className="text-left p-2">Receipt &amp; transfer</th>
                 <th className="text-left p-2">Flags</th>
                 <th className="text-left p-2">Actions</th>
               </tr>
@@ -301,6 +338,23 @@ export default function OpsFeed() {
                   </td>
                   <td className="p-2">
                     {typeof r.prepay_amount === 'number' ? `$${r.prepay_amount.toFixed(2)}` : '—'}
+                  </td>
+                  <td className="p-2 text-xs">
+                    <button
+                      className="text-left hover:opacity-80"
+                      onClick={() => openMoney(r)}
+                      title="Open receipt and transfer details"
+                    >
+                      <div>
+                        {typeof r.receipt_cents === 'number'
+                          ? <>Receipt {usd(r.receipt_cents)}{r.has_receipt_photo ? ' · photo' : <span className="text-red-300"> · no photo</span>}</>
+                          : <span className="opacity-60">No receipt</span>}
+                      </div>
+                      <div className="mt-1">
+                        <PayoutBadge state={r.payout_state} />
+                        {r.payout_cents > 0 ? <span className="ml-1 opacity-80">{usd(r.payout_cents)}</span> : null}
+                      </div>
+                    </button>
                   </td>
                   <td className="p-2 text-xs">
                     {r.running_minutes > 0 && <span className="inline-block border rounded px-1 mr-1">running</span>}
@@ -333,7 +387,7 @@ export default function OpsFeed() {
                 </tr>
               ))}
               {!filtered.length && !loading && (
-                <tr><td className="p-3 text-center opacity-60" colSpan="7">No tasks</td></tr>
+                <tr><td className="p-3 text-center opacity-60" colSpan="8">No tasks</td></tr>
               )}
             </tbody>
           </table>
@@ -391,6 +445,104 @@ export default function OpsFeed() {
           value={removeNote}
           onChange={(e) => setRemoveNote(e.target.value)}
         />
+      </Modal>
+
+      <Modal
+        open={!!moneyRow}
+        onClose={() => setMoneyRow(null)}
+        title="Receipt & transfer"
+        actions={
+          <button
+            className="rounded-md border border-white/20 px-3 py-1 text-sm hover:border-white/40"
+            onClick={() => setMoneyRow(null)}
+          >
+            Close
+          </button>
+        }
+      >
+        <p className="mb-3">
+          <span className="font-medium text-white">{moneyRow?.title}</span>
+          {moneyRow?.supporter_email ? <span className="opacity-60"> · {moneyRow.supporter_name || moneyRow.supporter_email}</span> : null}
+        </p>
+
+        {moneyError ? (
+          <p className="text-xs text-red-300">{moneyError}</p>
+        ) : !money ? (
+          <p className="text-xs opacity-60">Loading…</p>
+        ) : (
+          <div className="space-y-4 text-xs">
+            <section>
+              <div className="mb-1 uppercase tracking-wide opacity-70">Receipt</div>
+              {typeof money.receipt_cents === 'number' ? (
+                <>
+                  <div className="text-white">
+                    {usd(money.receipt_cents)} spent
+                    {typeof money.budget_cents === 'number' ? <span className="opacity-60"> · budget {usd(money.budget_cents)}</span> : null}
+                  </div>
+                  {money.receipt_photo_url ? (
+                    <a href={money.receipt_photo_url} target="_blank" rel="noreferrer" className="mt-2 block">
+                      <img
+                        src={money.receipt_photo_url}
+                        alt="Receipt"
+                        className="max-h-80 w-auto rounded border border-white/10"
+                      />
+                      <span className="mt-1 block opacity-60">Opens full size · link expires in 15 minutes</span>
+                    </a>
+                  ) : (
+                    <div className="mt-1 text-red-300">No receipt photo on file.</div>
+                  )}
+                </>
+              ) : (
+                <div className="opacity-60">
+                  No receipt submitted
+                  {typeof money.budget_cents === 'number' && money.budget_cents > 0 ? ` · budget ${usd(money.budget_cents)}` : ''}.
+                </div>
+              )}
+            </section>
+
+            <section>
+              <div className="mb-1 uppercase tracking-wide opacity-70">Requester charged</div>
+              {money.payments?.length ? money.payments.map((p, i) => (
+                <div key={i} className="flex justify-between border-t border-white/10 py-1 first:border-t-0">
+                  <span>{p.kind} · {p.status}</span>
+                  <span className="text-white">
+                    {typeof p.captured_cents === 'number' ? usd(p.captured_cents) : `hold ${usd(p.authorized_cents)}`}
+                  </span>
+                </div>
+              )) : <div className="opacity-60">No charge on this task.</div>}
+              {typeof money.settled_total_cents === 'number' ? (
+                <div className="mt-1 opacity-70">
+                  Settled {usd(money.settled_total_cents)}
+                  {typeof money.settled_time_cost_cents === 'number' ? ` · time ${usd(money.settled_time_cost_cents)}` : ''}
+                  {money.settled_at ? ` · ${new Date(money.settled_at).toLocaleString()}` : ''}
+                </div>
+              ) : null}
+            </section>
+
+            <section>
+              <div className="mb-1 uppercase tracking-wide opacity-70">Transfer to supporter</div>
+              {money.payouts?.length ? money.payouts.map((p) => (
+                <div key={p.id} className="border-t border-white/10 py-2 first:border-t-0">
+                  <div className="flex items-center justify-between">
+                    <PayoutBadge state={p.state} />
+                    <span className="text-white">{usd(p.amount_cents)}</span>
+                  </div>
+                  {typeof p.service_cents === 'number' ? (
+                    <div className="mt-1 opacity-70">
+                      Time {usd(p.service_cents)} − fee {usd(p.fee_cents)} + receipt {usd(p.reimbursement_cents)}
+                    </div>
+                  ) : null}
+                  <div className="mt-1 opacity-60">
+                    Sent {new Date(p.created_at).toLocaleString()}
+                    {p.bank_paid_at ? ` · in bank ${new Date(p.bank_paid_at).toLocaleString()}` : ''}
+                    {p.funding === 'promo_subsidy' ? ' · promo subsidy (platform funds)' : ''}
+                  </div>
+                  {p.stripe_transfer_id ? <div className="mt-1 font-mono opacity-50">{p.stripe_transfer_id}</div> : null}
+                </div>
+              )) : <div className="opacity-60">Nothing has been transferred for this task yet.</div>}
+            </section>
+          </div>
+        )}
       </Modal>
 
       <Modal
