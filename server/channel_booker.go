@@ -490,7 +490,7 @@ func (b *chatBooker) Cancel(ctx context.Context, userID, taskID, reasonCode stri
 	if cancelReasonLabel(reasonCode) == "" {
 		reasonCode = "other"
 	}
-	body, err := json.Marshal(map[string]string{"reason": "Cancelled by text message: " + cancelReasonLabel(reasonCode), "reason_code": reasonCode})
+	body, err := json.Marshal(map[string]string{"reason": channel.TextCancelReasonPrefix + cancelReasonLabel(reasonCode), "reason_code": reasonCode})
 	if err != nil {
 		log.Printf("[channel-booker] cancel task=%s: %v", taskID, err)
 		return channel.CancelResult{}

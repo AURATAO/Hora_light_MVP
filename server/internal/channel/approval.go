@@ -406,12 +406,11 @@ func (r *Router) resumeLine(ctx context.Context, id Identity, conv Conversation)
 		}
 	case StateAwaitingBudget:
 		if conv.Pending != nil {
-			items := conv.Pending.Items()
 			i := conv.Pending.BudgetAskIndex
-			if i >= 0 && i < len(items) && len(items) > 1 {
-				return CopyBackToDraft + "\n" + fmt.Sprintf(CopyAskBudgetFor, items[i].Draft.Title)
+			if i < 0 {
+				i = 0
 			}
-			return CopyBackToDraft + "\n" + CopyAskBudget
+			return CopyBackToDraft + "\n" + budgetQuestion(conv.Pending.Items(), i)
 		}
 	case StateAwaitingConfirm:
 		if conv.Pending != nil && conv.Pending.DetailsAsked {

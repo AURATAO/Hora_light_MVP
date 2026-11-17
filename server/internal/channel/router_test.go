@@ -420,6 +420,11 @@ func (m *memConversations) ReleaseHandoff(_ context.Context, iid string, o Relea
 		p.SimplerAsk, p.DetailsTries = true, MaxDetailsTries-1
 		c.Pending = &p
 	}
+	if o.BudgetAsk != nil && c.Pending != nil {
+		p := *c.Pending
+		p.BudgetAskIndex = *o.BudgetAsk
+		c.Pending = &p
+	}
 	if o.PutAgain {
 		sentinel := ShownUnconfirmed
 		if c.QuestionShownAt == nil || sentinel.After(*c.QuestionShownAt) {

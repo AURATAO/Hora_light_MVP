@@ -287,6 +287,9 @@ func (r *Router) OpsEditDraft(ctx context.Context, id Identity, note string) (re
 	if !it.NeedsBudget {
 		it.NeedsBudget = r.needsPurchase(ctx, p.Source+"\n"+note, d)
 	}
+	if it.NeedsBudget {
+		it.PurchaseClear = p.PurchaseClear || d.Category == "grocery" || LooksLikePurchase(p.Source+"\n"+note) || LooksLikePurchase(d.Title)
+	}
 	if e.BudgetCents != nil && *e.BudgetCents >= 0 {
 		it.BudgetCents, it.BudgetAsked, it.NeedsBudget = *e.BudgetCents, true, it.NeedsBudget || *e.BudgetCents > 0
 	}
@@ -315,10 +318,10 @@ func (r *Router) OpsEditDraft(ctx context.Context, id Identity, note string) (re
 	// waits for an address, and no unchecked stop reaches a summary.
 	if p.UnclearStop != "" {
 		if k := stopKey(p.UnclearStop); stopKey(d.Location1) != k && stopKey(d.Location2) != k {
-			p.UnclearStop, p.WhichBorough, p.AddressGuess = "", false, ""
+			p.UnclearStop, p.WhichBorough, p.AddressGuess, p.StopOptions = "", false, "", nil
 		}
 	} else {
-		p.WhichBorough, p.AddressGuess = false, ""
+		p.WhichBorough, p.AddressGuess, p.StopOptions = false, "", nil
 	}
 	p.PlaybookAsk, p.PlaybookAsked = nil, true // ops answered what the type would ask
 	p.NameAsked, p.BudgetAskIndex = false, -1

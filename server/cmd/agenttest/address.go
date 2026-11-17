@@ -39,6 +39,12 @@ type addressFile struct {
 		Want    []string `json:"want"`
 		Null    bool     `json:"null"`
 		OrNull  bool     `json:"or_null"`
+		// Place / Near: the business named with no address and where to
+		// look for it (pilot 2026-11-17), each word in the model's field;
+		// NoPlace: no place may be read.
+		Place   []string `json:"place"`
+		Near    []string `json:"near"`
+		NoPlace bool     `json:"no_place"`
 	} `json:"guesses"`
 }
 
@@ -64,19 +70,32 @@ func runAddress(spec llm.Spec, providers llm.Providers, runs int, delay time.Dur
 		for run := 0; run < runs; run++ {
 			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 			start := time.Now()
-			got, err := model.GuessAddress(ctx, c.Said, c.Unclear, c.Area)
+			sg, err := model.GuessStop(ctx, c.Said, c.Unclear, c.Area)
+			got := sg.Address
 			d := time.Since(start)
 			cancel()
 			lat = append(lat, d)
 			ok := err == nil
+			has := func(field string, words []string) bool {
+				for _, w := range words {
+					if !strings.Contains(strings.ToLower(field), strings.ToLower(w)) {
+						return false
+					}
+				}
+				return true
+			}
 			switch {
 			case !ok:
 			case c.Null || (c.OrNull && got == ""):
 				ok = got == ""
 			default:
-				for _, w := range c.Want {
-					ok = ok && strings.Contains(strings.ToLower(got), strings.ToLower(w))
-				}
+				ok = has(got, c.Want)
+			}
+			if ok && len(c.Place) > 0 {
+				ok = sg.Place != "" && has(sg.Place, c.Place) && has(sg.Near, c.Near)
+			}
+			if ok && c.NoPlace {
+				ok = sg.Place == ""
 			}
 			total++
 			mark := "FAIL"
@@ -89,6 +108,9 @@ func runAddress(spec llm.Spec, providers llm.Providers, runs int, delay time.Dur
 				shown = "ERROR " + err.Error()
 			} else if got == "" {
 				shown = "null"
+			}
+			if sg.Place != "" {
+				shown += fmt.Sprintf("  place=%q near=%q", sg.Place, sg.Near)
 			}
 			fmt.Printf("%s %5dms  %-22q → %s\n", mark, d.Milliseconds(), c.Unclear, shown)
 			time.Sleep(delay)

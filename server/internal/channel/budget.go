@@ -176,10 +176,24 @@ func (r *Router) askBudget(ctx context.Context, in Inbound, conv Conversation, i
 	if done, err := r.preempted(ctx, in, conv.IdentityID, conv.Pending); done {
 		return err
 	}
-	if len(items) > 1 {
-		return r.Reply(ctx, in, lead+fmt.Sprintf(CopyAskBudgetFor, items[i].Draft.Title), "")
+	return r.Reply(ctx, in, lead+budgetQuestion(items, i), "")
+}
+
+// budgetQuestion asks item i's budget: only how much when the errand's
+// words say something is bought; whether, and how much, when only the
+// model thought so.
+func budgetQuestion(items []DraftItem, i int) string {
+	clear := i >= 0 && i < len(items) && items[i].PurchaseClear
+	if i >= 0 && i < len(items) && len(items) > 1 {
+		if clear {
+			return fmt.Sprintf(CopyAskBudgetClearFor, items[i].Draft.Title)
+		}
+		return fmt.Sprintf(CopyAskBudgetFor, items[i].Draft.Title)
 	}
-	return r.Reply(ctx, in, lead+CopyAskBudget, "")
+	if clear {
+		return CopyAskBudgetClear
+	}
+	return CopyAskBudget
 }
 
 // onAwaitingBudget reads the amount (or "nothing") for the item being asked

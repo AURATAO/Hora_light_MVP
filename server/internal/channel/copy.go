@@ -43,6 +43,8 @@ const (
 	CopyAskName              = "Got it: %s.\n\nBefore I price it, what's your first name?"
 	CopyAskBudget            = "Will your supporter be buying something for this? About how much should I set aside, e.g. $20? Reply \"nothing\" if there's nothing to buy."
 	CopyAskBudgetFor         = "For \u201c%s\u201d: will your supporter be buying something? About how much should I set aside, e.g. $20? Reply \"nothing\" if there's nothing to buy."
+	CopyAskBudgetClear       = "About how much should I set aside for the purchase, e.g. $20? Reply \"nothing\" if it's already paid for."
+	CopyAskBudgetClearFor    = "For \u201c%s\u201d: about how much should I set aside for the purchase, e.g. $20? Reply \"nothing\" if it's already paid for."
 	CopyAskBudgetAgain       = "Just an amount is fine, like $20 — or \"nothing\" if there's nothing to buy."
 	CopyAutoExtendOn         = "If it runs a little over, up to %d extra minutes are OK without asking. Say \"no extra time\" to turn that off."
 	CopyAutoExtendOff        = "Your supporter will ask before going over the estimate."

@@ -339,7 +339,7 @@ func TestDiscoveryRoute(t *testing.T) {
 	if !strings.Contains(reply, "1. 2 stops, in this order:") || !strings.Contains(reply, "a. Joe's Laundromat") || !strings.Contains(reply, CopyDiscoveryPickOne) {
 		t.Fatalf("reply:\n%s", reply)
 	}
-	if ask := g.say(t, "1"); ask != CopyAskBudget {
+	if ask := g.say(t, "1"); ask != CopyAskBudgetClear {
 		t.Fatalf("a card is a purchase: the budget comes first, got %q", ask)
 	}
 	summary := g.say(t, "$10")

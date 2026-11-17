@@ -68,7 +68,8 @@ func TestAckTypeKey(t *testing.T) {
 		{"delivery", "Pick up dry cleaning", "", "laundry"},
 		{"delivery", "Buy Advil at CVS", "", "pharmacy"},
 		{"delivery", "Return a package at UPS", "", "packages"},
-		{"queue", "Wait in line at the Apple Store", "", "check"},
+		{"queue", "Wait in line at the Apple Store", "", "queue"},
+		{"queue", "Check if there is a line at Levain", "", "check"},
 		{"delivery", "Get a key copied", "", "small_services"},
 		{"delivery", "Coffee and a bagel", "", "food"},
 		{"companionship", "A walk in the park", "", "companionship"},
@@ -268,7 +269,7 @@ func TestReviewSeedTasksShowTheSheetAndThePay(t *testing.T) {
 	}
 	want := map[string]string{
 		"Pick up a coffee order": "food",
-		"Hold a place in line":   "check",
+		"Hold a place in line":   "queue",
 		"Drop off a package":     "packages",
 	}
 	for _, seed := range reviewSeedTasks {

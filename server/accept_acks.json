@@ -52,6 +52,12 @@
    "title": "Keys, repairs & tailoring",
    "body": "Never sign anything for the requester (claim tickets, waivers, repair agreements). If the shop asks for a signature, text the requester.\n\nNever unlock, open or look through anyone's phone.\n\nHouse keys stay with you only for the errand: don't copy more than asked, don't label them with an address, and hand them back to the requester or the person they name. Keep the claim ticket and photograph it."
   },
+  "queue": {
+   "version": "1",
+   "when": "always",
+   "title": "Checking & waiting in line",
+   "body": "Dress for the weather. You can leave the line if it becomes unsafe or you feel unwell; tell the requester.\n\nDon't argue with staff or others in line. If you're asked to leave, leave.\n\nPhotos are of the sign, the shelf or the length of the line, from a public spot, never of people's faces.\n\nNever buy anything to resell, and follow the venue's rules about holding a place."
+  },
   "check": {
    "version": "1",
    "when": "always",

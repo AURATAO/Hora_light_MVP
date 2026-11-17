@@ -34,7 +34,7 @@ func TestSplitAmountNotInTheMessageAsksForTheBudget(t *testing.T) {
 	g := splitRig(t, []string{"pick up my laundry", "get groceries with $400"},
 		map[string]llm.TaskDraft{"pick up my laundry": laundryD, "get groceries with $400": groceryD})
 	got := g.say(t, "pick up my laundry and get groceries with $40")
-	if want := fmt.Sprintf(CopyAskBudgetFor, "Grocery run"); got != want || g.state() != StateAwaitingBudget {
+	if want := fmt.Sprintf(CopyAskBudgetClearFor, "Grocery run"); got != want || g.state() != StateAwaitingBudget {
 		t.Fatalf("reply %q state %s, want the budget question", got, g.state())
 	}
 	if it := g.pending(t).Items()[1]; it.BudgetCents != 0 || it.BudgetAsked {

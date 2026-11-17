@@ -110,7 +110,8 @@ func TestReleaseResumesTheDraft(t *testing.T) {
 		t.Fatal(err)
 	}
 	last := g.ad.last()
-	if !strings.HasPrefix(last, CopyHandoffReleased) || !strings.Contains(last, "Reply YES to book") || g.state() != StateAwaitingConfirm {
+	// The request's next step alone (pilot 2026-11-17): its summary.
+	if strings.Contains(last, CopyHandoffReleased) || !strings.Contains(last, "Reply YES to book") || g.state() != StateAwaitingConfirm {
 		t.Fatalf("%q state %s", last, g.state())
 	}
 	g.say(t, "YES")

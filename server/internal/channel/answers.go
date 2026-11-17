@@ -982,6 +982,44 @@ func (r *Router) draftPlaybook(o draftOpts, prev *PendingDraft, source string) *
 	return r.Playbooks.ByID(o.playbookHint) // else the classifier's reading
 }
 
+// CategoryPlaybooks: the errand type a parsed category means when the words
+// matched no type by rule (pilot 2026-11-17: "wait line for me at Apple
+// Store" was parsed as queue but asked the check type's "If they find it,
+// what should they do?"). delivery and anything_else name no one type:
+// their words decide (food, pharmacy, gifts, friend, packages, small
+// services, check), or none.
+var CategoryPlaybooks = map[string]string{
+	"queue":         "queue",
+	"laundry":       "laundry",
+	"grocery":       "groceries",
+	"companionship": "companionship",
+}
+
+// checkWordsRE: words that ask only to go and look ("how long is the
+// line"), which stay a check even when the parser files them as queue.
+var checkWordsRE = regexp.MustCompile(`(?i)\bcheck\b|how long is the line|is (?:there|the) (?:a )?line|go (?:and )?(?:look|see)|just look|in stock|still have|sold out`)
+
+// categoryPlaybook: the type once the errand is parsed. The type the words
+// matched stands, with one exception: a queue errand is never a check
+// unless its words only ask to look. A draft discovery, a route, a repeat
+// or an earlier draft typed keeps that type.
+func (r *Router) categoryPlaybook(pb *llm.Playbook, o draftOpts, prev *PendingDraft, category, source string) *llm.Playbook {
+	if r.Playbooks == nil || o.playbook != "" || o.prebuilt != nil || len(o.places) > 1 || (prev != nil && prev.Playbook != "") {
+		return pb
+	}
+	id, ok := CategoryPlaybooks[category]
+	if !ok {
+		return pb
+	}
+	switch {
+	case pb == nil:
+		return r.Playbooks.ByID(id)
+	case category == "queue" && pb.ID == "check" && !checkWordsRE.MatchString(source):
+		return r.Playbooks.ByID(id)
+	}
+	return pb
+}
+
 // applyPlaybookNotes adds the type's fixed supporter notes to the task the
 // supporter reads (once each).
 func applyPlaybookNotes(d *llm.TaskDraft, pb *llm.Playbook) {

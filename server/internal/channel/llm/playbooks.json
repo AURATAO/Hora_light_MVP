@@ -1458,8 +1458,116 @@
    ]
   },
   {
+   "id": "queue",
+   "name": "Waiting in line",
+   "category": "queue",
+   "match": [
+    "wait(?:ing)?\\s+(?:in\\s+|on\\s+)?(?:the\\s+|a\\s+)?line",
+    "(?:stand|standing|stay|get|hold|holding|save|saving|keep)\\s+(?:in\\s+)?(?:the\\s+|a\\s+)?(?:line|queue)",
+    "(?:hold|save|keep)\\s+(?:my|a|our|me a)\\s+(?:spot|place)",
+    "line\\s?up\\s+for",
+    "queue(?:s|d)?\\s+(?:for|at|up)",
+    "queu(?:e|ing)\\s+for\\s+me",
+    "in\\s+(?:the\\s+)?(?:line|queue)\\s+for\\s+me",
+    "line\\s+for\\s+me",
+    "(?:the\\s+)?line\\s+at\\s+[^.\\n]{1,40}?\\s+for\\s+me"
+   ],
+   "unless": [
+    "how long is the line",
+    "check (?:if|whether|how)",
+    "is (?:there|the) (?:a )?line",
+    "(?:how|is it) busy"
+   ],
+   "typical_questions": [
+    "can someone wait in line for me at the Apple Store?",
+    "how long will they wait?",
+    "can they hold my spot until I get there?"
+   ],
+   "sources": [
+    "places_facts"
+   ],
+   "guidance": "Waiting in line for the customer (a product pickup or launch, tickets, a table, a sample sale, an office). A supporter goes, joins the line and texts updates. HO:RA needs three things before booking: what the line is for, the longest they should wait, and what to do at the front (buy something, hold the spot until the customer arrives, or text the customer). Google can't see a line: never guess how long it is.",
+   "asks": [
+    {
+     "key": "for_what",
+     "question": "What are they lining up for (for example, an order pickup, tickets, a table)?",
+     "answer": "redraft",
+     "skip_if": "(?i)\\b(?:line|queue|wait(?:ing)?|in line)\\s+(?:up\\s+)?for\\s+(?:the|a|an|tickets?|tix|\\d+|some|two|my (?:order|pickup|pick-up|appointment|reservation|table|phone|iphone|repair))\\b|\\bto (?:buy|get|grab|pick up|see|return)\\b|\\b(?:tickets?|tix|reservation|table for|release|launch|sample sale|appointment|order pickup|pick ?up my|iphone|cronuts?|genius bar)\\b"
+    },
+    {
+     "key": "max_wait",
+     "question": "How long should they wait at most?",
+     "answer": "redraft",
+     "skip_if": "(?i)\\b\\d+\\s*(?:min|mins|minutes?|hours?|hrs?)\\b|\\bhalf an hour\\b|\\ban hour\\b|\\bas long as (?:it takes|needed)\\b|don'?t wait|no wait"
+    },
+    {
+     "key": "at_front",
+     "question": "When they reach the front, what should they do: buy something (what and how many), hold your spot until you arrive, or text you?",
+     "answer": "redraft",
+     "skip_if": "(?i)\\b(?:buy|get me|grab|order|pay for|hold (?:my|the|a) (?:spot|place)|save (?:my|the|a|me a) (?:spot|place)|keep (?:my|the) (?:spot|place)|until i (?:get|arrive|come)|swap (?:places|with me)|text me (?:when|once)|call me (?:when|once))\\b"
+    }
+   ],
+   "supporter_notes": [
+    "Text the customer when you join the line and when you are near the front. Never photograph people: photos of the sign or the line's length only, from a public spot."
+   ],
+   "summary_lines": [],
+   "limits": [
+    "Never estimate a wait.",
+    "Never promise a spot, a ticket or an item: the supporter waits and reports.",
+    "Never photograph people or private property."
+   ],
+   "evals": [
+    {
+     "kind": "asks",
+     "msg": "I need someone wait line for me at Apple Store 767 5th Ave, ASAP",
+     "expect_asks": [
+      "for_what",
+      "max_wait",
+      "at_front"
+     ]
+    },
+    {
+     "kind": "asks",
+     "msg": "can someone wait in line for me at the Apple Store 767 5th Ave for my iPhone pickup, 45 minutes max, and text me when they're near the front",
+     "expect_asks": []
+    },
+    {
+     "kind": "asks",
+     "msg": "hold my spot in line at Dominique Ansel for the cronuts until I get there",
+     "expect_asks": [
+      "max_wait"
+     ]
+    },
+    {
+     "kind": "asks",
+     "msg": "please stand in line at the DMV on Herald Square for me, 2 hours max",
+     "expect_asks": [
+      "for_what",
+      "at_front"
+     ]
+    },
+    {
+     "kind": "discover",
+     "msg": "can someone wait in line for me at Levain on 74th?",
+     "hora_line": "levain",
+     "expect": {
+      "action": [
+       "choose",
+       "not_discovery",
+       "info",
+       "about"
+      ],
+      "playbook": [
+       "queue",
+       ""
+      ]
+     }
+    }
+   ]
+  },
+  {
    "id": "check",
-   "name": "Check / lines",
+   "name": "Check",
    "match": [
     "check (?:if|whether|on|the)",
     "go (?:and )?(?:look|see)",
@@ -1485,7 +1593,7 @@
    "sources": [
     "places_facts"
    ],
-   "guidance": "Check errands and lines. Google can't see a line or a shelf right now: a supporter goes, looks and texts back with a photo. Never guess a wait or stock.",
+   "guidance": "Check errands: a supporter goes, looks (stock, how busy, how long the line is) and texts back with a photo. Google can't see a line or a shelf right now. Never guess a wait or stock. Waiting in the line for the customer is the queue type, not this one.",
    "asks": [
     {
      "key": "if_yes",
@@ -1521,6 +1629,13 @@
      "kind": "asks",
      "msg": "check if Levain at 167 W 74th St has walnut cookies, buy 2, wait 20 minutes max",
      "expect_asks": []
+    },
+    {
+     "kind": "asks",
+     "msg": "how long is the line at Levain on 74th right now? just look and text me",
+     "expect_asks": [
+      "max_wait"
+     ]
     },
     {
      "kind": "answer",

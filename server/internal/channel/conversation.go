@@ -92,7 +92,11 @@ type PendingDraft struct {
 	// person as "Did you mean …?". A YES uses it; it is not a failed
 	// answer (DetailsTries does not count it). RejectedGuesses are never
 	// proposed again for this draft.
-	AddressGuess    string   `json:"address_guess,omitempty"`
+	AddressGuess string `json:"address_guess,omitempty"`
+	// StopOptions: Google place ids offered for UnclearStop (a business
+	// named with no address, pilot 2026-11-17); a number picks one. Ids
+	// only, as for discovery offers.
+	StopOptions     []string `json:"stop_options,omitempty"`
 	RejectedGuesses []string `json:"rejected_guesses,omitempty"`
 	// GuessesShown: how many guesses this draft has put to the person; past
 	// MaxFreeGuesses they count toward the hand-off again.
@@ -132,9 +136,10 @@ type PendingDraft struct {
 	PlaybookAsk   []string `json:"playbook_ask,omitempty"`
 	PlaybookAsked bool     `json:"playbook_asked,omitempty"`
 	// First-item budget fields; see DraftItem. Kept flat for stored rows.
-	BudgetCents int  `json:"budget_cents,omitempty"`
-	NeedsBudget bool `json:"needs_budget,omitempty"`
-	BudgetAsked bool `json:"budget_asked,omitempty"`
+	BudgetCents   int  `json:"budget_cents,omitempty"`
+	NeedsBudget   bool `json:"needs_budget,omitempty"`
+	BudgetAsked   bool `json:"budget_asked,omitempty"`
+	PurchaseClear bool `json:"purchase_clear,omitempty"`
 	// BookingKey: the first item's; see DraftItem.
 	BookingKey string `json:"booking_key,omitempty"`
 	// SummaryShownAtUnix: when the summary with these prices was last put to
@@ -162,6 +167,10 @@ type DraftItem struct {
 	BudgetCents int  `json:"budget_cents,omitempty"`
 	NeedsBudget bool `json:"needs_budget,omitempty"`
 	BudgetAsked bool `json:"budget_asked,omitempty"`
+	// PurchaseClear: the errand's own words say something is bought (a
+	// coffee pickup, groceries): the budget question asks only how much,
+	// never whether (pilot 2026-11-17).
+	PurchaseClear bool `json:"purchase_clear,omitempty"`
 	// BookingKey is this errand's idempotency key at POST /tasks: set when
 	// its summary is first shown and kept through every retry and re-quote,
 	// so a YES after a crash or a Stripe timeout finds the task (and the
@@ -174,7 +183,7 @@ type DraftItem struct {
 func (p *PendingDraft) Items() []DraftItem {
 	items := make([]DraftItem, 0, 1+len(p.More))
 	items = append(items, DraftItem{Draft: p.Draft, QuoteCents: p.QuoteCents, QuoteMinutes: p.QuoteMinutes,
-		BudgetCents: p.BudgetCents, NeedsBudget: p.NeedsBudget, BudgetAsked: p.BudgetAsked, BookingKey: p.BookingKey})
+		BudgetCents: p.BudgetCents, NeedsBudget: p.NeedsBudget, BudgetAsked: p.BudgetAsked, PurchaseClear: p.PurchaseClear, BookingKey: p.BookingKey})
 	return append(items, p.More...)
 }
 
@@ -182,7 +191,7 @@ func (p *PendingDraft) Items() []DraftItem {
 func (p *PendingDraft) SetItems(items []DraftItem) {
 	p.Draft, p.QuoteCents, p.QuoteMinutes = items[0].Draft, items[0].QuoteCents, items[0].QuoteMinutes
 	p.BudgetCents, p.NeedsBudget, p.BudgetAsked = items[0].BudgetCents, items[0].NeedsBudget, items[0].BudgetAsked
-	p.BookingKey = items[0].BookingKey
+	p.BookingKey, p.PurchaseClear = items[0].BookingKey, items[0].PurchaseClear
 	p.More = append([]DraftItem(nil), items[1:]...)
 }
 
@@ -314,6 +323,9 @@ type ReleaseOpts struct {
 	// gets SimplerAsk and one more answer before it would hand off again
 	// (details_tries = MaxDetailsTries-1).
 	Simpler bool
+	// BudgetAsk: the thread resumes on the budget question for this item
+	// (the summary would come before a purchase had its budget).
+	BudgetAsk *int
 }
 
 // CancelTTL: how long a cancel question stays answerable.
@@ -943,10 +955,12 @@ func (s *PGStore) ReleaseHandoff(ctx context.Context, identityID string, o Relea
 		  question_shown_at = GREATEST(question_shown_at, $5::timestamptz), updated_at = now(),
 		  pending_draft = CASE WHEN $7 AND pending_draft IS NOT NULL AND (pending_draft->>'details_asked')::boolean
 		    THEN pending_draft || jsonb_build_object('simpler_ask', true, 'details_tries', $8::int)
+		    WHEN $9::int IS NOT NULL AND pending_draft IS NOT NULL
+		    THEN pending_draft || jsonb_build_object('budget_ask_index', $9::int)
 		    ELSE pending_draft END
 		WHERE identity_id = $1 AND state = $4 AND ($6 OR handoff_activity_at IS NOT DISTINCT FROM $3::timestamptz)
 		RETURNING 1
-	`, identityID, string(o.Resume), seenV, string(StateHandoff), shownV, o.AnyClock, o.Simpler, MaxDetailsTries-1).Scan(&one)
+	`, identityID, string(o.Resume), seenV, string(StateHandoff), shownV, o.AnyClock, o.Simpler, MaxDetailsTries-1, o.BudgetAsk).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -1156,6 +1170,12 @@ var (
 	// second reading: "thanks" adds no condition, no change and no name. If a
 	// supporter has just written it is theirs first (HandleInbound: casual).
 	bookingYesRE = regexp.MustCompile(`(?i)^\s*(?:yes|是|確認)(?:[\s,!.]+(?:please|pls|thanks|thank you|thx|ty)|[\s,!.]*(?:謝謝|谢谢))[\s!.]*$`)
+	// yesBookRE: a yes word followed by "book" and nothing else ("Yes !
+	// Book", "yes book it", "yep, book", "yeah please book it"). The word
+	// the summary asks for, plus the verb it names, means one thing; a
+	// booking needs both (pilot 2026-11-17: "Yes ! Book" was asked again).
+	// "book it" or "ok book" alone still does not book.
+	yesBookRE = regexp.MustCompile(`(?i)^\s*(?:yes|yep|yeah|yup|是|確認)[\s,!.]+(?:(?:please|pls)\s+)?book(?:\s+it)?(?:[\s,!.]+(?:please|pls|now|thanks|thank you|thx|ty))?[\s!.]*$`)
 	// affirmationRE: nothing but agreeing words, more than a plain yes:
 	// "ok book it", "sure go ahead", "book it please". Never a booking, and
 	// nothing in it to re-draft.
@@ -1173,7 +1193,7 @@ func IsYes(text string) bool { return yesRE.MatchString(text) || politeYesRE.Mat
 // person is asked again, which costs a message; a wrong booking costs a hold
 // on their card.
 func IsBookingYes(text string) bool {
-	return bookingYesRE.MatchString(text) || (strictYesRE.MatchString(text) && IsYes(text))
+	return bookingYesRE.MatchString(text) || yesBookRE.MatchString(text) || (strictYesRE.MatchString(text) && IsYes(text))
 }
 
 // IsAffirmation: agreeing words and nothing else, however many.

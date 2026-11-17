@@ -1573,3 +1573,39 @@ func TestPGOpsEditKeepsHandoff(t *testing.T) {
 		t.Fatalf("after release %+v", c3)
 	}
 }
+
+// Pilot 2026-11-17: a hand-back onto a purchase with no budget resumes on
+// the budget question — the state and the item to ask about are set in the
+// release statement itself; with no BudgetAsk the draft is untouched.
+func TestPGReleaseOntoTheBudgetQuestion(t *testing.T) {
+	db := testDB(t)
+	s := &PGStore{DB: db}
+	ctx := context.Background()
+	a, err := s.UpsertIdentity(ctx, IMessage, "+15550001117")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &PendingDraft{Source: "coffee at blue bottle", BudgetAskIndex: -1}
+	p.SetItems([]DraftItem{{Draft: llm.TaskDraft{Title: "Coffee"}, NeedsBudget: true, PurchaseClear: true},
+		{Draft: llm.TaskDraft{Title: "Bagel"}, NeedsBudget: true}})
+	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateHandoff, Pending: p}); err != nil {
+		t.Fatal(err)
+	}
+	one := 1
+	if ok, err := s.ReleaseHandoff(ctx, a.ID, ReleaseOpts{Resume: StateAwaitingBudget, AnyClock: true, PutAgain: true, BudgetAsk: &one}); err != nil || !ok {
+		t.Fatalf("release: %v %v", ok, err)
+	}
+	c, _ := s.GetConversation(ctx, a.ID)
+	if c.State != StateAwaitingBudget || c.Pending == nil || c.Pending.BudgetAskIndex != 1 || !c.Pending.PurchaseClear || c.Pending.Items()[1].PurchaseClear {
+		t.Fatalf("after release: state %s pending %+v", c.State, c.Pending)
+	}
+	if err := s.SaveConversation(ctx, Conversation{IdentityID: a.ID, State: StateHandoff, Pending: c.Pending}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.ReleaseHandoff(ctx, a.ID, ReleaseOpts{Resume: StateAwaitingConfirm, AnyClock: true}); err != nil || !ok {
+		t.Fatalf("release: %v %v", ok, err)
+	}
+	if c, _ := s.GetConversation(ctx, a.ID); c.Pending == nil || c.Pending.BudgetAskIndex != 1 {
+		t.Fatalf("no BudgetAsk changed the draft: %+v", c.Pending)
+	}
+}

@@ -193,8 +193,75 @@ func (r *Router) onHandoff(ctx context.Context, in Inbound, id Identity) error {
 		log.Printf("[channel] handoff update identity=%s: ops NOT reached: %v", id.ID, err)
 		return r.Reply(ctx, in, CopyHandoffUpdateFailed, "")
 	}
+	if !r.holdingLineDue(ctx, id) {
+		return nil
+	}
 	return r.Reply(ctx, in, CopyHandoffHolding, "")
 }
+
+// holdingLineDue: "A HO:RA teammate will get back to you shortly." goes out
+// at most once per hand-off, and never once ops have written or claimed the
+// thread (pilot 2026-11-17: it followed every customer message, right after
+// ops' own replies). Read from the thread, newest first, back to the
+// hand-off's opening line: our holding line already there, or any other
+// outbound line of HO:RA's (ops' words) — no line. A claim without a word
+// moves the hand-off clock past the opening line. The thread unreadable:
+// the line goes (the person is never left with nothing).
+func (r *Router) holdingLineDue(ctx context.Context, id Identity) bool {
+	if r.Thread == nil {
+		return true
+	}
+	msgs, err := r.Thread.RecentMessages(ctx, id.Channel, id.Address, holdingLookback)
+	if err != nil {
+		log.Printf("[channel] handoff holding identity=%s: %v", id.ID, err)
+		return true
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if m.Direction != "outbound" || m.Relay {
+			continue // the person's words, or a supporter's
+		}
+		t := strings.TrimSpace(m.Text)
+		switch {
+		case t == CopyHandoffHolding:
+			return false // said once already
+		case handoffOpeningLine(t):
+			return !r.opsClaimedSince(ctx, id, m.At)
+		case statusLineRE.MatchString(t):
+			continue // a task notice ("… accepted …"), not ops
+		default:
+			return false // ops wrote
+		}
+	}
+	return true
+}
+
+// holdingLookback: how far back the thread is read for the hand-off's
+// opening line.
+const holdingLookback = 30
+
+// handoffOpeningLine: the line a hand-off opens with.
+func handoffOpeningLine(t string) bool {
+	return t == CopyHandoffStart || t == CopyScopeHolding
+}
+
+// statusLineRE: the fixed task notices (status.go) that can land during a
+// hand-off; never ops' words.
+var statusLineRE = regexp.MustCompile(`^(?:Booked\. |Done: |Your task has been cancelled|All set: )|\b(?:accepted|has arrived for|started on|clocked out on) “`)
+
+// opsClaimedSince: ops touched the hand-off (a claim or a send restarts its
+// clock) after the opening line at.
+func (r *Router) opsClaimedSince(ctx context.Context, id Identity, at time.Time) bool {
+	conv, err := r.Conversations.GetConversation(ctx, id.ID)
+	if err != nil || conv.HandoffActivityAt == nil || at.IsZero() {
+		return false
+	}
+	return conv.HandoffActivityAt.After(at.Add(handoffClaimSlack))
+}
+
+// handoffClaimSlack: the clock starts with the hand-off itself, a moment
+// before the opening line is recorded.
+const handoffClaimSlack = 5 * time.Second
 
 // handoffOpen names an approval question armed at hand-off time.
 type handoffOpen struct {
@@ -315,6 +382,16 @@ func (r *Router) release(ctx context.Context, id Identity, anyClock bool, text s
 		p.SimplerAsk, p.DetailsTries = true, MaxDetailsTries-1
 		resumed.Pending = &p
 	}
+	// A summary is never the next step while a purchase has no budget: the
+	// budget question comes first (pilot 2026-11-17: ops prepared a coffee
+	// pickup, the hand-back showed its summary, and the budget was asked
+	// only after the person changed something).
+	var budgetAsk *int
+	if i := budgetBeforeSummary(r, resumed); i >= 0 {
+		p := *resumed.Pending
+		p.BudgetAskIndex = i
+		resumed.Pending, resumed.State, budgetAsk = &p, StateAwaitingBudget, &i
+	}
 	// Our earlier question is put again — unless a supporter's question is
 	// about to be asked (resumeDeferred below): two YES-able questions in
 	// one burst invite a YES for the wrong one. Ours comes back after.
@@ -322,12 +399,20 @@ func (r *Router) release(ctx context.Context, id Identity, anyClock bool, text s
 	if !r.nextHoldLive(ctx, id, conv) {
 		back = r.resumeLine(ctx, id, resumed)
 	}
+	shown := back != ""
+	if shown && resumed.Pending != nil && !timedOut {
+		// A request is open: only its next step — the question still to
+		// answer, or the summary — never "You're back with your HO:RA
+		// concierge. What can I help you with?" above it (pilot
+		// 2026-11-17).
+		text, back = strings.TrimPrefix(back, CopyBackToDraft+"\n"), ""
+	}
 	// R-1: any question state we return to is "in flight" until a question
 	// is actually put again (markShown) — even when ours is held back for
 	// the supporter's: a YES to something ops asked must not book the old
 	// draft (review r2 F2).
-	putAgain := back != "" || awaitingAnswer(resumed.State)
-	won, err := r.Conversations.ReleaseHandoff(ctx, id.ID, ReleaseOpts{Resume: resumed.State, Seen: conv.HandoffActivityAt, AnyClock: anyClock, PutAgain: putAgain, Simpler: simpler})
+	putAgain := shown || awaitingAnswer(resumed.State)
+	won, err := r.Conversations.ReleaseHandoff(ctx, id.ID, ReleaseOpts{Resume: resumed.State, Seen: conv.HandoffActivityAt, AnyClock: anyClock, PutAgain: putAgain, Simpler: simpler, BudgetAsk: budgetAsk})
 	if err != nil {
 		return false, fmt.Errorf("release: %w", err)
 	}
@@ -344,7 +429,7 @@ func (r *Router) release(ctx context.Context, id Identity, anyClock bool, text s
 		if err := r.Send(c, Outbound{Channel: id.Channel, To: id.Address, Text: text}, ""); err != nil {
 			return err
 		}
-		if back != "" {
+		if shown {
 			r.markShown(c, id.ID) // our question was put again (R-1)
 		}
 		r.resumeDeferred(c, id) // a supporter's question held during the handoff
@@ -358,6 +443,16 @@ func (r *Router) release(ctx context.Context, id Identity, anyClock bool, text s
 		}
 		return nil
 	})
+}
+
+// budgetBeforeSummary: the item whose budget is still to ask when the
+// thread resumes on a summary, -1 none.
+func budgetBeforeSummary(r *Router, c Conversation) int {
+	p := c.Pending
+	if c.State != StateAwaitingConfirm || p == nil || p.DetailsAsked || len(p.PlaybookAsk) > 0 || len(r.pendingAsks(p)) > 0 {
+		return -1
+	}
+	return nextBudgetAsk(p)
 }
 
 // OpsClaim: ops are on it without writing yet (a call, the app) — the

@@ -18,12 +18,16 @@ func TestBookingNeedsAPlainYes(t *testing.T) {
 	}{
 		{"YES", true}, {"yes", true}, {"yes!", true}, {"y", true}, {"Yes.", true},
 		{"yes please", true}, {"Yes, please", true}, {"yes thanks", true}, {"yes, thank you!", true},
+		// Pilot 2026-11-17: "Yes ! Book" was asked again. A yes word with
+		// "book" after it is the YES the summary asks for.
+		{"Yes ! Book", true}, {"yes book it", true}, {"Yes!!", true}, {"yep, book", true},
+		{"yeah book it please", true}, {"YES BOOK", true},
 
 		{"ok", false}, {"okay", false}, {"OK!", false},
 		{"book it please", false}, {"ok book it", false}, {"sure go ahead", false},
 		{"👍", false}, {"✅", false}, {"book it", false}, {"sure", false}, {"go ahead", false},
 		{"do it", false}, {"yep", false}, {"yeah", false}, {"ok thx", false}, {"ok thanks", false},
-		{"yes book it", false}, {"yes please, thank you", false}, {"yes go ahead please", false},
+		{"yes please, thank you", false}, {"yes go ahead please", false}, {"yes book", true},
 	} {
 		g := newRig(llm.IntentNewTask)
 		g.ids.link(me, "user-1")
@@ -132,6 +136,27 @@ func TestYesWordMatchers(t *testing.T) {
 	for _, s := range []string{"okthanks", "yesterday", "yes but 4pm", "thanks", "please", "ok but 4pm", "ok, tell him thanks", "no thanks"} {
 		if IsAffirmation(s) || IsBookingYes(s) {
 			t.Errorf("%q: affirmation %v, booking %v", s, IsAffirmation(s), IsBookingYes(s))
+		}
+	}
+}
+
+// Pilot 2026-11-17: the yes-and-book forms are read by rule; NO and a change
+// stay strict — a yes with anything else in it never books.
+func TestYesBookFormsAreStrict(t *testing.T) {
+	for _, s := range []string{"Yes ! Book", "yes book it", "Yes!!", "yep, book", "Yes, book it please", "YES BOOK IT"} {
+		if !IsBookingYes(s) {
+			t.Errorf("%q must book", s)
+		}
+	}
+	for _, s := range []string{"yes book it tomorrow", "yes but book it for 4pm", "yes book another", "no book", "don't book",
+		"book", "book it", "ok book it", "yep", "yeah", "sure book it", "yes book it?", "yes, book it for my mom", "no", "nope, book it"} {
+		if IsBookingYes(s) {
+			t.Errorf("%q must not book", s)
+		}
+	}
+	for _, s := range []string{"Yes ! Book", "yes book it", "yep, book"} {
+		if IsNo(s) || IsDraftDecline(s) {
+			t.Errorf("%q read as a no", s)
 		}
 	}
 }

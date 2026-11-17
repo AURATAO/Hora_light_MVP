@@ -121,6 +121,13 @@ func StatusText(ev StatusEvent) (string, bool) {
 		}
 		return "", false
 	case "CANCELLED", "TASK_REASSIGNED", "TASK_REMOVED", "TIME_CAP_WARNING":
+		if ev.Type == "CANCELLED" && strings.Contains(ev.Body, TextCancelReasonPrefix) {
+			// Cancelled by text: the chat already said so ("All set: … is
+			// cancelled. No charge…"). A second "Your task has been
+			// cancelled" is noise (pilot 2026-11-17). Email and push still
+			// carry it.
+			return "", false
+		}
 		// The app's own requester copy is already plain and self-contained.
 		if strings.TrimSpace(ev.Body) == "" {
 			return "", false
@@ -129,6 +136,10 @@ func StatusText(ev StatusEvent) (string, bool) {
 	}
 	return "", false
 }
+
+// TextCancelReasonPrefix starts the reason of every cancel made by text
+// (the server's channel booker writes it; the cancel notice reads it).
+const TextCancelReasonPrefix = "Cancelled by text message: "
 
 func quoted(title string) string {
 	title = strings.TrimSpace(title)

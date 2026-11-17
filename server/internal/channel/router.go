@@ -972,6 +972,9 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		if len(o.places) > 0 {
 			applyPlaces(&draft, o.places, o.check, namesDuration(source))
 		}
+		if len(errands) == 1 {
+			pb = r.categoryPlaybook(pb, o, conv.Pending, draft.Category, source)
+		}
 		applyPlaybookNotes(&draft, pb)
 		if pb != nil && pb.Category != "" {
 			// Public companionship is priced as companionship, whatever
@@ -997,6 +1000,7 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		it := DraftItem{Draft: draft}
 		if r.needsPurchase(ctx, text, draft) {
 			it.NeedsBudget = true
+			it.PurchaseClear = draft.Category == "grocery" || LooksLikePurchase(text) || LooksLikePurchase(draft.Title)
 			// An amount in the person's own words settles it without a
 			// question ("budget 60", "$20 for the bagels").
 			// On a correction the newest line wins: the source is every line
@@ -1133,13 +1137,23 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 	if unclear {
 		p.UnclearStop, p.WhichBorough = area.Stop, area.Outcome == AreaWhichBorough
 	}
+	stopList := ""
 	if area.Outcome == AreaUnclear {
 		// The map could not place it: the model reads everything said
 		// for the most likely address, Google checks it, and the person
-		// is asked to confirm it (2026-11-12).
-		p.AddressGuess = r.proposeAddress(ctx, id, source, area.Stop, areaName, p.RejectedGuesses)
+		// is asked to confirm it (2026-11-12). A business named with no
+		// address is looked for on Google near the area they gave, and
+		// the closest few are offered (pilot 2026-11-17).
+		sp := r.proposeStop(ctx, id, source, area.Stop, areaName, p.RejectedGuesses, items)
+		p.AddressGuess = sp.address
 		if p.AddressGuess != "" {
 			p.GuessesShown++
+		}
+		if len(sp.options) > 0 {
+			for _, o := range sp.options {
+				p.StopOptions = append(p.StopOptions, o.ID)
+			}
+			stopList = renderStopOptions(sp.place, sp.near, sp.options)
 		}
 	}
 	p.DetailsAsked = needsDetailsIn(items, areaName) || unclear
@@ -1149,6 +1163,9 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		// or a neighbourhood newly read as the area.
 		p.DetailsTries = prev.DetailsTries
 		free := p.AddressGuess != "" && p.GuessesShown <= MaxFreeGuesses
+		// Places found to pick from move it on; a question about where a
+		// place is is never a failed answer (pilot 2026-11-17).
+		free = free || len(p.StopOptions) > 0 || IsPlaceQuestion(latestLine(source))
 		if !free && o.filled == nil && (areaName == "" || areaName == prev.Area) {
 			p.DetailsTries++
 		}
@@ -1218,6 +1235,9 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		}
 		if done, err := r.preempted(ctx, in, conv.IdentityID, p); done {
 			return err
+		}
+		if stopList != "" {
+			return r.Reply(ctx, in, lead+stopList, "")
 		}
 		return r.Reply(ctx, in, lead+detailsQuestion(p), "")
 	}
@@ -1447,6 +1467,12 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 		return r.answerPlaybookAsk(ctx, in, id, conv, text)
 	}
 	if conv.Pending.DetailsAsked {
+		if len(conv.Pending.StopOptions) > 0 && !IsNo(text) {
+			// "1", "the second one", or YES to a single place.
+			if handled, err := r.pickStopOption(ctx, in, id, conv, text); handled {
+				return err
+			}
+		}
 		if conv.Pending.AddressGuess != "" {
 			// "Did you mean …? Reply YES or send the right address."
 			switch {
@@ -1464,8 +1490,11 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 			// 2026-11-07): dropped by rule — it was re-parsed as details,
 			// still had none, and the second try handed off.
 			return r.dropDraftWith(ctx, in, conv, CopyDroppedCancelHint)
-		case IsClearSearch(text) && r.discoveryOn():
+		case IsClearSearch(text) && r.discoveryOn() && !(IsPlaceQuestion(text) && r.Addresses != nil && r.Places != nil):
 			// A search while we wait on details: answered, the draft waits.
+			// Where the place for this request is ("find the nearest Blue
+			// Bottle") is the details' own answer: its stop is looked for
+			// (stopoptions.go).
 			if handled, err := r.routeDiscoveryWhileDraft(ctx, in, id, conv, text); handled {
 				return err
 			}
@@ -2254,6 +2283,9 @@ func needsDetails(items []DraftItem) bool {
 // clearer address for a stop that could not be placed, what and where for an empty request, where for a draft
 // without a place.
 func detailsQuestion(p *PendingDraft) string {
+	if len(p.StopOptions) > 0 {
+		return CopyStopOptionsAgain
+	}
 	if p.AddressGuess != "" {
 		return fmt.Sprintf(CopyConfirmAddressGuess, p.AddressGuess)
 	}
@@ -2438,22 +2470,7 @@ func (r *Router) proposeAddress(ctx context.Context, id Identity, source, stop, 
 		log.Printf("[channel] address guess identity=%s: %v", id.ID, err)
 		return ""
 	}
-	if g == "" || stopKey(g) == stopKey(stop) {
-		return ""
-	}
-	got := r.Booker.CheckArea(ctx, llm.TaskDraft{Location1: g})
-	if got.Outcome != AreaInside || len(got.Resolved) != 1 || strings.TrimSpace(got.Resolved[0]) == "" {
-		log.Printf("[channel] address guess identity=%s: not placed (%s)", id.ID, areaOutcomeName(got.Outcome))
-		return ""
-	}
-	found := got.Resolved[0]
-	for _, x := range rejected {
-		if stopKey(x) == stopKey(found) || stopKey(x) == stopKey(g) {
-			return ""
-		}
-	}
-	log.Printf("[channel] address guess identity=%s: placed, asking to confirm", id.ID)
-	return found
+	return r.checkGuess(ctx, id, g, stop, rejected)
 }
 
 // addressGuessTimeout bounds the guess (p90 ~5s on Sonnet, 2026-11-13): past
