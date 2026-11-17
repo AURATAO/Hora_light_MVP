@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mergeMessages, settlePending, newHandoffMessages } from './opsChatsLive.js'
+import { mergeMessages, settlePending, newHandoffMessages, alertFor } from './opsChatsLive.js'
 
 const m = (id, at, extra = {}) => ({ id, at, direction: 'outbound', text: id, ...extra })
 
@@ -50,4 +50,13 @@ test('alerts: the first list is a baseline; then only hand-offs with a newer cus
   const second = newHandoffMessages(first.next, l2)
   assert.deepEqual(second.fresh.map((c) => c.identity_id), ['a', 'c'])
   assert.equal(newHandoffMessages(second.next, l2).fresh.length, 0, 'nothing new on the next poll')
+})
+
+test('how ops are told: hidden notifies; visible chimes unless it is the open chat with focus', () => {
+  const c = { identity_id: 'a' }
+  assert.equal(alertFor(c, { hidden: true, focused: false, selectedId: 'a' }), 'notify')
+  assert.equal(alertFor(c, { hidden: false, focused: true, selectedId: 'a' }), null, 'open and focused: they can see it')
+  assert.equal(alertFor(c, { hidden: false, focused: false, selectedId: 'a' }), 'chime', 'open but the window is in the background')
+  assert.equal(alertFor(c, { hidden: false, focused: true, selectedId: 'b' }), 'chime', 'another chat is open')
+  assert.equal(alertFor(c, { hidden: false, focused: true, selectedId: null }), 'chime')
 })

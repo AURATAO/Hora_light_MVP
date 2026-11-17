@@ -44,3 +44,14 @@ export function newHandoffMessages(prev, list) {
   }
   return { next, fresh }
 }
+
+// How to tell ops about a fresh hand-off message (one row from
+// newHandoffMessages). Tab hidden: 'notify' — the title count, the chime
+// and a browser notification. Tab visible: 'chime' only — unless it is the
+// chat that is open and the window has focus, where they are already
+// looking at it: null.
+export function alertFor(c, { hidden, focused, selectedId }) {
+  if (hidden) return 'notify'
+  if (focused && c.identity_id === selectedId) return null
+  return 'chime'
+}

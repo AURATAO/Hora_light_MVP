@@ -37,7 +37,7 @@ import {
   editChannelDraft,
   handBackWithSummary,
 } from '../api/ops'
-import { mergeMessages, settlePending, newHandoffMessages } from '../lib/opsChatsLive'
+import { mergeMessages, settlePending, newHandoffMessages, alertFor } from '../lib/opsChatsLive'
 
 // Polling (no Realtime: RLS stays deny-all and every read goes through the
 // ops-only Go routes). The open thread polls fast only while it is with a
@@ -249,15 +249,28 @@ export default function OpsChats() {
   // A customer wrote in a handed-off chat while nobody was looking: count
   // it for the tab title, chime, and a browser notification (hint and
   // name only — never their number or their words, S-12).
+  // A customer wrote in a handed-off chat. Tab hidden: count it in the
+  // title, chime, and a browser notification (hint and name only — never
+  // their number or their words, S-12). Tab visible: a chime only, unless
+  // it is the open chat and the window has focus (alertFor).
   function alertNew(list) {
     const { next, fresh } = newHandoffMessages(seenInbound.current, list)
     seenInbound.current = next
-    if (fresh.length === 0 || document.visibilityState !== 'hidden') return
-    setUnseen((n) => n + fresh.length)
+    if (fresh.length === 0) return
+    const ctx = {
+      hidden: document.visibilityState === 'hidden',
+      focused: document.hasFocus(),
+      selectedId: selectedRef.current,
+    }
+    const notify = fresh.filter((c) => alertFor(c, ctx) === 'notify')
+    const chimeOnly = fresh.filter((c) => alertFor(c, ctx) === 'chime')
+    if (notify.length === 0 && chimeOnly.length === 0) return
     chime()
+    if (notify.length === 0) return
+    setUnseen((n) => n + notify.length)
     try {
       if ('Notification' in window && Notification.permission === 'granted') {
-        for (const c of fresh) {
+        for (const c of notify) {
           const n = new Notification('Ops Chats — new message', {
             body: `${who(c)} wrote in a chat that's with a person.`,
             tag: `ops-chat-${c.identity_id}`,
