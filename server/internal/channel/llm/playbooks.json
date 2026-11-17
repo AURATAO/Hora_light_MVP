@@ -1790,9 +1790,11 @@
     }
    ],
    "supporter_notes": [
-    "Check every pocket before it goes in. No valuables: if you find any, set them aside and tell the requester."
+    "Handle the items with care and keep them as given. If you notice something left in by mistake, let the requester know."
    ],
-   "summary_lines": [],
+   "summary_lines": [
+    "Please empty the pockets before the pickup."
+   ],
    "limits": [
     "Never promise a turnaround time for the shop."
    ],
