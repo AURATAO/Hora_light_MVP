@@ -3,6 +3,7 @@ import { UserRound } from "lucide-react-native";
 import { Badge, Card } from "./ui";
 import { getCategoryMeta } from "../lib/categories";
 import { deriveTaskStatus, formatRelativeTime, statusLabel } from "../lib/task-utils";
+import { serverText } from "../lib/earnings-copy";
 import type { Task } from "../lib/types";
 import { color, size } from "../theme/tokens";
 
@@ -42,7 +43,7 @@ export function TaskListItem({ task, onPress, className }: TaskListItemProps) {
             is a list they now see cancelled tasks in at all (build 11: they
             vanished entirely). */}
         <Badge
-          label={statusLabel(status)}
+          label={(status === "assigned" && serverText(task.stage_label)) || statusLabel(status)}
           variant={status === "cancelled" || status === "removed" ? "neutral" : "success"}
         />
       </View>

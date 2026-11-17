@@ -22,6 +22,7 @@ import { UserSafetyMenu } from "../../components/UserSafetyMenu";
 import { safetyCounterpart } from "../../lib/safety";
 import { CancelTaskSheet } from "../../components/CancelTaskSheet";
 import { AcceptAckSheet } from "../../components/AcceptAckSheet";
+import { errorMessageFor } from "../../lib/api-error";
 import { acknowledgedPayload, type AcceptRequirements } from "../../lib/accept-ack";
 import { CompleteTaskSheet, type CompleteTaskPayload } from "../../components/CompleteTaskSheet";
 import { approvedBudgetCentsFor } from "../../lib/task-budget";
@@ -513,7 +514,7 @@ export default function TaskDetail() {
         setAcceptLost(true);
         await load();
       } else {
-        setAcceptError(e instanceof Error ? e.message : "Couldn't accept this task.");
+        setAcceptError(errorMessageFor(e, "Couldn't accept this task."));
       }
     } finally {
       setAccepting(false);
@@ -1160,7 +1161,14 @@ export default function TaskDetail() {
   // can now cancel at any point before the task closes; what it COSTS depends
   // on the state, and the sheet shows them the number before they commit
   // (server/billing.go cancellationPreview).
-  const cancellable = isRequester && task.status === "open";
+  //
+  // Not on a task the viewer is also the supporter of. That only happens in
+  // the App Review sandbox, whose one login plays both sides of a demo task:
+  // the reviewer is walking the SUPPORTER's flow, and a customer's "Cancel
+  // task" under "Accept task" read as a way to decline (and ended the demo
+  // when tapped). Aura 2026-11-17.
+  const playsBothSides = isRequester && (task.can_self_accept === true || isAssignee);
+  const cancellable = isRequester && task.status === "open" && !playsBothSides;
   const locations = locationParts(task.location_text);
   const TransportIcon = task.transport_required ? TRANSPORT_ICON[task.transport_required] : undefined;
   // Supporter-only, and only once this task is actually theirs: the route action
