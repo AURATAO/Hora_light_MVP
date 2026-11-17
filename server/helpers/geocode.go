@@ -150,6 +150,23 @@ func GeocodeAddress(ctx context.Context, address string) (float64, float64, erro
 	return loc.Lat, loc.Lng, nil
 }
 
+// GeocodeCenter is where an area is: a street, a neighbourhood, a
+// crossing, an address — the first result's point, whatever its precision.
+// Only for ordering places by distance from what the person named (the
+// middle of "W 54th St" is a fine centre for that); never a place to send
+// anyone, which is GeocodeAddress's job.
+func GeocodeCenter(ctx context.Context, area string) (float64, float64, error) {
+	results, err := geocodeLookup(ctx, area, nycBias)
+	if err != nil {
+		return 0, 0, err
+	}
+	loc := results[0].Geometry.Location
+	if loc.Lat == 0 && loc.Lng == 0 {
+		return 0, 0, ErrNotGeocodable
+	}
+	return loc.Lat, loc.Lng, nil
+}
+
 // placeable: the result names a place to stand.
 //
 // A wrong point is worse than none: the chat states distances and "at the

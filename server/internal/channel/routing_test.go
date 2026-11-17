@@ -198,7 +198,7 @@ func TestCancelTheDraftDropsByRule(t *testing.T) {
 		{"summary", laundry, "pick up my laundry at 12 Bedford Ave", false, false, StateAwaitingConfirm},
 		{"details", llm.TaskDraft{Title: "Two errands", Category: "anything_else"}, "can you do 2 errands for me", false, false, StateAwaitingConfirm},
 		{"playbook ask", llm.TaskDraft{Title: "Pizza", Category: "food", Location1: "68 Kenmare St, New York, NY 10012"}, "pick up lunch from 68 Kenmare St", true, false, StateAwaitingConfirm},
-		{"budget", llm.TaskDraft{Title: "Buy detergent", Category: "grocery", Location1: "9 Ave A, New York, NY 10009"}, "buy detergent at 9 Ave A", false, true, StateAwaitingBudget},
+		{"budget", llm.TaskDraft{Title: "Buy detergent", Category: "grocery", Location1: "9 Ave A, New York, NY 10009", Location2: "200 W 79th St"}, "buy detergent at 9 Ave A", false, true, StateAwaitingBudget},
 	}
 	for _, s := range setups {
 		for _, cancel := range []string{prodCancel, "cancel the draft", "no, cancel it", "cancel it please", "Cancel draft"} {

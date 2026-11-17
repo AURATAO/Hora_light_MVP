@@ -1000,7 +1000,7 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		it := DraftItem{Draft: draft}
 		if r.needsPurchase(ctx, text, draft) {
 			it.NeedsBudget = true
-			it.PurchaseClear = draft.Category == "grocery" || LooksLikePurchase(text) || LooksLikePurchase(draft.Title)
+			it.PurchaseClear = draft.Category == "grocery" || LooksLikePurchase(text) || LooksLikePurchase(draft.Title) || (pb != nil && buyingPlaybooks[pb.ID])
 			// An amount in the person's own words settles it without a
 			// question ("budget 60", "$20 for the bagels").
 			// On a correction the newest line wins: the source is every line
@@ -1263,6 +1263,11 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 			return r.Reply(ctx, in, lead+playbookAsksText(asks), "")
 		}
 	}
+	if i := needsDropOff(p); i >= 0 {
+		// A pickup or a purchase with nowhere to bring it: asked before
+		// anything else that leads to the summary (2026-11-17).
+		return r.askDropOff(ctx, in, id, conv, i)
+	}
 	if !id.Linked() && conv.PendingName == "" {
 		conv.State = StateAwaitingName
 		p.NameAsked = true
@@ -1405,6 +1410,15 @@ func (r *Router) showSummary(ctx context.Context, in Inbound, conv Conversation)
 // putSummary shows the draft's summary after lead: the prices it states are
 // what a YES within SummaryTTL agrees to (posting.go).
 func (r *Router) putSummary(ctx context.Context, in Inbound, conv Conversation, lead string) error {
+	if i := needsDropOff(conv.Pending); i >= 0 {
+		// Never a summary for a pickup with nowhere to bring it.
+		conv.Pending.DropOffAsked, conv.Pending.DropOffIndex, conv.Pending.DropOffSuggest = true, i, ""
+		conv.State = StateAwaitingConfirm
+		if err := r.Conversations.SaveConversation(ctx, conv); err != nil {
+			return fmt.Errorf("showSummary: %w", err)
+		}
+		return r.Reply(ctx, in, lead+dropOffQuestion(conv.Pending), "")
+	}
 	ensureBookingKeys(conv.Pending)
 	summary := lead + r.Summary(conv.Pending)
 	conv.Pending.SummaryShown = summary
@@ -1465,6 +1479,12 @@ func (r *Router) onConfirm(ctx context.Context, in Inbound, id Identity, conv Co
 	if len(conv.Pending.PlaybookAsk) > 0 {
 		// The answer to the type's questions (answers.go).
 		return r.answerPlaybookAsk(ctx, in, id, conv, text)
+	}
+	if conv.Pending.DropOffAsked || (!conv.Pending.DetailsAsked && needsDropOff(conv.Pending) >= 0) {
+		// "Where should your supporter bring it?" (dropoff.go) — also when
+		// it was put again without being armed (a hand-back): no YES books
+		// a pickup with nowhere to bring it.
+		return r.answerDropOff(ctx, in, id, conv, text)
 	}
 	if conv.Pending.DetailsAsked {
 		if len(conv.Pending.StopOptions) > 0 && !IsNo(text) {

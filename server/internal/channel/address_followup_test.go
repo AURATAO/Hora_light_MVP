@@ -279,7 +279,7 @@ func TestPlaceholderTitleKeepsThePendingTitle(t *testing.T) {
 		t.Fatalf("x: got %q", got)
 	}
 	// On a summary too.
-	g.parser.draft = llm.TaskDraft{Title: "Buy cough drops", Category: "delivery", Location1: "12 Bedford Ave, Brooklyn"}
+	g.parser.draft = llm.TaskDraft{Title: "Buy cough drops", Category: "delivery", Location1: "12 Bedford Ave, Brooklyn", Location2: "200 W 79th St"}
 	if got := g.say(t, "12 Bedford Ave, Brooklyn"); !strings.Contains(got, "set aside") {
 		t.Fatalf("got %q", got)
 	}
@@ -287,7 +287,7 @@ func TestPlaceholderTitleKeepsThePendingTitle(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 	for _, ph := range []string{"x", "-", "task", "", "N/A"} {
-		g.parser.draft = llm.TaskDraft{Title: ph, Category: "delivery", Location1: "12 Bedford Ave, Brooklyn"}
+		g.parser.draft = llm.TaskDraft{Title: ph, Category: "delivery", Location1: "12 Bedford Ave, Brooklyn", Location2: "200 W 79th St"}
 		got := g.say(t, "make it 4pm")
 		if p := g.pending(t); p.Draft.Title != "Buy cough drops" || !strings.Contains(got, "Buy cough drops") {
 			t.Fatalf("%q: got %q, title %q", ph, got, p.Draft.Title)

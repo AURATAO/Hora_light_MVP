@@ -33,6 +33,7 @@
     {"said": ["Hi I need a coffee at blue bottle, \nIs a one close to 54 w, right?", "I  want a coffee at Blue Bottle but I don’t know the address"], "unclear": "Blue Bottle Coffee near 54 W", "area": "", "null": true, "place": ["blue bottle"], "near": ["54"]},
     {"said": ["Hi I need a coffee at blue bottle, \nIs a one close to 54 w, right?", "I  want a coffee at Blue Bottle but I don’t know the address", "Where are Blue Bottle in Manhattan,"], "unclear": "Blue Bottle Coffee, Manhattan", "area": "", "null": true, "place": ["blue bottle"]},
     {"said": ["can you pick up my order at Duane Reade near Union Square and bring it to 120 E 7th St"], "unclear": "Duane Reade near Union Square", "area": "", "null": true, "place": ["duane reade"], "near": ["union square"]},
-    {"said": ["I’m in east village I need medicine", "335 e 3 ave", "6 street", "335 6 st 3 ave"], "unclear": "335 6 st 3 ave", "area": "East Village", "want": ["335", "6th St"], "no_place": true}
+    {"said": ["I’m in east village I need medicine", "335 e 3 ave", "6 street", "335 6 st 3 ave"], "unclear": "335 6 st 3 ave", "area": "East Village", "want": ["335", "6th St"], "no_place": true},
+    {"said": ["Hi I need a coffee at blue bottle, \nIs a one close to 54 w, right?", "3", "Bond street 200 nyc"], "unclear": "Bond street 200 nyc", "area": "", "want": ["200 Bond St"], "or_null": true, "no_place": true}
   ]
 }

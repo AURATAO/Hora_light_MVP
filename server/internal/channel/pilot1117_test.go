@@ -2,6 +2,7 @@ package channel
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -334,6 +335,12 @@ func (f *stopGuesser) GuessStop(_ context.Context, said []string, unclear, area 
 	f.calls++
 	f.mu.Unlock()
 	all := strings.ToLower(strings.Join(said, " "))
+	if strings.Contains(strings.ToLower(unclear), "bond") {
+		// The drop-off as typed. Sonnet also named the café from the
+		// earlier messages here (address eval 2026-11-17): the router
+		// must not search a drop-off as a place.
+		return llm.StopGuess{Address: bbDrop, Place: "Blue Bottle Coffee", Near: "Bond St, Manhattan"}, nil
+	}
 	if !strings.Contains(all, "blue bottle") {
 		return llm.StopGuess{}, nil
 	}
@@ -350,6 +357,8 @@ type searchingPlaces struct {
 	fakePlaces
 	order   []string
 	queries []string
+	located []string
+	near    int
 }
 
 func (f *searchingPlaces) SearchPlaces(_ context.Context, q string, _ bool) ([]llm.Place, error) {
@@ -363,16 +372,40 @@ func (f *searchingPlaces) SearchPlaces(_ context.Context, q string, _ bool) ([]l
 	return out, nil
 }
 
+// LocateArea: W 54th St (between 6th and 7th Ave) for the pilot's "54 w";
+// anything else is not placed.
+func (f *searchingPlaces) LocateArea(_ context.Context, area string) (float64, float64, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.located = append(f.located, area)
+	if strings.Contains(area, "54") {
+		return 40.7638, -73.9800, true
+	}
+	return 0, 0, false
+}
+
+func (f *searchingPlaces) SearchPlacesNear(ctx context.Context, q string, openNow bool, _, _, _ float64) ([]llm.Place, error) {
+	f.mu.Lock()
+	f.near++
+	f.mu.Unlock()
+	return f.SearchPlaces(ctx, q, openNow)
+}
+
+// blueBottles: invented fixtures at real-world points. Google's order puts
+// W 15th St (2.7 miles from W 54th St on the streets) ahead of Columbus
+// Circle; sorted, the three nearest are Rockefeller Plaza, Columbus Circle
+// and W 40th St.
 func blueBottles() *searchingPlaces {
 	open := true
 	ps := map[string]llm.Place{
-		"bb1": {ID: "bb1", Name: "Blue Bottle Coffee", Address: "54 W 40th St", FullAddress: bbAddr, Rating: 4.5, RatingCount: 1200, OpenNow: &open, ClosesAt: "7 PM", InNYC: true},
-		"bb2": {ID: "bb2", Name: "Blue Bottle Coffee", Address: "1 Rockefeller Plaza", FullAddress: "1 Rockefeller Plaza, New York, NY 10020", Rating: 4.4, RatingCount: 800, InNYC: true},
-		"bb3": {ID: "bb3", Name: "Blue Bottle Coffee", Address: "450 W 15th St", FullAddress: "450 W 15th St, New York, NY 10011", Rating: 4.6, RatingCount: 2100, InNYC: true},
-		"bbx": {ID: "bbx", Name: "Blue Bottle Coffee", Address: "Jersey City", FullAddress: "Jersey City, NJ", InNYC: false},
+		"bb1": {ID: "bb1", Name: "Blue Bottle Coffee", Address: "54 W 40th St", FullAddress: bbAddr, Rating: 4.5, RatingCount: 1200, OpenNow: &open, ClosesAt: "7 PM", InNYC: true, Lat: 40.7527, Lng: -73.9837},
+		"bb2": {ID: "bb2", Name: "Blue Bottle Coffee", Address: "1 Rockefeller Plaza", FullAddress: "1 Rockefeller Plaza, New York, NY 10020", Rating: 4.4, RatingCount: 800, InNYC: true, Lat: 40.7587, Lng: -73.9787},
+		"bb3": {ID: "bb3", Name: "Blue Bottle Coffee", Address: "450 W 15th St", FullAddress: "450 W 15th St, New York, NY 10011", Rating: 4.6, RatingCount: 2100, InNYC: true, Lat: 40.7424, Lng: -74.0063},
+		"bbx": {ID: "bbx", Name: "Blue Bottle Coffee", Address: "Jersey City", FullAddress: "Jersey City, NJ", InNYC: false, Lat: 40.7178, Lng: -74.0431},
 		"bb4": {ID: "bb4", Name: "Blue Bottle Coffee", Address: "Bryant Park", FullAddress: "Bryant Park, New York, NY", InNYC: true},
+		"bb5": {ID: "bb5", Name: "Blue Bottle Coffee", Address: "10 Columbus Cir", FullAddress: "10 Columbus Cir, New York, NY 10019", Rating: 4.3, RatingCount: 600, InNYC: true, Lat: 40.7681, Lng: -73.9827},
 	}
-	return &searchingPlaces{fakePlaces: fakePlaces{byID: ps}, order: []string{"bb1", "bbx", "bb2", "bb3", "bb4"}}
+	return &searchingPlaces{fakePlaces: fakePlaces{byID: ps}, order: []string{"bb1", "bbx", "bb3", "bb2", "bb4", "bb5"}}
 }
 
 func newBlueBottleRig(t *testing.T) (*rig, *searchingPlaces, *memOps) {
@@ -396,9 +429,17 @@ func TestBlueBottleTranscriptOffersPlaces(t *testing.T) {
 		if strings.Contains(got, "I couldn't find") || g.state() == StateHandoff || len(ops.notices) != 0 {
 			t.Fatalf("message %d: %q (state %s, ops %d)", i+1, got, g.state(), len(ops.notices))
 		}
-		for _, want := range []string{"1. Blue Bottle Coffee", "54 W 40th St", "2. Blue Bottle Coffee", "1 Rockefeller Plaza", "3. Blue Bottle Coffee", "450 W 15th St", CopyStopOptionsPick} {
-			if !strings.Contains(got, want) {
-				t.Fatalf("message %d lacks %q:\n%s", i+1, want, got)
+		want := []string{"1. Blue Bottle Coffee", "2. Blue Bottle Coffee", "3. Blue Bottle Coffee", CopyStopOptionsPick}
+		if i < 2 {
+			// Near W 54th St: closest first, W 15th St (2.7 miles) gone.
+			want = append(want, "1 Rockefeller Plaza", "10 Columbus Cir", "54 W 40th St")
+			if strings.Contains(got, "450 W 15th St") || strings.Index(got, "Rockefeller") > strings.Index(got, "Columbus") || strings.Index(got, "Columbus") > strings.Index(got, "W 40th") {
+				t.Fatalf("message %d: not by distance from W 54th St:\n%s", i+1, got)
+			}
+		}
+		for _, w := range want {
+			if !strings.Contains(got, w) {
+				t.Fatalf("message %d lacks %q:\n%s", i+1, w, got)
 			}
 		}
 		if strings.Contains(got, "Jersey City") || strings.Contains(got, "4. ") {
@@ -408,35 +449,43 @@ func TestBlueBottleTranscriptOffersPlaces(t *testing.T) {
 			t.Fatalf("message %d: tries %d options %v", i+1, p.DetailsTries, p.StopOptions)
 		}
 	}
-	if !strings.Contains(pl.queries[0], "Blue Bottle Coffee near W 54th St, Manhattan") || !strings.Contains(pl.queries[2], "near Manhattan") {
-		t.Fatalf("queries %q", pl.queries)
+	// W 54th St is located and searched around; "Manhattan" is a whole
+	// borough: Google's order, no cut.
+	if pl.near != 2 || len(pl.located) != 2 || !strings.Contains(pl.queries[2], "near Manhattan") {
+		t.Fatalf("near searches %d located %q queries %q", pl.near, pl.located, pl.queries)
 	}
 }
 
-// The pick fills the stop with Google's address and moves on: the budget
-// (a coffee is a purchase: only how much), the summary naming the place,
-// a drop-off added, and "Yes ! Book".
+// The pick fills the stop with Google's address; the next question is
+// where to bring it (2026-11-17: the pilot went straight to the budget),
+// then the budget (a coffee is a purchase: only how much), the summary
+// with both stops, and "Yes ! Book".
 func TestBlueBottlePickToBooking(t *testing.T) {
 	g, _, _ := newBlueBottleRig(t)
 	g.say(t, bbMsg1)
-	got := g.say(t, "1")
-	t.Logf("1 → %s", got)
+	got := g.say(t, "3") // 54 W 40th St, third by distance
+	t.Logf("3 → %s", got)
 	p := g.pending(t)
 	if p.Draft.Location1 != bbAddr || len(p.StopOptions) != 0 || p.UnclearStop != "" || len(p.Places) != 1 || p.Places[0].ID != "bb1" {
 		t.Fatalf("after the pick: %q %+v places %+v", got, p.Draft, p.Places)
 	}
+	if got != CopyAskDropOff || !p.DropOffAsked {
+		t.Fatalf("the drop-off comes next: %q", got)
+	}
+	got = g.say(t, "Bond street 200 nyc")
+	t.Logf("Bond street 200 nyc → %s", got)
+	if got != fmt.Sprintf(CopyConfirmAddressGuess, bbDrop) {
+		t.Fatalf("the drop-off as Google has it: %q", got)
+	}
+	got = g.say(t, "yes")
+	t.Logf("yes → %s", got)
 	if got != CopyAskBudgetClear {
-		t.Fatalf("budget before the summary: %q", got)
+		t.Fatalf("budget after the drop-off: %q", got)
 	}
 	sum := g.say(t, "Nothing")
 	t.Logf("Nothing → %s", sum)
-	if !strings.Contains(sum, bbAddr) || !strings.Contains(sum, "Reply YES to book") {
-		t.Fatalf("summary: %q", sum)
-	}
-	sum = g.say(t, "Bond street 200 nyc")
-	t.Logf("Bond street 200 nyc → %s", sum)
 	if !strings.Contains(sum, bbAddr) || !strings.Contains(sum, bbDrop) || !strings.Contains(sum, "Reply YES to book") {
-		t.Fatalf("summary with the drop-off: %q", sum)
+		t.Fatalf("summary: %q", sum)
 	}
 	if got := g.say(t, "Yes ! Book"); got != CopyBooked || g.booker.posts != 1 {
 		t.Fatalf("Yes ! Book: %q posts %d", got, g.booker.posts)

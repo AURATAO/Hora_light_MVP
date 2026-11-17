@@ -419,6 +419,9 @@ func (r *Router) resumeLine(ctx context.Context, id Identity, conv Conversation)
 		if asks := r.pendingAsks(conv.Pending); len(asks) > 0 {
 			return CopyBackToDraft + "\n" + playbookAsksText(asks)
 		}
+		if conv.Pending != nil && needsDropOff(conv.Pending) >= 0 {
+			return CopyBackToDraft + "\n" + dropOffQuestion(conv.Pending)
+		}
 		if conv.Pending != nil {
 			// Put again with its prices: a YES to it is as fresh as one to
 			// the first showing (posting.go, SummaryTTL). The price itself

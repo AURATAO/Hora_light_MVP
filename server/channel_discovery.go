@@ -109,6 +109,30 @@ func (placesSearcher) SearchPlaces(ctx context.Context, query string, openNow bo
 	return out, nil
 }
 
+// SearchPlacesNear: up to 10 results biased to a circle around the area
+// named (stop options, 2026-11-17), for sorting by distance after.
+func (placesSearcher) SearchPlacesNear(ctx context.Context, query string, openNow bool, lat, lng, radius float64) ([]llm.Place, error) {
+	ps, err := helpers.PlacesSearchNear(ctx, query, openNow, 10, nycLocation, lat, lng, radius)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]llm.Place, len(ps))
+	for i, p := range ps {
+		out[i] = llmPlace(p)
+	}
+	return out, nil
+}
+
+// LocateArea: the area's point (Geocoding), to order places by distance.
+func (placesSearcher) LocateArea(ctx context.Context, area string) (float64, float64, bool) {
+	lat, lng, err := helpers.GeocodeCenter(ctx, area)
+	if err != nil {
+		log.Printf("[channel] locate area: %v", err)
+		return 0, 0, false
+	}
+	return lat, lng, true
+}
+
 func (placesSearcher) PlaceDetails(ctx context.Context, id string) (llm.Place, error) {
 	p, err := helpers.PlaceDetails(ctx, id, nycLocation)
 	if err != nil {
@@ -144,7 +168,7 @@ func (placesSearcher) PlaceName(ctx context.Context, id string) (string, error) 
 func llmPlace(p helpers.Place) llm.Place {
 	return llm.Place{ID: p.ID, Name: p.Name, Address: p.Address, FullAddress: p.FullAddress, Rating: p.Rating,
 		RatingCount: p.RatingCount, PriceLevel: p.PriceLevel, OpenNow: p.OpenNow, ClosesAt: p.ClosesAt, OpensAt: p.OpensAt,
-		InNYC: p.Area == helpers.AreaInside}
+		InNYC: p.Area == helpers.AreaInside, Lat: p.Lat, Lng: p.Lng}
 }
 
 // chatHistory reads a requester's own past errands for "the usual": posted

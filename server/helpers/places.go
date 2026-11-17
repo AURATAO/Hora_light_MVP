@@ -65,10 +65,13 @@ type Place struct {
 	// Area is the service-area verdict on the place's own address parts, by
 	// the rule a task's address is held to (AreaOfParts).
 	Area AreaVerdict
+	// Lat, Lng: where Google puts it (search results only; 0 unknown) —
+	// for sorting by distance from the area asked about, never shown.
+	Lat, Lng float64
 }
 
 const (
-	searchFields  = "places.id,places.displayName,places.shortFormattedAddress,places.formattedAddress,places.addressComponents,places.businessStatus,places.rating,places.userRatingCount,places.priceLevel,places.currentOpeningHours"
+	searchFields  = "places.id,places.displayName,places.shortFormattedAddress,places.formattedAddress,places.addressComponents,places.location,places.businessStatus,places.rating,places.userRatingCount,places.priceLevel,places.currentOpeningHours"
 	detailsFields = "id,displayName,shortFormattedAddress,formattedAddress,addressComponents"
 	// aboutFields: what an answer about the options shown is made from.
 	aboutFields = detailsFields + ",rating,userRatingCount,priceLevel,currentOpeningHours"
@@ -95,6 +98,10 @@ type placesWire struct {
 		ShortText string   `json:"shortText"`
 		Types     []string `json:"types"`
 	} `json:"addressComponents"`
+	Location *struct {
+		Latitude  float64 `json:"latitude"`
+		Longitude float64 `json:"longitude"`
+	} `json:"location"`
 	BusinessStatus      string  `json:"businessStatus"`
 	Rating              float64 `json:"rating"`
 	UserRatingCount     int     `json:"userRatingCount"`
@@ -110,7 +117,23 @@ type placesWire struct {
 // query, only places open now when openNow. Places that closed for good or
 // for now are dropped; the rest come back in Google's order. The query is
 // redacted in the trace like any text; the key never leaves this function.
-func PlacesSearch(ctx context.Context, query string, openNow bool, max int, loc *time.Location) (out []Place, err error) {
+func PlacesSearch(ctx context.Context, query string, openNow bool, max int, loc *time.Location) ([]Place, error) {
+	return placesSearch(ctx, query, openNow, max, loc, nycRect)
+}
+
+// PlacesSearchNear is PlacesSearch biased to a circle of radius metres
+// around lat, lng (the area the person named) instead of the five
+// boroughs' box: the nearer branches of a chain come back first.
+func PlacesSearchNear(ctx context.Context, query string, openNow bool, max int, loc *time.Location, lat, lng, radius float64) ([]Place, error) {
+	if radius <= 0 || radius > 50000 {
+		radius = 5000
+	}
+	return placesSearch(ctx, query, openNow, max, loc, map[string]any{"circle": map[string]any{
+		"center": map[string]float64{"latitude": lat, "longitude": lng}, "radius": radius,
+	}})
+}
+
+func placesSearch(ctx context.Context, query string, openNow bool, max int, loc *time.Location, bias map[string]any) (out []Place, err error) {
 	_, sp := tracing.StartSpan(ctx, "places.search", tracing.KindTool)
 	start, httpStatus := time.Now(), 0
 	defer func() {
@@ -136,7 +159,7 @@ func PlacesSearch(ctx context.Context, query string, openNow bool, max int, loc 
 	}
 	body := map[string]any{
 		"textQuery": query, "pageSize": max, "languageCode": "en", "regionCode": "us",
-		"locationBias": nycRect,
+		"locationBias": bias,
 	}
 	if openNow {
 		body["openNow"] = true
@@ -313,6 +336,9 @@ func (w placesWire) place(loc *time.Location) Place {
 	}
 	if p.Address == "" {
 		p.Address = p.FullAddress
+	}
+	if w.Location != nil {
+		p.Lat, p.Lng = w.Location.Latitude, w.Location.Longitude
 	}
 	var country, state, county string
 	for _, c := range w.AddressComponents {

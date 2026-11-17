@@ -11,7 +11,7 @@ import (
 
 var (
 	laundryD = llm.TaskDraft{Title: "Laundry pickup", Category: "laundry", Location1: "12 Bedford Ave", DurationMinutes: 30}
-	groceryD = llm.TaskDraft{Title: "Grocery run", Category: "grocery", Location1: "Whole Foods on 3rd", DurationMinutes: 60}
+	groceryD = llm.TaskDraft{Title: "Grocery run", Category: "grocery", Location1: "Whole Foods on 3rd", Location2: "200 W 79th St", DurationMinutes: 60}
 	returnD  = llm.TaskDraft{Title: "Return a package", Category: "delivery", Location1: "UPS on 5th", DurationMinutes: 20}
 )
 

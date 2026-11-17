@@ -449,7 +449,7 @@ func (r *Router) release(ctx context.Context, id Identity, anyClock bool, text s
 // thread resumes on a summary, -1 none.
 func budgetBeforeSummary(r *Router, c Conversation) int {
 	p := c.Pending
-	if c.State != StateAwaitingConfirm || p == nil || p.DetailsAsked || len(p.PlaybookAsk) > 0 || len(r.pendingAsks(p)) > 0 {
+	if c.State != StateAwaitingConfirm || p == nil || p.DetailsAsked || len(p.PlaybookAsk) > 0 || len(r.pendingAsks(p)) > 0 || needsDropOff(p) >= 0 {
 		return -1
 	}
 	return nextBudgetAsk(p)

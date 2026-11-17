@@ -179,6 +179,10 @@ func (r *Router) askBudget(ctx context.Context, in Inbound, conv Conversation, i
 	return r.Reply(ctx, in, lead+budgetQuestion(items, i), "")
 }
 
+// buyingPlaybooks: errand types that are a purchase by nature (Tylenol at
+// the pharmacy, a pizza, a gift): their budget question asks only how much.
+var buyingPlaybooks = map[string]bool{"pharmacy": true, "groceries": true, "food": true, "gifts": true}
+
 // budgetQuestion asks item i's budget: only how much when the errand's
 // words say something is bought; whether, and how much, when only the
 // model thought so.
@@ -268,6 +272,9 @@ func (r *Router) onAwaitingBudget(ctx context.Context, in Inbound, id Identity, 
 // continueDraft is the step after the draft is priced and the name is known:
 // any budget question first, then the summary.
 func (r *Router) continueDraft(ctx context.Context, in Inbound, id Identity, conv Conversation) error {
+	if i := needsDropOff(conv.Pending); i >= 0 {
+		return r.askDropOff(ctx, in, id, conv, i) // where to bring it, before the budget
+	}
 	if i := nextBudgetAsk(conv.Pending); i >= 0 {
 		return r.askBudget(ctx, in, conv, i)
 	}

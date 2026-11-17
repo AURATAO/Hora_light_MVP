@@ -96,7 +96,13 @@ type PendingDraft struct {
 	// StopOptions: Google place ids offered for UnclearStop (a business
 	// named with no address, pilot 2026-11-17); a number picks one. Ids
 	// only, as for discovery offers.
-	StopOptions     []string `json:"stop_options,omitempty"`
+	StopOptions []string `json:"stop_options,omitempty"`
+	// DropOffAsked: "Where should your supporter bring it?" is open for
+	// errand DropOffIndex (dropoff.go); DropOffSuggest: the last drop-off
+	// offered with it, which a YES takes.
+	DropOffAsked    bool     `json:"drop_off_asked,omitempty"`
+	DropOffIndex    int      `json:"drop_off_index,omitempty"`
+	DropOffSuggest  string   `json:"drop_off_suggest,omitempty"`
 	RejectedGuesses []string `json:"rejected_guesses,omitempty"`
 	// GuessesShown: how many guesses this draft has put to the person; past
 	// MaxFreeGuesses they count toward the hand-off again.

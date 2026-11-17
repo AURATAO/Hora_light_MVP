@@ -41,6 +41,9 @@ type Place struct {
 	ClosesAt   string // "11 PM", "" unknown
 	OpensAt    string
 	InNYC      bool // the service-area rule on Google's own address parts
+	// Lat, Lng: Google's point (search results; 0 unknown) — for ordering
+	// by distance only, never shown.
+	Lat, Lng float64
 }
 
 // PlaceSearcher is Google Places, behind the server's key.
@@ -353,6 +356,9 @@ func (d *PlaceDiscovery) Discover(ctx context.Context, req DiscoveryRequest) (re
 	// near 250 Mercer St, Manhattan", run twice) is answered from this
 	// turn's first result: no second Places call, no second count.
 	seenQuery := map[string]string{} // normalised query → tool result
+	// center: the area the last search was near, for ordering the options.
+	var center [2]float64
+	haveCenter := false
 	// Search once, then answer: a round of searches with any result in it
 	// switches the tool off for the next call. Only a round where a search
 	// came back empty may search again.
@@ -393,7 +399,11 @@ func (d *PlaceDiscovery) Discover(ctx context.Context, req DiscoveryRequest) (re
 					`An "info" answer must come from search_places results in this turn. Call search_places now, then answer.`)))
 				continue
 			}
-			return decodeDiscovery(raw, found, refs, len(req.PastErrands), res)
+			out, err := decodeDiscovery(raw, found, refs, len(req.PastErrands), res)
+			if err == nil && haveCenter {
+				out.Options = sortOptionsNear(out.Options, center[0], center[1])
+			}
+			return out, err
 		}
 		messages = append(messages, msg.ToParam())
 		var results []anthropic.ContentBlockParamUnion
@@ -429,6 +439,14 @@ func (d *PlaceDiscovery) Discover(ctx context.Context, req DiscoveryRequest) (re
 			if err != nil {
 				// Places is down or refused: no answer can be made from data.
 				return res, fmt.Errorf("discover: search: %w", err)
+			}
+			// "… near W 54th St": the results by distance from there,
+			// closest first, the far ones dropped (2026-11-17).
+			if area := QueryArea(in.Query); area != "" {
+				if lat, lng, ok := LocateArea(ctx, d.Places, area); ok {
+					places = SortNear(places, lat, lng, NearMiles)
+					center, haveCenter = [2]float64{lat, lng}, true
+				}
 			}
 			out, shown := searchResultJSON(places, found, &refs)
 			seenQuery[key] = out

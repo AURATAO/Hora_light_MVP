@@ -77,7 +77,11 @@ func (r *Router) proposeStop(ctx context.Context, id Identity, source, stop, are
 		log.Printf("[channel] address guess identity=%s: %v", id.ID, err)
 		return stopProposal{}
 	}
-	if g.Place != "" && r.Places != nil {
+	// A drop-off is where things are brought, never a business to look
+	// for: the café named for the pickup must not come back as one
+	// (address eval 2026-11-17: "Bond street 200 nyc" as the drop-off was
+	// read as Blue Bottle near Bond St).
+	if g.Place != "" && r.Places != nil && !isDropOffStop(items, stop) {
 		near := firstNonEmpty(firstNonEmpty(g.Near, area), otherStop(items, stop))
 		if near == "" {
 			near = r.lastAddress(ctx, id)
@@ -125,11 +129,27 @@ func (r *Router) searchStop(ctx context.Context, id Identity, place, near string
 		q += ", New York, NY"
 	}
 	sctx, cancel := context.WithTimeout(ctx, stopSearchTimeout)
-	found, err := r.Places.SearchPlaces(sctx, q, false)
-	cancel()
+	defer cancel()
+	// Near the area named: searched around its point, then ordered by
+	// distance from it, closest first; farther than llm.NearMiles is
+	// dropped unless nothing is closer (2026-11-17).
+	lat, lng, located := 0.0, 0.0, false
+	if near != "" && !llm.IsBorough(near) {
+		lat, lng, located = llm.LocateArea(sctx, r.Places, near)
+	}
+	var found []llm.Place
+	var err error
+	if ns, ok := r.Places.(llm.NearSearcher); ok && located {
+		found, err = ns.SearchPlacesNear(sctx, place, false, lat, lng, llm.NearMiles*1609.34)
+	} else {
+		found, err = r.Places.SearchPlaces(sctx, q, false)
+	}
 	if err != nil {
 		log.Printf("[channel] stop search identity=%s: %v", id.ID, err)
 		return nil
+	}
+	if located {
+		found = llm.SortNear(found, lat, lng, llm.NearMiles)
 	}
 	var out []llm.Place
 	for _, p := range found {
@@ -222,4 +242,15 @@ func (r *Router) checkGuess(ctx context.Context, id Identity, g, stop string, re
 	}
 	log.Printf("[channel] address guess identity=%s: placed, asking to confirm", id.ID)
 	return found
+}
+
+// isDropOffStop: stop is an errand's drop-off after a pickup.
+func isDropOffStop(items []DraftItem, stop string) bool {
+	k := stopKey(stop)
+	for _, it := range items {
+		if strings.TrimSpace(it.Draft.Location1) != "" && stopKey(it.Draft.Location2) == k {
+			return true
+		}
+	}
+	return false
 }

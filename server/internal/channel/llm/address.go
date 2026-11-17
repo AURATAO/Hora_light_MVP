@@ -37,6 +37,7 @@ Also read whether they named a business or place to go to — a shop, café, res
 - "place": its name as people search for it on a map ("Blue Bottle Coffee", "Duane Reade", "Apple Store"); null when they named none, or when they gave its street address.
 - "near": where they said to look for it, as a map search area ("W 54th St, Manhattan", "Manhattan", "5th Ave and 57th St", "near 2 Bond St"); null when they said nowhere. A street said without a building number ("54 w", "close to 54th") is a search area here, never an address.
 A question about where the place is ("where are Blue Bottle in Manhattan", "is there one close to 54th?", "I don't know the address") names the place and the area: fill both.
+"place" is only ever about the stop the map could not find. When that stop is a street address typed in a hurry ("Bond street 200 nyc", "335 e 3 ave") — or it is where things are brought (a drop-off) — "place" is null, even if a business was named earlier for another stop.
 
 Return {"address": string or null, "place": string or null, "near": string or null}.`
 

@@ -291,7 +291,7 @@ func TestDiscoveryChoiceMakesANormalDraft(t *testing.T) {
 func TestDiscoveryPlaceNameIsNeverAMoneyInput(t *testing.T) {
 	g := newDiscoRig(llm.IntentQuestion, infoResult("", false, []llm.Place{evil}))
 	g.ids.link(me, "user-1")
-	g.parser.draft = llm.TaskDraft{Title: "Buy detergent", Category: "grocery", Location1: "9 Ave A, New York, NY 10009"}
+	g.parser.draft = llm.TaskDraft{Title: "Buy detergent", Category: "grocery", Location1: "9 Ave A, New York, NY 10009", Location2: "200 W 79th St"}
 	g.r.Purchases = &fakePurchases{yes: true}
 	reply := g.say(t, "where can I buy detergent near Ave A?")
 	noYesNoPrice(t, strings.Replace(reply, evil.Name, "", 1)) // the name is shown as Google has it; nothing else

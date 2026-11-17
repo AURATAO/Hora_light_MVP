@@ -23,7 +23,7 @@ func (f *fakePurchases) NeedsPurchase(_ context.Context, text string) (bool, err
 	return f.yes, f.err
 }
 
-var bagelD = llm.TaskDraft{Title: "Bagel from Russ & Daughters", Category: "delivery", Location1: "Russ & Daughters, Houston St", DurationMinutes: 30}
+var bagelD = llm.TaskDraft{Title: "Bagel from Russ & Daughters", Category: "delivery", Location1: "Russ & Daughters, Houston St", Location2: "200 W 79th St", DurationMinutes: 30}
 
 func TestAmountCents(t *testing.T) {
 	for text, want := range map[string]int{
