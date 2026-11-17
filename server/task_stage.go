@@ -151,7 +151,7 @@ func acceptOverlapStep(c *gin.Context, taskID, meUID string) bool {
 	}
 	c.JSON(http.StatusConflict, gin.H{
 		"error":   "task_overlap",
-		"message": fmt.Sprintf("This overlaps with “%s”, which you've already accepted. Finish or hand back that one first.", title),
+		"message": fmt.Sprintf("This overlaps with “%s”, which you've already accepted. Finish that one first, or message HO:RA if you can't do it.", title),
 	})
 	return false
 }

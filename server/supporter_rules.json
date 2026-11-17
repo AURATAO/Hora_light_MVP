@@ -1,16 +1,21 @@
 {
   "_readme": [
     "The supporter rules the apps show (Profile → Supporter rules, and the application form). Served in GET /config as supporter_rules; the app shows these when present and its own built-in copy when not, so the rules can change after a legal review without an app release.",
-    "icon: one of hand, door, shield, footprints, ban. An unknown name shows a neutral icon.",
+    "icon: one of hand, door, shield, footprints, ban. An unknown name shows a neutral icon (\"message\" is one until the app learns it).",
     "Keep them in step with the scope rules (llm/playbooks.json): a rule here that the assistant would still book is a promise we break.",
     "version: bump on any change."
   ],
-  "version": "sr2",
+  "version": "sr3",
   "items": [
     {
       "icon": "hand",
       "title": "You can always say no",
       "body": "Decline any task, or leave one, if you feel unsafe. There's no penalty, and you don't have to explain."
+    },
+    {
+      "icon": "message",
+      "title": "Can't finish? Tell us right away",
+      "body": "If you can't start or finish a task you accepted, message HO:RA straight away so we can find someone else. If you leave a task without a valid reason, the time you logged on it isn't paid. Feeling unsafe is always a valid reason."
     },
     {
       "icon": "door",

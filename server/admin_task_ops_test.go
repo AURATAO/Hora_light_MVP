@@ -555,6 +555,90 @@ func TestAdminOpsCancelWithoutReason(t *testing.T) {
 	}
 }
 
+// A supporter who leaves an accepted task: the requester is told what happened
+// and that it cost them nothing, and the supporter is told they were taken off
+// and that the time is not paid — nobody is thanked for their time.
+func TestAdminOpsCancelSupporterDroppedCopy(t *testing.T) {
+	setupAdminOpsDB(t)
+	w := seedOpsWorld(t, "open")
+	seedWorklog(t, w.taskID, 15, true)
+
+	code, out := callAdminOps(t, adminCancelTaskHandler, "cancel", w.taskID, w.adminID, adminEmail,
+		`{"cause":"supporter_dropped","reason":"left mid-task, no reply"}`)
+	if code != http.StatusOK {
+		t.Fatalf("want 200, got %d (%v)", code, out)
+	}
+	bodyFor := func(uid string) (string, string) {
+		var title, body string
+		if err := db.QueryRow(context.Background(), `
+			SELECT title, body FROM public.notifications
+			WHERE task_id=$1::uuid AND user_id=$2::uuid AND type='CANCELLED'`, w.taskID, uid).Scan(&title, &body); err != nil {
+			t.Fatalf("notification for %s: %v", uid, err)
+		}
+		return title, body
+	}
+	rTitle, rBody := bodyFor(w.requesterID)
+	if rTitle != "Your supporter couldn't finish" {
+		t.Errorf("requester title = %q", rTitle)
+	}
+	for _, want := range []string{"wasn't able to finish", "haven't been charged", "someone else"} {
+		if !strings.Contains(rBody, want) {
+			t.Errorf("requester body lacks %q: %q", want, rBody)
+		}
+	}
+	// The ops note is internal: it goes to the audit log, never to the requester.
+	if strings.Contains(rBody, "no reply") {
+		t.Errorf("the internal reason leaked to the requester: %q", rBody)
+	}
+	sTitle, sBody := bodyFor(w.supporterID)
+	if sTitle != "You've been taken off a task" {
+		t.Errorf("supporter title = %q", sTitle)
+	}
+	if !strings.Contains(sBody, "isn't paid") || strings.Contains(sBody, "Thanks for your time") {
+		t.Errorf("supporter body = %q", sBody)
+	}
+	if got := scalar[string](t, `SELECT coalesce(cancel_reason,'') FROM public.tasks WHERE id=$1::uuid`, w.taskID); got != "The supporter couldn't finish" {
+		t.Errorf("cancel_reason = %q — the internal note must not be stored where the requester reads it", got)
+	}
+	// Nothing charged, nobody paid: the cancel settles nothing.
+	if got := scalar[string](t, `SELECT status FROM public.tasks WHERE id=$1::uuid`, w.taskID); got != "cancelled" {
+		t.Errorf("status = %q", got)
+	}
+	if audit := auditRows(t, w.taskID, "CANCELLED"); len(audit) != 1 || audit[0].Reason != "left mid-task, no reply" {
+		t.Errorf("audit = %+v", audit)
+	}
+}
+
+// Every requester-facing cancel says what happened to the money.
+func TestAdminCancelCopyAlwaysMentionsTheCharge(t *testing.T) {
+	for _, c := range []struct{ cause, reason string }{
+		{"", ""}, {"", "you asked us to by phone."}, {cancelCauseSupporterDropped, ""},
+	} {
+		_, body := adminCancelRequesterCopy(c.cause, "Coffee run", c.reason)
+		if !strings.Contains(body, noChargeSentence) {
+			t.Errorf("cause=%q reason=%q: no word about the charge: %q", c.cause, c.reason, body)
+		}
+		if strings.Contains(body, "..") {
+			t.Errorf("doubled full stop: %q", body)
+		}
+	}
+	if _, body := adminCancelSupporterCopy("", "Coffee run"); strings.Contains(body, "Thanks for your time") {
+		t.Errorf("supporter copy still thanks for time: %q", body)
+	}
+}
+
+func TestAdminOpsCancelRejectsUnknownCause(t *testing.T) {
+	setupAdminOpsDB(t)
+	w := seedOpsWorld(t, "open")
+	code, out := callAdminOps(t, adminCancelTaskHandler, "cancel", w.taskID, w.adminID, adminEmail, `{"cause":"whatever"}`)
+	if code != http.StatusBadRequest || out["error"] != "unknown_cause" {
+		t.Fatalf("want 400 unknown_cause, got %d (%v)", code, out)
+	}
+	if got := scalar[string](t, `SELECT status FROM public.tasks WHERE id=$1::uuid`, w.taskID); got != "open" {
+		t.Errorf("a rejected cancel still changed the task: %q", got)
+	}
+}
+
 func TestAdminOpsCancelRejectsNonAdmin(t *testing.T) {
 	setupAdminOpsDB(t)
 	w := seedOpsWorld(t, "open")
