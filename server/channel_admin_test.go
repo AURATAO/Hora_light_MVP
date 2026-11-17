@@ -306,3 +306,30 @@ func TestOpsEditErrorResponses(t *testing.T) {
 		}
 	}
 }
+
+// The thread's ?since cursor: empty is a full reload, garbage is refused,
+// and the answer's cursor is the newest written time (never older than the
+// one sent, so an empty answer keeps the place).
+func TestThreadSinceCursor(t *testing.T) {
+	if s, err := parseThreadSince(""); err != nil || !s.IsZero() {
+		t.Fatalf("empty: %v %v", s, err)
+	}
+	if _, err := parseThreadSince("yesterday"); err == nil {
+		t.Fatal("want an error for a non-cursor")
+	}
+	base := time.Date(2026, 11, 17, 12, 0, 0, 123456000, time.UTC)
+	got, err := parseThreadSince(base.Format(time.RFC3339Nano))
+	if err != nil || !got.Equal(base) {
+		t.Fatalf("round trip: %v %v", got, err)
+	}
+	if c := threadCursor(base, nil); !c.Equal(base) {
+		t.Fatalf("no rows: %v", c)
+	}
+	msgs := []channel.ThreadMessage{{Created: base.Add(-time.Second)}, {Created: base.Add(3 * time.Second)}, {Created: base.Add(time.Second)}}
+	if c := threadCursor(base, msgs); !c.Equal(base.Add(3 * time.Second)) {
+		t.Fatalf("newest: %v", c)
+	}
+	if c := threadCursor(time.Time{}, msgs); !c.Equal(base.Add(3 * time.Second)) {
+		t.Fatalf("full load: %v", c)
+	}
+}

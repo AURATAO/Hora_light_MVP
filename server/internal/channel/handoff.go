@@ -49,6 +49,13 @@ type ThreadMessage struct {
 	// only — never in a hand-off email).
 	ProviderID string   `json:"-"`
 	Photos     []string `json:"photos,omitempty"`
+	// ID is the stored row's id (an opaque uuid, no content): Ops Chats
+	// merges an incremental fetch into what it already shows by it.
+	// Created is when the row was written — the cursor for that fetch
+	// (MessagesSince). An inbound row's At is the provider's timestamp and
+	// can be older than rows already written, so At is not a safe cursor.
+	ID      string    `json:"id,omitempty"`
+	Created time.Time `json:"-"`
 }
 
 // HandoffNotice is what ops receive.

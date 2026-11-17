@@ -731,6 +731,24 @@ func TestPGThreadAndHandedOff(t *testing.T) {
 	if b, _ := json.Marshal(msgs[0]); !strings.Contains(string(b), `"direction":"inbound"`) {
 		t.Fatalf("ThreadMessage JSON: %s", b)
 	}
+
+	// Ops Chats' incremental fetch: by when a row was written, not its
+	// provider timestamp — a late-recorded inbound with an old received_at
+	// is still "new".
+	if msgs[1].ID == "" || msgs[1].Created.IsZero() {
+		t.Fatalf("id/created not scanned: %+v", msgs[1])
+	}
+	cursor := msgs[1].Created
+	if _, err := s.RecordInbound(ctx, Inbound{Channel: WhatsApp, ProviderMessageID: "in-late", From: "+15550000505", Text: "late one", ReceivedAt: base.Add(-time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	since, err := s.MessagesSince(ctx, WhatsApp, "+15550000505", cursor, 50)
+	if err != nil || len(since) != 1 || since[0].Text != "late one" || since[0].ID == "" {
+		t.Fatalf("since: %+v %v", since, err)
+	}
+	if other, err := s.MessagesSince(ctx, WhatsApp, "+15550000999", time.Time{}, 50); err != nil || len(other) != 0 {
+		t.Fatalf("another number's thread: %+v %v", other, err)
+	}
 }
 
 // M3.2: the task list and the held message round-trip, clear to NULL, and

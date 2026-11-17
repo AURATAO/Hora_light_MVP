@@ -80,35 +80,58 @@ func (s *PGStore) RecordOutbound(ctx context.Context, out Outbound, providerMess
 // RecentMessages returns up to limit messages exchanged with the number,
 // oldest first (ThreadReader, for ops handoffs).
 func (s *PGStore) RecentMessages(ctx context.Context, ch Channel, address string, limit int) ([]ThreadMessage, error) {
-	rows, err := s.DB.QueryContext(ctx, `
-		SELECT direction, COALESCE(body, ''), received_at, COALESCE(relay, false), provider_message_id
+	out, err := s.queryThread(ctx, "recent messages", `
+		SELECT id::text, direction, COALESCE(body, ''), received_at, COALESCE(relay, false), provider_message_id, created_at
 		FROM channel_messages
 		WHERE channel = $1 AND address = $2
 		ORDER BY received_at DESC
 		LIMIT $3
 	`, string(ch), address, limit)
 	if err != nil {
-		return nil, fmt.Errorf("recent messages: %w", err)
+		return nil, err
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
+}
+
+// MessagesSince returns up to limit messages for the number written
+// (created_at) after `after`, oldest written first — the incremental fetch
+// behind Ops Chats' fast poll. The caller merges by ID; rows from
+// concurrent transactions can commit slightly out of created_at order, so
+// callers pass a cursor with some overlap rather than the exact last one.
+func (s *PGStore) MessagesSince(ctx context.Context, ch Channel, address string, after time.Time, limit int) ([]ThreadMessage, error) {
+	return s.queryThread(ctx, "messages since", `
+		SELECT id::text, direction, COALESCE(body, ''), received_at, COALESCE(relay, false), provider_message_id, created_at
+		FROM channel_messages
+		WHERE channel = $1 AND address = $2 AND created_at > $3
+		ORDER BY created_at ASC
+		LIMIT $4
+	`, string(ch), address, after, limit)
+}
+
+func (s *PGStore) queryThread(ctx context.Context, what, q string, args ...any) ([]ThreadMessage, error) {
+	rows, err := s.DB.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", what, err)
 	}
 	var out []ThreadMessage
 	for rows.Next() {
 		var m ThreadMessage
-		if err := rows.Scan(&m.Direction, &m.Text, &m.At, &m.Relay, &m.ProviderID); err != nil {
+		if err := rows.Scan(&m.ID, &m.Direction, &m.Text, &m.At, &m.Relay, &m.ProviderID, &m.Created); err != nil {
 			if cerr := rows.Close(); cerr != nil {
-				log.Printf("[channel] recent messages: close rows: %v", cerr)
+				log.Printf("[channel] %s: close rows: %v", what, cerr)
 			}
-			return nil, fmt.Errorf("recent messages: scan: %w", err)
+			return nil, fmt.Errorf("%s: scan: %w", what, err)
 		}
 		out = append(out, m)
 	}
 	if err := rows.Close(); err != nil {
-		return nil, fmt.Errorf("recent messages: close rows: %w", err)
+		return nil, fmt.Errorf("%s: close rows: %w", what, err)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("recent messages: %w", err)
-	}
-	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
-		out[i], out[j] = out[j], out[i]
+		return nil, fmt.Errorf("%s: %w", what, err)
 	}
 	return out, nil
 }

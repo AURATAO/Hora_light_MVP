@@ -479,12 +479,29 @@ func registerChannelAdminRoutes(r *gin.Engine, sqlDB *sql.DB, store *channel.PGS
 		}
 		c.JSON(http.StatusOK, gin.H{"conversations": rows, "handoff_timeout_minutes": int(channel.HandoffTimeout.Minutes())})
 	})
+	// The thread, for one chat. Without ?since: the last 50 messages, oldest
+	// first. With ?since=<cursor from an earlier answer>: only the rows
+	// written after it (with threadSinceOverlap of overlap, merged by id on
+	// the page), so the 2-second poll during a hand-off is one indexed query
+	// and signs photo links only for new messages — a full reload signs every
+	// photo in the thread, one Storage call each. The answer's cursor goes
+	// into the next ?since.
 	r.GET("/admin/channel/:identity/thread", dualAuth(sqlDB), requireOpsAdmin(), func(c *gin.Context) {
+		since, err := parseThreadSince(c.Query("since"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bad_since", "message": "since must be the cursor from an earlier answer."})
+			return
+		}
 		id, ok := loadIdentityParam(c, store)
 		if !ok {
 			return
 		}
-		msgs, err := store.RecentMessages(c.Request.Context(), id.Channel, id.Address, 50)
+		var msgs []channel.ThreadMessage
+		if since.IsZero() {
+			msgs, err = store.RecentMessages(c.Request.Context(), id.Channel, id.Address, threadPage)
+		} else {
+			msgs, err = store.MessagesSince(c.Request.Context(), id.Channel, id.Address, since.Add(-threadSinceOverlap), threadPage)
+		}
 		if err != nil {
 			log.Printf("[channel-admin] thread identity=%s: %v", id.ID, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "server_error"})
@@ -494,7 +511,12 @@ func registerChannelAdminRoutes(r *gin.Engine, sqlDB *sql.DB, store *channel.PGS
 			msgs = []channel.ThreadMessage{}
 		}
 		attachThreadPhotos(c.Request.Context(), store, id.Channel, msgs)
-		c.JSON(http.StatusOK, gin.H{"identity_id": id.ID, "channel": id.Channel, "phone_hint": channel.PhoneHint(id.Address), "messages": msgs})
+		c.JSON(http.StatusOK, gin.H{
+			"identity_id": id.ID, "channel": id.Channel, "phone_hint": channel.PhoneHint(id.Address),
+			"messages": msgs, "cursor": threadCursor(since, msgs).Format(time.RFC3339Nano), "partial": !since.IsZero(),
+			// A full page of new rows: there may be more — the page reloads in full.
+			"more": !since.IsZero() && len(msgs) == threadPage,
+		})
 	})
 	r.POST("/admin/channel/:identity/send", dualAuth(sqlDB), requireOpsAdmin(), func(c *gin.Context) {
 		id, ok := loadIdentityParam(c, store)
@@ -806,6 +828,39 @@ func opsEditError(err error) (int, string, string) {
 		return http.StatusUnprocessableEntity, "address_unclear", fmt.Sprintf("Google couldn't place “%s”. Send the full address with the ZIP. Nothing was changed.", ae.Stop)
 	}
 	return http.StatusInternalServerError, "server_error", "Something went wrong. Nothing was changed."
+}
+
+// threadSinceOverlap: how far before the cursor an incremental thread fetch
+// reaches. Rows from concurrent transactions can commit out of created_at
+// order by a few milliseconds; the page drops the repeats by id.
+const threadSinceOverlap = 5 * time.Second
+
+// threadPage: the most messages one thread answer carries.
+const threadPage = 50
+
+// parseThreadSince reads ?since: zero for none (a full reload), an error
+// for anything that is not a cursor this endpoint gave out.
+func parseThreadSince(raw string) (time.Time, error) {
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return t, nil
+}
+
+// threadCursor: the newest written time among msgs, or since when none is
+// newer — the value the next ?since sends back.
+func threadCursor(since time.Time, msgs []channel.ThreadMessage) time.Time {
+	cur := since
+	for _, m := range msgs {
+		if m.Created.After(cur) {
+			cur = m.Created
+		}
+	}
+	return cur.UTC()
 }
 
 func loadIdentityParam(c *gin.Context, store *channel.PGStore) (channel.Identity, bool) {

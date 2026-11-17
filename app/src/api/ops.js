@@ -174,9 +174,14 @@ export function listChannelConversations() {
   return opsFetch('/admin/channel/conversations')
 }
 
-// GET /admin/channel/:identity/thread — the last 50 messages, oldest first.
-export function getChannelThread(identityId) {
-  return opsFetch(`/admin/channel/${encodeURIComponent(identityId)}/thread`)
+// GET /admin/channel/:identity/thread — the last 50 messages, oldest first,
+// and a cursor. With `since` (a cursor from an earlier answer): only the
+// rows written after it, a few seconds of overlap included — merge by
+// message id. { messages, cursor, partial, more }: `more` means a full page
+// of new rows came back and there may be others; reload in full.
+export function getChannelThread(identityId, { since } = {}) {
+  const q = since ? `?since=${encodeURIComponent(since)}` : ''
+  return opsFetch(`/admin/channel/${encodeURIComponent(identityId)}/thread${q}`)
 }
 
 // POST /admin/channel/:identity/send — queued (202). 409 when the chat is
