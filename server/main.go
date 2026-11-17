@@ -136,6 +136,10 @@ type Task struct {
 	PayLabel string `json:"pay_label,omitempty"`
 	PayNote  string `json:"pay_note,omitempty"`
 
+	// Where an accepted task stands, for its supporter: "Accepted", "On my
+	// way", "Working" (task_stage.go). Shown as sent.
+	StageLabel string `json:"stage_label,omitempty"`
+
 	// uuid（後端查詢/權限全靠它）
 	RequesterID  string  `json:"requester_id"`
 	AssignedToID *string `json:"assigned_to_id,omitempty"`
@@ -3081,6 +3085,15 @@ func listAssignedTasks(c *gin.Context) {
 		}
 	}
 	attachTaskNames(c.Request.Context(), items)
+	// Each one's stage, in the server's words (task_stage.go).
+	ids := make([]string, len(items))
+	for k := range items {
+		ids[k] = items[k].ID
+	}
+	stages := taskStageLabels(c.Request.Context(), meUID, c.GetString("email"), ids)
+	for k := range items {
+		items[k].StageLabel = stages[items[k].ID]
+	}
 	c.JSON(200, gin.H{"items": items, "next": next})
 }
 
@@ -3344,6 +3357,13 @@ func acceptTask(c *gin.Context) {
 			"error":   "payouts_onboarding_required",
 			"message": gateMsg,
 		})
+		return
+	}
+
+	// Not while it overlaps a task they already hold (task_stage.go). Before
+	// the notes: nobody should read and accept notes for a task they cannot
+	// take.
+	if !acceptOverlapStep(c, id, meUID) {
 		return
 	}
 

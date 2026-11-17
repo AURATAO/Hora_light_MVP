@@ -209,6 +209,10 @@ export interface Task {
   /** One sentence under it on the task screen: why the final amount can
    *  differ (billed by the minute). */
   pay_note?: string;
+  /** Where an accepted task stands, for its supporter, in the SERVER's words:
+   *  "Accepted", "On my way", "Working" (server/task_stage.go). Shown as
+   *  sent on My jobs; absent from an older backend. */
+  stage_label?: string;
   description: string | null;
   category: TaskCategory;
   location_text: string | null;

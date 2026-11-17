@@ -1,0 +1,36 @@
+{
+  "_readme": [
+    "The supporter rules the apps show (Profile → Supporter rules, and the application form). Served in GET /config as supporter_rules; the app shows these when present and its own built-in copy when not, so the rules can change after a legal review without an app release.",
+    "icon: one of hand, door, shield, footprints, ban. An unknown name shows a neutral icon.",
+    "Keep them in step with the scope rules (llm/playbooks.json): a rule here that the assistant would still book is a promise we break.",
+    "version: bump on any change."
+  ],
+  "version": "sr2",
+  "items": [
+    {
+      "icon": "hand",
+      "title": "You can always say no",
+      "body": "Decline any task, or leave one, if you feel unsafe. There's no penalty, and you don't have to explain."
+    },
+    {
+      "icon": "door",
+      "title": "Homes only for a specific errand",
+      "body": "Go inside a home only for the errand you accepted, with the customer or an adult they named present, or with clear access instructions from them."
+    },
+    {
+      "icon": "shield",
+      "title": "Never alone with minors",
+      "body": "If you would be left alone with someone under 18, stop and leave the task."
+    },
+    {
+      "icon": "footprints",
+      "title": "Never drive a customer",
+      "body": "Never give anyone a ride. You can use your own car to carry items when the task says so."
+    },
+    {
+      "icon": "ban",
+      "title": "No alcohol, tobacco, drugs or prescriptions",
+      "body": "Never buy, carry or deliver alcohol, tobacco, vapes, cannabis or illegal drugs, even if the customer asks. At a pharmacy, over-the-counter items only: never pick up a prescription."
+    }
+  ]
+}

@@ -24,3 +24,16 @@ export class ApiError extends Error {
     this.isAuthError = status === 401;
   }
 }
+
+/**
+ * What to show a person for a failed request: the server's own sentence when
+ * it sent one (`message`), else the error's text. Refusals are worded on the
+ * server so they can change without an app release ("This overlaps with …").
+ */
+export function errorMessageFor(e: unknown, fallback: string): string {
+  if (e instanceof ApiError) {
+    const body = (e.body ?? {}) as Record<string, unknown>;
+    if (typeof body.message === "string" && body.message.trim()) return body.message.trim();
+  }
+  return e instanceof Error && e.message ? e.message : fallback;
+}
