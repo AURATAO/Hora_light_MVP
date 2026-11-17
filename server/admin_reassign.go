@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
@@ -35,6 +36,17 @@ import (
 //     is a data-integrity problem, not a UX one, so it is refused outright
 //     (task_in_progress) and the admin is pointed at remove + repost.
 //   - Only to an approved supporter, and not to whoever already holds it.
+//
+// THE ONE WAY PAST THE CLOCK-IN RULE: void_prior_work. A supporter who starts
+// a task and then leaves it used to leave ops with two bad options — remove the
+// task and make the requester post it again, or force-complete it and charge
+// the requester for work nobody finished. With void_prior_work the outgoing
+// supporter's sessions are taken OFF the task before the swap (recorded in the
+// audit row, deleted from worklogs), so the data-integrity problem above does
+// not arise: there is no tracked time left to misattribute. The task then
+// looks exactly like one that was accepted and never started — same hold,
+// clock at zero — and the incoming supporter does the whole job. The requester
+// pays for one supporter's time, once. See voidAndReassign.
 //
 // Assigning an unassigned task is the same operation with no outgoing
 // supporter, so it shares this path rather than getting its own.
@@ -64,12 +76,18 @@ func adminReassignTask(c *gin.Context) {
 	var in struct {
 		SupporterEmail string `json:"supporter_email"`
 		SupporterID    string `json:"supporter_id"`
+		// Take the current supporter's logged time off the task and hand it
+		// over anyway. Requires a reason: it is the decision not to pay
+		// someone for time they logged, and the audit row has to say why.
+		VoidPriorWork bool   `json:"void_prior_work"`
+		Reason        string `json:"reason"`
 	}
 	if c.Request.Body != nil {
 		_ = c.ShouldBindJSON(&in)
 	}
 	wantEmail := strings.TrimSpace(strings.ToLower(in.SupporterEmail))
 	wantID := strings.TrimSpace(in.SupporterID)
+	voidReason := strings.TrimSpace(in.Reason)
 	if wantEmail == "" && wantID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   "supporter_required",
@@ -112,14 +130,31 @@ func adminReassignTask(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
 	}
-	if hasWorklog {
+	if hasWorklog && !in.VoidPriorWork {
 		c.JSON(http.StatusConflict, gin.H{
 			"error": "task_in_progress",
 			"message": "Work has already started on this task, and its logged time and " +
-				"location belong to the current supporter. Remove the task and ask the " +
-				"requester to post it again instead.",
+				"location belong to the current supporter. To hand it over anyway, " +
+				"reassign with the logged time voided (the current supporter is not " +
+				"paid for it), or cancel the task.",
 		})
 		return
+	}
+	if in.VoidPriorWork {
+		if oldID == nil || *oldID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":   "nothing_to_void",
+				"message": "Nobody holds this task, so there is no logged time to void.",
+			})
+			return
+		}
+		if voidReason == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":   "reason_required",
+				"message": "Say why the logged time is being voided — it is recorded in the audit log.",
+			})
+			return
+		}
 	}
 
 	target, errCode, errMsg := resolveApprovedSupporter(c, wantID, wantEmail)
@@ -164,7 +199,15 @@ func adminReassignTask(c *gin.Context) {
 		return
 	}
 
-	affected, err := applyReassign(ctx, taskID, target, oldID)
+	var voided voidedWork
+	var affected int64
+	if in.VoidPriorWork && hasWorklog {
+		voided, affected, err = voidAndReassign(ctx, taskID, target, *oldID)
+	} else {
+		// void_prior_work on a task with no sessions is just a swap: there
+		// is nothing to take off it.
+		affected, err = applyReassign(ctx, taskID, target, oldID)
+	}
 	if err != nil {
 		log.Printf("[admin.reassign][update] task=%s err=%v", taskID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
@@ -197,11 +240,21 @@ func adminReassignTask(c *gin.Context) {
 		"new_supporter_email": target.Email,
 		"talkjs":              chatResult,
 	}
-	metaJSON, _ := json.Marshal(meta)
 	reason := "swap"
 	if oldEmail == "" {
 		reason = "direct_assign"
 	}
+	if in.VoidPriorWork {
+		// The only record of the sessions that were taken off the task: who
+		// logged them, when, and how long. Not paid, not billed, not lost.
+		reason = "swap_voided"
+		meta["void_reason"] = voidReason
+		meta["voided_sessions"] = voided.Sessions
+		meta["voided_minutes"] = voided.Minutes
+		meta["voided_gps_pings"] = voided.GPSPings
+		meta["expired_extension_requests"] = voided.ExpiredRequests
+	}
+	metaJSON, _ := json.Marshal(meta)
 	if _, err := db.Exec(ctx, `
 		insert into public.audit_logs (job_id, actor_id, action, reason, meta)
 		values ($1::uuid, $2::uuid, 'TASK_REASSIGNED', $3, $4::jsonb)
@@ -214,23 +267,43 @@ func adminReassignTask(c *gin.Context) {
 	// was not reused. notifyUser is used throughout rather than
 	// notifyAssignee/notifyRequesterRich because those re-read the task to find
 	// their recipient, which cannot reach the supporter who was just replaced.
+	newBody := fmt.Sprintf("You've been assigned %q by the HO:RA team. "+
+		"Open the task to see the details and message the requester.", title)
+	oldTitle := "You've been unassigned from a task"
+	oldBody := fmt.Sprintf("You've been unassigned from %q — the task has been "+
+		"reassigned. Thanks for your flexibility!", title)
+	reqBody := fmt.Sprintf("Your task %q has a new supporter: %s.", title, target.Name)
+	if in.VoidPriorWork {
+		// A supporter left the task. Nobody is thanked for their flexibility,
+		// and the requester is told the one thing they will worry about:
+		// that they are not paying twice.
+		newBody = fmt.Sprintf("You've been assigned %q by the HO:RA team. The previous supporter "+
+			"couldn't finish it, so you're starting it fresh: open the task to see the details "+
+			"and message the requester.", title)
+		oldTitle = "You've been taken off a task"
+		oldBody = fmt.Sprintf("You've been taken off %q because it wasn't finished, and someone else "+
+			"is taking over. Time logged on it isn't paid. If something went wrong on your side, "+
+			"message HO:RA so we know.", title)
+		reqBody = fmt.Sprintf("Your supporter wasn't able to finish %q, so %s is taking over. "+
+			"You only pay for the time %s spends on it — nothing for the first supporter.",
+			title, target.Name, target.Name)
+	}
+
 	notifyUser(ctx, target.UID, target.Email, notify.CreateNotificationInput{
-		TaskID: taskID,
-		Type:   "TASK_REASSIGNED",
-		Title:  "You've been assigned a task",
-		Body: fmt.Sprintf("You've been assigned %q by the HO:RA team. "+
-			"Open the task to see the details and message the requester.", title),
+		TaskID:        taskID,
+		Type:          "TASK_REASSIGNED",
+		Title:         "You've been assigned a task",
+		Body:          newBody,
 		SupporterName: target.Name,
 		TaskTitle:     title,
 	})
 
 	if oldID != nil && *oldID != "" {
 		notifyUser(ctx, *oldID, oldEmail, notify.CreateNotificationInput{
-			TaskID: taskID,
-			Type:   "TASK_REASSIGNED",
-			Title:  "You've been unassigned from a task",
-			Body: fmt.Sprintf("You've been unassigned from %q — the task has been "+
-				"reassigned. Thanks for your flexibility!", title),
+			TaskID:    taskID,
+			Type:      "TASK_REASSIGNED",
+			Title:     oldTitle,
+			Body:      oldBody,
 			TaskTitle: title,
 		})
 	}
@@ -239,7 +312,7 @@ func adminReassignTask(c *gin.Context) {
 		TaskID:        taskID,
 		Type:          "TASK_REASSIGNED",
 		Title:         "Your task has a new supporter",
-		Body:          fmt.Sprintf("Your task %q has a new supporter: %s.", title, target.Name),
+		Body:          reqBody,
 		SupporterName: target.Name,
 		TaskTitle:     title,
 	})
@@ -255,6 +328,8 @@ func adminReassignTask(c *gin.Context) {
 		"new_supporter_name":     target.Name,
 		"talkjs":                 chatResult,
 		"old_supporter_notified": oldID != nil && *oldID != "",
+		"voided_minutes":         voided.Minutes,
+		"voided_sessions":        len(voided.Sessions),
 	})
 }
 
@@ -290,6 +365,126 @@ func applyReassign(ctx context.Context, taskID string, target reassignTarget, ex
 		return 0, err
 	}
 	return tag.RowsAffected(), nil
+}
+
+// voidedSession is one work session taken off a task, as the audit row keeps it.
+type voidedSession struct {
+	User    string     `json:"user"`
+	StartAt time.Time  `json:"start_at"`
+	EndAt   *time.Time `json:"end_at"` // nil: the timer was still running
+	Minutes int        `json:"minutes"`
+}
+
+type voidedWork struct {
+	Sessions        []voidedSession
+	Minutes         int
+	GPSPings        int64
+	ExpiredRequests int64
+}
+
+// voidAndReassign takes the outgoing supporter's work off a started task and
+// hands the task to target, in one transaction — either the task ends up with
+// the new supporter and a clean clock, or nothing changed.
+//
+// What "clean" means, and why each piece goes:
+//
+//   - worklogs: DELETED (after being copied into the returned voidedWork, which
+//     the caller writes to the audit log). Every reader of billable time sums
+//     this table by task — billing, the time cap, the stage label, the feed —
+//     so a row left behind under any flag would be billed to the requester and
+//     paid to whoever completes the task. Removing the rows is the only form of
+//     "void" that all of those readers already understand.
+//   - task_gps_pings: deleted for the same reason the original rule gave — two
+//     of the three "where is my supporter" reads take the latest ping for the
+//     TASK, so the requester would be shown the departed supporter's last
+//     position as the new one's.
+//   - pending extension_requests: expired. They are the outgoing supporter's
+//     questions; nobody is left to act on the answer. APPROVED ones stand: the
+//     requester agreed to that time or budget for the task, not for a person.
+//   - the en-route, arrival and time-cap latches: reset, so the new supporter
+//     gets their own "on my way", their own arrival notice and their own
+//     warning as the ceiling approaches.
+//
+// The row lock plus the assigned_to_id guard is what makes a concurrent
+// reassign, cancel or completion lose cleanly: 0 rows, and the caller reports
+// the current state.
+func voidAndReassign(ctx context.Context, taskID string, target reassignTarget, expectedOldID string) (voidedWork, int64, error) {
+	var out voidedWork
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return out, 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var locked bool
+	if err := tx.QueryRow(ctx, `
+		select true from public.tasks
+		 where id = $1::uuid and status = 'open' and assigned_to_id = $2::uuid
+		 for update
+	`, taskID, expectedOldID).Scan(&locked); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return out, 0, nil
+		}
+		return out, 0, err
+	}
+
+	rows, err := tx.Query(ctx, `
+		delete from public.worklogs where task_id = $1::uuid
+		returning coalesce("user",''), start_at, end_at,
+		          greatest(0, ceil(extract(epoch from (coalesce(end_at, now()) - start_at)) / 60.0))::int
+	`, taskID)
+	if err != nil {
+		return out, 0, err
+	}
+	for rows.Next() {
+		var v voidedSession
+		if err := rows.Scan(&v.User, &v.StartAt, &v.EndAt, &v.Minutes); err != nil {
+			rows.Close()
+			return out, 0, err
+		}
+		out.Sessions = append(out.Sessions, v)
+		out.Minutes += v.Minutes
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return out, 0, err
+	}
+
+	tag, err := tx.Exec(ctx, `delete from public.task_gps_pings where task_id = $1::uuid`, taskID)
+	if err != nil {
+		return out, 0, err
+	}
+	out.GPSPings = tag.RowsAffected()
+
+	tag, err = tx.Exec(ctx, `
+		update public.extension_requests
+		   set status = 'expired', resolved_at = now()
+		 where task_id = $1::uuid and status = 'pending'
+	`, taskID)
+	if err != nil {
+		return out, 0, err
+	}
+	out.ExpiredRequests = tag.RowsAffected()
+
+	tag, err = tx.Exec(ctx, `
+		update public.tasks
+		   set assigned_to_id = $2::uuid,
+		       assigned_to    = $3,
+		       accepted_at    = now(),
+		       enroute_at = null,
+		       arrival_notified_at = null,
+		       time_cap_warned_at = null,
+		       time_cap_reached_at = null,
+		       time_cap_ops_alerted_at = null
+		 where id = $1::uuid
+	`, taskID, target.UID, target.Email)
+	if err != nil {
+		return out, 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return out, 0, err
+	}
+	return out, tag.RowsAffected(), nil
 }
 
 // resolveApprovedSupporter turns the request's supporter_id/supporter_email

@@ -512,8 +512,8 @@ func TestAdminReassignRejectsTaskWithWorklog(t *testing.T) {
 		t.Errorf("error = %v, want task_in_progress", out["error"])
 	}
 	// The admin is told what to do instead.
-	if msg, _ := out["message"].(string); !strings.Contains(msg, "Remove the task") {
-		t.Errorf("message does not point at remove + repost: %q", msg)
+	if msg, _ := out["message"].(string); !strings.Contains(msg, "logged time voided") || !strings.Contains(msg, "cancel the task") {
+		t.Errorf("message does not point at void-and-reassign or cancel: %q", msg)
 	}
 	// Nothing moved.
 	if n := scalar[int](t,
@@ -821,5 +821,177 @@ func TestAdminListSupportersReturnsOnlyApproved(t *testing.T) {
 	}
 	if got[newSupporterEmail] != "Nina New" {
 		t.Errorf("name = %q, want the profile name", got[newSupporterEmail])
+	}
+}
+
+// ── Handing over a task that was started and then left ─────────────────────
+
+// The headline case: the supporter clocked in, logged time, pinged a location,
+// left a question pending — and left. Ops hand the task to someone else with
+// the logged time voided. The task ends up exactly as if it had been accepted
+// and never started, so the requester is billed for one supporter's time.
+func TestAdminReassignVoidsPriorWorkAndHandsOver(t *testing.T) {
+	setupReassignDB(t)
+	w := seedWorld(t)
+	ctx := context.Background()
+	taskID := seedReassignTask(t, "open", w.requesterID, requesterEmail, w.oldID, oldSupporterEmail)
+	// A closed 20-minute session and one still running.
+	if _, err := db.Exec(ctx, `
+		INSERT INTO public.worklogs (task_id, "user", start_at, end_at) VALUES
+		  ($1::uuid, $2, now() - interval '40 minutes', now() - interval '20 minutes'),
+		  ($1::uuid, $2, now() - interval '5 minutes', null)`, taskID, oldSupporterEmail); err != nil {
+		t.Fatalf("seed worklogs: %v", err)
+	}
+	if _, err := db.Exec(ctx, `
+		INSERT INTO public.task_gps_pings (task_id, user_id, lat, lng) VALUES ($1::uuid, $2::uuid, 40.7, -74.0)`,
+		taskID, w.oldID); err != nil {
+		t.Fatalf("seed ping: %v", err)
+	}
+	if _, err := db.Exec(ctx, `
+		INSERT INTO public.extension_requests (task_id, supporter_id, kind, requested_minutes, status)
+		VALUES ($1::uuid, $2::uuid, 'time', 15, 'pending')`, taskID, w.oldID); err != nil {
+		t.Fatalf("seed extension: %v", err)
+	}
+	if _, err := db.Exec(ctx, `
+		UPDATE public.tasks SET enroute_at = now(), arrival_notified_at = now(), time_cap_warned_at = now()
+		WHERE id = $1::uuid`, taskID); err != nil {
+		t.Fatalf("seed latches: %v", err)
+	}
+
+	code, out := callReassign(t, taskID, w.adminID, adminEmail,
+		`{"supporter_email":"`+newSupporterEmail+`","void_prior_work":true,"reason":"left mid-task, unreachable"}`)
+	if code != http.StatusOK {
+		t.Fatalf("want 200, got %d (%v)", code, out)
+	}
+	if out["voided_sessions"] != float64(2) || out["voided_minutes"].(float64) < 25 {
+		t.Errorf("voided = %v sessions / %v min, want 2 / >=25", out["voided_sessions"], out["voided_minutes"])
+	}
+
+	// The task is the new supporter's, with a clean clock.
+	if n := scalar[int](t,
+		`SELECT count(*) FROM public.tasks WHERE id=$1::uuid AND assigned_to_id=$2::uuid AND assigned_to=$3 AND status='open'`,
+		taskID, w.newID, newSupporterEmail); n != 1 {
+		t.Fatal("the task did not move to the new supporter")
+	}
+	if n := scalar[int](t, `SELECT count(*) FROM public.worklogs WHERE task_id=$1::uuid`, taskID); n != 0 {
+		t.Errorf("%d voided sessions are still on the task — they would be billed and paid", n)
+	}
+	// What billing reads: zero minutes.
+	if got := liveLoggedMinutes(ctx, taskID); got != 0 {
+		t.Errorf("billable minutes after void = %d, want 0", got)
+	}
+	if n := scalar[int](t, `SELECT count(*) FROM public.task_gps_pings WHERE task_id=$1::uuid`, taskID); n != 0 {
+		t.Errorf("%d of the old supporter's pings remain — the requester would see them as the new one's", n)
+	}
+	if n := scalar[int](t,
+		`SELECT count(*) FROM public.extension_requests WHERE task_id=$1::uuid AND status='pending'`, taskID); n != 0 {
+		t.Error("the old supporter's pending request is still pending")
+	}
+	if n := scalar[int](t, `
+		SELECT count(*) FROM public.tasks WHERE id=$1::uuid
+		   AND enroute_at IS NULL AND arrival_notified_at IS NULL AND time_cap_warned_at IS NULL`, taskID); n != 1 {
+		t.Error("the en-route / arrival / time-cap latches were not reset for the new supporter")
+	}
+
+	// The audit row is the only record of the voided time, and it has all of it.
+	var reason string
+	var metaRaw []byte
+	if err := db.QueryRow(ctx, `
+		SELECT coalesce(reason,''), meta FROM public.audit_logs WHERE job_id=$1::uuid AND action='TASK_REASSIGNED'`,
+		taskID).Scan(&reason, &metaRaw); err != nil {
+		t.Fatalf("audit row: %v", err)
+	}
+	var meta map[string]any
+	_ = json.Unmarshal(metaRaw, &meta)
+	if reason != "swap_voided" || meta["void_reason"] != "left mid-task, unreachable" {
+		t.Errorf("audit reason=%q void_reason=%v", reason, meta["void_reason"])
+	}
+	sessions, _ := meta["voided_sessions"].([]any)
+	if len(sessions) != 2 || sessions[0].(map[string]any)["user"] != oldSupporterEmail {
+		t.Errorf("audit voided_sessions = %v", meta["voided_sessions"])
+	}
+
+	// Three people told, each the right thing.
+	body := func(uid string) string {
+		return scalar[string](t, `
+			SELECT body FROM public.notifications
+			WHERE task_id=$1::uuid AND user_id=$2::uuid AND type='TASK_REASSIGNED'`, taskID, uid)
+	}
+	if b := body(w.requesterID); !strings.Contains(b, "wasn't able to finish") || !strings.Contains(b, "nothing for the first supporter") {
+		t.Errorf("requester body = %q", b)
+	}
+	if b := body(w.oldID); !strings.Contains(b, "isn't paid") || strings.Contains(b, "Thanks for your flexibility") {
+		t.Errorf("old supporter body = %q", b)
+	}
+	if b := body(w.newID); !strings.Contains(b, "starting it fresh") {
+		t.Errorf("new supporter body = %q", b)
+	}
+}
+
+// Voiding somebody's logged time is a decision; it needs a reason on record.
+func TestAdminReassignVoidRequiresReason(t *testing.T) {
+	setupReassignDB(t)
+	w := seedWorld(t)
+	taskID := seedReassignTask(t, "open", w.requesterID, requesterEmail, w.oldID, oldSupporterEmail)
+	if _, err := db.Exec(context.Background(),
+		`INSERT INTO public.worklogs (task_id, "user") VALUES ($1::uuid, $2)`, taskID, oldSupporterEmail); err != nil {
+		t.Fatalf("seed worklog: %v", err)
+	}
+	code, out := callReassign(t, taskID, w.adminID, adminEmail,
+		`{"supporter_email":"`+newSupporterEmail+`","void_prior_work":true}`)
+	if code != http.StatusBadRequest || out["error"] != "reason_required" {
+		t.Fatalf("want 400 reason_required, got %d (%v)", code, out)
+	}
+	if n := scalar[int](t, `SELECT count(*) FROM public.worklogs WHERE task_id=$1::uuid`, taskID); n != 1 {
+		t.Error("a refused void still removed the session")
+	}
+	if n := scalar[int](t,
+		`SELECT count(*) FROM public.tasks WHERE id=$1::uuid AND assigned_to_id=$2::uuid`, taskID, w.oldID); n != 1 {
+		t.Error("a refused void still moved the task")
+	}
+}
+
+// A finished task is history: its time has been billed and paid, and no flag
+// reopens that.
+func TestAdminReassignVoidStillRefusesNonOpenTask(t *testing.T) {
+	setupReassignDB(t)
+	w := seedWorld(t)
+	taskID := seedReassignTask(t, "completed", w.requesterID, requesterEmail, w.oldID, oldSupporterEmail)
+	if _, err := db.Exec(context.Background(),
+		`INSERT INTO public.worklogs (task_id, "user", end_at) VALUES ($1::uuid, $2, now())`, taskID, oldSupporterEmail); err != nil {
+		t.Fatalf("seed worklog: %v", err)
+	}
+	code, out := callReassign(t, taskID, w.adminID, adminEmail,
+		`{"supporter_email":"`+newSupporterEmail+`","void_prior_work":true,"reason":"x"}`)
+	if code != http.StatusBadRequest || out["error"] != "task_not_reassignable" {
+		t.Fatalf("want 400 task_not_reassignable, got %d (%v)", code, out)
+	}
+	if n := scalar[int](t, `SELECT count(*) FROM public.worklogs WHERE task_id=$1::uuid`, taskID); n != 1 {
+		t.Error("a completed task's worklog was deleted")
+	}
+}
+
+// The transaction's guard: if the task moved or closed between the handler's
+// read and the void, nothing is deleted.
+func TestVoidAndReassignLosesRaceWithoutDeleting(t *testing.T) {
+	setupReassignDB(t)
+	w := seedWorld(t)
+	ctx := context.Background()
+	taskID := seedReassignTask(t, "open", w.requesterID, requesterEmail, w.oldID, oldSupporterEmail)
+	if _, err := db.Exec(ctx,
+		`INSERT INTO public.worklogs (task_id, "user") VALUES ($1::uuid, $2)`, taskID, oldSupporterEmail); err != nil {
+		t.Fatalf("seed worklog: %v", err)
+	}
+	// Completed underneath us.
+	if _, err := db.Exec(ctx, `UPDATE public.tasks SET status='completed' WHERE id=$1::uuid`, taskID); err != nil {
+		t.Fatal(err)
+	}
+	_, affected, err := voidAndReassign(ctx, taskID,
+		reassignTarget{UID: w.newID, Email: newSupporterEmail, Name: "Nina New"}, w.oldID)
+	if err != nil || affected != 0 {
+		t.Fatalf("want 0 rows and no error, got %d / %v", affected, err)
+	}
+	if n := scalar[int](t, `SELECT count(*) FROM public.worklogs WHERE task_id=$1::uuid`, taskID); n != 1 {
+		t.Error("the lost race still deleted the session")
 	}
 }

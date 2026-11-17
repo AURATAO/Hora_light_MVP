@@ -135,10 +135,20 @@ export function listApprovedSupporters() {
 // POST /admin/tasks/:id/reassign — rotate the supporter on an open task, or
 // assign one directly to a task nobody has accepted. The backend re-checks the
 // admin allowlist and every eligibility rule; this wrapper only shapes the call.
-export function reassignTask(taskId, supporterId) {
+//
+// voidReason set means "this task was started and then left": the current
+// supporter's logged time is taken off the task (kept in the audit log, not
+// paid, not billed) and the new supporter starts it from zero. Without it the
+// backend refuses any task that has been clocked into.
+export function reassignTask(taskId, supporterId, voidReason = '') {
+  const body = { supporter_id: supporterId }
+  if (voidReason) {
+    body.void_prior_work = true
+    body.reason = voidReason
+  }
   return opsFetch(`/admin/tasks/${taskId}/reassign`, {
     method: 'POST',
-    body: JSON.stringify({ supporter_id: supporterId }),
+    body: JSON.stringify(body),
   })
 }
 
