@@ -445,7 +445,7 @@ func TestPlaybookAskSkipAndRedraft(t *testing.T) {
 	if len(g.parser.sources) != parses+1 || !strings.Contains(g.parser.sources[len(g.parser.sources)-1], "2 bags, pick up at 9am") {
 		t.Fatalf("not re-drafted: %q", g.parser.sources)
 	}
-	if p := g.pending(t); len(p.PlaybookAsk) != 0 || !strings.Contains(p.Draft.Description, "Check every pocket") {
+	if p := g.pending(t); len(p.PlaybookAsk) != 0 || !strings.Contains(p.Draft.Description, "Handle the items with care") {
 		t.Fatalf("pending %+v", p)
 	}
 

@@ -35,10 +35,10 @@
    "body": "Buy over-the-counter items only, exactly as the requester named them.\n\nNever pick up a prescription, never show anyone's ID or insurance card, and never suggest which medicine to take or how much.\n\nIf the pharmacist asks about the requester's health, say you're running an errand and text the requester. What you learn about their health stays between you and them."
   },
   "laundry": {
-   "version": "1",
+   "version": "2",
    "when": "always",
    "title": "Laundry & dry cleaning",
-   "body": "Check every pocket before anything goes in. Anything you find (cash, cards, keys, anything sharp) is set aside, photographed and reported to the requester.\n\nPhotograph the bags or items when you collect them and when you hand them back.\n\nYou are not responsible for what the laundry or dry cleaner does to a garment."
+   "body": "Handle the bag or items with care, and keep them as they were given to you.\n\nA quick photo when you collect them and when you hand them back helps everyone.\n\nIf you notice something that looks left in by mistake (cash, keys, a card), let the requester know.\n\nIf you're asked to do the washing yourself, check with the requester how they'd like it done before you start."
   },
   "packages": {
    "version": "1",
