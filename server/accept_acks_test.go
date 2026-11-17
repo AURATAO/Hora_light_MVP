@@ -182,12 +182,12 @@ func TestAcceptAck_RequirementsRecordAndAskAgain(t *testing.T) {
 	if got := strings.Join(requirementKeys(t, w.taskID, w.supporterID), ","); got != "baseline,laundry" {
 		t.Fatalf("first requirements = %s, want baseline,laundry", got)
 	}
-	code, body := acceptWith(t, w, `{"acknowledged":[{"key":"baseline","version":"1"},{"key":"laundry","version":"1"},{"key":"made_up","version":"1"}]}`)
+	code, body := acceptWith(t, w, `{"acknowledged":[{"key":"baseline","version":"1"},{"key":"laundry","version":"2"},{"key":"made_up","version":"1"}]}`)
 	if code != http.StatusOK {
 		t.Fatalf("accept: %d %v", code, body)
 	}
-	if got := strings.Join(ackRows(t, w.supporterID), ","); got != "baseline@1,laundry@1" {
-		t.Errorf("recorded = %s, want baseline@1,laundry@1 (an item nobody asked for is not recorded)", got)
+	if got := strings.Join(ackRows(t, w.supporterID), ","); got != "baseline@1,laundry@2" {
+		t.Errorf("recorded = %s, want baseline@1,laundry@2 (an item nobody asked for is not recorded)", got)
 	}
 	var hash string
 	if err := db.QueryRow(context.Background(),
@@ -214,7 +214,7 @@ func TestAcceptAck_NotEnforced_AcceptsWithoutAcknowledgments(t *testing.T) {
 func TestAcceptAck_Enforced_RefusesThenAccepts(t *testing.T) {
 	w := setupAckDB(t)
 	t.Setenv("ACCEPT_ACK_ENFORCED", "1")
-	code, body := acceptWith(t, w, `{"acknowledged":[{"key":"laundry","version":"1"}]}`)
+	code, body := acceptWith(t, w, `{"acknowledged":[{"key":"laundry","version":"2"}]}`)
 	if code != http.StatusConflict || body["error"] != "acknowledgment_required" {
 		t.Fatalf("accept without the baseline: %d %v, want 409 acknowledgment_required", code, body)
 	}
@@ -229,7 +229,7 @@ func TestAcceptAck_Enforced_RefusesThenAccepts(t *testing.T) {
 	if rows := ackRows(t, w.supporterID); len(rows) != 0 {
 		t.Errorf("recorded %v after a refusal, want nothing", rows)
 	}
-	code, body = acceptWith(t, w, `{"acknowledged":[{"key":"baseline","version":"1"},{"key":"laundry","version":"1"}]}`)
+	code, body = acceptWith(t, w, `{"acknowledged":[{"key":"baseline","version":"1"},{"key":"laundry","version":"2"}]}`)
 	if code != http.StatusOK {
 		t.Fatalf("accept with both: %d %v", code, body)
 	}
