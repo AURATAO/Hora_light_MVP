@@ -532,9 +532,9 @@ export default function OpsFeed() {
               <span>
                 The supporter left or can't finish
                 <span className="block text-xs opacity-60">
-                  Requester: "Your supporter wasn't able to finish… You haven't been charged… Tell us if you'd like
-                  us to set it up again with someone else." Supporter: "You've been taken off… Message HO:RA and tell us
-                  what happened: how the time you logged is handled depends on the situation."
+                  Requester: "Your supporter couldn't finish… You haven't been charged. Want it done by someone
+                  else? Just tell us." Supporter: "…was cancelled because it wasn't finished. Message HO:RA and tell
+                  us what happened."
                 </span>
               </span>
             </label>
