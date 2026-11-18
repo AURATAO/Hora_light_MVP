@@ -48,6 +48,7 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 	if base == "" {
 		log.Printf("[channel] WARNING: no CHANNEL_SETUP_BASE_URL or RENDER_EXTERNAL_URL — setup links cannot be built")
 	}
+	ops := newOpsNotifier(sqlDB, sb, store)
 	router := &channel.Router{
 		Messages:      store,
 		Identities:    store,
@@ -83,7 +84,7 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		Location: nycLocation,
 		SetupURL: func(token string) string { return setupLink(base, token) },
 		Status:   store,
-		Ops:      newOpsNotifier(sqlDB, sb, store),
+		Ops:      ops,
 		Thread:   store,
 		Tasks:    store,
 		Live:     &chatLive{sqlDB: sqlDB},
@@ -96,6 +97,12 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		// internal/channel/handover.go): read by rule, then the small model.
 		HandOvers:      &chatHandOvers{sqlDB: sqlDB},
 		HandOverReader: steps.Small,
+		// Pre-launch gate (internal/channel/pilotgate.go): nil unless
+		// CHANNEL_PILOT_GATE=1.
+		Pilot: channel.PilotGateFromEnv(store),
+	}
+	if router.Pilot != nil {
+		go watchPilotGateDigest(context.Background(), store, ops.emails)
 	}
 	// D-18: the requester agent replaces the context classifier only when
 	// CHANNEL_AGENT=1 (off by default; staging first). It proposes; the

@@ -179,6 +179,8 @@ Nothing here is in the repo; Aura sets them in the dashboard.
 | `LLM_ANTHROPIC_EFFORT` | optional, default `low` | `output_config.effort` on the Anthropic steps |
 | `CHANNEL_OPS_EMAILS` | ops allowlist | hand-off notices |
 | `CHANNEL_OPS_NUMBERS` | Aura's number, E.164 | hand-off SMS |
+| `CHANNEL_PILOT_GATE` | `1` until launch, then unset | pre-launch gate (`internal/channel/pilotgate.go`): numbers not allowlisted, not ops and not an approved supporter get one "we open in December" line a day and nothing else. STOP/START/HELP as usual. Daily count to `CHANNEL_OPS_EMAILS` at 9:00 New York. Startup log: `pilot gate ON: N allowlisted, M ops numbers` |
+| `CHANNEL_PILOT_ALLOWLIST` | the pilot's numbers, E.164, comma-separated | who may book while the gate is on (ops numbers and approved supporters pass already) |
 | `CHANNEL_AGENT` | `1` | the requester agent (on in staging since 2026-10-25) |
 | `CHANNEL_SETUP_WEB_URL` | `https://<webapp host>/channel/setup` | points texted links at the React page; unset = the embedded Go page |
 | `TALKJS_APP_ID` | the live TalkJS app (= the web's `VITE_TALKJS_APP_ID`) | the chat ↔ iMessage relay, both directions. Missing on production until 2026-10-30: the startup log said `chat relay off (both directions)` |

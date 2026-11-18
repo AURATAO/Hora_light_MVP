@@ -322,6 +322,10 @@ type Router struct {
 	// HandOvers nil = off: replies are routed as any message.
 	HandOvers      HandOverStore
 	HandOverReader llm.HandOverReader
+	// Pilot is the pre-launch gate (pilotgate.go, CHANNEL_PILOT_GATE=1):
+	// only allowlisted, ops and approved-supporter numbers are routed;
+	// anyone else gets one closed line a day. Nil = no gate.
+	Pilot *PilotGate
 }
 
 // dispatch runs a reply: inline when routing a webhook message (already off
@@ -370,6 +374,14 @@ func (r *Router) HandleInbound(ctx context.Context, in Inbound) error {
 	// STOP / START and a stopped number, ahead of every other rule: a
 	// carrier keyword is never an answer to anything (optout.go).
 	if handled, err := r.handleOptOut(ctx, in, id); handled {
+		if err := r.Identities.TouchConversation(ctx, id.ID, in.ReceivedAt); err != nil {
+			log.Printf("[channel] touch conversation identity=%s: %v", id.ID, err)
+		}
+		return err
+	}
+	// The pre-launch gate (pilotgate.go): after STOP / START, before
+	// anything else reads the message or keeps its photos.
+	if gated, err := r.pilotGate(ctx, in, id); gated {
 		if err := r.Identities.TouchConversation(ctx, id.ID, in.ReceivedAt); err != nil {
 			log.Printf("[channel] touch conversation identity=%s: %v", id.ID, err)
 		}
