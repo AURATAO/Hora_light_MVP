@@ -90,7 +90,7 @@ export function forceCompleteTask(taskId) {
 // cause picks the wording both people receive: '' is the general case,
 // 'supporter_dropped' is a supporter who left an accepted task (the requester
 // is told their supporter couldn't finish and that nothing was charged; the
-// supporter is told they were taken off and that the time isn't paid). The
+// supporter is told they were taken off and asked to message HO:RA). The
 // reason is an internal note in that case — it never reaches the requester.
 export function adminCancelTask(taskId, reason, cause = '') {
   return opsFetch(`/admin/tasks/${taskId}/cancel`, {

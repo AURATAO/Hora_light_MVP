@@ -557,7 +557,8 @@ func TestAdminOpsCancelWithoutReason(t *testing.T) {
 
 // A supporter who leaves an accepted task: the requester is told what happened
 // and that it cost them nothing, and the supporter is told they were taken off
-// and that the time is not paid — nobody is thanked for their time.
+// and asked to get in touch — nobody is thanked for their time, and nothing is
+// promised or refused about pay.
 func TestAdminOpsCancelSupporterDroppedCopy(t *testing.T) {
 	setupAdminOpsDB(t)
 	w := seedOpsWorld(t, "open")
@@ -594,7 +595,8 @@ func TestAdminOpsCancelSupporterDroppedCopy(t *testing.T) {
 	if sTitle != "You've been taken off a task" {
 		t.Errorf("supporter title = %q", sTitle)
 	}
-	if !strings.Contains(sBody, "isn't paid") || strings.Contains(sBody, "Thanks for your time") {
+	if !strings.Contains(sBody, "Message HO:RA") || !strings.Contains(sBody, "depends on the situation") ||
+		strings.Contains(sBody, "isn't paid") || strings.Contains(sBody, "Thanks for your time") {
 		t.Errorf("supporter body = %q", sBody)
 	}
 	if got := scalar[string](t, `SELECT coalesce(cancel_reason,'') FROM public.tasks WHERE id=$1::uuid`, w.taskID); got != "The supporter couldn't finish" {
