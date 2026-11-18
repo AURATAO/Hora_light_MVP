@@ -90,8 +90,22 @@ func RegisterOpsRoutes(r *gin.Engine, sqldb *sql.DB, authMW gin.HandlerFunc, isA
 				        end
 				   from public.payouts p where p.task_id = v.task_id),
 				(select coalesce(sum(p.amount_cents),0) from public.payouts p
-				  where p.task_id = v.task_id and p.status <> 'failed')
+				  where p.task_id = v.task_id and p.status <> 'failed'),
+				-- "I can't do this task" from whoever holds the task now
+				-- (server/cant_do.go): the latest one, if any. A report from a
+				-- supporter who has since been replaced is history, not a flag.
+				cd.cd_at, cd.cd_reason, (cd.cd_meta->>'bought_items')::boolean, cd.cd_meta->>'note'
 			FROM public.view_ops_tasks v
+			LEFT JOIN LATERAL (
+				select a.created_at as cd_at, a.reason as cd_reason, a.meta as cd_meta
+				  from public.audit_logs a
+				  join public.tasks t on t.id = a.job_id
+				 where a.job_id = v.task_id
+				   and a.action = 'SUPPORTER_CANT_DO'
+				   and a.actor_id = t.assigned_to_id
+				 order by a.created_at desc
+				 limit 1
+			) cd ON true
 			WHERE %s
 			ORDER BY last_event_at DESC
 			LIMIT 500
@@ -139,6 +153,12 @@ func RegisterOpsRoutes(r *gin.Engine, sqldb *sql.DB, authMW gin.HandlerFunc, isA
 			HasReceiptPhoto  bool       `json:"has_receipt_photo"`
 			PayoutState      string     `json:"payout_state"`
 			PayoutCents      int        `json:"payout_cents"`
+			// The supporter on the task has said they can't do it. Null when
+			// they have not. Nothing changed on the task when they did.
+			CantDoAt     *time.Time `json:"cant_do_at"`
+			CantDoReason *string    `json:"cant_do_reason"`
+			CantDoBought *bool      `json:"cant_do_bought"`
+			CantDoNote   *string    `json:"cant_do_note"`
 		}
 
 		out := []Row{}
@@ -153,6 +173,7 @@ func RegisterOpsRoutes(r *gin.Engine, sqldb *sql.DB, authMW gin.HandlerFunc, isA
 				&requesterName, &supporterName,
 				&r.FirstStartAt, &r.LastEndAt, &r.TotalDone, &r.Running, &r.Duration, &r.LastEventAt,
 				&r.ReceiptCents, &hasReceiptPhoto, &r.PayoutState, &r.PayoutCents,
+				&r.CantDoAt, &r.CantDoReason, &r.CantDoBought, &r.CantDoNote,
 			); err != nil {
 				log.Printf("[ops.feed][scan] %v", err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "scan error"})

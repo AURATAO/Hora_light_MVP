@@ -8,7 +8,7 @@
  */
 
 export interface SupporterRule {
-  /** hand | door | shield | footprints | ban; anything else shows a neutral icon. */
+  /** hand | message | door | shield | footprints | ban; anything else shows a neutral icon. */
   icon: string;
   title: string;
   body: string;
@@ -19,6 +19,11 @@ export const BUILT_IN_RULES: SupporterRule[] = [
     icon: "hand",
     title: "You can always say no",
     body: "Decline any task, or leave one, if you feel unsafe. There's no penalty, and you don't have to explain.",
+  },
+  {
+    icon: "message",
+    title: "Can't finish? Tell us right away",
+    body: "If you can't start or finish a task you accepted, tell HO:RA straight away so we can find someone else: tap \"I can't do this task\" on the task, or message us. How the time you logged is handled depends on what happened, so tell us and we'll work it out with you. If you feel unsafe, leave first and tell us after.",
   },
   {
     icon: "door",

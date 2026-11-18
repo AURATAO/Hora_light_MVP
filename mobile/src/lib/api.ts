@@ -344,6 +344,10 @@ export interface AppConfig {
   /** The supporter rules in the server's words (supporter-rules.ts reads
    *  them). Absent from an older backend. */
   supporter_rules?: unknown;
+  /** "I can't do this task": the button, reasons and confirmation in the
+   *  server's words (cant-do.ts reads them). Absent from an older backend,
+   *  and then the button is not shown. */
+  cant_do?: unknown;
 }
 
 export function getAppConfig(): Promise<AppConfig> {
@@ -822,6 +826,15 @@ export function acceptTask(
     method: "POST",
     ...(acknowledged.length > 0 ? { body: { acknowledged } } : {}),
   });
+}
+
+/** Tell HO:RA you can't do a task you hold. Changes nothing on the task; the
+ *  server answers with the confirmation to show (server/cant_do.go). */
+export function reportCantDo(
+  id: string,
+  payload: { reason: string; bought_items: boolean; note?: string },
+): Promise<{ ok: boolean; title: string; body: string; reported_at?: string }> {
+  return apiFetch(`/tasks/${id}/cant-do`, { method: "POST", body: payload });
 }
 
 /** What this supporter must confirm to accept this task. The words are the

@@ -694,6 +694,12 @@ func getAppConfig(c *gin.Context) {
 	if rules, err := supporterRules(); err == nil {
 		out["supporter_rules"] = rules
 	}
+	// "I can't do this task": the button, the reasons and the confirmation
+	// (cant_do.go). Left out when unreadable, and then the app shows no
+	// button at all rather than one whose reasons the server would refuse.
+	if cd, err := cantDoText(); err == nil {
+		out["cant_do"] = cd
+	}
 	c.JSON(200, out)
 }
 

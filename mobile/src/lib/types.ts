@@ -213,6 +213,9 @@ export interface Task {
    *  "Accepted", "On my way", "Working" (server/task_stage.go). Shown as
    *  sent on My jobs; absent from an older backend. */
   stage_label?: string;
+  /** When this supporter last told HO:RA they can't do the task. Only sent
+   *  to the supporter who holds it. */
+  cant_do_reported_at?: string;
   description: string | null;
   category: TaskCategory;
   location_text: string | null;
