@@ -280,6 +280,21 @@ func adminCancelSupporterCopy(cause, taskTitle string) (title, body string) {
 		fmt.Sprintf("%q was cancelled by the HO:RA team. Nothing more to do on it.", taskTitle)
 }
 
+// assignedByOps reports whether the task's supporter was put on it by ops
+// (admin reassign or direct assign) rather than accepting it themselves. On
+// any error the answer is false, and the ordinary wording is used.
+func assignedByOps(ctx context.Context, taskID string) bool {
+	var yes bool
+	if err := db.QueryRow(ctx, `
+		select exists (select 1 from public.audit_logs
+		                where job_id = $1::uuid and action = 'TASK_REASSIGNED')
+	`, taskID).Scan(&yes); err != nil {
+		log.Printf("[admin.cancel][assignedByOps] task=%s err=%v", taskID, err)
+		return false
+	}
+	return yes
+}
+
 // POST /admin/tasks/:id/cancel  { "reason": "...", "cause": "" | "supporter_dropped" }
 //
 // An admin cancelling on the requester's behalf — they phoned in, or the task
@@ -388,6 +403,14 @@ func adminCancelTaskHandler(c *gin.Context) {
 	})
 	if t.AssigneeID != nil && *t.AssigneeID != "" {
 		sTitle, sBody := adminCancelSupporterCopy(cause, t.Title)
+		if cause == cancelCauseSupporterDropped && assignedByOps(ctx, taskID) {
+			// Whoever holds the task now was put on it by ops — they stepped
+			// in for the supporter who left. "Because it wasn't finished …
+			// tell us what happened" is addressed to the person who left,
+			// and would read as blame to the one who came to help.
+			sTitle, sBody = "Task cancelled", fmt.Sprintf(
+				"%q was cancelled. Thanks for stepping in: there's nothing more to do on it.", t.Title)
+		}
 		notifyUser(ctx, *t.AssigneeID, t.AssigneeEmail, notify.CreateNotificationInput{
 			TaskID:    taskID,
 			Type:      "CANCELLED",
