@@ -22,6 +22,7 @@ Walkthrough
 6. Earnings tab shows the payout for the same task, under "On its way" and "Paid out". My jobs lists active and finished tasks.
 7. Profile → Supporter rules shows the safety rules for supporters (also shown on the application form before applying): decline any task if you feel unsafe; enter a home only for a specific errand with the customer or a named adult present, or with clear access instructions; never alone with minors; never give anyone a ride; no alcohol, tobacco, drugs or prescriptions.
 8. From the task or the chat, the "⋯" menu offers Report user / Block user (Guideline 1.2).
+   An accepted task also has an "I can't do this task" link at the bottom. It sends a short form to the HO:RA team (reason, whether anything was bought) so a person can follow up; it does not change the task. No need to use it for the walkthrough.
 9. Account deletion is available in-app under Profile (Guideline 5.1.1(v)).
 
 Three notes

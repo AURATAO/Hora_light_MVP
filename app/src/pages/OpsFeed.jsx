@@ -32,6 +32,17 @@ const PAYOUT_STATES = {
   failed:     { label: 'Transfer failed', cls: 'border-red-400/60 text-red-300' },
 }
 
+// The reason codes of "I can't do this task" (server/cant_do.json). A code the
+// panel does not know yet is shown as the code.
+const CANT_DO_REASONS = {
+  unsafe: "doesn't feel safe",
+  emergency: 'emergency or unwell',
+  unreachable: "can't reach the requester",
+  not_as_described: "task isn't as described",
+  timing: "can't make the time",
+  other: 'something else',
+}
+
 const usd = (cents) => (typeof cents === 'number' ? `$${(cents / 100).toFixed(2)}` : '—')
 
 function PayoutBadge({ state }) {
@@ -341,6 +352,20 @@ export default function OpsFeed() {
                   <td className="p-2">
                     <div className="font-medium">{r.title}</div>
                     <div className="text-xs opacity-70">{r.location_text || '—'}</div>
+                    {r.cant_do_at && r.status === 'open' ? (
+                      /* The supporter pressed "I can't do this task". Nothing
+                         changed on the task: it is waiting for one of us. */
+                      <div className="mt-1 rounded border border-red-400/60 bg-red-400/10 px-2 py-1 text-xs text-red-200">
+                        <div className="font-semibold">
+                          Supporter can't do this · {CANT_DO_REASONS[r.cant_do_reason] || r.cant_do_reason}
+                        </div>
+                        <div>
+                          {r.cant_do_bought ? 'Items already bought — get the receipt. ' : 'Nothing bought. '}
+                          <span className="opacity-70">{new Date(r.cant_do_at).toLocaleTimeString()}</span>
+                        </div>
+                        {r.cant_do_note ? <div className="mt-1 opacity-90">“{r.cant_do_note}”</div> : null}
+                      </div>
+                    ) : null}
                   </td>
                   <td className="p-2">
                     <div className="text-xs">Req: {r.requester_name || '—'}{r.requester_email ? <span className="opacity-60"> · {r.requester_email}</span> : null}</div>
@@ -507,9 +532,9 @@ export default function OpsFeed() {
               <span>
                 The supporter left or can't finish
                 <span className="block text-xs opacity-60">
-                  Requester: "Your supporter wasn't able to finish… You haven't been charged… Tell us if you'd like
-                  us to set it up again with someone else." Supporter: "You've been taken off… Message HO:RA and tell us
-                  what happened: how the time you logged is handled depends on the situation."
+                  Requester: "Your supporter couldn't finish… You haven't been charged. Want it done by someone
+                  else? Just tell us." Supporter: "…was cancelled because it wasn't finished. Message HO:RA and tell
+                  us what happened."
                 </span>
               </span>
             </label>

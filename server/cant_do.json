@@ -1,0 +1,28 @@
+{
+  "_comment": [
+    "What a supporter sees when they tell HO:RA they can't do a task they accepted (cant_do.go).",
+    "The app shows this text as sent. Bump version when the wording changes.",
+    "reasons[].code is what is recorded and what ops see; never reuse a code for a different meaning. Remove a reason by deleting it; old reports keep their code."
+  ],
+  "version": "cd1",
+  "button": "I can't do this task",
+  "button_caption": "Tell HO:RA. We'll get in touch.",
+  "heading": "Can't do this task?",
+  "intro": "Tell us what's going on and we'll contact you. Nothing changes on the task until we do.",
+  "reasons": [
+    { "code": "unsafe", "label": "I don't feel safe" },
+    { "code": "emergency", "label": "An emergency, or I'm unwell" },
+    { "code": "unreachable", "label": "I can't reach the requester" },
+    { "code": "not_as_described", "label": "The task isn't what was described" },
+    { "code": "timing", "label": "I can't make the time" },
+    { "code": "other", "label": "Something else" }
+  ],
+  "bought_question": "Have you already bought anything for this task?",
+  "bought_yes": "Yes",
+  "bought_no": "No",
+  "note_placeholder": "Anything we should know? (optional)",
+  "submit": "Send to HO:RA",
+  "done_title": "We've got it",
+  "done_body": "HO:RA will contact you shortly. If you feel unsafe, leave now: you don't need to wait for us.",
+  "reported_label": "You told HO:RA you can't do this task. We'll contact you."
+}

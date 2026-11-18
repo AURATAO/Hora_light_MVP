@@ -22,6 +22,8 @@ import { UserSafetyMenu } from "../../components/UserSafetyMenu";
 import { safetyCounterpart } from "../../lib/safety";
 import { CancelTaskSheet } from "../../components/CancelTaskSheet";
 import { AcceptAckSheet } from "../../components/AcceptAckSheet";
+import { CantDoSheet } from "../../components/CantDoSheet";
+import { cantDoFromConfig, type CantDoCopy, type CantDoPayload } from "../../lib/cant-do";
 import { errorMessageFor } from "../../lib/api-error";
 import { acknowledgedPayload, type AcceptRequirements } from "../../lib/accept-ack";
 import { CompleteTaskSheet, type CompleteTaskPayload } from "../../components/CompleteTaskSheet";
@@ -45,6 +47,8 @@ import {
   acceptTask,
   acknowledgmentRequired,
   getAcceptRequirements,
+  getAppConfig,
+  reportCantDo,
   isPayoutsOnboardingRequired,
   cancelTask,
   clockIn,
@@ -247,6 +251,12 @@ export default function TaskDetail() {
   const [payoutsGate, setPayoutsGate] = useState<string | null>(null);
   // The confirmation sheet before accepting; null = closed.
   const [ackSheet, setAckSheet] = useState<AcceptRequirements | null>(null);
+  // "I can't do this task" (lib/cant-do.ts). The copy is the server's; null
+  // until /config answers with something usable, and then there is no button.
+  const [cantDoCopy, setCantDoCopy] = useState<CantDoCopy | null>(null);
+  const [cantDoOpen, setCantDoOpen] = useState(false);
+  // Sent from this screen, before the next refetch carries it on the task.
+  const [cantDoSent, setCantDoSent] = useState(false);
   const [clockLoading, setClockLoading] = useState(false);
   // In flight on the "On my way" tap. The server is idempotent, but a button
   // that still looks unpressed after being pressed is its own bug.
@@ -283,6 +293,33 @@ export default function TaskDetail() {
       if (acceptLostTimeoutRef.current) clearTimeout(acceptLostTimeoutRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    let alive = true;
+    getAppConfig()
+      .then((cfg) => {
+        if (alive) setCantDoCopy(cantDoFromConfig(cfg.cant_do));
+      })
+      .catch(() => {
+        // No config, no button: Profile → Contact HO:RA is still there.
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Tells HO:RA; changes nothing on the task (server/cant_do.go). The sheet
+  // shows the server's confirmation, or the message thrown here.
+  async function handleCantDo(payload: CantDoPayload) {
+    try {
+      const res = await reportCantDo(id, payload);
+      setCantDoSent(true);
+      return { title: res.title, body: res.body };
+    } catch (e) {
+      if (handleAuthError(e)) throw new Error("Please sign in again.");
+      throw new Error(errorMessageFor(e, "That didn't reach us. Try again, or message HO:RA directly."));
+    }
+  }
 
   async function handleCopyDescription() {
     if (!task?.description) return;
@@ -1948,6 +1985,32 @@ export default function TaskDetail() {
           </View>
         ) : null}
 
+        {/* The way to say "I can't do this" without disappearing. Quiet, and
+            last: it is not something to reach for, but it has to be findable
+            by someone who is stuck. Text, not a solid button — the screen's
+            one solid CTA is the work itself (DESIGN.md §1). */}
+        {isAssignee && task.status === "open" && cantDoCopy ? (
+          cantDoSent || task.cant_do_reported_at ? (
+            <View className="mb-8 rounded-card bg-brand-tint p-4">
+              <Text className="text-body text-brand">{cantDoCopy.reportedLabel}</Text>
+            </View>
+          ) : (
+            <View className="mb-8 items-start">
+              <PressableScale
+                onPress={() => setCantDoOpen(true)}
+                hitSlop={8}
+                accessibilityRole="button"
+                className="min-h-[44px] justify-center"
+              >
+                <Text className="text-body font-semibold text-muted underline">{cantDoCopy.button}</Text>
+              </PressableScale>
+              {cantDoCopy.buttonCaption ? (
+                <Text className="text-caption text-muted">{cantDoCopy.buttonCaption}</Text>
+              ) : null}
+            </View>
+          )
+        ) : null}
+
         {/* Lost the accept race. Outside the block above because that one is
             gone by now — the refetch turned this into an assigned task. Brand
             tint, not danger: nothing went wrong, someone else was quicker. */}
@@ -1958,6 +2021,12 @@ export default function TaskDetail() {
         ) : null}
       </ScrollView>
 
+      <CantDoSheet
+        visible={cantDoOpen}
+        copy={cantDoCopy}
+        onClose={() => setCantDoOpen(false)}
+        onSubmit={handleCantDo}
+      />
       <AcceptAckSheet
         requirements={ackSheet}
         busy={accepting}

@@ -582,7 +582,7 @@ func TestAdminOpsCancelSupporterDroppedCopy(t *testing.T) {
 	if rTitle != "Your supporter couldn't finish" {
 		t.Errorf("requester title = %q", rTitle)
 	}
-	for _, want := range []string{"wasn't able to finish", "haven't been charged", "someone else"} {
+	for _, want := range []string{"couldn't finish", "haven't been charged", "someone else"} {
 		if !strings.Contains(rBody, want) {
 			t.Errorf("requester body lacks %q: %q", want, rBody)
 		}
@@ -595,7 +595,7 @@ func TestAdminOpsCancelSupporterDroppedCopy(t *testing.T) {
 	if sTitle != "You've been taken off a task" {
 		t.Errorf("supporter title = %q", sTitle)
 	}
-	if !strings.Contains(sBody, "Message HO:RA") || !strings.Contains(sBody, "depends on the situation") ||
+	if !strings.Contains(sBody, "Message HO:RA") || len(sBody) > 140 ||
 		strings.Contains(sBody, "isn't paid") || strings.Contains(sBody, "Thanks for your time") {
 		t.Errorf("supporter body = %q", sBody)
 	}

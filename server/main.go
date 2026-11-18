@@ -140,6 +140,10 @@ type Task struct {
 	// way", "Working" (task_stage.go). Shown as sent.
 	StageLabel string `json:"stage_label,omitempty"`
 
+	// When the supporter reading this last told HO:RA they can't do the task
+	// (cant_do.go). Only ever set for the supporter who holds it.
+	CantDoReportedAt *time.Time `json:"cant_do_reported_at,omitempty"`
+
 	// uuid（後端查詢/權限全靠它）
 	RequesterID  string  `json:"requester_id"`
 	AssignedToID *string `json:"assigned_to_id,omitempty"`
@@ -834,6 +838,9 @@ func main() {
 
 		tasksAPI.POST("/:id/accept", acceptTask)
 		tasksAPI.GET("/:id/accept-requirements", getAcceptRequirements)
+		// A supporter raising a hand on a task they hold. Changes nothing on
+		// the task; records it and emails ops (cant_do.go).
+		tasksAPI.POST("/:id/cant-do", postCantDo)
 		tasksAPI.POST("/:id/complete", completeTask)
 		tasksAPI.POST("/:id/completion-photo", uploadTaskCompletionPhoto)
 		tasksAPI.POST("/:id/cancel", cancelTask)
@@ -2589,6 +2596,10 @@ func getTask(c *gin.Context) {
 	// Review sandbox, which plays both sides of its own task.
 	if t.Status == "open" && t.AssignedToID == nil && (uid != t.RequesterID || t.CanSelfAccept) {
 		t.PayLabel, t.PayNote = taskPayText(ctx, id)
+	}
+
+	if isAssignee && t.Status == "open" {
+		t.CantDoReportedAt = cantDoReportedAt(c, id, uid)
 	}
 
 	// A block between the viewer and the other party on this task: the chat

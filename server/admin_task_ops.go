@@ -247,7 +247,7 @@ const cancelCauseSupporterDropped = "supporter_dropped"
 // nothing is captured (see releaseTaskHold below). Said in every requester
 // message, because "Task cancelled" with no word about the money is how a
 // requester ends up checking their bank.
-const noChargeSentence = "You haven't been charged, and any hold on your card is released."
+const noChargeSentence = "You haven't been charged."
 
 // adminCancelRequesterCopy is what the requester reads. It is also what a
 // texting requester receives verbatim (channel/status.go relays CANCELLED
@@ -256,8 +256,8 @@ const noChargeSentence = "You haven't been charged, and any hold on your card is
 func adminCancelRequesterCopy(cause, taskTitle, reason string) (title, body string) {
 	if cause == cancelCauseSupporterDropped {
 		return "Your supporter couldn't finish",
-			fmt.Sprintf("Your supporter wasn't able to finish %q, so we've cancelled it. %s "+
-				"Tell us if you'd like us to set it up again with someone else.", taskTitle, noChargeSentence)
+			fmt.Sprintf("Your supporter couldn't finish %q, so we've cancelled it. %s "+
+				"Want it done by someone else? Just tell us.", taskTitle, noChargeSentence)
 	}
 	if reason != "" {
 		return "Task cancelled",
@@ -273,12 +273,11 @@ func adminCancelRequesterCopy(cause, taskTitle, reason string) (title, body stri
 func adminCancelSupporterCopy(cause, taskTitle string) (title, body string) {
 	if cause == cancelCauseSupporterDropped {
 		return "You've been taken off a task",
-			fmt.Sprintf("You've been taken off %q because it wasn't finished, and the task has been cancelled. "+
-				"Message HO:RA and tell us what happened: how the time you logged is handled depends on the situation.", taskTitle)
+			fmt.Sprintf("%q was cancelled because it wasn't finished. "+
+				"Message HO:RA and tell us what happened.", taskTitle)
 	}
 	return "Task cancelled",
-		fmt.Sprintf("%q has been cancelled by the HO:RA team, so there's nothing more to do on it. "+
-			"Message us if you have any questions.", taskTitle)
+		fmt.Sprintf("%q was cancelled by the HO:RA team. Nothing more to do on it.", taskTitle)
 }
 
 // POST /admin/tasks/:id/cancel  { "reason": "...", "cause": "" | "supporter_dropped" }
