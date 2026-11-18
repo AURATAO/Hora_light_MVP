@@ -236,7 +236,52 @@ func adminForceCompleteTask(c *gin.Context) {
 	})
 }
 
-// POST /admin/tasks/:id/cancel  { "reason": "..." }
+// cancelCauseSupporterDropped: the supporter left an accepted task and ops are
+// closing it because nobody else can take it over. The requester is told what
+// happened and that nothing was charged; the supporter is NOT thanked for
+// their time: whether any of it is paid is decided case by case, by a person
+// (supporter rules, sr3), so the message asks them to get in touch instead.
+const cancelCauseSupporterDropped = "supporter_dropped"
+
+// noChargeSentence is true of every admin cancel: the hold is released and
+// nothing is captured (see releaseTaskHold below). Said in every requester
+// message, because "Task cancelled" with no word about the money is how a
+// requester ends up checking their bank.
+const noChargeSentence = "You haven't been charged, and any hold on your card is released."
+
+// adminCancelRequesterCopy is what the requester reads. It is also what a
+// texting requester receives verbatim (channel/status.go relays CANCELLED
+// bodies), so it has to stand on its own: what happened, what it cost them
+// (nothing), what to do next.
+func adminCancelRequesterCopy(cause, taskTitle, reason string) (title, body string) {
+	if cause == cancelCauseSupporterDropped {
+		return "Your supporter couldn't finish",
+			fmt.Sprintf("Your supporter wasn't able to finish %q, so we've cancelled it. %s "+
+				"Tell us if you'd like us to set it up again with someone else.", taskTitle, noChargeSentence)
+	}
+	if reason != "" {
+		return "Task cancelled",
+			fmt.Sprintf("Your task %q has been cancelled by the HO:RA team. Reason: %s. %s",
+				taskTitle, strings.TrimRight(reason, ". "), noChargeSentence)
+	}
+	return "Task cancelled",
+		fmt.Sprintf("Your task %q has been cancelled by the HO:RA team. %s "+
+			"Message us if you have any questions.", taskTitle, noChargeSentence)
+}
+
+// adminCancelSupporterCopy is what the supporter who held the task reads.
+func adminCancelSupporterCopy(cause, taskTitle string) (title, body string) {
+	if cause == cancelCauseSupporterDropped {
+		return "You've been taken off a task",
+			fmt.Sprintf("You've been taken off %q because it wasn't finished, and the task has been cancelled. "+
+				"Message HO:RA and tell us what happened: how the time you logged is handled depends on the situation.", taskTitle)
+	}
+	return "Task cancelled",
+		fmt.Sprintf("%q has been cancelled by the HO:RA team, so there's nothing more to do on it. "+
+			"Message us if you have any questions.", taskTitle)
+}
+
+// POST /admin/tasks/:id/cancel  { "reason": "...", "cause": "" | "supporter_dropped" }
 //
 // An admin cancelling on the requester's behalf — they phoned in, or the task
 // is stale. Distinct from adminRemoveTask (a platform takedown, which the
@@ -254,11 +299,22 @@ func adminCancelTaskHandler(c *gin.Context) {
 
 	var in struct {
 		Reason string `json:"reason"`
+		// Why ops are cancelling, when it is one of the cases that has its
+		// own wording for the two people involved. Empty is the general case.
+		Cause string `json:"cause"`
 	}
 	if c.Request.Body != nil {
 		_ = c.ShouldBindJSON(&in)
 	}
 	reason := strings.TrimSpace(in.Reason)
+	cause := strings.TrimSpace(in.Cause)
+	if cause != "" && cause != cancelCauseSupporterDropped {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "unknown_cause",
+			"message": "cause must be empty or \"supporter_dropped\".",
+		})
+		return
+	}
 
 	ctx := c.Request.Context()
 
@@ -282,11 +338,20 @@ func adminCancelTaskHandler(c *gin.Context) {
 
 	closed := closeOpenWorklogs(ctx, taskID)
 
+	// tasks.cancel_reason is read back to the requester on their task screen.
+	// For a dropped task the ops note is internal (it may say things about the
+	// supporter), so the column gets a fixed neutral line and the note goes
+	// to the audit row only.
+	storedReason := reason
+	if cause == cancelCauseSupporterDropped {
+		storedReason = "The supporter couldn't finish"
+	}
+
 	tag, err := db.Exec(ctx, `
 		update public.tasks
 		set status = 'cancelled', cancelled_at = now(), cancel_reason = nullif($2,'')
 		where id = $1::uuid and status = 'open'
-	`, taskID, reason)
+	`, taskID, storedReason)
 	if err != nil {
 		log.Printf("[admin.cancel][update] task=%s err=%v", taskID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
@@ -308,28 +373,27 @@ func adminCancelTaskHandler(c *gin.Context) {
 
 	writeAudit(ctx, taskID, actorUID, "CANCELLED", reason, map[string]any{
 		"admin_email":             actorEmail,
+		"cause":                   cause,
 		"closed_worklog_sessions": closed,
 		"supporter_email":         t.AssigneeEmail,
 		"hold_released":           released != nil,
 	})
 
-	body := fmt.Sprintf("Your task %q has been cancelled by the HO:RA team.", t.Title)
-	if reason != "" {
-		body = fmt.Sprintf("Your task %q has been cancelled by the HO:RA team: %s", t.Title, reason)
-	}
+	rTitle, rBody := adminCancelRequesterCopy(cause, t.Title, reason)
 	notifyUser(ctx, t.RequesterID, t.RequesterEmail, notify.CreateNotificationInput{
 		TaskID:    taskID,
 		Type:      "CANCELLED",
-		Title:     "Task cancelled",
-		Body:      body,
+		Title:     rTitle,
+		Body:      rBody,
 		TaskTitle: t.Title,
 	})
 	if t.AssigneeID != nil && *t.AssigneeID != "" {
+		sTitle, sBody := adminCancelSupporterCopy(cause, t.Title)
 		notifyUser(ctx, *t.AssigneeID, t.AssigneeEmail, notify.CreateNotificationInput{
 			TaskID:    taskID,
 			Type:      "CANCELLED",
-			Title:     "Task cancelled",
-			Body:      fmt.Sprintf("%q has been cancelled. Thanks for your time.", t.Title),
+			Title:     sTitle,
+			Body:      sBody,
 			TaskTitle: t.Title,
 		})
 	}

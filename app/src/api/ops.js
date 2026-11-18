@@ -86,10 +86,16 @@ export function forceCompleteTask(taskId) {
 // POST /admin/tasks/:id/cancel — cancel on the requester's behalf. Records
 // 'cancelled', the same status the requester's own cancellation produces;
 // removeTask is the platform takedown and is deliberately a different status.
-export function adminCancelTask(taskId, reason) {
+//
+// cause picks the wording both people receive: '' is the general case,
+// 'supporter_dropped' is a supporter who left an accepted task (the requester
+// is told their supporter couldn't finish and that nothing was charged; the
+// supporter is told they were taken off and asked to message HO:RA). The
+// reason is an internal note in that case — it never reaches the requester.
+export function adminCancelTask(taskId, reason, cause = '') {
   return opsFetch(`/admin/tasks/${taskId}/cancel`, {
     method: 'POST',
-    body: JSON.stringify({ reason }),
+    body: JSON.stringify({ reason, cause }),
   })
 }
 

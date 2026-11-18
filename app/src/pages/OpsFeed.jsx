@@ -72,6 +72,13 @@ export default function OpsFeed() {
   const [pickedSupporter, setPickedSupporter] = useState('')
   const [reassignBusy, setReassignBusy] = useState(false)
 
+  // Cancel dialog: null when closed, otherwise the row being cancelled. The
+  // cause decides what the requester and the supporter are each told.
+  const [cancelling, setCancelling] = useState(null)
+  const [cancelCause, setCancelCause] = useState('')
+  const [cancelNote, setCancelNote] = useState('')
+  const [cancelBusy, setCancelBusy] = useState(false)
+
   // Money dialog: the row it was opened for, and the detail once it arrives.
   // Fetched on open rather than with the feed because the receipt photo is a
   // signed link that expires — it is minted for the person about to look.
@@ -145,15 +152,25 @@ export default function OpsFeed() {
   }
 
   // --- 動作：取消
-  async function cancelTask(id) {
-    const reason = prompt('Cancel reason (optional):');
-    if (reason == null) return;
+  function openCancel(row) {
+    setCancelling(row)
+    // A task somebody holds is most often cancelled because they left it.
+    setCancelCause(row.supporter_email ? 'supporter_dropped' : '')
+    setCancelNote('')
+  }
+
+  async function confirmCancel() {
+    if (!cancelling) return
+    setCancelBusy(true)
     try {
-      const res = await adminCancelTask(id, reason);
-      toast(res?.already_cancelled ? 'Task was already cancelled' : 'Task cancelled — both parties notified');
-      load();
+      const res = await adminCancelTask(cancelling.task_id, cancelNote.trim(), cancelCause)
+      toast(res?.already_cancelled ? 'Task was already cancelled' : 'Task cancelled — both parties notified, nothing charged')
+      setCancelling(null)
+      load()
     } catch (e) {
-      toast(e.message || 'Cancel failed');
+      toast(e.message || 'Cancel failed')
+    } finally {
+      setCancelBusy(false)
     }
   }
 
@@ -365,7 +382,7 @@ export default function OpsFeed() {
                     <div className="flex gap-1">
                       <button className="rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40" onClick={()=>adjustTime(r.task_id)}>Adjust</button>
                       <button className="rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40" onClick={()=>forceComplete(r.task_id)}>Force</button>
-                      <button className="rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40" onClick={()=>cancelTask(r.task_id)}>Cancel</button>
+                      <button className="rounded-md border border-white/20 px-2 py-1 text-xs hover:border-white/40" onClick={()=>openCancel(r)}>Cancel</button>
                       {r.status === 'open' && (
                         <>
                           <button
@@ -444,6 +461,89 @@ export default function OpsFeed() {
           placeholder="Only recorded in the audit log — never shown to the user"
           value={removeNote}
           onChange={(e) => setRemoveNote(e.target.value)}
+        />
+      </Modal>
+
+      <Modal
+        open={!!cancelling}
+        onClose={() => (cancelBusy ? null : setCancelling(null))}
+        title="Cancel task"
+        actions={
+          <>
+            <button
+              className="rounded-md border border-white/20 px-3 py-1 text-sm hover:border-white/40"
+              onClick={() => setCancelling(null)}
+              disabled={cancelBusy}
+            >
+              Keep task
+            </button>
+            <button
+              className="rounded-md border border-red-400/60 px-3 py-1 text-sm text-red-300 hover:border-red-400"
+              onClick={confirmCancel}
+              disabled={cancelBusy}
+            >
+              {cancelBusy ? 'Cancelling…' : 'Cancel task'}
+            </button>
+          </>
+        }
+      >
+        <p className="mb-3">
+          <span className="font-medium text-white">{cancelling?.title}</span>
+        </p>
+        <p className="mb-3 text-xs opacity-70">
+          The hold on the requester's card is released and nothing is charged. The system pays the supporter nothing for this task; anything owed is decided case by case and paid by hand.
+        </p>
+
+        <label className="block text-xs uppercase tracking-wide opacity-70 mb-1">Why</label>
+        <div className="mb-3 space-y-2 text-sm">
+          {cancelling?.supporter_email ? (
+            <label className="flex items-start gap-2">
+              <input
+                type="radio"
+                className="mt-1"
+                checked={cancelCause === 'supporter_dropped'}
+                onChange={() => setCancelCause('supporter_dropped')}
+              />
+              <span>
+                The supporter left or can't finish
+                <span className="block text-xs opacity-60">
+                  Requester: "Your supporter wasn't able to finish… You haven't been charged… Tell us if you'd like
+                  us to set it up again with someone else." Supporter: "You've been taken off… Message HO:RA and tell us
+                  what happened: how the time you logged is handled depends on the situation."
+                </span>
+              </span>
+            </label>
+          ) : null}
+          <label className="flex items-start gap-2">
+            <input
+              type="radio"
+              className="mt-1"
+              checked={cancelCause === ''}
+              onChange={() => setCancelCause('')}
+            />
+            <span>
+              Another reason
+              <span className="block text-xs opacity-60">
+                Requester: "Your task has been cancelled by the HO:RA team. Reason: (your note). You haven't been
+                charged…"
+              </span>
+            </span>
+          </label>
+        </div>
+
+        <label className="block text-xs uppercase tracking-wide opacity-70 mb-1">
+          {cancelCause === 'supporter_dropped' ? 'Internal note (optional)' : 'Reason shown to the requester (optional)'}
+        </label>
+        <textarea
+          className="w-full border rounded px-2 py-1 bg-transparent"
+          rows={2}
+          placeholder={
+            cancelCause === 'supporter_dropped'
+              ? 'Only recorded in the audit log — never shown to anyone'
+              : 'e.g. you asked us to by phone'
+          }
+          value={cancelNote}
+          onChange={(e) => setCancelNote(e.target.value)}
         />
       </Modal>
 
