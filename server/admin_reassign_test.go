@@ -917,13 +917,13 @@ func TestAdminReassignVoidsPriorWorkAndHandsOver(t *testing.T) {
 			SELECT body FROM public.notifications
 			WHERE task_id=$1::uuid AND user_id=$2::uuid AND type='TASK_REASSIGNED'`, taskID, uid)
 	}
-	if b := body(w.requesterID); !strings.Contains(b, "wasn't able to finish") || !strings.Contains(b, "nothing for the first supporter") {
+	if b := body(w.requesterID); !strings.Contains(b, "couldn't finish") || !strings.Contains(b, "You only pay for") {
 		t.Errorf("requester body = %q", b)
 	}
-	if b := body(w.oldID); !strings.Contains(b, "depends on the situation") || strings.Contains(b, "isn't paid") || strings.Contains(b, "Thanks for your flexibility") {
+	if b := body(w.oldID); !strings.Contains(b, "Message HO:RA") || strings.Contains(b, "isn't paid") || strings.Contains(b, "Thanks for your flexibility") {
 		t.Errorf("old supporter body = %q", b)
 	}
-	if b := body(w.newID); !strings.Contains(b, "starting it fresh") {
+	if b := body(w.newID); !strings.Contains(b, "start it fresh") {
 		t.Errorf("new supporter body = %q", b)
 	}
 }

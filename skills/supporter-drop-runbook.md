@@ -1,8 +1,10 @@
 # Operational runbook — a supporter leaves an accepted task
 
 > Companion to `payments-runbook.md`. Rules set by Aura on 2026-11-18.
-> The supporter app has no "give this task back" button, on purpose: every
-> drop goes through a person at HO:RA, so we always know why it happened.
+> The supporter app has no button that releases a task, on purpose: every drop
+> goes through a person at HO:RA, so we always know why it happened. What it
+> has (from build 21) is **I can't do this task**: a form that tells us, and
+> changes nothing on the task.
 
 ## The three rules
 
@@ -21,12 +23,17 @@ Feeling unsafe is always a valid reason. Do not ask a supporter to justify it.
 
 ## How we hear about it
 
+- The supporter taps **I can't do this task** on the task. Ops get an email
+  with the reason and whether anything was bought, and the task shows a red
+  flag in Ops → Task feed. Nothing else has happened: they are still assigned,
+  their timer is still running, the customer has not been told.
 - The supporter messages HO:RA (WhatsApp from Profile, or the task chat).
 - The customer says nobody came, or their supporter stopped answering.
 - The time-cap alert email (`payments-runbook.md`) for a task with no activity.
 
 First reply to the supporter, always: **ask whether they bought anything and
-where the items are now.** That decides which row below applies.
+where the items are now.** That decides which row below applies. (The form
+asks the first half; you still need to ask where the items are.)
 
 ## What to do
 

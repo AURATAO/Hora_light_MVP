@@ -277,16 +277,13 @@ func adminReassignTask(c *gin.Context) {
 		// A supporter left the task. Nobody is thanked for their flexibility,
 		// and the requester is told the one thing they will worry about:
 		// that they are not paying twice.
-		newBody = fmt.Sprintf("You've been assigned %q by the HO:RA team. The previous supporter "+
-			"couldn't finish it, so you're starting it fresh: open the task to see the details "+
-			"and message the requester.", title)
+		newBody = fmt.Sprintf("HO:RA assigned you %q. The previous supporter couldn't finish, "+
+			"so you start it fresh. Open the task for the details.", title)
 		oldTitle = "You've been taken off a task"
-		oldBody = fmt.Sprintf("You've been taken off %q because it wasn't finished, and someone else "+
-			"is taking over. Message HO:RA and tell us what happened: how the time you logged "+
-			"is handled depends on the situation.", title)
-		reqBody = fmt.Sprintf("Your supporter wasn't able to finish %q, so %s is taking over. "+
-			"You only pay for the time %s spends on it — nothing for the first supporter.",
-			title, target.Name, target.Name)
+		oldBody = fmt.Sprintf("Someone else is taking over %q because it wasn't finished. "+
+			"Message HO:RA and tell us what happened.", title)
+		reqBody = fmt.Sprintf("Your supporter couldn't finish %q, so %s is taking over. "+
+			"You only pay for %s's time.", title, target.Name, target.Name)
 	}
 
 	notifyUser(ctx, target.UID, target.Email, notify.CreateNotificationInput{
