@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Text, View } from "react-native";
-import { Ban, DoorOpen, Footprints, Hand, ShieldAlert } from "lucide-react-native";
+import { Ban, DoorOpen, Footprints, Hand, MessageCircle, ShieldAlert } from "lucide-react-native";
 import type { LucideIcon } from "lucide-react-native";
 import { Card } from "./ui";
 import { getAppConfig } from "../lib/api";
@@ -16,6 +16,7 @@ import { color, size } from "../theme/tokens";
 
 const ICONS: Record<string, LucideIcon> = {
   hand: Hand,
+  message: MessageCircle,
   door: DoorOpen,
   shield: ShieldAlert,
   footprints: Footprints,

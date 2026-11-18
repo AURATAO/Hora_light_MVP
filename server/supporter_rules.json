@@ -1,11 +1,11 @@
 {
   "_readme": [
     "The supporter rules the apps show (Profile → Supporter rules, and the application form). Served in GET /config as supporter_rules; the app shows these when present and its own built-in copy when not, so the rules can change after a legal review without an app release.",
-    "icon: one of hand, door, shield, footprints, ban. An unknown name shows a neutral icon (\"message\" is one until the app learns it).",
+    "icon: one of hand, message, door, shield, footprints, ban (message from app build 21; older builds show the neutral icon). An unknown name shows a neutral icon.",
     "Keep them in step with the scope rules (llm/playbooks.json): a rule here that the assistant would still book is a promise we break.",
     "version: bump on any change."
   ],
-  "version": "sr3",
+  "version": "sr4",
   "items": [
     {
       "icon": "hand",
@@ -15,7 +15,7 @@
     {
       "icon": "message",
       "title": "Can't finish? Tell us right away",
-      "body": "If you can't start or finish a task you accepted, message HO:RA straight away so we can find someone else. How the time you logged is handled depends on what happened, so tell us and we'll work it out with you. If you feel unsafe, leave first and tell us after."
+      "body": "If you can't start or finish a task you accepted, tell HO:RA straight away so we can find someone else: tap \"I can't do this task\" on the task, or message us. How the time you logged is handled depends on what happened, so tell us and we'll work it out with you. If you feel unsafe, leave first and tell us after."
     },
     {
       "icon": "door",
