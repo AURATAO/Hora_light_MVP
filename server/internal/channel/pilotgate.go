@@ -33,7 +33,7 @@ import (
 )
 
 // CopyPilotClosed is the one reply a gated sender gets.
-const CopyPilotClosed = "Thanks for reaching out! HO:RA opens in New York City in December. We can't take requests yet, but we'd love to help once we're open."
+const CopyPilotClosed = "Thanks for reaching out! HO:RA opens in New York City in January. We can't take requests yet, but we'd love to help once we're open."
 
 // PilotReplyEvery: a gated sender gets CopyPilotClosed at most once in this
 // long.

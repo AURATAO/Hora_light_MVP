@@ -39,7 +39,7 @@ func pilotDigestEmail(count int, end time.Time) (subject, body string) {
 	subject = fmt.Sprintf("[HO:RA] Pilot gate — %s texted before launch (24h)", who)
 	day := end.In(nycLocation).Format("Mon Jan 2, 3:04 PM MST")
 	body = fmt.Sprintf(`<p>In the 24 hours to %s, <strong>%s</strong> not on the pilot allowlist texted the HO:RA line.</p>
-<p>Each got the "we open in December" reply at most once a day, and nothing was booked or drafted. No phone numbers are in this email.</p>
+<p>Each got the "we open in January" reply at most once a day, and nothing was booked or drafted. No phone numbers are in this email.</p>
 <p>The gate is on while CHANNEL_PILOT_GATE=1.</p>`, day, who)
 	return subject, body
 }
