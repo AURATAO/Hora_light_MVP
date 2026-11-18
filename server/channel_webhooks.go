@@ -92,6 +92,10 @@ func RegisterChannelWebhooks(r *gin.Engine, sqlDB *sql.DB) {
 		OptOuts: store,
 		// How long a booking summary stays bookable (posting.go).
 		SummaryTTL: channel.SummaryTTLFromEnv(),
+		// Replies to a supporter drop-off notice (channel_handover.go,
+		// internal/channel/handover.go): read by rule, then the small model.
+		HandOvers:      &chatHandOvers{sqlDB: sqlDB},
+		HandOverReader: steps.Small,
 	}
 	// D-18: the requester agent replaces the context classifier only when
 	// CHANNEL_AGENT=1 (off by default; staging first). It proposes; the

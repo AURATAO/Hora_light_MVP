@@ -317,6 +317,11 @@ type Router struct {
 	// "I can only read text" reply).
 	Photos PhotoStore
 	Blobs  PhotoBlobs
+	// HandOvers finds the supporter drop-off notices a thread received, and
+	// HandOverReader reads a reply to one the rules leave (handover.go).
+	// HandOvers nil = off: replies are routed as any message.
+	HandOvers      HandOverStore
+	HandOverReader llm.HandOverReader
 }
 
 // dispatch runs a reply: inline when routing a webhook message (already off
@@ -515,6 +520,11 @@ func (r *Router) routeMessage(ctx context.Context, in Inbound, id Identity, conv
 	// Inline replies (relay.go, routeReply): the bubble decides. A "yes"
 	// swiped on a supporter's words never books; a YES on our prompt does.
 	if handled, err := r.routeReply(ctx, in, id, conv, text); handled {
+		return err
+	}
+	// A reply to a supporter drop-off notice (handover.go): a redo, the
+	// charge, who is coming now — only while the notice is the open thing.
+	if handled, err := r.routeHandOver(ctx, in, id, conv, text); handled {
 		return err
 	}
 	// A new booking's question is open and the message only takes the
@@ -827,6 +837,11 @@ type draftOpts struct {
 	// notes: words for the supporter added to the draft's notes (a
 	// question asked with a pick — discovery.go).
 	notes []string
+	// askTime: ask when, before the summary, unless the draft has a time
+	// (a redo whose booked time has passed — handover.go).
+	askTime bool
+	// redoOf: the cancelled task this draft does again (handover.go).
+	redoOf string
 	// prebuilt: the errand is already a draft (the usual — discovery.go):
 	// not parsed, priced and checked like any other. intro: said once
 	// before its first question.
@@ -1100,13 +1115,14 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		return r.Reply(ctx, in, CopyAreaCheckDown, "")
 	}
 	p := &PendingDraft{Source: source, CreatedAtUnix: r.now().Unix(), Unparsed: unparsed, BudgetAskIndex: -1, WhileActive: whileActive,
-		Places: o.places, Check: o.check, Intro: o.intro}
+		Places: o.places, Check: o.check, Intro: o.intro, RedoOf: o.redoOf}
 	if conv.Pending != nil && o.prebuilt == nil {
 		// A correction re-drafts; the opt-out they already gave stands.
 		p.NoAutoExtend = conv.Pending.NoAutoExtend
 		p.Notes = conv.Pending.Notes
 		p.Photos = conv.Pending.Photos
 		p.WhileActive, p.WhileActiveShown = conv.Pending.WhileActive, conv.Pending.WhileActiveShown
+		p.RedoOf = conv.Pending.RedoOf
 	}
 	for _, n := range o.notes {
 		if n = strings.TrimSpace(n); n != "" && len(p.Notes) < MaxNotes {
@@ -1157,6 +1173,10 @@ func (r *Router) startDraftOpts(ctx context.Context, in Inbound, id Identity, co
 		}
 	}
 	p.DetailsAsked = needsDetailsIn(items, areaName) || unclear
+	if o.askTime && !p.DetailsAsked && !anyScheduled(items) {
+		// The answer re-drafts like any details answer (onConfirm).
+		p.DetailsAsked, p.TimeAsked = true, true
+	}
 	if prev := conv.Pending; p.DetailsAsked && prev != nil && prev.DetailsAsked && !prev.AskedFirst {
 		// A failed answer counts toward the hand-off; a question that
 		// moves the request on does not: "Did you mean …?", a YES to it,
@@ -2303,6 +2323,9 @@ func needsDetails(items []DraftItem) bool {
 // clearer address for a stop that could not be placed, what and where for an empty request, where for a draft
 // without a place.
 func detailsQuestion(p *PendingDraft) string {
+	if p.TimeAsked {
+		return CopyHandOverAskTime
+	}
 	if len(p.StopOptions) > 0 {
 		return CopyStopOptionsAgain
 	}
@@ -2327,6 +2350,16 @@ func detailsQuestion(p *PendingDraft) string {
 		return CopyAskWhatWhere
 	}
 	return fmt.Sprintf(CopyAskWhere, p.Headline())
+}
+
+// anyScheduled: some errand has a time.
+func anyScheduled(items []DraftItem) bool {
+	for _, it := range items {
+		if it.Draft.Scheduled {
+			return true
+		}
+	}
+	return false
 }
 
 // needsDetailsIn is needsDetails with the person's area: a purchase with

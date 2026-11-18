@@ -373,6 +373,7 @@ func main() {
 		scope     = flag.Bool("scope", false, "scope rules (people, homes): rules, then LLM_SMALL_MODEL on what they leave (scope_rules.evals in playbooks.json)")
 		supporter = flag.Bool("supporter", false, "supporter interest: rules, then the classifier on LLM_SMALL_MODEL (internal/channel/testdata/supporter_phrasings.json)")
 		address   = flag.Bool("address", false, "address follow-ups: the address model's guesses, and the parse of each transcript (internal/channel/testdata/address_followups.json)")
+		handover  = flag.Bool("handover", false, "replies to a supporter drop-off notice: rules, then LLM_SMALL_MODEL (internal/channel/testdata/handover_replies.json)")
 		scopeAll  = flag.Bool("scope-all", false, "scope: ask the model on every case, also those a rule decides (measures the model alone)")
 	)
 	flag.Parse()
@@ -388,7 +389,7 @@ func main() {
 		os.Exit(3)
 	}
 	defModel := orDefault(os.Getenv("LLM_AGENT_MODEL"), "anthropic:"+llm.DefaultAnthropicModel)
-	if *routing || *scope || *supporter || *address {
+	if *routing || *scope || *supporter || *address || *handover {
 		defModel = orDefault(os.Getenv("LLM_SMALL_MODEL"), "anthropic:"+llm.DefaultAnthropicModel)
 	}
 	spec, err := llm.ParseSpec(orDefault(*modelFlag, defModel))
@@ -413,6 +414,9 @@ func main() {
 	}
 	if *address {
 		os.Exit(runAddress(spec, providers, *runs, *delay/4))
+	}
+	if *handover {
+		os.Exit(runHandOver(spec, providers, *runs, *delay/4))
 	}
 	if *supporter {
 		os.Exit(runSupporter(spec, providers, *runs, *delay/4))

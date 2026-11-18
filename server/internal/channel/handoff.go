@@ -34,6 +34,10 @@ const (
 	// flight (posting.go). A notice, not a hand-off: the thread stays with
 	// the bot and the person has been told what to do.
 	HandoffBookingFailed HandoffReason = "booking_failed"
+	// HandoffSupporterChange: a reply to a supporter drop-off notice a
+	// person must answer — the original supporter wanted back, or words the
+	// assistant could not place (handover.go).
+	HandoffSupporterChange HandoffReason = "supporter_change"
 )
 
 // ThreadMessage is one line of the conversation, for ops.

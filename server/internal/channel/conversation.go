@@ -75,6 +75,12 @@ type PendingDraft struct {
 	// draft without what it needs. At MaxDetailsTries the thread goes to a
 	// person instead of asking again forever (review 10/24 #6).
 	DetailsTries int `json:"details_tries,omitempty"`
+	// TimeAsked: the details question is "when?" (a redo whose booked time
+	// passed — handover.go); its answer re-drafts like any details answer.
+	TimeAsked bool `json:"time_asked,omitempty"`
+	// RedoOf: the cancelled task (a supporter dropped out) this draft does
+	// again; its replies are the draft's, not the notice's (handover.go).
+	RedoOf string `json:"redo_of,omitempty"`
 	// UnclearStop: the address the service-area check could not place. Set
 	// with DetailsAsked, so no YES books the draft until the words that
 	// answer detailsQuestion re-draft it and the check passes.

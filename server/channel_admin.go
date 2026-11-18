@@ -445,6 +445,8 @@ func reasonLabelOps(r channel.HandoffReason) string {
 		return "asked about becoming a supporter"
 	case channel.HandoffScopeUnchecked:
 		return "the scope check could not read a message — decide whether HO:RA can do it; nothing was drafted"
+	case channel.HandoffSupporterChange:
+		return "replied to a supporter drop-off message (cancelled or reassigned task) — wants the original supporter back, or the reply could not be placed"
 	case channel.HandoffAgentEscalated:
 		return "the assistant judged a person should handle it (safety, dispute, legal/medical or repeated confusion)"
 	}

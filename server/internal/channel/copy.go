@@ -332,3 +332,25 @@ func Dollars(cents int) string {
 	}
 	return fmt.Sprintf("$%d.%02d", cents/100, cents%100)
 }
+
+// Replies to a supporter drop-off notice (handover.go). The notices
+// themselves are the app's (server/admin_task_ops.go, admin_reassign.go).
+// Never a refund, compensation or a time; nothing about why a supporter left
+// beyond that they couldn't finish.
+const (
+	CopyHandOverDeclined        = "No problem."
+	CopyHandOverAckCancelled    = "Got it. If you'd like someone else to do it, just say so."
+	CopyHandOverWhyCancelled    = "Your supporter couldn't finish %s, so we cancelled it, and you haven't been charged. Want someone else to do it? Just say yes."
+	CopyHandOverWhyTakenOver    = "Your first supporter couldn't finish %s, so %s is taking over."
+	CopyHandOverWhyChanged      = "We changed the supporter for %s: %s is doing it now."
+	CopyHandOverNotCharged      = "No, you weren't charged for %s. Any hold for it on your card was released."
+	CopyHandOverNotTwice        = "No, you won't be charged twice. You only pay for %s's time on %s."
+	CopyHandOverWho             = "%s is your supporter for %s now, and it's still on."
+	CopyHandOverRedoIntro       = "Sure, here's %s again for another supporter:"
+	CopyHandOverAskTime         = "When should it be done this time? Say a day and time, or “as soon as possible”."
+	CopyHandOverWhichLead       = "Just to check:"
+	CopyHandOverWhichCancelled  = "do you want %s done again by someone else? Reply REDO for that."
+	CopyHandOverWhichReassigned = `do you want to cancel %s? Reply "cancel task" for that.`
+	CopyHandOverDraftDropped    = "OK, I've dropped \u201c%s\u201d (ask again any time)."
+	CopyHandOverWhichDraft      = "Otherwise I'll keep going with “%s”, which is waiting for your reply."
+)
