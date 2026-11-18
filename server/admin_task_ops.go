@@ -239,7 +239,8 @@ func adminForceCompleteTask(c *gin.Context) {
 // cancelCauseSupporterDropped: the supporter left an accepted task and ops are
 // closing it because nobody else can take it over. The requester is told what
 // happened and that nothing was charged; the supporter is NOT thanked for
-// their time, because the time is not paid (supporter rules, sr3).
+// their time: whether any of it is paid is decided case by case, by a person
+// (supporter rules, sr3), so the message asks them to get in touch instead.
 const cancelCauseSupporterDropped = "supporter_dropped"
 
 // noChargeSentence is true of every admin cancel: the hold is released and
@@ -273,7 +274,7 @@ func adminCancelSupporterCopy(cause, taskTitle string) (title, body string) {
 	if cause == cancelCauseSupporterDropped {
 		return "You've been taken off a task",
 			fmt.Sprintf("You've been taken off %q because it wasn't finished, and the task has been cancelled. "+
-				"Time logged on it isn't paid. If something went wrong on your side, message HO:RA so we know.", taskTitle)
+				"Message HO:RA and tell us what happened: how the time you logged is handled depends on the situation.", taskTitle)
 	}
 	return "Task cancelled",
 		fmt.Sprintf("%q has been cancelled by the HO:RA team, so there's nothing more to do on it. "+

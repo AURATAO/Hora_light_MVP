@@ -497,7 +497,7 @@ export default function OpsFeed() {
           <span className="font-medium text-white">{cancelling?.title}</span>
         </p>
         <p className="mb-3 text-xs opacity-70">
-          The hold on the requester's card is released and nothing is charged. No time is paid to the supporter.
+          The hold on the requester's card is released and nothing is charged. The system pays the supporter nothing for this task; anything owed is decided case by case and paid by hand.
         </p>
 
         <label className="block text-xs uppercase tracking-wide opacity-70 mb-1">Why</label>
@@ -514,8 +514,8 @@ export default function OpsFeed() {
                 The supporter left or can't finish
                 <span className="block text-xs opacity-60">
                   Requester: "Your supporter wasn't able to finish… You haven't been charged… Tell us if you'd like
-                  us to set it up again with someone else." Supporter: "You've been taken off… Time logged on it
-                  isn't paid."
+                  us to set it up again with someone else." Supporter: "You've been taken off… Message HO:RA and tell us
+                  what happened: how the time you logged is handled depends on the situation."
                 </span>
               </span>
             </label>
