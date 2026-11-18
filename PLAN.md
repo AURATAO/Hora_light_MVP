@@ -1039,6 +1039,51 @@ the scope and playbook evals describe companionship as offered.
 - [ ] Web app (`app/`): the category picker still lists Companion; a post
   is refused with the reply above. Hide it while paused.
 
+### 13e. A supporter leaves an accepted task (Aura, 2026-11-18)
+
+The app has no "give back" button; every drop goes through ops. Rules and the
+step-by-step are in `skills/supporter-drop-runbook.md`:
+
+1. Valid reason → ops pay what is fair, by hand, after the fact.
+2. No valid reason → logged time is voided and unpaid; the task goes to
+   another supporter who starts from zero; the customer pays once.
+3. Items already bought → the supporter is refunded against the receipt.
+
+Built (three stacked branches, in merge order):
+
+- `feat/ops-task-money` — receipt amount, receipt photo and transfer state on
+  the ops task feed (`GET /admin/tasks/:id/money`).
+- `feat/supporter-drop-copy` — supporter rule sr3 ("Can't finish? Tell us
+  right away"), admin cancel `cause=supporter_dropped` with its own wording,
+  no more "Thanks for your time", the overlap refusal no longer promises a
+  hand-back.
+- `feat/reassign-after-start` — `void_prior_work` on admin reassign. Merge
+  after App Review: it deletes worklogs, which billing reads.
+
+To do:
+
+- [ ] Lawyers: confirm "time logged on a task left without a valid reason
+  isn't paid" before or right after sr3 goes live (it is in the rules the
+  moment `feat/supporter-drop-copy` is merged).
+- [ ] Tracking sheet for drops and by-hand payments (date, task, supporter,
+  reason, valid or not, amount, receipt link). The runbook depends on it.
+- [ ] Items bought, then the task handed over: no system path to refund the
+  first supporter or to charge the customer for those items. Manual today.
+  Build: an ops-recorded reimbursement on the task that settlement includes.
+- [ ] Ops Cancel has no "the customer asked" option. It releases the hold and
+  pays nobody, where the customer's own cancel charges base fee + time after
+  the 3-minute grace. Add the option and route it through the same settlement.
+- [ ] By-hand goodwill pay (rule 1): today a bank transfer plus a sheet line.
+  Decide whether it should be a recorded payout in the system instead.
+- [ ] Next app build: the "message" icon for the new rule (build 20 shows the
+  neutral shield), and the built-in fallback rules in
+  `mobile/src/lib/supporter-rules.ts` brought in step with sr3.
+- [ ] Next app build: check what the supporter who was taken off sees when
+  they tap the notification — the task is no longer theirs to open.
+- [ ] Policy for repeat drops (the runbook says "Aura's decision").
+- [ ] A direct-assigned supporter skips the accept acknowledgments. Either
+  record them at assignment or send an offer instead of assigning.
+
 ## 14. Paused
 
 App Store public release of the requester app; requester-side app features;

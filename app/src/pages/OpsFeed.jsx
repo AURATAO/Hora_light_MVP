@@ -82,6 +82,8 @@ export default function OpsFeed() {
   const [supportersError, setSupportersError] = useState('')
   const [pickedSupporter, setPickedSupporter] = useState('')
   const [reassignBusy, setReassignBusy] = useState(false)
+  // Only used when work has started: why the logged time is being voided.
+  const [voidReason, setVoidReason] = useState('')
 
   // Cancel dialog: null when closed, otherwise the row being cancelled. The
   // cause decides what the requester and the supporter are each told.
@@ -99,9 +101,10 @@ export default function OpsFeed() {
 
   const allowed = !!user && ADMIN_EMAILS.has(user.email)
 
-  // Any logged time means a worklog exists, which is exactly what the reassign
-  // endpoint refuses (task_in_progress). Checked here too so the dialog explains
-  // it instead of spending a round-trip on a guaranteed 409.
+  // Any logged time means a worklog exists, and the reassign endpoint refuses
+  // that (task_in_progress) unless the logged time is voided with a reason.
+  // Checked here so the dialog asks for the reason up front instead of
+  // spending a round-trip on a guaranteed 409.
   const reassignStarted =
     !!reassigning &&
     ((reassigning.running_minutes || 0) > 0 || (reassigning.total_minutes_done || 0) > 0)
@@ -227,6 +230,7 @@ export default function OpsFeed() {
     setReassigning(row)
     setPickedSupporter('')
     setSupportersError('')
+    setVoidReason('')
     if (supporters) return
     try {
       const list = await listApprovedSupporters()
@@ -241,9 +245,11 @@ export default function OpsFeed() {
     if (!reassigning || !pickedSupporter) return
     setReassignBusy(true)
     try {
-      const res = await reassignTask(reassigning.task_id, pickedSupporter)
+      const res = await reassignTask(reassigning.task_id, pickedSupporter, reassignStarted ? voidReason.trim() : '')
       toast(
-        res?.previous_supporter
+        res?.voided_sessions
+          ? `Handed over to ${res.new_supporter_name || res.new_supporter} — ${res.voided_minutes}m voided, all three parties notified`
+          : res?.previous_supporter
           ? `Reassigned to ${res.new_supporter_name || res.new_supporter} — all three parties notified`
           : `Assigned to ${res.new_supporter_name || res.new_supporter} — requester notified`
       )
@@ -686,9 +692,9 @@ export default function OpsFeed() {
             <button
               className="rounded-md border border-white/40 px-3 py-1 text-sm hover:border-white/70 disabled:opacity-40"
               onClick={confirmReassign}
-              disabled={reassignBusy || !pickedSupporter || reassignStarted}
+              disabled={reassignBusy || !pickedSupporter || (reassignStarted && !voidReason.trim())}
             >
-              {reassignBusy ? 'Reassigning…' : 'Confirm'}
+              {reassignBusy ? 'Reassigning…' : reassignStarted ? 'Void time & hand over' : 'Confirm'}
             </button>
           </>
         }
@@ -707,16 +713,33 @@ export default function OpsFeed() {
         </div>
 
         {reassignStarted ? (
-          /* Mirrors the server's task_in_progress rule. The worklog is keyed to
-             the current supporter's email and the GPS pings to their user id, so
-             swapping now would file their tracked time under someone else. */
-          <p className="mb-3 rounded border border-amber-400/40 bg-amber-400/5 px-3 py-2 text-xs text-amber-200">
-            Work has already started on this task ({reassigning?.duration_minutes || 0}m logged), so its
-            time and location belong to the current supporter. Remove the task and ask the requester
-            to post it again instead.
-          </p>
-        ) : (
-          <>
+          /* The supporter started this task and is not finishing it. Their
+             sessions come off the task (kept in the audit log) so the new
+             supporter starts from zero and the requester pays for one person. */
+          <div className="mb-3 rounded border border-amber-400/40 bg-amber-400/5 px-3 py-2 text-xs text-amber-200">
+            <p>
+              Work has already started on this task ({reassigning?.duration_minutes || 0}m logged). Handing it
+              over <span className="font-semibold">voids that time</span>: the current supporter is not paid
+              for it, the requester is not billed for it, and the new supporter starts from zero on the same
+              card hold.
+            </p>
+            <p className="mt-2 opacity-90">
+              If the supporter had a valid reason and should be paid for what they did, pay them separately —
+              this action never pays them.
+            </p>
+            <label className="mt-3 block uppercase tracking-wide opacity-80 mb-1">
+              Why (required — audit log only)
+            </label>
+            <textarea
+              className="w-full border border-amber-400/40 rounded px-2 py-1 bg-transparent text-white"
+              rows={2}
+              placeholder="e.g. left after 10 minutes, not answering messages"
+              value={voidReason}
+              onChange={(e) => setVoidReason(e.target.value)}
+            />
+          </div>
+        ) : null}
+
             <label className="block text-xs uppercase tracking-wide opacity-70 mb-1">
               New supporter
             </label>
@@ -742,12 +765,12 @@ export default function OpsFeed() {
               </select>
             )}
             <p className="text-xs opacity-60">
-              {reassigning?.supporter_email
+              {reassignStarted
+                ? 'Requester: "Your supporter couldn\'t finish…, so (name) is taking over. You only pay for (name)\'s time." Previous supporter: "Someone else is taking over… Message HO:RA and tell us what happened."'
+                : reassigning?.supporter_email
                 ? 'The new supporter is assigned and moved into the task chat, the previous one is unassigned and loses chat access, and all three parties are notified.'
                 : 'The supporter is assigned directly, skipping the accept flow. They and the requester are notified.'}
             </p>
-          </>
-        )}
       </Modal>
     </div>
   );
