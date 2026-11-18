@@ -282,8 +282,8 @@ func adminReassignTask(c *gin.Context) {
 			"and message the requester.", title)
 		oldTitle = "You've been taken off a task"
 		oldBody = fmt.Sprintf("You've been taken off %q because it wasn't finished, and someone else "+
-			"is taking over. Time logged on it isn't paid. If something went wrong on your side, "+
-			"message HO:RA so we know.", title)
+			"is taking over. Message HO:RA and tell us what happened: how the time you logged "+
+			"is handled depends on the situation.", title)
 		reqBody = fmt.Sprintf("Your supporter wasn't able to finish %q, so %s is taking over. "+
 			"You only pay for the time %s spends on it — nothing for the first supporter.",
 			title, target.Name, target.Name)

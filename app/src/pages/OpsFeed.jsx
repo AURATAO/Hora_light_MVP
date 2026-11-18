@@ -741,7 +741,7 @@ export default function OpsFeed() {
             )}
             <p className="text-xs opacity-60">
               {reassignStarted
-                ? 'Requester: "Your supporter wasn\'t able to finish… You only pay for the time the new supporter spends on it." Previous supporter: "You\'ve been taken off… Time logged on it isn\'t paid."'
+                ? 'Requester: "Your supporter wasn\'t able to finish… You only pay for the time the new supporter spends on it." Previous supporter: "You\'ve been taken off… Message HO:RA and tell us what happened."'
                 : reassigning?.supporter_email
                 ? 'The new supporter is assigned and moved into the task chat, the previous one is unassigned and loses chat access, and all three parties are notified.'
                 : 'The supporter is assigned directly, skipping the accept flow. They and the requester are notified.'}

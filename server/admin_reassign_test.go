@@ -920,7 +920,7 @@ func TestAdminReassignVoidsPriorWorkAndHandsOver(t *testing.T) {
 	if b := body(w.requesterID); !strings.Contains(b, "wasn't able to finish") || !strings.Contains(b, "nothing for the first supporter") {
 		t.Errorf("requester body = %q", b)
 	}
-	if b := body(w.oldID); !strings.Contains(b, "isn't paid") || strings.Contains(b, "Thanks for your flexibility") {
+	if b := body(w.oldID); !strings.Contains(b, "depends on the situation") || strings.Contains(b, "isn't paid") || strings.Contains(b, "Thanks for your flexibility") {
 		t.Errorf("old supporter body = %q", b)
 	}
 	if b := body(w.newID); !strings.Contains(b, "starting it fresh") {

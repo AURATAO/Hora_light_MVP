@@ -45,8 +45,10 @@ is, a clocked-in task can only be cancelled (third row).
 What the app shows after a hand-over:
 
 - **The supporter who left:** the task disappears from My jobs and they can no
-  longer open it. They get one notification: taken off the task, the time
-  logged isn't paid, message HO:RA if something went wrong.
+  longer open it. They get one notification: taken off the task, and asked to
+  message HO:RA because how the logged time is handled depends on the
+  situation. The message promises nothing and refuses nothing; the decision
+  is ours, under the three rules above.
 - **The new supporter:** the task appears in My jobs as Accepted, with the
   clock at zero, and they are added to the task chat. They did not go through
   the accept screen, so **message them first and get a yes** — do not assign a
@@ -58,7 +60,7 @@ What the app shows after a cancel for this reason:
 
 - **The customer:** their supporter couldn't finish, nothing was charged, and
   they can ask us to set it up again.
-- **The supporter:** taken off the task, the time logged isn't paid.
+- **The supporter:** taken off the task, and asked to message HO:RA.
 
 ## Items already bought
 
