@@ -102,6 +102,13 @@ export function adjustTaskTime(taskId, delta) {
   })
 }
 
+// GET /admin/tasks/:id/money — one task's money: the receipt (amount + a
+// short-lived signed photo link), what the requester was charged, and each
+// transfer to the supporter with its state. Read-only.
+export function getTaskMoney(taskId) {
+  return opsFetch(`/admin/tasks/${taskId}/money`)
+}
+
 // Reason slugs the endpoint accepts, with the labels the ops panel shows.
 // Mirrors removalReasons in server/admin_tasks.go.
 export const REMOVAL_REASONS = [

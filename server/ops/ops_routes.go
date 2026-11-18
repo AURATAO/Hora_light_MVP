@@ -74,7 +74,23 @@ func RegisterOpsRoutes(r *gin.Engine, sqldb *sql.DB, authMW gin.HandlerFunc, isA
 				(select coalesce(p.name,'') from public.profiles p where lower(p.email) = lower(v.supporter_email) limit 1),
 				first_start_at, last_end_at, total_minutes_done, running_minutes,
 				(COALESCE(total_minutes_done,0)+COALESCE(running_minutes,0)) AS duration_minutes,
-				last_event_at
+				last_event_at,
+				-- The money columns: what the supporter says they spent, whether
+				-- there is a photo behind it, and where their transfer stands.
+				-- The photo itself is NOT here — it needs a signed link, and
+				-- that is minted per task by GET /admin/tasks/:id/money.
+				(select t.receipt_amount_cents from public.tasks t where t.id = v.task_id),
+				(select coalesce(t.receipt_photo_url,'') <> '' from public.tasks t where t.id = v.task_id),
+				(select case
+				          when count(*) = 0 then 'none'
+				          when bool_or(p.status = 'failed') then 'failed'
+				          when bool_or(p.status = 'pending') then 'pending'
+				          when bool_and(p.bank_paid_at is not null) then 'paid_out'
+				          else 'on_its_way'
+				        end
+				   from public.payouts p where p.task_id = v.task_id),
+				(select coalesce(sum(p.amount_cents),0) from public.payouts p
+				  where p.task_id = v.task_id and p.status <> 'failed')
 			FROM public.view_ops_tasks v
 			WHERE %s
 			ORDER BY last_event_at DESC
@@ -114,24 +130,37 @@ func RegisterOpsRoutes(r *gin.Engine, sqldb *sql.DB, authMW gin.HandlerFunc, isA
 			Running          *int       `json:"running_minutes"`
 			Duration         *int       `json:"duration_minutes"`
 			LastEventAt      time.Time  `json:"last_event_at"`
+			// Money, at a glance. receipt_cents is null when no receipt was
+			// submitted (a task with nothing to buy, or one not finished yet).
+			// payout_state is one of none | pending | on_its_way | paid_out |
+			// failed — the worst state across the task's transfers, so one
+			// failed transfer is never hidden behind a paid one.
+			ReceiptCents     *int       `json:"receipt_cents"`
+			HasReceiptPhoto  bool       `json:"has_receipt_photo"`
+			PayoutState      string     `json:"payout_state"`
+			PayoutCents      int        `json:"payout_cents"`
 		}
 
 		out := []Row{}
 		for rows.Next() {
 			var r Row
 			var requesterName, supporterName *string
+			var hasReceiptPhoto *bool
 			if err := rows.Scan(
 				&r.TaskID, &r.Title, &r.Category, &r.LocationText, &r.Status, &r.EstimatedMinutes,
 				&r.PrepayAmount, &r.IsImmediate, &r.ScheduledAt, &r.CreatedAt, &r.CancelledAt, &r.CancelReason,
 				&r.RequesterEmail, &r.SupporterEmail,
 				&requesterName, &supporterName,
 				&r.FirstStartAt, &r.LastEndAt, &r.TotalDone, &r.Running, &r.Duration, &r.LastEventAt,
+				&r.ReceiptCents, &hasReceiptPhoto, &r.PayoutState, &r.PayoutCents,
 			); err != nil {
+				log.Printf("[ops.feed][scan] %v", err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "scan error"})
 				return
 			}
 			r.RequesterName = helpers.DisplayName(deref(requesterName), deref(r.RequesterEmail))
 			r.SupporterName = helpers.DisplayName(deref(supporterName), deref(r.SupporterEmail))
+			r.HasReceiptPhoto = hasReceiptPhoto != nil && *hasReceiptPhoto
 			out = append(out, r)
 		}
 		c.JSON(http.StatusOK, out)
