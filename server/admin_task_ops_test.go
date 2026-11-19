@@ -611,6 +611,33 @@ func TestAdminOpsCancelSupporterDroppedCopy(t *testing.T) {
 	}
 }
 
+// Cancelled after a hand-over: the supporter on the task now is the one who
+// stepped in. They are thanked, not asked what happened.
+func TestAdminOpsCancelAfterHandOverDoesNotBlameTheReplacement(t *testing.T) {
+	setupAdminOpsDB(t)
+	w := seedOpsWorld(t, "open")
+	// The task was handed to its current supporter by ops.
+	writeAudit(context.Background(), w.taskID, w.adminID, "TASK_REASSIGNED", "swap_voided", map[string]any{})
+
+	if code, out := callAdminOps(t, adminCancelTaskHandler, "cancel", w.taskID, w.adminID, adminEmail,
+		`{"cause":"supporter_dropped"}`); code != http.StatusOK {
+		t.Fatalf("want 200, got %d (%v)", code, out)
+	}
+	body := scalar[string](t, `
+		SELECT body FROM public.notifications
+		WHERE task_id=$1::uuid AND user_id=$2::uuid AND type='CANCELLED'`, w.taskID, w.supporterID)
+	if !strings.Contains(body, "Thanks for stepping in") || strings.Contains(body, "tell us what happened") {
+		t.Errorf("replacement supporter body = %q", body)
+	}
+	// The requester's message is unchanged.
+	rBody := scalar[string](t, `
+		SELECT body FROM public.notifications
+		WHERE task_id=$1::uuid AND user_id=$2::uuid AND type='CANCELLED'`, w.taskID, w.requesterID)
+	if !strings.Contains(rBody, "haven't been charged") {
+		t.Errorf("requester body = %q", rBody)
+	}
+}
+
 // Every requester-facing cancel says what happened to the money.
 func TestAdminCancelCopyAlwaysMentionsTheCharge(t *testing.T) {
 	for _, c := range []struct{ cause, reason string }{

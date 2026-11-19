@@ -69,6 +69,24 @@ What the app shows after a cancel for this reason:
   they can ask us to set it up again.
 - **The supporter:** taken off the task, and asked to message HO:RA.
 
+## The customer wants out after a hand-over
+
+The 3-minute free-cancel window restarts when the new supporter is assigned.
+If the customer cancels **themselves** after that, the system charges the base
+fee plus the new supporter's time and pays the new supporter, exactly as for
+any accepted task. That is correct for the supporter and wrong for the
+customer: they are paying because our first supporter left.
+
+Until this is automatic:
+
+1. If the customer says they no longer want it, ask them **not** to cancel
+   themselves. Use ops **Cancel** (nothing is charged).
+2. Pay the new supporter the base fee by hand if they had already set off
+   (see "Paying a supporter by hand"). HO:RA absorbs it.
+3. If the customer already cancelled and was charged, refund them in Stripe.
+
+Who absorbs this cost as a standing rule is still to be decided (PLAN 13e).
+
 ## Items already bought
 
 The system cannot reimburse a receipt on a task that is not completed, and a

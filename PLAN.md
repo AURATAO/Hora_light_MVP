@@ -1080,6 +1080,13 @@ To do:
   `mobile/src/lib/supporter-rules.ts` brought in step with sr3.
 - [ ] Next app build: check what the supporter who was taken off sees when
   they tap the notification — the task is no longer theirs to open.
+- [ ] After a hand-over, a customer who cancels past the restarted 3-minute
+  window is charged base fee + time. Decide who absorbs it (runbook says
+  HO:RA, by hand); then make it automatic.
+- [ ] Admin reassign skips the payout-readiness, overlap and acknowledgment
+  checks that accept runs. On 2026-11-18 only one approved supporter had
+  payouts enabled, so a hand-over target usually cannot be paid. Add the
+  checks (warn, do not block) before the pilot.
 - [ ] Policy for repeat drops (the runbook says "Aura's decision").
 - [ ] A direct-assigned supporter skips the accept acknowledgments. Either
   record them at assignment or send an offer instead of assigning.
