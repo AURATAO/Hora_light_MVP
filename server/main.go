@@ -617,6 +617,10 @@ func main() {
 	// it refuses a task that has already been clocked into.
 	r.POST("/admin/tasks/:id/reassign", dualAuth(sqldb), requireOpsAdmin(), adminReassignTask)
 	r.GET("/admin/supporters", dualAuth(sqldb), requireOpsAdmin(), adminListSupporters)
+	// The onboarding automation (n8n) reads where each Supporter applicant
+	// stands in the app. Machine token, read-only, off unless
+	// OPS_AUTOMATION_TOKEN is set (ops_onboarding_feed.go).
+	r.GET("/ops/automation/onboarding", getOnboardingFeed)
 
 	// The ops panel's Force / Cancel / Adjust buttons. Previously POST /ops/*
 	// handlers that called SECURITY DEFINER Postgres functions and failed every
